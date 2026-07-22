@@ -12,7 +12,21 @@ recovery, and uninstall commands are documented in the
 - Python 3.10 or newer;
 - at least one installed and authenticated executor: Codex, Claude Code, or Hermes.
 
-## 2. Download And Verify
+## 2. Install From PyPI
+
+Install the published Alpha package from the
+[AgentBC PyPI project](https://pypi.org/project/agentbc/), then run setup to
+discover local executors, install their AgentBC integrations, and start Runner:
+
+```bash
+python3 -m pip install agentbc==1.0.1a1
+agentbc setup
+```
+
+The explicit version pin keeps Alpha deployments reproducible. To use the
+checksummed GitHub bundle instead, continue with the next section.
+
+## 3. Install From A Verified GitHub Release
 
 Open the [AgentBC 1.0.1A release](https://github.com/roway49/agent-bridge-connect/releases/tag/v1.0.1A)
 to review the release notes and assets. The recommended one-command installer
@@ -40,7 +54,7 @@ shasum -a 256 -c SHA256SUMS
 
 Do not install the bundle if either checksum command fails.
 
-## 3. Install A Manually Downloaded Bundle
+### Install A Manually Downloaded Bundle
 
 ```bash
 ./install_local_alpha.sh ./agent_bridge_connect-1.0.1a1-py3-none-any.whl
@@ -49,10 +63,11 @@ Do not install the bundle if either checksum command fails.
 The installer creates an isolated environment, detects local executors,
 installs their AgentBC integrations, runs setup, and starts Runner.
 
-## 4. Refresh The Shell
+## 4. Refresh The Shell And Agent Sessions
 
-Open a new terminal and new agent sessions so the shell and each client reload
-their command and skill catalogs. If the command is not yet on `PATH`:
+Open a new terminal and new agent sessions after either installation method so
+the shell and each client reload their command and skill catalogs. If the
+command is not yet on `PATH`:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"

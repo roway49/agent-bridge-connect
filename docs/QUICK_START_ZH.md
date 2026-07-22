@@ -11,7 +11,20 @@
 - Python 3.10 或更高版本；
 - 至少安装并登录一个执行器：Codex、Claude Code 或 Hermes。
 
-## 2. 下载并校验
+## 2. 通过 PyPI 安装
+
+从 [AgentBC PyPI 项目](https://pypi.org/project/agentbc/)安装已发布的 Alpha
+包，然后执行 setup；它会识别本地执行器、安装 AgentBC 集成并启动 Runner：
+
+```bash
+python3 -m pip install agentbc==1.0.1a1
+agentbc setup
+```
+
+固定版本号可以确保 Alpha 部署结果可复现。如需使用带完整校验文件的 GitHub
+压缩包，请继续阅读下一节。
+
+## 3. 通过已校验的 GitHub Release 安装
 
 打开 [AgentBC 1.0.1A Release](https://github.com/roway49/agent-bridge-connect/releases/tag/v1.0.1A)
 查看发布说明和资产。推荐使用一行安装命令：它会下载发布校验文件、验证压缩包、
@@ -37,7 +50,7 @@ shasum -a 256 -c SHA256SUMS
 
 任意一条校验命令失败时都不要继续安装。
 
-## 3. 安装手动下载的压缩包
+### 安装手动下载的压缩包
 
 ```bash
 ./install_local_alpha.sh ./agent_bridge_connect-1.0.1a1-py3-none-any.whl
@@ -48,8 +61,8 @@ shasum -a 256 -c SHA256SUMS
 
 ## 4. 刷新终端与 Agent 会话
 
-新开一个终端和新的 Agent 会话，让 shell 与各客户端重新加载命令和 Skill。
-如果命令尚未加入 `PATH`：
+无论采用哪种安装方式，都请新开一个终端和新的 Agent 会话，让 shell 与各客户端
+重新加载命令和 Skill。如果命令尚未加入 `PATH`：
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
