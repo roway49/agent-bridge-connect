@@ -13,7 +13,19 @@
 
 ## 2. 下载并校验
 
-从同一个 Release 下载 Alpha 压缩包及其 `.sha256` 文件：
+打开 [AgentBC 1.0.1A Release](https://github.com/roway49/agent-bridge-connect/releases/tag/v1.0.1A)
+查看发布说明和资产。推荐使用一行安装命令：它会下载发布校验文件、验证压缩包、
+在隔离环境中安装 AgentBC、执行 setup，并运行纯包 smoke test：
+
+```bash
+curl -fsSL \
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A/install-agentbc-alpha.sh \
+  | sh -s -- \
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A
+```
+
+如需手动安装，请从同一个 Release 下载 Alpha 压缩包及其 `.sha256` 文件，随后
+依次校验压缩包和包内文件：
 
 ```bash
 shasum -a 256 -c agentbc-1.0.1A-macos-local-alpha.tar.gz.sha256
@@ -25,7 +37,7 @@ shasum -a 256 -c SHA256SUMS
 
 任意一条校验命令失败时都不要继续安装。
 
-## 3. 安装
+## 3. 安装手动下载的压缩包
 
 ```bash
 ./install_local_alpha.sh ./agent_bridge_connect-1.0.1a1-py3-none-any.whl

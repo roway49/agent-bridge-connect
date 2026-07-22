@@ -3,6 +3,7 @@
 [中文](FEATURE_SHOW_ZH.md) | English
 
 This walkthrough demonstrates the Public Alpha behavior with real CLI commands.
+See [Examples](Example.md) for recorded end-to-end workflows.
 
 ```mermaid
 flowchart LR

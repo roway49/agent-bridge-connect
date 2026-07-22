@@ -14,7 +14,21 @@ recovery, and uninstall commands are documented in the
 
 ## 2. Download And Verify
 
-Download the Alpha archive and its `.sha256` file from the same release:
+Open the [AgentBC 1.0.1A release](https://github.com/roway49/agent-bridge-connect/releases/tag/v1.0.1A)
+to review the release notes and assets. The recommended one-command installer
+downloads the release checksum manifest, verifies the bundle, installs
+AgentBC in an isolated environment, runs setup, and performs a package smoke
+test:
+
+```bash
+curl -fsSL \
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A/install-agentbc-alpha.sh \
+  | sh -s -- \
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A
+```
+
+For a manual installation, download the Alpha archive and its `.sha256` file
+from the same release, then verify both the archive and its contents:
 
 ```bash
 shasum -a 256 -c agentbc-1.0.1A-macos-local-alpha.tar.gz.sha256
@@ -26,7 +40,7 @@ shasum -a 256 -c SHA256SUMS
 
 Do not install the bundle if either checksum command fails.
 
-## 3. Install
+## 3. Install A Manually Downloaded Bundle
 
 ```bash
 ./install_local_alpha.sh ./agent_bridge_connect-1.0.1a1-py3-none-any.whl

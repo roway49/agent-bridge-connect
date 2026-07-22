@@ -141,6 +141,7 @@ AgentBC 不是容器沙箱。请结合版本控制、操作系统权限和执行
 - [快速开始](docs/QUICK_START_ZH.md) / [Quick Start](docs/QUICK_START.md)
 - [用户指南](docs/USER_GUIDE_ZH.md) / [User Guide](docs/USER_GUIDE.md)
 - [功能展示](docs/FEATURE_SHOW_ZH.md) / [Feature Show](docs/FEATURE_SHOW.md)
+- [演示示例](docs/Example_ZH.md) / [Examples](docs/Example.md)
 - [后续功能预告](docs/PREVIEW_ZH.md) / [Feature Preview](docs/PREVIEW.md)
 
 ## 许可证

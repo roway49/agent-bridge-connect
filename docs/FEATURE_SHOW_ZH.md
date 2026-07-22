@@ -2,7 +2,8 @@
 
 中文 | [English](FEATURE_SHOW.md)
 
-以下流程用真实 CLI 命令展示 Public Alpha 的核心行为。
+以下流程用真实 CLI 命令展示 Public Alpha 的核心行为。端到端操作录屏请参阅
+[演示示例](Example_ZH.md)。
 
 ```mermaid
 flowchart LR
