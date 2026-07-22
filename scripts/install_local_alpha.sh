@@ -2,7 +2,7 @@
 set -eu
 
 if [ "$#" -ne 1 ]; then
-  echo "usage: $0 /path/to/agent_bridge_connect-1.0.1a1-py3-none-any.whl" >&2
+  echo "usage: $0 /path/to/agentbc-1.0.1a1-py3-none-any.whl" >&2
   exit 2
 fi
 

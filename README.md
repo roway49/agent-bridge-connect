@@ -13,6 +13,7 @@ gateway, one report contract, and one recovery model.
 Current release: **1.0.1A** (Python package version `1.0.1a1`).
 
 - Repository and releases: [GitHub](https://github.com/roway49/agent-bridge-connect)
+- Python package: [agentbc](https://pypi.org/project/agentbc/)
 - CLI: `agentbc`
 
 ## Why AgentBC
@@ -53,6 +54,13 @@ curl -fsSL \
   https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A/install-agentbc-alpha.sh \
   | sh -s -- \
   https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A
+```
+
+For a package-managed installation from PyPI:
+
+```bash
+python3 -m pip install agentbc==1.0.1a1
+agentbc setup
 ```
 
 Start with [Quick Start](docs/QUICK_START.md), then use the

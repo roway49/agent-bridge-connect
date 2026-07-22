@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agent-bridge-connect"
+name = "agentbc"
 version = "1.0.1a1"
 description = "Local-first task control plane for coordinating Codex, Claude Code, and Hermes."
 readme = "README.md"
