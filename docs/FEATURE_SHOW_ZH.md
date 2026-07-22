@@ -30,7 +30,6 @@ agentbc runner status
 setup 会发现执行器自身的 CLI 路径、安装集成，并启动唯一的本地 Runner。
 AgentBC 不依赖云端协调服务。
 
-![在 Codex 中规划 AgentBC 任务](assets/codex_plan.gif)
 
 ## 2. 原子化创建与派发
 
@@ -47,7 +46,6 @@ agentbc task create \
 create 加 `--dispatch` 会在一次操作中分配任务 ID 并通过 Runner 提交。Task List
 与报告中的 route 会显示为 `claude -> codex`。
 
-![从 Hermes 派发给 Codex](assets/hermes2codex.gif)
 
 ## 3. 两种明确的路径模式
 
@@ -79,7 +77,6 @@ agentbc task handoff 4XMC --to hermes \
 产物的工作都应使用 handoff，即使自然语言只说“继续”或“修改之前的结果”。若新
 根任务指向已有托管产物目录，Core 会拒绝该操作。
 
-![通过 Codex handoff 继续任务](assets/codex_handoff.gif)
 
 ## 5. 观察并发工作
 
@@ -101,7 +98,6 @@ Task List 在一个终端中保留当前派发批次，展示带颜色的任务 
 终态任务会以 `completed` 或 `failed` 保留在列表中，直到当前批次全部进入终态，
 随后 Task List 窗口关闭。
 
-![查看多个并发 AgentBC 任务](assets/multidispatch.gif)
 
 ## 6. 不依赖聊天上下文验收
 
@@ -114,7 +110,6 @@ agentbc task logs 4XMC
 新的 Agent 会话可以通过任务身份、全局索引、报告和产物定位历史工作，无需依赖
 之前的聊天上下文。
 
-![查看任务产物和报告](assets/artifacts.gif)
 
 ## 7. 关闭与恢复任务
 
@@ -127,7 +122,6 @@ close 只针对当前活跃 head。关闭根任务会删除 AgentBC 自有文件
 关闭后续迭代会保留历史，并提示工程改动无法回滚。未正常执行的任务必须由用户
 明确决定是否恢复。
 
-![关闭活跃的 AgentBC 任务](assets/task_cancel.gif)
 
 ## 8. 卸载产品但不触碰用户工程
 

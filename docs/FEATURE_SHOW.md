@@ -30,7 +30,6 @@ agentbc runner status
 Setup discovers executor-owned CLI locations, installs integrations, and starts
 one local Runner. AgentBC does not require a cloud coordination service.
 
-![Plan an AgentBC task from Codex](assets/codex_plan.gif)
 
 ## 2. Atomic Create And Dispatch
 
@@ -47,7 +46,6 @@ agentbc task create \
 Create plus `--dispatch` allocates a task ID and submits it through Runner as
 one operation. The route appears as `claude -> codex` in Task List and reports.
 
-![Dispatch from Hermes to Codex](assets/hermes2codex.gif)
 
 ## 3. Two Deliberate Path Modes
 
@@ -81,7 +79,6 @@ existing AgentBC deliverables is a handoff even when the natural-language
 request only says "continue" or "modify the previous result". Core rejects a
 new root task that points back into an existing managed artifact directory.
 
-![Continue work through a Codex handoff](assets/codex_handoff.gif)
 
 ## 5. Watch Concurrent Work
 
@@ -104,7 +101,6 @@ progress monitor.
 Terminal rows remain visible as `completed` or `failed` until the whole cohort
 reaches a terminal state, then the Task List window closes.
 
-![Observe concurrent AgentBC tasks](assets/multidispatch.gif)
 
 ## 6. Verify Without Chat Context
 
@@ -117,7 +113,6 @@ agentbc task logs 4XMC
 These commands let a new agent session locate prior work through task identity,
 the global index, reports, and artifacts instead of depending on chat history.
 
-![Inspect task artifacts and reports](assets/artifacts.gif)
 
 ## 7. Close And Recover Deliberately
 
@@ -131,7 +126,6 @@ and releases its code; later chain iterations preserve prior history and warn
 that project changes cannot be rolled back. Recovery remains explicit when a
 task did not execute normally.
 
-![Close an active AgentBC task](assets/task_cancel.gif)
 
 ## 8. Remove The Product Without Touching Projects
 
