@@ -2,9 +2,9 @@
 
 中文 | [English](README.md)
 
-AgentBC 是一个本地优先的任务控制平面，用于协调 Codex、Claude Code 和
-Hermes。它让不同 Agent CLI 共享统一的任务身份、Runner 网关、报告契约和
-恢复模型。
+AgentBC 是一个本地优先的任务控制系统，用于协调本机 Agent 执行后台任务。
+当前版本支持 Codex/ChatGPT、Claude Code 和 Hermes。它让不同 Agent CLI
+共享统一的任务身份、Runner 网关、报告契约和恢复模型。
 
 > Public Alpha：请在启用版本控制的开发项目中使用 AgentBC，并在接受改动前
 > 审查 Agent 的输出。
@@ -16,19 +16,41 @@ Hermes。它让不同 Agent CLI 共享统一的任务身份、Runner 网关、�
 
 ## 为什么使用 AgentBC
 
-- 通过统一 CLI 将任务派发给 Codex、Claude Code 或 Hermes。
+- 通过统一 CLI 将任务派发给本机 Agent。
 - 用 `4XMC-001 -> 4XMC-002` 这样的可见任务链持续迭代。
 - 将产物直接写入用户工程，或写入隔离的托管工作区。
 - 通过紧凑、自动管理的 Task List 观察并发任务。
 - 将可读任务报告与有容量上限的运行时记录分离。
 - 无需依赖聊天上下文即可关闭、恢复、改派或 handoff 任务。
 - 接收简洁的 macOS 完成与恢复通知。
+- 通过自然语言在任意 Agent 中完成任务收发，详情参阅
+  [演示示例](docs/Example_ZH.md)。
+
+![通过任务 ID 延续任务并 handoff](docs/assets/codex_handoff.gif)
+
+## 如何创建任务
+
+在任意 Agent 对话中调用 `/agentbc`，使用自然语言描述任务并指定执行者：
+
+```text
+/agentbc 让 Codex（或任意受支持的 Agent）写一个文档，总结 AgentBC 的功能和用途。
+```
 
 ## 环境要求
 
 - 当前桌面通知和 Task List 工作流需要 macOS；
 - Python 3.10 或更高版本；
 - 至少安装并登录一个执行器：Codex、Claude Code 或 Hermes。
+
+## 部署并校验
+
+一行命令即可完成下载、校验、安装和配置：
+```bash
+curl -fsSL \
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A/install-agentbc-alpha.sh \
+  | sh -s -- \
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A
+```
 
 请先阅读[快速开始](docs/QUICK_START_ZH.md)，任务与 Runner 命令详见
 [用户指南](docs/USER_GUIDE_ZH.md)。

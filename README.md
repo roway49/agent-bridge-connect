@@ -2,9 +2,10 @@
 
 [中文](README_ZH.md) | English
 
-AgentBC is a local-first task control plane for coordinating Codex, Claude Code,
-and Hermes. It gives different agent CLIs one task identity, one Runner gateway,
-one report contract, and one recovery model.
+AgentBC is a local-first task control system for running background work through
+agents on your machine. The current release supports Codex/ChatGPT, Claude
+Code, and Hermes. It gives different agent CLIs one task identity, one Runner
+gateway, one report contract, and one recovery model.
 
 > Public Alpha. Use AgentBC on development projects with version control and
 > review agent output before accepting changes.
@@ -16,19 +17,43 @@ Current release: **1.0.1A** (Python package version `1.0.1a1`).
 
 ## Why AgentBC
 
-- Dispatch work to Codex, Claude Code, or Hermes through one CLI.
+- Dispatch work to local agents through one CLI.
 - Keep continuation work in a visible chain such as `4XMC-001 -> 4XMC-002`.
 - Write deliverables directly to a user project or an isolated managed workspace.
 - Observe concurrent work through a compact, automatically managed task list.
 - Separate readable task reports from bounded runtime records.
 - Close, recover, reassign, or hand off work without relying on chat context.
 - Receive concise macOS completion and recovery notifications.
+- Send and receive tasks in natural language from any supported agent. See the
+  [examples](docs/Example.md) for complete workflows.
+
+![Continue an existing task through its ID and handoff](docs/assets/codex_handoff.gif)
+
+## Create A Task
+
+In any supported agent conversation, invoke `/agentbc`, describe the task in
+natural language, and name the executor:
+
+```text
+/agentbc Ask Codex (or any supported agent) to write a document summarizing AgentBC's features and use cases.
+```
 
 ## Requirements
 
 - macOS for the current desktop notification and task-list workflow;
 - Python 3.10 or newer;
 - at least one installed and authenticated executor: Codex, Claude Code, or Hermes.
+
+## Install And Verify
+
+One command downloads, verifies, installs, and configures AgentBC:
+
+```bash
+curl -fsSL \
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A/install-agentbc-alpha.sh \
+  | sh -s -- \
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A
+```
 
 Start with [Quick Start](docs/QUICK_START.md), then use the
 [User Guide](docs/USER_GUIDE.md) for task and Runner commands.
