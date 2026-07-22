@@ -1,0 +1,38 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+
+# Runtime state is intentionally local and user-specific.
+runtime/
+.bridge/
+bridge.toml
+
+# Local operator logs and generated artifacts.
+logs/
+state/
+inbox/
+workspace/
+notifications/
+scripts/tmp_stress_*/
+tests/fixtures/stress_*/
+shaders/
+
+# Local Codex/plugin scratch.
+.codex/skills/
+.codex/external/
+.claude/
+
+# Development-only scratch and legacy local task output.
+work/
+agentbc_tasks/

@@ -1,0 +1,7 @@
+interface:
+  display_name: "AgentBC"
+  short_description: "Coordinate AgentBC tasks and reviews"
+  default_prompt: "Use $agentbc to inspect or coordinate the task by task ID."
+
+policy:
+  allow_implicit_invocation: true
