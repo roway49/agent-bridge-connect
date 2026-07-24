@@ -44,6 +44,7 @@ class _TaskHealthView:
 
 
 _LEASE_PATHS: dict[str, Path] = {}
+_WORKER_FINALIZE_GRACE_S = 30
 
 
 def create_lease(task_id: str, executor_id: str, pid: int, work_dir: str) -> RunLease:
@@ -105,7 +106,17 @@ def reconcile_task(task_id: str, board_root: Path) -> str:
     task = store.read_task(task_id)
     status = str(task.get("status", ""))
 
-    if lease.state == RunLeaseState.ORPHANED or _process_lost(lease):
+    process_lost = _process_lost(lease)
+    if process_lost and _worker_process_alive(task):
+        lease.state = (
+            RunLeaseState.ACTIVE
+            if heartbeat_age_s(lease) <= _WORKER_FINALIZE_GRACE_S
+            else RunLeaseState.STALE
+        )
+        save_lease(lease, root)
+        return lease.state
+
+    if lease.state == RunLeaseState.ORPHANED or process_lost:
         lease.state = RunLeaseState.ORPHANED
         if status in {"pending", "running", "assigned", "working", "input_required", "needs_review", "pause_pending", "paused"}:
             task["status"] = "failed"
@@ -349,13 +360,29 @@ def _process_group(pid: int) -> int:
 def _process_lost(lease: RunLease) -> bool:
     if lease.pid <= 0:
         return False
+    return not _pid_alive(lease.pid)
+
+
+def _worker_process_alive(task: dict[str, Any]) -> bool:
+    extensions = task.get("extensions") if isinstance(task.get("extensions"), dict) else {}
+    execution = extensions.get("agentbc.execution") if isinstance(extensions.get("agentbc.execution"), dict) else {}
     try:
-        os.kill(lease.pid, 0)
-    except ProcessLookupError:
-        return True
-    except PermissionError:
+        worker_pid = int(execution.get("worker_pid") or 0)
+    except (TypeError, ValueError):
         return False
-    return False
+    return _pid_alive(worker_pid)
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _current_process_group() -> int:

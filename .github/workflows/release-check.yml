@@ -40,6 +40,7 @@ jobs:
         run: |
           ruff check src
           PYTHONPATH=src PYTHONPYCACHEPREFIX=/tmp/agentbc-pycache python -m compileall -q src
+          PYTHONPATH=src PYTHONPYCACHEPREFIX=/tmp/agentbc-pycache python -m unittest discover -s tests -v
           sh -n scripts/*.sh
           git diff --check
 
