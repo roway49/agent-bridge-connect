@@ -26,4 +26,9 @@ agentbc = "agent_bridge_connect.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-agent_bridge_connect = ["skills/*.md", "skills/*.yaml", "skills/references/*.md"]
+agent_bridge_connect = [
+    "skills/*.md",
+    "skills/*.yaml",
+    "skills/references/*.md",
+    "_build_info.json",
+]

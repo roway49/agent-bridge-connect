@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 
-VERSION=1.0.1A
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+VERSION=$(python3 "$SCRIPT_DIR/build_provenance.py" print-product-version --repo-root "$SCRIPT_DIR/..")
 BUNDLE_NAME="agentbc-$VERSION-macos-local-alpha"
 ARCHIVE="$BUNDLE_NAME.tar.gz"
 BASE_URL=${1:-${AGENTBC_ALPHA_BASE_URL:-}}

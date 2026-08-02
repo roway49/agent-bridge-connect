@@ -6,7 +6,7 @@ REPOSITORY_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 DIST_ROOT_INPUT=${1:-"$REPOSITORY_ROOT/dist"}
 mkdir -p "$DIST_ROOT_INPUT"
 DIST_ROOT=$(CDPATH= cd -- "$DIST_ROOT_INPUT" && pwd)
-VERSION=1.0.1A
+VERSION=$(python3 "$SCRIPT_DIR/build_provenance.py" print-product-version --repo-root "$REPOSITORY_ROOT")
 BUNDLE_NAME="agentbc-$VERSION-macos-local-alpha"
 BUILD_DIR="$DIST_ROOT/build-$VERSION"
 BUNDLE_DIR="$DIST_ROOT/$BUNDLE_NAME"

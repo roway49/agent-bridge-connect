@@ -5,7 +5,8 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPOSITORY_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 DIST_ROOT=${AGENTBC_ALPHA_DIST_ROOT:-"$REPOSITORY_ROOT/dist"}
 PORT=${1:-8765}
-ARCHIVE=agentbc-1.0.1A-macos-local-alpha.tar.gz
+VERSION=$(python3 "$SCRIPT_DIR/build_provenance.py" print-product-version --repo-root "$REPOSITORY_ROOT")
+ARCHIVE="agentbc-$VERSION-macos-local-alpha.tar.gz"
 
 if [ "${AGENTBC_ALPHA_SKIP_BUILD:-0}" != "1" ]; then
   "$SCRIPT_DIR/build_local_alpha_bundle.sh" "$DIST_ROOT"
