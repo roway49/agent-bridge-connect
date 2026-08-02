@@ -1,0 +1,13 @@
+{
+  "task_id": "T-001",
+  "step_id": 1,
+  "status": "done",
+  "worker": "codex",
+  "started_at": "2026-06-05T14:31:00Z",
+  "finished_at": "2026-06-05T14:31:23Z",
+  "duration_s": 23,
+  "diff": {"summary": "+45/-0", "patch": "checkpoints/01_git.patch"},
+  "artifacts": ["src/models/user.py"],
+  "prompt_summary": "Create User model with email and password_hash fields",
+  "error": null
+}

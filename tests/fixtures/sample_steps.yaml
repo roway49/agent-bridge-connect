@@ -1,0 +1,7 @@
+steps:
+  - id: 1
+    description: "Create User model with email and password_hash"
+  - id: 2
+    description: "Implement login endpoint with JWT"
+  - id: 3
+    description: "Write unit tests for auth flow"
