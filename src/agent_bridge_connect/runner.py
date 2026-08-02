@@ -1708,6 +1708,8 @@ def _dispatch_request(state: RunnerState, request: dict[str, Any]) -> dict[str, 
             "ok": True,
             "status": "ready",
             "pid": os.getpid(),
+            "python_executable": str(Path(sys.executable).expanduser().resolve()),
+            "module_path": str(Path(__file__).with_name("__init__.py").resolve()),
             "executors": sorted(state.allowed_executables),
             "executor_commands": {
                 name: {
