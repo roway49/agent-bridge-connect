@@ -16,8 +16,9 @@ from agent_bridge_connect.adapters import (
     StartResult,
 )
 from agent_bridge_connect.execution_contract import (
-    build_agent_callback,
-    extract_callback_from_output,
+    FINAL_CALLBACK_PREFIX,
+    extract_callback_validation_from_output,
+    route_executor_terminal,
     strip_callback_line,
 )
 from agent_bridge_connect.media import task_image_paths
@@ -227,22 +228,19 @@ class HermesExecutor(CLIExecutorBase):
         stderr = completed.stderr or ""
         failure = _runtime_failure_details(stdout, stderr)
         summary = _extract_summary(stdout)
-        callback = (
-            extract_callback_from_output(
-                stdout,
-                task_packet,
-                run_id,
-                final_state="completed",
-                summary_fallback=summary,
-            )
-            if completed.returncode == 0 and failure is None
-            else None
+        validation = extract_callback_validation_from_output(
+            stdout,
+            task_packet,
+            run_id,
         )
-        status = (
-            "completed"
-            if completed.returncode == 0 and failure is None
-            else "needs_recovery"
+        terminal = route_executor_terminal(
+            validation,
+            completed.returncode,
+            executor_name="hermes",
+            stderr=stderr,
+            runtime_failure=failure,
         )
+        status = terminal.status
         self._store_run(run_id, root, completed.returncode)
         self._runs[run_id] = PollResult(
             status=status,
@@ -253,8 +251,10 @@ class HermesExecutor(CLIExecutorBase):
                 "returncode": completed.returncode,
                 "summary": summary,
                 "parsed": _parse_output(stdout),
-                "failure": failure,
-                "agent_callback": callback,
+                "failure": terminal.failure,
+                "agent_callback": terminal.callback,
+                "marker_valid": validation.valid,
+                "marker_seen": validation.marker_seen,
                 "extensions": self.get_extensions(),
             },
         )
@@ -308,31 +308,20 @@ class HermesExecutor(CLIExecutorBase):
                 "retryable": True,
             }
         summary = _extract_summary(stdout)
-        callback = (
-            extract_callback_from_output(
-                stdout,
-                self._task_packets.get(run_id, {"task_id": "", "workspace": {}}),
-                run_id,
-                final_state="completed",
-                summary_fallback=summary,
-            )
-            if remote_status == "completed" and returncode == 0 and failure is None
-            else (
-                build_agent_callback(
-                    self._task_packets.get(run_id, {"task_id": "", "workspace": {}}),
-                    "cancelled",
-                    "Hermes execution was cancelled through AgentBC Runner.",
-                    run_id,
-                )
-                if remote_status == "cancelled"
-                else None
-            )
+        task_packet = self._task_packets.get(run_id, {"task_id": "", "steps": [], "workspace": {}})
+        validation = extract_callback_validation_from_output(
+            stdout,
+            task_packet,
+            run_id,
         )
-        status = (
-            "completed"
-            if remote_status == "completed" and returncode == 0 and failure is None
-            else ("cancelled" if remote_status == "cancelled" else "needs_recovery")
+        terminal = route_executor_terminal(
+            validation,
+            returncode if isinstance(returncode, int) else 1,
+            executor_name="hermes",
+            stderr=stderr,
+            runtime_failure=failure,
         )
+        status = "cancelled" if remote_status == "cancelled" else terminal.status
         self._store_run(
             run_id,
             Path(str(remote.get("cwd") or ".")),
@@ -352,8 +341,10 @@ class HermesExecutor(CLIExecutorBase):
                 "returncode": returncode,
                 "summary": summary,
                 "parsed": _parse_output(stdout),
-                "failure": failure,
-                "agent_callback": callback,
+                "failure": failure if remote_status == "cancelled" else terminal.failure,
+                "agent_callback": None if remote_status == "cancelled" else terminal.callback,
+                "marker_valid": validation.valid,
+                "marker_seen": validation.marker_seen,
                 "transport": "runner",
                 "extensions": self.get_extensions(),
             },
@@ -549,8 +540,6 @@ def _build_prompt(task_packet: dict[str, Any]) -> str:
                 "Return a concise execution summary and mention any files changed.",
                 "For long-running work, refresh AgentBC progress at least every few minutes:",
                 progress_command,
-                "AgentBC derives task completion from the executor CLI exit; no completion callback is required.",
-                "A normal CLI exit means execution completed and is ready for user review, not that the result was accepted.",
             ]
         )
     if lineage:
@@ -564,6 +553,23 @@ def _build_prompt(task_packet: dict[str, Any]) -> str:
                 f"Base artifact root: {lineage.get('base_artifacts_dir', workspace.get('artifacts_dir', ''))}",
             ]
         )
+    step_results = ",".join(
+        f'{{"id":{step.get("id", index)},"status":"done"}}'
+        for index, step in enumerate(task_packet.get("steps") or [], 1)
+    )
+    lines.extend(
+        [
+            "",
+            "Your final response must end with exactly one single-line terminal marker and no text after it:",
+            (
+                f'{FINAL_CALLBACK_PREFIX} {{"version":1,"task_id":{json.dumps(task_id)},'
+                f'"final_state":"completed","summary":"concise summary",'
+                f'"step_results":[{step_results}]}}'
+            ),
+            "Use final_state input_required only with at least one declared step status blocked; plain permission or approval prose is not a valid stop.",
+            "A zero CLI exit without a valid marker fails the task. completed means flow execution ended, not user acceptance or quality approval.",
+        ]
+    )
     return "\n".join(lines)
 
 

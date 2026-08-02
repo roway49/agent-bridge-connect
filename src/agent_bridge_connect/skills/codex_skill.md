@@ -127,18 +127,24 @@ For long-running AgentBC work, refresh task progress at least every few minutes 
 agentbc task progress <task-id> --root <board-root> --summary "short progress update"
 ```
 
-AgentBC determines terminal state from the executor CLI lifecycle. A normal CLI
-exit completes the execution and wakes the Runner; it does not claim that the
-user accepted the result. The callback command is optional compatibility
-metadata for a concise summary and never controls whether the task completes:
+Successful AgentBC execution requires the final response to end with exactly one
+single-line versioned flow marker. A zero CLI exit is not completion by itself:
 
-```bash
-agentbc task callback <task-id> --root <board-root> --state completed --summary "short completion summary"
+```text
+AGENTBC_FINAL_CALLBACK: {"version":1,"task_id":"4XMC-001","final_state":"completed","summary":"short completion summary","step_results":[{"id":1,"status":"done"}]}
 ```
 
-Do not request user approval merely to send this optional callback. Put quality
-caveats in the execution summary; `completed` means execution ended, not that
-the result succeeded or passed user review.
+Use the exact running task ID and list every declared task step exactly once as
+`done` for `completed`. Missing/invalid JSON, mismatched IDs, or missing,
+duplicate, unknown, or non-done steps fail the task. Use `input_required` only
+with at least one declared step marked `blocked`; permission or approval prose
+without that valid marker fails. Explicit retryable transport/infrastructure
+failures may remain `needs_recovery` and are never auto-retried. Core validates
+the flow declaration only, not Git state, tests, files, artifact quality, or user
+acceptance.
+
+The `agentbc task callback` command remains compatibility metadata and does not
+replace the mandatory terminal marker.
 
 ## Intervention
 

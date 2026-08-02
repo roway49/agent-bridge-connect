@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .execution_contract import AGENT_FINAL_STATES
+from .execution_contract import AGENT_FINAL_STATES, FINAL_CALLBACK_VERSION
 from .notifications import notify_terminal
 from .protocol import ABCError
 from .reports import write_report_files
@@ -44,9 +44,11 @@ def apply_agent_completion(
         level = "warning"
     else:
         callback: dict[str, Any] = {
+            "version": FINAL_CALLBACK_VERSION,
             "task_id": task_id,
             "final_state": final_state,
             "summary": clean_summary,
+            "step_results": step_results,
         }
         if report_file:
             callback["report_file"] = str(report_file)
@@ -54,8 +56,6 @@ def apply_agent_completion(
             callback["artifacts_dir"] = str(artifacts_dir)
         if executor_run_id:
             callback["executor_run_id"] = str(executor_run_id)
-        if step_results is not None:
-            callback["step_results"] = step_results
         finalized = service.finalize_task_from_agent(task_id, callback)
         event_type = "task.finalized"
         level = "done" if final_state == "completed" else "info"

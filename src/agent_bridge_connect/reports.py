@@ -81,6 +81,20 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
     final_callback = extensions.get("agentbc.final_callback") or {}
     report_ready = bool(workspace.get("report_file")) and Path(str(workspace.get("report_file"))).expanduser().exists()
     chain = _chain_snapshot(task_id, root, task)
+    completed_step_count = sum(
+        1 for step in steps if step.get("status") in {"done", "completed"}
+    )
+    failed_steps = [step.get("id") for step in steps if step.get("status") == "failed"]
+    blocked_steps = [step.get("id") for step in steps if step.get("status") == "blocked"]
+    latest_error = errors[-1] if errors and isinstance(errors[-1], dict) else {}
+    marker_valid = bool(final_callback) and final_callback.get("marker_valid") is True
+    flow_contract_satisfied = (
+        public_status == "completed"
+        and marker_valid
+        and final_callback.get("final_state") == "completed"
+        and completed_step_count == len(steps)
+        and report_ready
+    )
 
     report = {
         "task_id": task.get("id", task_id),
@@ -102,7 +116,12 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "chain": chain,
         "final_callback": final_callback,
         "has_final_callback": bool(final_callback),
+        "marker_valid": marker_valid,
         "report_ready": report_ready,
+        "flow_contract_satisfied": flow_contract_satisfied,
+        "failure_code": str(latest_error.get("code") or ""),
+        "failed_steps": failed_steps,
+        "blocked_steps": blocked_steps,
         "duration_s": _duration_seconds(created_at, completed_at, steps),
         "run_lease_state": lease_state,
         "time_since_last_heartbeat_s": heartbeat_age,
@@ -114,9 +133,7 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "generated_at": _utc_now(),
         "summary": {
             "steps_total": len(steps),
-            "steps_done": sum(
-                1 for step in steps if step.get("status") in {"done", "completed"}
-            ),
+            "steps_done": completed_step_count,
             "artifacts_total": len(artifacts),
             "interventions_total": len(interventions),
             "errors_total": len(errors),
@@ -175,9 +192,18 @@ def write_report_files(task_id: str, board_root: Path) -> tuple[dict[str, Any], 
     store = TaskStore(root)
     task_dir = store.task_dir(task_id)
     report = generate_report(task_id, root)
-    markdown = _render_report_md(report)
     workspace = report.get("workspace") or {}
     report_file = workspace.get("report_file")
+    if isinstance(report_file, str) and report_file:
+        report["report_ready"] = True
+        report["flow_contract_satisfied"] = (
+            report.get("status") == "completed"
+            and report.get("marker_valid") is True
+            and (report.get("final_callback") or {}).get("final_state") == "completed"
+            and (report.get("summary") or {}).get("steps_done")
+            == (report.get("summary") or {}).get("steps_total")
+        )
+    markdown = _render_report_md(report)
     if isinstance(report_file, str) and report_file:
         user_report = Path(report_file).expanduser()
         try:
@@ -479,7 +505,12 @@ def _render_report_md(report: dict[str, Any]) -> str:
         f"- Task: `{report.get('task_id', '')}`",
         f"- Status: `{report.get('status', '')}`",
         f"- Agent declared state: `{(report.get('final_callback') or {}).get('final_state', 'missing')}`",
-        f"- Report contract satisfied: `{'yes' if report.get('has_final_callback') and report.get('report_ready') else 'no'}`",
+        f"- Marker valid: `{'yes' if report.get('marker_valid') else 'no'}`",
+        f"- Completed steps: `{(report.get('summary') or {}).get('steps_done', 0)}/{(report.get('summary') or {}).get('steps_total', 0)}`",
+        f"- Flow contract satisfied: `{'yes' if report.get('flow_contract_satisfied') else 'no'}`",
+        f"- Failure code: `{report.get('failure_code') or 'none'}`",
+        f"- Failed steps: `{_format_step_ids(report.get('failed_steps'))}`",
+        f"- Blocked steps: `{_format_step_ids(report.get('blocked_steps'))}`",
         f"- Assignee: `{report.get('assignee', '')}`",
         f"- Created: `{_format_report_timestamp(created_at)}`",
         f"- Completed: `{_format_report_timestamp(completed_at) if completed_at else 'not completed'}`",
@@ -604,6 +635,12 @@ def _render_report_md(report: dict[str, Any]) -> str:
         ]
     )
     return _redact_text("\n".join(lines))
+
+
+def _format_step_ids(value: Any) -> str:
+    if not isinstance(value, list) or not value:
+        return "none"
+    return ", ".join(str(item) for item in value)
 
 
 def _format_report_timestamp(value: str) -> str:

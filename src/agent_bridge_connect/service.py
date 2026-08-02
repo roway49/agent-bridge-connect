@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import DEFAULT_BOARD_ROOT, init_board
-from .execution_contract import is_valid_agent_final_state
+from .execution_contract import validate_callback_payload
 from .executor_registry import get_executor
 from .media import media_extension, normalize_image_inputs, task_image_paths
 from .path_model import build_path_plan, validate_path_plan_workspace
@@ -444,13 +444,9 @@ class TaskService:
         self.store.append_event(task_id, {"event_type": "step_executed", "task_id": task_id, "step_id": step_id, "created_at": task.updated_at, "result": result})
 
     def complete_task(self, task_id: str) -> None:
-        self.finalize_task_from_agent(
-            task_id,
-            {
-                "task_id": task_id,
-                "final_state": "completed",
-                "summary": "Task completed",
-            },
+        raise ABCError(
+            "completion_marker_required",
+            "Task completion requires a valid AGENTBC_FINAL_CALLBACK from the executor",
         )
 
     def fail_task(
@@ -521,33 +517,20 @@ class TaskService:
         summary: str = "",
         exit_code: int = 0,
         callback: dict[str, Any] | None = None,
-        step_results: Any = None,
     ) -> bool:
-        """Finalize a normally exited executor; task quality remains unverified."""
+        """Finalize an executor only from its valid structured flow declaration."""
         task = self.get_task(task_id)
-        workspace = task.workspace or {}
-        intent = (task.extensions or {}).get("agentbc.completion_intent")
-        merged = dict(intent) if isinstance(intent, dict) else {}
-        if isinstance(callback, dict):
-            merged.update(callback)
-        clean_summary = str(merged.get("summary") or summary or "Executor exited normally")
-        merged.update(
-            {
-                "task_id": task.id,
-                "final_state": "completed",
-                "summary": clean_summary,
-                "executor_run_id": executor_run_id,
-                "exit_code": int(exit_code),
-                "source": "executor_exit_guard",
-                "outcome": "unverified",
-                "step_results": step_results,
-                # The task Path Plan is authoritative. Agent-emitted callback paths
-                # are advisory output and must not poison a confirmed CLI exit.
-                "report_file": str(workspace.get("report_file") or ""),
-                "artifacts_dir": str(workspace.get("artifacts_dir") or ""),
-            }
-        )
-        return self.finalize_task_from_agent(task.id, merged)
+        if not isinstance(callback, dict):
+            raise ABCError(
+                "completion_marker_missing",
+                "Executor exited without a valid AGENTBC_FINAL_CALLBACK",
+            )
+        declared = dict(callback)
+        declared["executor_run_id"] = executor_run_id
+        declared["exit_code"] = int(exit_code)
+        declared["source"] = "executor_final_marker"
+        declared["outcome"] = "flow_declared"
+        return self.finalize_task_from_agent(task.id, declared)
 
     def finalize_task_from_agent(self, task_id: str, callback: dict[str, Any]) -> bool:
         from .reports import write_report_files
@@ -557,9 +540,11 @@ class TaskService:
         task_id = task.id
         if _has_close_intent(task):
             return False
-        final_state = str(callback.get("final_state") or "")
-        if not is_valid_agent_final_state(final_state):
-            raise ABCError("invalid_agent_callback", f"Unsupported final state: {final_state}")
+        validation = validate_callback_payload(callback, task_id, task.steps)
+        if not validation.valid or validation.callback is None:
+            raise ABCError(validation.code or "completion_marker_invalid", validation.message)
+        callback = validation.callback
+        final_state = str(callback["final_state"])
         workspace = task.workspace or {}
         validate_path_plan_workspace(workspace)
         default_report = str(workspace.get("report_file") or (self.store.task_dir(task_id) / f"{task_id}-report.md"))
@@ -639,10 +624,11 @@ class TaskService:
 
         task.status = final_state
         task.updated_at = str(callback.get("finished_at") or _utc_now())
-        task.steps = _finalize_steps(task.steps, final_state, callback.get("step_results"), callback)
+        task.steps = _finalize_steps(task.steps, callback["step_results"])
         task.extensions = dict(task.extensions or {})
         task.extensions.pop("agentbc.completion_intent", None)
         task.extensions["agentbc.final_callback"] = {
+            "version": callback["version"],
             "task_id": task_id,
             "final_state": final_state,
             "report_file": report_file,
@@ -653,6 +639,11 @@ class TaskService:
             "source": str(callback.get("source") or "agent_callback"),
             "outcome": str(callback.get("outcome") or "unverified"),
             "exit_code": callback.get("exit_code"),
+            "step_results": callback["step_results"],
+            "marker_valid": True,
+            "completed_step_count": sum(
+                1 for item in callback["step_results"] if item.get("status") == "done"
+            ),
         }
         task.extensions = _merge_execution(task.extensions, {"internal_status": final_state})
         self._release_lease(task_id)
@@ -1944,12 +1935,8 @@ def _merge_execution(extensions: dict[str, Any] | None, updates: dict[str, Any])
 
 def _finalize_steps(
     steps: list[dict[str, Any]],
-    final_state: str,
     step_results: Any,
-    callback: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    if final_state != "completed":
-        return list(steps)
     results_by_id: dict[int, dict[str, Any]] = {}
     if isinstance(step_results, list):
         for item in step_results:
@@ -1958,6 +1945,15 @@ def _finalize_steps(
     finalized: list[dict[str, Any]] = []
     for index, step in enumerate(steps, 1):
         step_id = step.get("id", index)
-        result = results_by_id.get(step_id, {"status": "done", "summary": callback.get("summary", "")})
-        finalized.append(_update_step(step, step_id, {"status": "done", "executor_result": result}))
+        result = results_by_id.get(step_id)
+        if result is None:
+            finalized.append(dict(step))
+            continue
+        finalized.append(
+            _update_step(
+                step,
+                step_id,
+                {"status": result["status"], "executor_result": result},
+            )
+        )
     return finalized

@@ -87,12 +87,28 @@ agentbc task report 4XMC
 agentbc task logs 4XMC
 ```
 
-- `completed`: execution started and ended normally; quality is not asserted.
-- `needs_recovery`: execution could not start or continue normally.
-- `failed`: execution started, but normal executor termination was not confirmed.
+- `completed`: a valid final marker declared every task step `done`; quality is not asserted.
+- `needs_recovery`: an explicit retryable transport or infrastructure failure stopped execution.
+- `failed`: the final marker or another non-retryable execution contract was missing or invalid.
 
-Agent callbacks are optional metadata. Runner-observed executor exit owns normal
-completion.
+Every successful Codex, Claude, or Hermes run must end its final response with
+exactly one version-1 marker on a single line:
+
+```text
+AGENTBC_FINAL_CALLBACK: {"version":1,"task_id":"4XMC-001","final_state":"completed","summary":"Completed the task","step_results":[{"id":1,"status":"done"}]}
+```
+
+The task ID must match. Every declared task step must appear exactly once and be
+`done` for `completed`. A valid `input_required` marker must name at least one
+declared `blocked` step. Zero exit, invalid JSON, incomplete step data, or plain
+permission/approval text does not imply success. Explicit retryable transport or
+infrastructure failures may become `needs_recovery`, but AgentBC never dispatches
+a retry automatically. Flow validation does not inspect Git, tests, files, or
+artifact quality.
+
+Reports show marker validity, completed-step count, failure code, failed/blocked
+steps, and `Flow contract satisfied`. That field is `yes` only for a valid
+completed marker with all task steps done after the report is generated.
 
 ## Task List And Health
 

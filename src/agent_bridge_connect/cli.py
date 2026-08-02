@@ -252,7 +252,10 @@ def build_parser() -> argparse.ArgumentParser:
     task_recover.add_argument("id")
     task_recover.add_argument("--from-snapshot", action="store_true")
 
-    task_callback = task_sub.add_parser("callback", help="Report agent completion to Runner.")
+    task_callback = task_sub.add_parser(
+        "callback",
+        help="Record compatibility summary metadata; this does not replace the final marker.",
+    )
     add_task_root(task_callback)
     task_callback.add_argument("id")
     task_callback.add_argument(
@@ -1040,6 +1043,26 @@ def command_worker_reap(args: argparse.Namespace) -> int:
     return 0
 
 
+def _is_explicit_retryable_failure(failure: Any) -> bool:
+    if not isinstance(failure, dict) or failure.get("retryable") is not True:
+        return False
+    kind = str(failure.get("kind") or "").lower()
+    if "cancel" in kind or str(failure.get("layer") or "") == "flow_contract":
+        return False
+    return any(
+        marker in kind
+        for marker in (
+            "transport",
+            "infrastructure",
+            "connection",
+            "timeout",
+            "runner_status",
+            "runner_unavailable",
+            "api_",
+        )
+    )
+
+
 def command_worker_run(args: argparse.Namespace) -> int:
     from .run_lease import reconcile_task
     if getattr(args, "detach", False) is True:
@@ -1181,22 +1204,32 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     break
                 time.sleep(max(args.interval, 0.1))
 
-            if poll.status in {"needs_recovery", "failed", "needs_review", "cancelled"}:
+            if poll.status not in {"completed", "input_required", "cancelled"}:
                 failure = poll.result.get("failure")
                 failure_message = (
                     failure.get("message")
                     if isinstance(failure, dict) and failure.get("message")
-                    else f"Agent execution requires recovery ({poll.status})"
+                    else f"Agent execution failed ({poll.status})"
                 )
-                recovery_marked = service.mark_task_needs_recovery(
-                    task.id,
-                    "executor_transport_error",
-                    failure_message,
-                    {"executor": args.executor, "result": poll.result, "progress": poll.progress},
+                failure_code = (
+                    str(failure.get("kind"))
+                    if isinstance(failure, dict) and failure.get("kind")
+                    else "executor_terminal_failure"
                 )
-                if recovery_marked:
+                details = {"executor": args.executor, "result": poll.result, "progress": poll.progress}
+                if poll.status == "needs_recovery" and _is_explicit_retryable_failure(failure):
+                    terminal_marked = service.mark_task_needs_recovery(
+                        task.id, failure_code, failure_message, details
+                    )
+                    event_type, level = "task.recovery_required", "warning"
+                else:
+                    terminal_marked = service.mark_task_failed(
+                        task.id, failure_code, failure_message, details
+                    )
+                    event_type, level = "task.failed", "error"
+                if terminal_marked:
                     _write_terminal_report(task.id, service.board_root)
-                    _notify_terminal(service, task.id, "task.recovery_required", "warning", failure_message)
+                    _notify_terminal(service, task.id, event_type, level, failure_message)
                 _request_task_list_refresh(service.board_root)
                 print(f"worker_error: executor failed for {task.id}: {failure_message}")
                 return 1
@@ -1212,12 +1245,13 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 summary=summary,
                 exit_code=exit_code,
                 callback=callback if isinstance(callback, dict) else None,
-                step_results=poll.result.get("steps"),
             )
             finalized = service.get_task(task.id)
             final_status = finalized.status
             if final_status == "completed":
                 event_type, level = "task.finalized", "done"
+            elif final_status in {"input_required", "cancelled"}:
+                event_type, level = "task.finalized", "info"
             elif final_status == "needs_recovery":
                 event_type, level = "task.recovery_required", "warning"
             else:
@@ -1231,7 +1265,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 terminal_marked = (
                     service.mark_task_failed(
                         task.id,
-                        "executor_exit_unconfirmed",
+                        exc.code,
                         str(exc),
                         {"executor": args.executor, "details": exc.details},
                     )

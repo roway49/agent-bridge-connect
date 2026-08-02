@@ -15,7 +15,10 @@ from agent_bridge_connect.adapters import (
     StartResult,
 )
 from agent_bridge_connect.execution_contract import (
-    extract_callback_from_events,
+    FINAL_CALLBACK_PREFIX,
+    detect_retryable_transport_failure,
+    extract_callback_validation_from_events,
+    route_executor_terminal,
     strip_callback_line,
 )
 from agent_bridge_connect.media import task_image_paths
@@ -168,34 +171,28 @@ class CodexExecutor(CLIExecutorBase):
         self._heartbeat_run(run_id)
         events = _parse_jsonl(completed.stdout)
         summary = _extract_summary(events)
-        callback = (
-            extract_callback_from_events(
-                events,
-                task_packet,
-                run_id,
-                final_state="completed",
-                summary_fallback=summary,
-            )
-            if completed.returncode == 0
-            else None
+        validation = extract_callback_validation_from_events(
+            events,
+            task_packet,
+            run_id,
         )
-        status = "completed" if completed.returncode == 0 else "needs_recovery"
+        terminal = route_executor_terminal(
+            validation,
+            completed.returncode,
+            executor_name="codex",
+            stderr=completed.stderr,
+            runtime_failure=detect_retryable_transport_failure(completed.stdout, completed.stderr),
+        )
+        status = terminal.status
         result = {
             "events": events,
             "summary": summary,
             "stderr": completed.stderr,
             "returncode": completed.returncode,
-            "agent_callback": callback,
-            "failure": (
-                None
-                if completed.returncode == 0
-                else {
-                    "kind": "executor_exit_nonzero",
-                    "layer": "executor",
-                    "message": completed.stderr.strip() or f"codex exited with {completed.returncode}",
-                    "retryable": True,
-                }
-            ),
+            "agent_callback": terminal.callback,
+            "marker_valid": validation.valid,
+            "marker_seen": validation.marker_seen,
+            "failure": terminal.failure,
         }
         self._store_metadata(run_id, root, events, returncode=completed.returncode)
         result["extensions"] = self.get_extensions()
@@ -320,8 +317,6 @@ def _build_prompt(task_packet: dict[str, Any]) -> str:
                 "After completing all steps, write a summary of what you did.",
                 "For long-running work, refresh AgentBC progress at least every few minutes:",
                 progress_command,
-                "AgentBC derives task completion from the executor CLI exit; no completion callback is required.",
-                "A normal CLI exit means execution completed and is ready for user review, not that the result was accepted.",
             ]
         )
     if lineage:
@@ -335,6 +330,23 @@ def _build_prompt(task_packet: dict[str, Any]) -> str:
                 f"Base artifact root: {lineage.get('base_artifacts_dir', workspace.get('artifacts_dir', ''))}",
             ]
         )
+    step_results = ",".join(
+        f'{{"id":{step.get("id", index)},"status":"done"}}'
+        for index, step in enumerate(task_packet.get("steps") or [], 1)
+    )
+    lines.extend(
+        [
+            "",
+            "Your final response must end with exactly one single-line terminal marker and no text after it:",
+            (
+                f'{FINAL_CALLBACK_PREFIX} {{"version":1,"task_id":{json.dumps(task_id)},'
+                f'"final_state":"completed","summary":"concise summary",'
+                f'"step_results":[{step_results}]}}'
+            ),
+            "Use final_state input_required only with at least one declared step status blocked; plain permission or approval prose is not a valid stop.",
+            "A zero CLI exit without a valid marker fails the task. completed means flow execution ended, not user acceptance or quality approval.",
+        ]
+    )
     return "\n".join(lines)
 
 

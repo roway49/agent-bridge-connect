@@ -120,18 +120,32 @@ A four-character `TASKCODE` identifies a task chain. The numeric suffix is its
 iteration: `4XMC-001` and `4XMC-002` belong to the same chain. Commands may use
 the task code to resolve the current head or the full ID for an exact iteration.
 
-Agent callbacks are optional metadata. Normal executor-process exit is the
-completion authority:
+Successful execution requires one versioned terminal declaration. The executor's
+final response must end with exactly one single-line marker:
+
+```text
+AGENTBC_FINAL_CALLBACK: {"version":1,"task_id":"4XMC-001","final_state":"completed","summary":"Implemented and verified the requested change","step_results":[{"id":1,"status":"done"}]}
+```
+
+`completed` is valid only when `task_id` matches and every declared task step
+appears exactly once with status `done`. Missing or invalid JSON, wrong task IDs,
+duplicate/unknown/missing steps, and non-`done` completion steps fail the flow.
+`input_required` must be explicit and identify at least one declared step as
+`blocked`; permission or approval prose alone is a failure.
 
 1. Runner confirms that execution started.
-2. The executor CLI exits.
-3. Runner classifies the exit contract.
+2. The executor emits and exits with its final marker.
+3. Runner and Core validate only that flow declaration.
 4. Core writes the terminal status and synchronizes the report.
 5. Task List and desktop notifications display the same status.
 
-- `completed`: execution started and ended normally; quality is not asserted.
-- `needs_recovery`: execution could not start or continue normally.
-- `failed`: execution started, but normal executor termination was not confirmed.
+- `completed`: a valid completed marker declares every task step done; quality is not asserted.
+- `needs_recovery`: an explicit retryable transport or infrastructure failure stopped execution.
+- `failed`: the marker or non-retryable execution contract was missing or invalid.
+
+A zero exit is never completion by itself. AgentBC does not inspect Git state,
+tests, files, or artifact quality when validating the flow marker, and it never
+automatically retries a recovery state.
 
 A dispatch response such as `accepted` is not task completion. Task status,
 reports, artifacts, and notifications are the source of truth.

@@ -53,6 +53,16 @@ class MockExecutor(ExecutorPort):
                     "completed",
                     "mock executor completed all steps",
                     run_id,
+                    callback={
+                        "version": 1,
+                        "task_id": str(packet.get("task_id") or ""),
+                        "final_state": "completed",
+                        "summary": "mock executor completed all steps",
+                        "step_results": [
+                            {"id": step.get("id", index), "status": "done"}
+                            for index, step in enumerate(packet.get("steps") or [], 1)
+                        ],
+                    },
                 ),
             },
         )

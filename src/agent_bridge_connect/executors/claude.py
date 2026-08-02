@@ -15,7 +15,10 @@ from agent_bridge_connect.adapters import (
     StartResult,
 )
 from agent_bridge_connect.execution_contract import (
-    extract_callback_from_output,
+    FINAL_CALLBACK_PREFIX,
+    detect_retryable_transport_failure,
+    extract_callback_validation_from_output,
+    route_executor_terminal,
     strip_callback_line,
 )
 from agent_bridge_connect.protocol import task_step_text
@@ -189,26 +192,19 @@ class ClaudeExecutor(CLIExecutorBase):
         stderr = completed.stderr or ""
         output_text, parsed_output = _extract_output_text(stdout, self.output_format)
         summary = _extract_summary(output_text)
-        callback = (
-            extract_callback_from_output(
-                output_text,
-                task_packet,
-                run_id,
-                final_state="completed",
-                summary_fallback=summary,
-            )
-            if completed.returncode == 0
-            else None
+        validation = extract_callback_validation_from_output(
+            output_text,
+            task_packet,
+            run_id,
         )
-        status = "completed" if completed.returncode == 0 else "needs_recovery"
-        failure = None
-        if completed.returncode != 0:
-            failure = {
-                "kind": "executor_exit_nonzero",
-                "layer": "executor",
-                "message": stderr.strip() or f"claude exited with {completed.returncode}",
-                "retryable": True,
-            }
+        terminal = route_executor_terminal(
+            validation,
+            completed.returncode,
+            executor_name="claude",
+            stderr=stderr,
+            runtime_failure=detect_retryable_transport_failure(output_text, stderr),
+        )
+        status = terminal.status
         self._store_run(run_id, root, completed.returncode)
         result = {
             "stdout": stdout,
@@ -216,13 +212,15 @@ class ClaudeExecutor(CLIExecutorBase):
             "summary": summary,
             "parsed_output": parsed_output,
             "returncode": completed.returncode,
-            "agent_callback": callback,
-            "failure": failure,
+            "agent_callback": terminal.callback,
+            "marker_valid": validation.valid,
+            "marker_seen": validation.marker_seen,
+            "failure": terminal.failure,
             "extensions": self.get_extensions(),
         }
         self._runs[run_id] = PollResult(
             status=status,
-            progress={"steps_total": len(steps), "callback_seen": callback is not None},
+            progress={"steps_total": len(steps), "callback_seen": terminal.callback is not None},
             result=result,
         )
         self._close_run_lease(run_id)
@@ -351,8 +349,23 @@ def _build_prompt(task_packet: dict[str, Any]) -> str:
             "After completing all steps, print a concise summary.",
             "For long-running work, refresh AgentBC progress at least every few minutes:",
             progress_command,
-            "AgentBC derives task completion from the executor CLI exit; no completion callback is required.",
-            "A normal CLI exit means execution completed and is ready for user review, not that the result was accepted.",
+        ]
+    )
+    step_results = ",".join(
+        f'{{"id":{step.get("id", index)},"status":"done"}}'
+        for index, step in enumerate(task_packet.get("steps") or [], 1)
+    )
+    lines.extend(
+        [
+            "",
+            "Your final response must end with exactly one single-line terminal marker and no text after it:",
+            (
+                f'{FINAL_CALLBACK_PREFIX} {{"version":1,"task_id":{json.dumps(task_id)},'
+                f'"final_state":"completed","summary":"concise summary",'
+                f'"step_results":[{step_results}]}}'
+            ),
+            "Use final_state input_required only with at least one declared step status blocked; plain permission or approval prose is not a valid stop.",
+            "A zero CLI exit without a valid marker fails the task. completed means flow execution ended, not user acceptance or quality approval.",
         ]
     )
     return "\n".join(lines)

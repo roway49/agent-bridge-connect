@@ -126,6 +126,16 @@ class ShellExecutor(CLIExecutorBase):
                         "completed",
                         "shell executor completed all steps",
                         run_id,
+                        callback={
+                            "version": 1,
+                            "task_id": str(task_packet.get("task_id") or ""),
+                            "final_state": "completed",
+                            "summary": "shell executor completed all steps",
+                            "step_results": [
+                                {"id": step.get("id", index), "status": "done"}
+                                for index, step in enumerate(steps, 1)
+                            ],
+                        },
                     )
                     if status == "completed"
                     else None
@@ -137,7 +147,7 @@ class ShellExecutor(CLIExecutorBase):
                         "kind": "shell_command_failed",
                         "layer": "executor",
                         "message": results[-1]["stderr"] if results else "shell command failed",
-                        "retryable": True,
+                        "retryable": False,
                     }
                 ),
             },
