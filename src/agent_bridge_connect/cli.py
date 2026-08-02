@@ -33,6 +33,7 @@ _SHORTHAND_ALIASES = {
 }
 _SHORTHAND_SUGGESTIONS = [
     "setup",
+    "doctor",
     "init",
     "task list",
     "task status",
@@ -62,6 +63,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+
+    doctor = sub.add_parser("doctor", help="Inspect build, configuration, and Runner identity without changing state.")
+    doctor.add_argument("--json", action="store_true", help="Emit the stable machine-readable contract.")
 
     uninstall = sub.add_parser("uninstall", help="Remove AgentBC while choosing which managed data to keep.")
     uninstall.add_argument("--non-interactive", action="store_true", help=argparse.SUPPRESS)
@@ -1354,6 +1358,17 @@ def command_runner(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_doctor(args: argparse.Namespace) -> int:
+    from .doctor import build_doctor_report, render_doctor_text
+
+    report = build_doctor_report()
+    if args.json:
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+    else:
+        print(render_doctor_text(report))
+    return 0 if report["ok"] else 1
+
+
 def _probe_existing_runner(spool: Path | None, token: Path | None) -> dict[str, Any] | None:
     from .runner import RunnerClient, RunnerError
 
@@ -1737,6 +1752,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0 if result["ok"] else 1
 
+    if args.command == "doctor":
+        return command_doctor(args)
+
     if args.command == "uninstall":
         from .setup import run_uninstall
 
@@ -1806,6 +1824,7 @@ def main(argv: list[str] | None = None) -> int:
 def _expand_shorthand(argv: list[str]) -> list[str]:
     known_commands = {
         "setup",
+        "doctor",
         "uninstall",
         "init",
         "record",
