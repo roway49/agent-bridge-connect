@@ -108,6 +108,7 @@ class MCPParityTests(unittest.TestCase):
         """MCP report returns same data as CLI report."""
         from agent_bridge_connect.mcp_server import handle_tool_call
         from agent_bridge_connect.service import TaskService
+        from tests.contract_helpers import finalize_completed
 
         svc = TaskService(self.test_dir, config={"workspace_root": str(self.workspace)})
         task = svc.create_task("Report test", "mock",
@@ -115,7 +116,7 @@ class MCPParityTests(unittest.TestCase):
                                 customer_dir=False)
         svc.claim_task(task.id, "mock")
         svc.execute_step(task.id, 1, {"status": "done"})
-        svc.complete_task(task.id)
+        finalize_completed(svc, task.id)
 
         # CLI path
         cli_report = svc.generate_report(task.id)

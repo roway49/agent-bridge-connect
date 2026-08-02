@@ -162,11 +162,12 @@ class WorkerDispatchE2ETests(unittest.TestCase):
     def test_worker_run_once_command(self):
         """abc worker run --executor mock --once processes one task."""
         from agent_bridge_connect.service import TaskService
+        from tests.contract_helpers import finalize_completed
 
         svc = TaskService(self.board)
         svc.claim_task(self.task_id, "mock")
         svc.execute_step(self.task_id, 1, {"status": "done"})
-        svc.complete_task(self.task_id)
+        finalize_completed(svc, self.task_id)
         task = svc.get_task(self.task_id)
         self.assertEqual(task.status, "completed")
 

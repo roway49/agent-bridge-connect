@@ -1217,7 +1217,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     else "executor_terminal_failure"
                 )
                 details = {"executor": args.executor, "result": poll.result, "progress": poll.progress}
-                if poll.status == "needs_recovery" and _is_explicit_retryable_failure(failure):
+                if _is_explicit_retryable_failure(failure):
                     terminal_marked = service.mark_task_needs_recovery(
                         task.id, failure_code, failure_message, details
                     )

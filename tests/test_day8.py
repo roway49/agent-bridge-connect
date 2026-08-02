@@ -165,6 +165,7 @@ class GateATests(unittest.TestCase):
     def test_gate_a_full_lifecycle(self):
         """CLI: create → claim → execute → complete → report."""
         from agent_bridge_connect.service import TaskService
+        from tests.contract_helpers import finalize_completed
         svc = TaskService(self.test_dir, config={"workspace_root": str(self.test_dir)})
         task = svc.create_task("Gate A test", "mock",
                                [{"id": 1, "description": "Write hello"}], customer_dir=False)
@@ -175,7 +176,7 @@ class GateATests(unittest.TestCase):
         task = svc.get_task(task.id)
         self.assertEqual(task.status, "running")
 
-        svc.complete_task(task.id)
+        finalize_completed(svc, task.id)
         task = svc.get_task(task.id)
         self.assertEqual(task.status, "completed")
 

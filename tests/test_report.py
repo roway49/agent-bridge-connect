@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.contract_helpers import finalize_completed
+
 FIXTURES = Path(__file__).parent / "fixtures"
 STEPS_YAML = FIXTURES / "sample_steps.yaml"
 
@@ -30,7 +32,7 @@ class ReportGenerationTests(unittest.TestCase):
         svc = TaskService(self.board)
         svc.claim_task(self.task_id, "mock")
         svc.execute_step(self.task_id, 1, {"status": "done", "artifacts": ["src/user.py"], "diff": "+10/-0"})
-        svc.complete_task(self.task_id)
+        finalize_completed(svc, self.task_id)
         return svc
 
     def test_report_json_structure(self):
@@ -70,7 +72,7 @@ class ReportGenerationTests(unittest.TestCase):
         svc = TaskService(self.board)
         svc.claim_task(task.id, "mock")
         svc.execute_step(task.id, 1, {"status": "done"})
-        svc.complete_task(task.id)
+        finalize_completed(svc, task.id)
 
         report = generate_report(task.id, self.board)
         self.assertEqual(report.get("session_id"), "test-sess-001")
@@ -292,7 +294,7 @@ class NotificationTests(unittest.TestCase):
         svc = TaskService(self.board)
         svc.claim_task(self.task_id, "mock")
         svc.execute_step(self.task_id, 1, {"status": "done"})
-        svc.complete_task(self.task_id)
+        finalize_completed(svc, self.task_id)
 
         md = generate_report_md(self.task_id, self.board)
         # Should not contain common secret patterns

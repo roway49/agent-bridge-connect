@@ -530,6 +530,13 @@ class TaskService:
         declared["exit_code"] = int(exit_code)
         declared["source"] = "executor_final_marker"
         declared["outcome"] = "flow_declared"
+        # Core owns managed report/artifact paths. Treat executor-supplied paths
+        # as advisory and pin them back to the task workspace before validation.
+        workspace = task.workspace or {}
+        if workspace.get("report_file"):
+            declared["report_file"] = str(workspace["report_file"])
+        if workspace.get("artifacts_dir"):
+            declared["artifacts_dir"] = str(workspace["artifacts_dir"])
         return self.finalize_task_from_agent(task.id, declared)
 
     def finalize_task_from_agent(self, task_id: str, callback: dict[str, Any]) -> bool:

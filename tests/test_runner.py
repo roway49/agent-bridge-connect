@@ -10,6 +10,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.contract_helpers import completed_callback
+
 
 class RunnerStateTests(unittest.TestCase):
     def setUp(self):
@@ -530,12 +532,12 @@ class RunnerStateTests(unittest.TestCase):
             "agent_bridge_connect.notifications.DialogNotifier.send",
             return_value=mock.Mock(ok=True, message="shown"),
         ):
+            callback = completed_callback(task, summary="agent reported completion")
             result = self.state.agent_callback(
                 {
-                    "task_id": task.id,
                     "board_root": str(board),
                     "state": "completed",
-                    "summary": "agent reported completion",
+                    **callback,
                 }
             )
 
@@ -555,6 +557,7 @@ class RunnerStateTests(unittest.TestCase):
             task.id,
             executor_run_id="hermes-run-1",
             exit_code=0,
+            callback=callback,
         )
         self.assertTrue(finalized)
         completed = TaskService(board).get_task(task.id)
@@ -584,11 +587,12 @@ class RunnerStateTests(unittest.TestCase):
             task.id,
             executor_run_id="hermes-run-2",
             exit_code=0,
-            callback={
-                "summary": "Hermes finished",
-                "report_file": "/tmp/stale-report.md",
-                "artifacts_dir": "/tmp/stale-artifacts",
-            },
+            callback=completed_callback(
+                task,
+                summary="Hermes finished",
+                report_file="/tmp/stale-report.md",
+                artifacts_dir="/tmp/stale-artifacts",
+            ),
         )
 
         self.assertTrue(finalized)
@@ -654,7 +658,9 @@ class RunnerStateTests(unittest.TestCase):
         )
         service.claim_task(source.id, "hermes")
         service.execute_step(source.id, 1, {"status": "done"})
-        service.complete_task(source.id)
+        from tests.contract_helpers import finalize_completed
+
+        finalize_completed(service, source.id)
         source_report = Path(source.workspace["report_file"])
         source_report.chmod(0o400)
         dispatched = {

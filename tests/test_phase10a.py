@@ -86,11 +86,12 @@ class GateFTests(unittest.TestCase):
     def test_gate_f_lifecycle(self):
         """HermesExecutor: claim → execute → complete → report."""
         from agent_bridge_connect.service import TaskService
+        from tests.contract_helpers import finalize_completed
         svc = TaskService(self.test_dir)
 
         svc.claim_task(self.task_id, "hermes")
         svc.execute_step(self.task_id, 1, {"status": "done", "result": "reviewed"})
-        svc.complete_task(self.task_id)
+        finalize_completed(svc, self.task_id)
 
         task = svc.get_task(self.task_id)
         self.assertEqual(task.status, "completed")

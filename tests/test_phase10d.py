@@ -15,6 +15,8 @@ from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from tests.contract_helpers import completed_callback, finalize_completed
+
 
 class RunLeaseTests(unittest.TestCase):
     def setUp(self):
@@ -142,11 +144,7 @@ class RunLeaseTests(unittest.TestCase):
         self.service.start_task_run(self.task.id, "shell")
         self.assertTrue(self.service.finalize_task_from_agent(
             self.task.id,
-            {
-                "task_id": self.task.id,
-                "final_state": "completed",
-                "summary": "completed with compact evidence",
-            },
+            completed_callback(self.task, summary="completed with compact evidence"),
         ))
         task_dir = self.service.store.task_dir(self.task.id)
         self.assertLessEqual(task_record_size(task_dir), MAX_TASK_RECORD_BYTES)
@@ -166,6 +164,10 @@ class RunLeaseTests(unittest.TestCase):
             self.task.id,
             executor_run_id="normal-exit",
             summary="executor exited normally after producing the requested deliverable",
+            callback=completed_callback(
+                self.task,
+                summary="executor exited normally after producing the requested deliverable",
+            ),
         ))
 
         completed = self.service.get_task(self.task.id)
@@ -197,7 +199,7 @@ class RunLeaseTests(unittest.TestCase):
         self.service.start_task_run(self.task.id, "shell")
         self.service.finalize_task_from_agent(
             self.task.id,
-            {"task_id": self.task.id, "final_state": "completed", "summary": "done"},
+            completed_callback(self.task, summary="done"),
         )
         task_dir = self.service.store.task_dir(self.task.id)
         result = clean_terminal_records(self.board)
@@ -231,11 +233,7 @@ class RunLeaseTests(unittest.TestCase):
         self.service.start_task_run(self.task.id, "shell")
         self.assertTrue(self.service.finalize_task_from_agent(
             self.task.id,
-            {
-                "task_id": self.task.id,
-                "final_state": "completed",
-                "summary": "Optimized runner memory sampling",
-            },
+            completed_callback(self.task, summary="Optimized runner memory sampling"),
         ))
         entries = [
             json.loads(line)
@@ -251,19 +249,11 @@ class RunLeaseTests(unittest.TestCase):
         self.service.start_task_run(self.task.id, "shell")
         first = self.service.finalize_task_from_agent(
             self.task.id,
-            {
-                "task_id": self.task.id,
-                "final_state": "completed",
-                "summary": "first completion",
-            },
+            completed_callback(self.task, summary="first completion"),
         )
         second = self.service.finalize_task_from_agent(
             self.task.id,
-            {
-                "task_id": self.task.id,
-                "final_state": "completed",
-                "summary": "duplicate completion",
-            },
+            completed_callback(self.task, summary="duplicate completion"),
         )
 
         self.assertTrue(first)
@@ -288,11 +278,7 @@ class RunLeaseTests(unittest.TestCase):
 
         accepted = self.service.finalize_task_from_agent(
             self.task.id,
-            {
-                "task_id": self.task.id,
-                "final_state": "completed",
-                "summary": "late success",
-            },
+            completed_callback(self.task, summary="late success"),
         )
 
         self.assertFalse(accepted)
@@ -313,11 +299,7 @@ class RunLeaseTests(unittest.TestCase):
 
         accepted = self.service.finalize_task_from_agent(
             self.task.id,
-            {
-                "task_id": self.task.id,
-                "final_state": "completed",
-                "summary": "late completion after close",
-            },
+            completed_callback(self.task, summary="late completion after close"),
         )
 
         self.assertFalse(accepted)
@@ -385,11 +367,7 @@ class RunLeaseTests(unittest.TestCase):
         self.service.start_task_run(self.task.id, "shell")
         self.service.finalize_task_from_agent(
             self.task.id,
-            {
-                "task_id": self.task.id,
-                "final_state": "completed",
-                "summary": "done",
-            },
+            completed_callback(self.task, summary="done"),
         )
         payload = _build_notification_payload(
             self.service,
@@ -417,11 +395,7 @@ class RunLeaseTests(unittest.TestCase):
         self.service.start_task_run(self.task.id, "shell")
         self.service.finalize_task_from_agent(
             self.task.id,
-            {
-                "task_id": self.task.id,
-                "final_state": "completed",
-                "summary": "executor initially appeared complete",
-            },
+            completed_callback(self.task, summary="executor initially appeared complete"),
         )
         self.service.mark_task_failed(
             self.task.id,
@@ -543,11 +517,7 @@ class RunLeaseTests(unittest.TestCase):
         self.service.start_task_run(self.task.id, "shell")
         self.service.finalize_task_from_agent(
             self.task.id,
-            {
-                "task_id": self.task.id,
-                "final_state": "completed",
-                "summary": "done",
-            },
+            completed_callback(self.task, summary="done"),
         )
         with mock.patch("agent_bridge_connect.notifiers.dialog.DialogNotifier.send") as dialog:
             dialog.return_value = mock.Mock(ok=True, message="dialog shown")
@@ -665,7 +635,7 @@ class RunLeaseTests(unittest.TestCase):
         )
         self.service.claim_task(source.id, "shell")
         self.service.execute_step(source.id, 1, {"status": "done"})
-        self.service.complete_task(source.id)
+        finalize_completed(self.service, source.id)
         followup = self.service.handoff_task(source.id, "codex", "second iteration")
         self.service.start_task_run(followup.id, "codex")
         code = source.workspace["task_code"]
@@ -749,7 +719,7 @@ class RunLeaseTests(unittest.TestCase):
         )
         self.service.claim_task(source.id, "shell")
         self.service.execute_step(source.id, 1, {"status": "done"})
-        self.service.complete_task(source.id)
+        finalize_completed(self.service, source.id)
         head = self.service.handoff_task(source.id, "codex", "continue")
         self.service.start_task_run(head.id, "codex")
         with self.assertRaises(ABCError) as stale:
@@ -1273,7 +1243,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         self.service.claim_task(task.id, "shell")
         self.service.execute_step(task.id, 1, {"status": "done"})
-        self.service.complete_task(task.id)
+        finalize_completed(self.service, task.id)
         from agent_bridge_connect.reports import write_report_files
 
         write_report_files(task.id, self.board)
@@ -1322,7 +1292,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         self.service.claim_task(older.id, "shell")
         self.service.execute_step(older.id, 1, {"status": "done"})
-        self.service.complete_task(older.id)
+        finalize_completed(self.service, older.id)
         latest = self.service.create_task(
             "Latest task",
             "shell",
@@ -1332,7 +1302,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         self.service.claim_task(latest.id, "shell")
         self.service.execute_step(latest.id, 1, {"status": "done"})
-        self.service.complete_task(latest.id)
+        finalize_completed(self.service, latest.id)
 
         args = mock.Mock(root=self.board, id=None, json=False, watch=False)
         output = io.StringIO()
@@ -1360,7 +1330,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         self.service.claim_task(completed.id, "shell")
         self.service.execute_step(completed.id, 1, {"status": "done"})
-        self.service.complete_task(completed.id)
+        finalize_completed(self.service, completed.id)
 
         args = mock.Mock(root=self.board, id=None, json=True, watch=False)
         output = io.StringIO()
@@ -1445,7 +1415,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         for task in (first, second):
             self.service.claim_task(task.id, task.assignee)
             self.service.execute_step(task.id, 1, {"status": "done"})
-            self.service.complete_task(task.id)
+            finalize_completed(self.service, task.id)
 
         tied_timestamp = "2099-06-20T12:00:00Z"
         for task in (first, second):
@@ -1735,7 +1705,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         self.service.claim_task(first.id, "shell")
         self.service.claim_task(second.id, "hermes")
         self.service.execute_step(second.id, 1, {"status": "done"})
-        self.service.complete_task(second.id)
+        finalize_completed(self.service, second.id)
 
         args = mock.Mock(root=self.board, status=None, assignee=None, current=False)
         output = io.StringIO()
@@ -1896,7 +1866,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         self.service.claim_task(source.id, "shell")
         self.service.execute_step(source.id, 1, {"status": "done"})
-        self.service.complete_task(source.id)
+        finalize_completed(self.service, source.id)
         source = self.service.get_task(source.id)
         handoff = self.service.handoff_task(source.id, "codex", "continue")
 
@@ -1954,7 +1924,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         self.service.claim_task(watched.id, "shell")
         self.service.execute_step(watched.id, 1, {"status": "done"})
-        self.service.complete_task(watched.id)
+        finalize_completed(self.service, watched.id)
         self.service.claim_task(active.id, "codex")
         register_dashboard_task(self.board, watched.id, reset=True)
         register_dashboard_task(self.board, active.id)
@@ -1988,7 +1958,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         self.service.claim_task(watched.id, "shell")
         self.service.execute_step(watched.id, 1, {"status": "done"})
-        self.service.complete_task(watched.id)
+        finalize_completed(self.service, watched.id)
         register_dashboard_task(self.board, watched.id, reset=True)
 
         args = mock.Mock(
@@ -2136,7 +2106,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         self.service.claim_task(source.id, "hermes")
         self.service.execute_step(source.id, 1, {"status": "done"})
-        self.service.complete_task(source.id)
+        finalize_completed(self.service, source.id)
 
         followup = self.service.handoff_task(source.id, "codex", "在最新基础上继续改")
 
@@ -2171,7 +2141,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         (artifact_root / "output.txt").write_text("baseline", encoding="utf-8")
         self.service.claim_task(source.id, "hermes")
         self.service.execute_step(source.id, 1, {"status": "done"})
-        self.service.complete_task(source.id)
+        finalize_completed(self.service, source.id)
         before = {task.id for task in self.service.list_tasks()}
 
         with self.assertRaises(ABCError) as raised:
@@ -2198,7 +2168,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         empty_root = Path(empty.workspace["artifact_root"])
         self.service.claim_task(empty.id, "shell")
-        self.service.complete_task(empty.id)
+        finalize_completed(self.service, empty.id)
 
         self.assertFalse(empty_root.exists())
         self.assertTrue(Path(empty.workspace["report_file"]).is_file())
@@ -2212,7 +2182,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         nonempty_root = Path(nonempty.workspace["artifact_root"])
         (nonempty_root / "keep.txt").write_text("keep", encoding="utf-8")
         self.service.claim_task(nonempty.id, "shell")
-        self.service.complete_task(nonempty.id)
+        finalize_completed(self.service, nonempty.id)
 
         self.assertTrue(nonempty_root.is_dir())
         self.assertTrue((nonempty_root / "keep.txt").is_file())
@@ -2243,7 +2213,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
             customer_path=customer,
         )
         self.service.claim_task(task.id, "shell")
-        self.service.complete_task(task.id)
+        finalize_completed(self.service, task.id)
 
         self.assertTrue(customer.is_dir())
 
@@ -2275,7 +2245,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         self.service.claim_task(source.id, "hermes")
         self.service.execute_step(source.id, 1, {"status": "done"})
-        self.service.complete_task(source.id)
+        finalize_completed(self.service, source.id)
         before = {task.id for task in self.service.list_tasks()}
 
         with self.assertRaises(ABCError) as raised:
@@ -2313,7 +2283,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         self.service.claim_task(source.id, "hermes")
         self.service.execute_step(source.id, 1, {"status": "done"})
-        self.service.complete_task(source.id)
+        finalize_completed(self.service, source.id)
         from agent_bridge_connect.reports import write_report_files
 
         write_report_files(source.id, self.board)
@@ -2354,7 +2324,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         self.service.claim_task(source.id, "hermes")
         self.service.execute_step(source.id, 1, {"status": "done"})
-        self.service.complete_task(source.id)
+        finalize_completed(self.service, source.id)
         source = self.service.get_task(source.id)
         source_task_record = Path(source.workspace["output_dir"]) / "TASK.md"
         source_report_record = Path(source.workspace["output_dir"]) / "REPORT.md"
@@ -2460,7 +2430,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         self.service.claim_task(source.id, "hermes")
         self.service.execute_step(source.id, 1, {"status": "done"})
-        self.service.complete_task(source.id)
+        finalize_completed(self.service, source.id)
         from agent_bridge_connect.reports import write_report_files
 
         write_report_files(source.id, self.board)
@@ -2471,7 +2441,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         self.assertIn(f"Previous report: `{source.workspace['report_file']}`", codex_report)
         self.service.claim_task(codex_task.id, "codex")
         self.service.execute_step(codex_task.id, 1, {"status": "done"})
-        self.service.complete_task(codex_task.id)
+        finalize_completed(self.service, codex_task.id)
         codex_task = self.service.get_task(codex_task.id)
         hermes_task = self.service.handoff_task(codex_task.id, "hermes", "根据验收意见继续")
 
@@ -2495,11 +2465,11 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         self.service.claim_task(source.id, "hermes")
         self.service.execute_step(source.id, 1, {"status": "done"})
-        self.service.complete_task(source.id)
+        finalize_completed(self.service, source.id)
         first = self.service.handoff_task(source.id, "codex", "first continuation")
         self.service.claim_task(first.id, "codex")
         self.service.execute_step(first.id, 1, {"status": "done"})
-        self.service.complete_task(first.id)
+        finalize_completed(self.service, first.id)
 
         with self.assertRaises(ABCError) as raised:
             self.service.handoff_task(source.id, "hermes", "stale continuation")
@@ -2517,11 +2487,11 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         self.service.claim_task(source.id, "hermes")
         self.service.execute_step(source.id, 1, {"status": "done"})
-        self.service.complete_task(source.id)
+        finalize_completed(self.service, source.id)
         first = self.service.handoff_task(source.id, "codex", "first continuation")
         self.service.claim_task(first.id, "codex")
         self.service.execute_step(first.id, 1, {"status": "done"})
-        self.service.complete_task(first.id)
+        finalize_completed(self.service, first.id)
 
         sibling = self.service.handoff_task(source.id, "hermes", "intentional branch", branch=True)
         chain = self.service.resolve_chain(source.id)
@@ -2540,15 +2510,15 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         self.service.claim_task(source.id, "hermes")
         self.service.execute_step(source.id, 1, {"status": "done"})
-        self.service.complete_task(source.id)
+        finalize_completed(self.service, source.id)
         first = self.service.handoff_task(source.id, "codex", "first continuation")
         self.service.claim_task(first.id, "codex")
         self.service.execute_step(first.id, 1, {"status": "done"})
-        self.service.complete_task(first.id)
+        finalize_completed(self.service, first.id)
         sibling = self.service.handoff_task(source.id, "hermes", "intentional branch", branch=True)
         self.service.claim_task(sibling.id, "hermes")
         self.service.execute_step(sibling.id, 1, {"status": "done"})
-        self.service.complete_task(sibling.id)
+        finalize_completed(self.service, sibling.id)
 
         with self.assertRaises(ABCError) as raised:
             self.service.handoff_task(first.id, "hermes", "ambiguous continuation")
@@ -2565,7 +2535,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         self.service.claim_task(source.id, "hermes")
         self.service.execute_step(source.id, 1, {"status": "done"})
-        self.service.complete_task(source.id)
+        finalize_completed(self.service, source.id)
         followup = self.service.handoff_task(source.id, "codex", "continue")
 
         status = self.service.resolve_task(followup.id)["current_task"]
@@ -2647,7 +2617,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(seen["root"], str(workspace.resolve()))
 
-    def test_worker_execution_error_marks_needs_recovery_and_writes_report(self):
+    def test_worker_execution_error_marks_failed_and_writes_report(self):
         from agent_bridge_connect.adapters import ExecutorCapabilities, ExecutorLevel, PollResult, ProbeResult, StartResult
         from agent_bridge_connect.adapters import ExecutorPort
         from agent_bridge_connect.cli import command_worker_run
@@ -2689,11 +2659,11 @@ class Phase10dIntegrationTests(unittest.TestCase):
             )
         self.assertEqual(code, 1)
         failed = self.service.get_task(task.id)
-        self.assertEqual(failed.status, "needs_recovery")
-        self.assertEqual(failed.errors[0]["code"], "executor_transport_error")
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(failed.errors[0]["code"], "executor_exit_nonzero")
         self.assertTrue(Path(failed.workspace["report_file"]).exists())
 
-    def test_worker_normal_exit_completes_without_agent_callback(self):
+    def test_worker_normal_exit_without_agent_callback_fails(self):
         from agent_bridge_connect.adapters import ExecutorCapabilities, ExecutorLevel, PollResult, ProbeResult, StartResult
         from agent_bridge_connect.adapters import ExecutorPort
         from agent_bridge_connect.cli import command_worker_run
@@ -2730,17 +2700,11 @@ class Phase10dIntegrationTests(unittest.TestCase):
             code = command_worker_run(
                 mock.Mock(root=self.board, executor="exited", once=True, interval=0.01, config=None)
             )
-        completed = self.service.get_task(task.id)
-        self.assertEqual(code, 0)
-        self.assertEqual(completed.status, "completed")
-        self.assertEqual(
-            completed.extensions["agentbc.final_callback"]["source"],
-            "executor_exit_guard",
-        )
-        self.assertEqual(
-            completed.extensions["agentbc.final_callback"]["outcome"],
-            "unverified",
-        )
+        failed = self.service.get_task(task.id)
+        self.assertEqual(code, 1)
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(failed.errors[-1]["code"], "completion_marker_missing")
+        self.assertNotIn("agentbc.final_callback", failed.extensions)
 
     @mock.patch("agent_bridge_connect.executors.codex.subprocess.run")
     def test_codex_allows_non_git_workspaces(self, run):
@@ -2887,7 +2851,9 @@ class Phase10dIntegrationTests(unittest.TestCase):
             }
         )
         self.assertTrue(result.ok)
-        self.assertEqual(executor.poll(result.run_id).status, "needs_recovery")
+        polled = executor.poll(result.run_id)
+        self.assertEqual(polled.status, "failed")
+        self.assertEqual(polled.result["failure"]["kind"], "completion_marker_missing")
 
     @mock.patch("agent_bridge_connect.executors.hermes.subprocess.run")
     def test_hermes_profile_log_denial_is_classified_as_parent_sandbox(self, run):
@@ -2943,7 +2909,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
             "returncode": 0,
             "stdout": (
                 "RUNNER_OK\n"
-                'AGENTBC_FINAL_CALLBACK: {"final_state":"completed","summary":"runner ok"}\n'
+                f"AGENTBC_FINAL_CALLBACK: {json.dumps(completed_callback(self.task, summary='runner ok'), separators=(',', ':'))}\n"
             ),
             "stderr": "",
             "output_truncated": False,
@@ -3053,7 +3019,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
                 "- old report: Failed to initialize agent: Operation not permitted\n"
                 "Task completed successfully\n"
                 "Session: 20260619_test\n"
-                'AGENTBC_FINAL_CALLBACK: {"final_state":"completed","summary":"quoted old failure safely"}\n'
+                f"AGENTBC_FINAL_CALLBACK: {json.dumps(completed_callback(self.task, summary='quoted old failure safely'), separators=(',', ':'))}\n"
             ),
             stderr="",
         )
@@ -3090,8 +3056,8 @@ class Phase10dIntegrationTests(unittest.TestCase):
         for prompt in (codex_prompt(packet), hermes_prompt(packet), claude_prompt(packet)):
             self.assertNotIn("Report target:", prompt)
             self.assertIn("Do not write or replace REPORT.md", prompt)
-            self.assertIn("derives task completion from the executor CLI exit", prompt)
-            self.assertNotIn("agentbc task callback", prompt)
+            self.assertIn("AGENTBC_FINAL_CALLBACK", prompt)
+            self.assertIn("A zero CLI exit without a valid marker fails the task", prompt)
 
     def test_executor_prompts_support_legacy_action_steps(self):
         from agent_bridge_connect.executors.codex import _build_prompt as codex_prompt
@@ -3113,7 +3079,9 @@ class Phase10dIntegrationTests(unittest.TestCase):
 
         run.return_value = mock.Mock(
             returncode=0,
-            stdout='AGENTBC_FINAL_CALLBACK: {"final_state":"completed","summary":"ok"}\n',
+            stdout=(
+                f"AGENTBC_FINAL_CALLBACK: {json.dumps(completed_callback(self.task, summary='ok'), separators=(',', ':'))}\n"
+            ),
             stderr="",
         )
         executor = ClaudeExecutor(command="/opt/claude", transport="direct")
@@ -3142,13 +3110,13 @@ class Phase10dIntegrationTests(unittest.TestCase):
         self.assertEqual(command[command.index("--disallowedTools") + 1], "TaskCreate,TaskUpdate,TodoWrite")
         self.assertNotIn("bypassPermissions", command)
         self.assertNotIn("--dangerously-skip-permissions", command)
-        self.assertIn("derives task completion from the executor CLI exit", run.call_args.kwargs["input"])
-        self.assertNotIn("AGENTBC_FINAL_CALLBACK", run.call_args.kwargs["input"])
+        self.assertIn("AGENTBC_FINAL_CALLBACK", run.call_args.kwargs["input"])
+        self.assertIn("A zero CLI exit without a valid marker fails the task", run.call_args.kwargs["input"])
         self.assertIn("use BashOutput repeatedly until it exits", run.call_args.kwargs["input"])
         self.assertNotIn("AGENTBC_FINAL_CALLBACK", command)
 
     @mock.patch("agent_bridge_connect.executors.claude.subprocess.run")
-    def test_claude_normal_exit_completes_without_final_callback(self, run):
+    def test_claude_normal_exit_without_final_callback_fails(self, run):
         from agent_bridge_connect.executors.claude import ClaudeExecutor
 
         executor = ClaudeExecutor(command="/opt/claude", transport="direct")
@@ -3162,20 +3130,22 @@ class Phase10dIntegrationTests(unittest.TestCase):
         run.return_value = mock.Mock(returncode=0, stdout="done without callback\n", stderr="")
         started = executor.start(packet)
         polled = executor.poll(started.run_id)
-        self.assertEqual(polled.status, "completed")
+        self.assertEqual(polled.status, "failed")
         self.assertIsNone(polled.result["agent_callback"])
-        self.assertIsNone(polled.result["failure"])
+        self.assertEqual(polled.result["failure"]["kind"], "completion_marker_missing")
 
     @mock.patch("agent_bridge_connect.executors.claude.subprocess.run")
     def test_claude_json_output_can_extract_callback(self, run):
         from agent_bridge_connect.executors.claude import ClaudeExecutor
 
+        callback_line = (
+            "AGENTBC_FINAL_CALLBACK: "
+            + json.dumps(completed_callback(self.task, summary="json ok"), separators=(",", ":"))
+        )
         run.return_value = mock.Mock(
             returncode=0,
-            stdout=(
-                '{"type":"result","subtype":"success","result":"summary\\n'
-                'AGENTBC_FINAL_CALLBACK: {\\"final_state\\":\\"completed\\",'
-                '\\"summary\\":\\"json ok\\"}\\n"}'
+            stdout=json.dumps(
+                {"type": "result", "subtype": "success", "result": f"summary\n{callback_line}\n"}
             ),
             stderr="",
         )
@@ -3403,7 +3373,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
                 "- historical text: Failed to initialize agent: old failure\n"
                 "Task completed successfully\n"
                 "Session: isolated_test\n"
-                'AGENTBC_FINAL_CALLBACK: {"final_state":"completed","summary":"layered contract complete"}\n'
+                f"AGENTBC_FINAL_CALLBACK: {json.dumps(completed_callback(task, summary='layered contract complete'), separators=(',', ':'))}\n"
             ),
             stderr="",
         )
