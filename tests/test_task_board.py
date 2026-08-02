@@ -1,7 +1,6 @@
 """Test abc task board: create, list, init commands."""
 
 import json
-import os
 import shutil
 import tempfile
 import unittest
@@ -68,7 +67,7 @@ class TaskCreateTests(unittest.TestCase):
 
     def test_create_basic(self):
         """Create a basic task and verify task.json structure."""
-        from agent_bridge_connect.task_board import create_task, TaskBoard
+        from agent_bridge_connect.task_board import create_task
 
         task = create_task(
             title="Add user authentication",

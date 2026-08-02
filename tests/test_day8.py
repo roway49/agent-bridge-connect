@@ -1,6 +1,5 @@
 """Day 8 tests: AgentBC CLI + Codex executor + Task Brief."""
 
-import json
 import re
 import shutil
 import tempfile

@@ -518,7 +518,6 @@ class NoPublishBehaviourTests(unittest.TestCase):
         workflow = (
             _REPO / ".github" / "workflows" / "publish-pypi.yml"
         ).read_text(encoding="utf-8")
-        publish_job = workflow.split("publish:")[1].split("\n  ")[0]
         self.assertIn("github.event_name", workflow,
                       "publish job must have an if: condition")
         # The publish job must only trigger on release published.

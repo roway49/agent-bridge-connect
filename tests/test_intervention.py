@@ -1,6 +1,5 @@
 """Intervention and guardrail tests for ABC V1."""
 
-import json
 import shutil
 import tempfile
 import unittest

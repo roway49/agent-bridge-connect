@@ -2,7 +2,6 @@
 
 import contextlib
 import io
-import json
 import os
 import shutil
 import tempfile
@@ -105,9 +104,12 @@ class NaturalLanguageTests(unittest.TestCase):
         self.test_dir = Path(tempfile.mkdtemp())
         from agent_bridge_connect.task_board import init_board, create_task
         init_board(self.test_dir)
-        self.task = create_task("NL test", "mock", 
-                                Path("tests/fixtures/sample_steps.yaml"), 
-                                self.test_dir)
+        self.task = create_task(
+            "NL test",
+            "mock",
+            Path("tests/fixtures/sample_steps.yaml"),
+            self.test_dir,
+        )
         self.task_id = self.task.id
 
     def tearDown(self):
@@ -159,7 +161,7 @@ class NaturalLanguageTests(unittest.TestCase):
         """A new session should be able to review a task by ID only."""
         from agent_bridge_connect.service import TaskService
         from agent_bridge_connect.reports import generate_task_brief
-        svc = TaskService(self.test_dir)
+        _service = TaskService(self.test_dir)
         brief = generate_task_brief(self.task_id, self.test_dir)
         # Brief should be self-contained
         self.assertIn("task_id", brief)

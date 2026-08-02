@@ -4,7 +4,6 @@ import json
 import shutil
 import tempfile
 import unittest
-from datetime import datetime, timezone
 from pathlib import Path
 
 from agent_bridge_connect.task_board import create_task, init_board
@@ -143,7 +142,7 @@ class TaskListFilterTests(unittest.TestCase):
 
         # Create tasks with different statuses
         t1 = create_task("Pending A", "codex", STEPS_YAML, self.board)
-        t2 = create_task("Pending B", "claude", STEPS_YAML, self.board)
+        _t2 = create_task("Pending B", "claude", STEPS_YAML, self.board)
         t3 = create_task("Done task", "codex", STEPS_YAML, self.board)
 
         # Set t3 to done

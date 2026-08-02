@@ -1850,7 +1850,6 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         self.service.claim_task(task.id, "shell")
         running = self.service.get_task(task.id)
-        report_root = Path(running.workspace["report_root"])
         artifact_root = Path(running.workspace["artifact_root"])
         artifact_root.mkdir(parents=True, exist_ok=True)
         (artifact_root / "managed.txt").write_text("managed", encoding="utf-8")
@@ -2626,7 +2625,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
 
         workspace = self.board.parent / "project"
         workspace.mkdir(exist_ok=True)
-        task = self.service.create_task(
+        _task = self.service.create_task(
             "Worker workspace",
             "mock",
             [{"id": 1, "description": "noop"}],

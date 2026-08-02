@@ -1,6 +1,5 @@
 """Phase 10b tests: MCP tools + Gate D (CLI/MCP parity)."""
 
-import json
 import os
 import shutil
 import tempfile

@@ -1,10 +1,8 @@
 """L0 executor conformance tests + end-to-end dispatch tests."""
 
-import json
 import shutil
 import tempfile
 import unittest
-from datetime import datetime, timezone
 from pathlib import Path
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -130,7 +128,7 @@ class WorkerDispatchE2ETests(unittest.TestCase):
         self.assertEqual(task.status, "running")
 
         # Execute via executor (outside service — executor runs steps)
-        caps = executor.capabilities()
+        _capabilities = executor.capabilities()
         start_result = executor.start({
             "task_id": self.task_id,
             "title": task.title,

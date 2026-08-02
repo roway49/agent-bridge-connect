@@ -11,9 +11,23 @@ class CliTests(unittest.TestCase):
     def test_public_help_lists_only_v2_command_groups(self) -> None:
         help_text = build_parser().format_help()
 
-        for command in ("setup", "uninstall", "init", "task", "worker", "runner"):
+        for command in (
+            "setup",
+            "doctor",
+            "uninstall",
+            "init",
+            "task",
+            "worker",
+            "runner",
+        ):
             self.assertIn(command, help_text)
-        for legacy_command in ("submit", "session", "watch", "notify", "doctor", "_shorthand"):
+        for legacy_command in (
+            "submit",
+            "session",
+            "watch",
+            "notify",
+            "_shorthand",
+        ):
             self.assertNotIn(legacy_command, help_text)
 
     def test_task_code_shorthand_routes_to_status(self) -> None:

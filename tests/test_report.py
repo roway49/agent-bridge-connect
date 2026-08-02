@@ -119,10 +119,9 @@ class ReportGenerationTests(unittest.TestCase):
 
     def test_report_includes_interventions(self):
         """Report must include interventions when present."""
-        from agent_bridge_connect.service import TaskService
         from agent_bridge_connect.reports import generate_report
 
-        svc = self._complete_task()
+        _service = self._complete_task()
         # No interventions in this case, but the field must exist
         report = generate_report(self.task_id, self.board)
         self.assertIn("interventions", report)

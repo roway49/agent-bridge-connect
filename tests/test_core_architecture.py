@@ -10,8 +10,6 @@ These tests verify the architecture freeze gate:
 """
 
 import importlib
-import json
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
