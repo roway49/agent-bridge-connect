@@ -36,3 +36,6 @@ shaders/
 # Development-only scratch and legacy local task output.
 work/
 agentbc_tasks/
+
+# Generated at build time — never commit a stale identity.
+_build_info.json

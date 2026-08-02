@@ -21,10 +21,10 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -44,11 +44,20 @@ jobs:
           sh -n scripts/*.sh
           git diff --check
 
+      - name: Generate build identity
+        run: python3 scripts/build_provenance.py generate-build-info --build-source ci
+
       - name: Build distributions
         run: python -m build
 
-      - name: Check package metadata
+      - name: Check package metadata (Twine)
         run: python -m twine check dist/*
+
+      - name: Validate distribution filenames
+        run: python3 scripts/build_provenance.py validate-dists
+
+      - name: Generate release manifest
+        run: python3 scripts/build_provenance.py generate-manifest
 
       - name: Install wheel
         run: python -m pip install dist/*.whl
