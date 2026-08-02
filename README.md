@@ -178,6 +178,14 @@ are never automatic-cleanup or uninstall targets.
 - Report Markdown is Core-owned.
 - Uninstall and task close never traverse customer project paths.
 
+Runner uninstall honors two isolation controls:
+
+- `AGENTBC_UNINSTALL_SKIP_RUNNER=1` skips stopping Runner and preserves its live
+  spool, token, and pid files during uninstall.
+- `AGENTBC_RUNNER_SPOOL=/path/to/spool` relocates the Runner spool used by the
+  CLI, setup, and uninstall paths, letting tests and multi-install setups isolate
+  the spool from the per-user default `/tmp/agentbc-runner-v2-<uid>`.
+
 AgentBC is not a container sandbox. Use source control, normal OS permissions,
 and executor-native approval controls for defense in depth.
 

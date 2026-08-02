@@ -163,6 +163,13 @@ Agent callback 仅作为可选元数据，正常情况下以执行器进程退�
 - Report Markdown 由 Core 管理。
 - 卸载和 task close 不会遍历用户工程路径。
 
+Runner 卸载遵循两个隔离控制项：
+
+- `AGENTBC_UNINSTALL_SKIP_RUNNER=1` 在卸载时跳过停止 Runner，并保留其运行中的
+  spool、token 与 pid 文件。
+- `AGENTBC_RUNNER_SPOOL=/path/to/spool` 可重定位 CLI、setup 与卸载路径使用的
+  Runner spool，便于测试与多实例安装隔离默认的 `/tmp/agentbc-runner-v2-<uid>`。
+
 AgentBC 不是容器沙箱。请结合版本控制、操作系统权限和执行器自身的审批机制
 进行纵深防护。
 

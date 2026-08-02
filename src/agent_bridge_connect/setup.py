@@ -463,6 +463,7 @@ def run_uninstall(
 
     removed: list[str] = []
     preserved: list[str] = []
+    skip_runner = os.environ.get("AGENTBC_UNINSTALL_SKIP_RUNNER") == "1"
     _stop_owned_runner(removed)
 
     hermes_result = uninstall_hermes_skill(interactive=False, force=True, all_profiles=True)
@@ -490,9 +491,11 @@ def run_uninstall(
 
     launch_agent = Path.home() / "Library" / "LaunchAgents" / "com.agentbc.runner.plist"
     _remove_owned_path(launch_agent, removed)
-    from .runner import default_runner_spool
+    if not skip_runner:
+        # Skipping the Runner stop also preserves its live spool, token, and pid.
+        from .runner import default_runner_spool
 
-    _remove_owned_path(default_runner_spool(), removed)
+        _remove_owned_path(default_runner_spool(), removed)
 
     if remove_records:
         _remove_owned_path(board_root, removed)

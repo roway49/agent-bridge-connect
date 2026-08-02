@@ -219,7 +219,9 @@ remove_tree "$HOME/.claude/skills/agentbc"
 remove_tree "$HOME/.codex/skills/agentbc"
 
 remove_tree "$HOME/Library/LaunchAgents/com.agentbc.runner.plist"
-remove_tree "$RUNNER_SPOOL"
+if [ "${AGENTBC_UNINSTALL_SKIP_RUNNER:-0}" != "1" ]; then
+  remove_tree "$RUNNER_SPOOL"
+fi
 if [ "$REMOVE_RECORDS" = "1" ]; then
   remove_tree "$BOARD_ROOT"
   remove_tree "$REPORT_ROOT"

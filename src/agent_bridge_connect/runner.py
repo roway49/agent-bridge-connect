@@ -66,6 +66,9 @@ def default_runner_root() -> Path:
 
 
 def default_runner_spool() -> Path:
+    override = os.environ.get("AGENTBC_RUNNER_SPOOL")
+    if override:
+        return Path(override).expanduser()
     return Path("/tmp") / f"agentbc-runner-v2-{os.getuid()}"
 
 
