@@ -1,0 +1,28 @@
+{
+  "id": "T-001",
+  "title": "Add user authentication",
+  "status": "pending",
+  "assignee": "codex",
+  "created_by": "hermes",
+  "session_id": "20260605_143022_a1b2c3",
+  "created_at": "2026-06-05T14:30:00Z",
+  "updated_at": "2026-06-05T14:30:00Z",
+  "context": {
+    "project": "agent-bridge-connect",
+    "branch": "feat/auth",
+    "memory_tags": ["auth", "login", "security"],
+    "references": ["docs/api-spec.md"]
+  },
+  "steps": [
+    {"id": 1, "description": "Create User model", "status": "pending", "record": "steps/01.json"},
+    {"id": 2, "description": "Implement login endpoint", "status": "pending", "record": "steps/02.json"},
+    {"id": 3, "description": "Write tests", "status": "pending", "record": "steps/03.json"}
+  ],
+  "intervention": {
+    "paused": false,
+    "pause_reason": null,
+    "latest_correction_id": null
+  },
+  "errors": [],
+  "report": null
+}
