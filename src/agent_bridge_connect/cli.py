@@ -231,6 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Replace inherited image inputs for this iteration. Repeat when supported.",
     )
+    task_handoff.add_argument("--session-id")
     task_handoff.add_argument("--source-platform")
     task_handoff.add_argument("--branch", action="store_true", help="Intentionally create a branch from a non-head task.")
     task_handoff.add_argument("--dispatch", action="store_true", help="Atomically create and submit the handoff task to Runner.")
@@ -419,18 +420,31 @@ def _origin_context(
     session_id: str | None,
     source_platform: str | None,
 ) -> tuple[str | None, str]:
-    if source_platform:
-        return session_id, source_platform
-    candidates = (
+    session_variables = (
         ("CODEX_THREAD_ID", "codex"),
         ("HERMES_SESSION_ID", "hermes"),
         ("CLAUDE_SESSION_ID", "claude"),
         ("OPENCODE_SESSION_ID", "opencode"),
     )
-    for variable, platform in candidates:
-        value = os.environ.get(variable, "").strip()
-        if value:
-            return session_id or value, platform
+    explicit_platform = source_platform if isinstance(source_platform, str) else ""
+    platform = explicit_platform.strip() or _detected_source_platform(
+        session_variables
+    )
+    if isinstance(session_id, str):
+        return session_id, platform
+    matching_variable = next(
+        (variable for variable, candidate in session_variables if candidate == platform),
+        None,
+    )
+    trusted_session_id = (
+        os.environ.get(matching_variable, "").strip() if matching_variable else ""
+    )
+    return trusted_session_id or None, platform
+
+
+def _detected_source_platform(
+    session_variables: tuple[tuple[str, str], ...],
+) -> str:
     platform_markers = (
         ("CLAUDECODE", "claude"),
         ("CLAUDE_CODE_ENTRYPOINT", "claude"),
@@ -439,13 +453,16 @@ def _origin_context(
     )
     for variable, platform in platform_markers:
         if os.environ.get(variable, "").strip():
-            return session_id, platform
+            return platform
     bundle_identifier = os.environ.get("__CFBundleIdentifier", "").strip().lower()
     if "claude" in bundle_identifier or "anthropic" in bundle_identifier:
-        return session_id, "claude"
+        return "claude"
     if "codex" in bundle_identifier or "openai" in bundle_identifier:
-        return session_id, "codex"
-    return session_id, "cli"
+        return "codex"
+    for variable, platform in session_variables:
+        if os.environ.get(variable, "").strip():
+            return platform
+    return "cli"
 
 
 def _parse_customer_dir(value: str) -> bool:
@@ -808,7 +825,10 @@ def _task_log_status_line(
 
 def command_task_intervention(args: argparse.Namespace) -> int:
     config_path = _optional_path_arg(getattr(args, "config", None))
-    _, source_platform = _origin_context(None, getattr(args, "source_platform", None))
+    session_id, source_platform = _origin_context(
+        getattr(args, "session_id", None),
+        getattr(args, "source_platform", None),
+    )
     if args.task_command == "handoff" and getattr(args, "dispatch", False) is True:
         from .runner import RunnerClient, RunnerError
 
@@ -822,6 +842,7 @@ def command_task_intervention(args: argparse.Namespace) -> int:
                 config_path=config_path,
                 interval_s=getattr(args, "interval", 2),
                 monitor=getattr(args, "monitor", False),
+                session_id=session_id,
                 source_platform=source_platform,
                 images=_image_args(args, inherit_when_missing=True),
             )
@@ -878,6 +899,7 @@ def command_task_intervention(args: argparse.Namespace) -> int:
                 args.to,
                 args.message,
                 branch=getattr(args, "branch", False),
+                session_id=session_id,
                 source_platform=source_platform,
                 images=_image_args(args, inherit_when_missing=True),
             )

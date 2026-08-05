@@ -1077,6 +1077,7 @@ class TaskService:
         branch: bool = False,
         source_platform: str | None = None,
         images: list[str | Path] | None = None,
+        session_id: str | None = None,
     ) -> TaskModel:
         source = self.get_task(source_task_id)
         target_assignee = _normalize_executor_ref(
@@ -1155,13 +1156,8 @@ class TaskService:
             title=f"Handoff from {source.id}: {source.title}",
             assignee=target_assignee,
             steps=[{"id": 1, "description": description}],
-            session_id=source.session_id,
-            source_platform=str(
-                source_platform
-                or (source.extensions.get("agentbc.provenance") or {}).get("source_platform")
-                or source.created_by
-                or "unknown"
-            ),
+            session_id=session_id,
+            source_platform=source_platform,
             customer_dir=bool(workspace.get("customer_dir")),
             customer_path=workspace.get("customer_path") or None,
             lineage=_next_lineage(source, workspace, branch=branch),
@@ -1403,12 +1399,14 @@ def handoff_task(
     branch: bool = False,
     source_platform: str | None = None,
     images: list[str | Path] | None = None,
+    session_id: str | None = None,
 ) -> TaskModel:
     return TaskService(board_root).handoff_task(
         source_task_id,
         target_assignee,
         message,
         branch=branch,
+        session_id=session_id,
         source_platform=source_platform,
         images=images,
     )
@@ -1634,8 +1632,8 @@ def _write_task_requirements(task: TaskModel, path: Path) -> None:
         f"- Iteration: `{workspace.get('iteration', lineage.get('iteration_index', 1))}`",
         f"- Assignee: `{task.assignee}`",
         f"- Status snapshot: `{task.status}` (non-authoritative; use `agentbc task status {task.id}` or the report for current state)",
-        f"- Source platform: `{provenance.get('source_platform', task.created_by)}`",
-        f"- Conversation ID: `{task.session_id or 'unavailable'}`",
+        f"- Dispatcher platform: `{provenance.get('source_platform', task.created_by)}`",
+        f"- Dispatcher conversation ID: `{task.session_id or 'unavailable'}`",
         f"- Customer directory: `{workspace.get('customer_dir', '')}`",
         f"- Customer path: `{workspace.get('customer_path', '')}`",
         f"- Project root: `{workspace.get('project_root', workspace.get('root', ''))}`",
