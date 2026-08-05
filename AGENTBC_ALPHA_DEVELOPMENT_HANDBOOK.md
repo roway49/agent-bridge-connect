@@ -1804,13 +1804,14 @@ SSH 自动 Gate 不应访问 MacBook 的 `~/Documents/AgentBC`，因为 macOS TC
 
 ## 17. 后续版本建议顺序
 
-1. `1.0.2A` 收口 delete、doctor、预算、执行时长、Skill 漂移和 prompt 去重；
-2. `1.0.3A` 完成 update/Homebrew、协议 fixtures 和模块机械拆分第一阶段；
-3. `1.0.4A` 让 completion/liveness/schema v2 进入私有及真实 Executor 预览；
-4. `1.0.5A` 发布 OpenCode 与 Docker profile，优先覆盖 macOS/Linux/Windows
+1. `1.0.1A` 先完成两日真实任务 Canary，只修复阻断日常开发流程的 P0/P1 回归；
+2. `1.0.2A` 收口 delete、doctor、预算、执行时长、Skill 漂移和 prompt 去重；
+3. `1.0.3A` 完成 update/Homebrew、协议 fixtures 和模块机械拆分第一阶段；
+4. `1.0.4A` 让 completion/liveness/schema v2 进入私有及真实 Executor 预览；
+5. `1.0.5A` 发布 OpenCode 与 Docker profile，优先覆盖 macOS/Linux/Windows
    Docker 用户，并用真实社区使用验证 v2；
-5. `1.1.0` 发布 GUI、多样化通知和傻瓜式安装包，完成 Alpha 退出；
-6. 链式自动派发、原生跨机协同和原生 Windows/Linux Runner 放到 `1.2+`，不占用
+6. `1.1.0` 发布 GUI、多样化通知和傻瓜式安装包，完成 Alpha 退出；
+7. 链式自动派发、原生跨机协同和原生 Windows/Linux Runner 放到 `1.2+`，不占用
    `1.1.0` 正式版收口资源。
 
 新功能优先判断能否复用 Task Packet、Path Plan、TaskService、Runner IPC、
@@ -1854,7 +1855,7 @@ CLI 或 Skill 中加条件分支。
 [ ] 我标明 task/schema/completion/Runner protocol 版本和 v1 兼容策略
 [ ] 我没有让 Agent 重抄 Core 已知的 ID、步骤、路径或版本
 [ ] 我没有让 GUI、通知、Report 或 Index 反向覆盖任务状态
-[ ] 我知道本次改动属于 1.0.2/1.0.3/1.0.4/1.0.5/1.1.0 哪个版本目标
+[ ] 我知道本次改动属于 1.0.1A 稳定性收口或 1.0.2/1.0.3/1.0.4/1.0.5/1.1.0 哪个版本目标
 ```
 
 这份检查表的目标不是增加流程负担，而是让每次改动进入正确模块，并让下一位开发者
@@ -1865,6 +1866,30 @@ CLI 或 Skill 中加条件分支。
 ## 20. 重点版本开发目标
 
 本节是当前社区调研后的产品优先级，优先于旧 backlog 和本手册前期的功能排序。
+
+### 20.0 `1.0.1A`：日常开发流程稳定性基线
+
+**产品目标**：证明当前 AgentBC 能够正式加入日常开发流程。公开 `v1.0.1A` 标签和
+PyPI `1.0.1a1` 资产保持冻结；私有候选只做两日真实任务 Canary，不以相同版本重发。
+
+**固定范围**：
+
+- Codex、Claude、Hermes 三类 Executor 各完成至少一个真实任务；
+- 验证 `accepted -> running -> terminal`、RunLease、严格终态、report、logs 和通知一致；
+- `completed` 必须依赖全部步骤完成和合法终态标志；
+- 验证长任务黄色健康状态在有效心跳后的下一轮查询恢复绿色；
+- 验证 Runner finalize、spool 隔离、双机 Gate、候选安装和回退；
+- 只修复实战发现的 P0/P1 流程、数据安全、Runner、安装或恢复回归。
+
+**明确不做**：delete、预算配置、执行时长修复、update、Homebrew、OpenCode、Docker、
+GUI、通知扩展、protocol v2 和结构性重构。这些工作不得倒灌，继续进入后续版本。
+
+**退出条件**：完成 2026-08-05 至 2026-08-07 两日 Canary；三类 Executor 的真实任务
+证据完整且一致；没有未解决 P0/P1；如发生修复，重新通过完整 Gate 和受影响真实任务。
+通过后锁定实际候选提交，作为 `1.0.2A` 开发基线。
+
+详细范围以
+`~/hermes-team/codex/plan/20260805_plan_AgentBC_1.0.1A开发目标冻结.md` 为准。
 
 ### 20.1 `1.0.5A`：OpenCode + Docker 全平台覆盖
 
