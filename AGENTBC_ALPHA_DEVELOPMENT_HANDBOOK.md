@@ -1804,8 +1804,8 @@ SSH 自动 Gate 不应访问 MacBook 的 `~/Documents/AgentBC`，因为 macOS TC
 
 ## 17. 后续版本建议顺序
 
-1. `1.0.1A` 先完成两日真实任务 Canary，只修复阻断日常开发流程的 P0/P1 回归；
-2. `1.0.2A` 收口 delete、doctor、预算、执行时长、Skill 漂移和 prompt 去重；
+1. `1.0.1A` 先完成派发源 Conversation ID 双文档溯源和两日真实任务 Canary，只修复阻断日常开发流程的 P0/P1 回归；
+2. `1.0.2A` 收口 delete、doctor、预算、执行时长、执行会话保留、Skill 漂移和 prompt 去重；
 3. `1.0.3A` 完成 update/Homebrew、协议 fixtures 和模块机械拆分第一阶段；
 4. `1.0.4A` 让 completion/liveness/schema v2 进入私有及真实 Executor 预览；
 5. `1.0.5A` 发布 OpenCode 与 Docker profile，优先覆盖 macOS/Linux/Windows
@@ -1879,19 +1879,43 @@ PyPI `1.0.1a1` 资产保持冻结；私有候选只做两日真实任务 Canary�
 - `completed` 必须依赖全部步骤完成和合法终态标志；
 - 验证长任务黄色健康状态在有效心跳后的下一轮查询恢复绿色；
 - 验证 Runner finalize、spool 隔离、双机 Gate、候选安装和回退；
+- 每次 create/handoff 记录当前派发 Agent 平台和 Conversation ID，并在 task/report 两份
+  Markdown 固定展示；handoff 不得继承上一迭代的派发对话 ID；
 - 只修复实战发现的 P0/P1 流程、数据安全、Runner、安装或恢复回归。
 
-**明确不做**：delete、预算配置、执行时长修复、update、Homebrew、OpenCode、Docker、
-GUI、通知扩展、protocol v2 和结构性重构。这些工作不得倒灌，继续进入后续版本。
+**明确不做**：delete、预算配置、执行时长修复、执行 Agent 临时会话保留/清理、
+update、Homebrew、OpenCode、Docker、GUI、通知扩展、protocol v2 和结构性重构。
+这些工作不得倒灌，继续进入后续版本。
 
 **退出条件**：完成 2026-08-05 至 2026-08-07 两日 Canary；三类 Executor 的真实任务
-证据完整且一致；没有未解决 P0/P1；如发生修复，重新通过完整 Gate 和受影响真实任务。
+在 task/report 中显示正确且一致的派发源 Conversation ID；流程证据完整且一致；没有
+未解决 P0/P1；如发生修复，重新通过完整 Gate 和受影响真实任务。
 通过后锁定实际候选提交，作为 `1.0.2A` 开发基线。
 
 详细范围以
 `~/hermes-team/codex/plan/20260805_plan_AgentBC_1.0.1A开发目标冻结.md` 为准。
 
-### 20.1 `1.0.5A`：OpenCode + Docker 全平台覆盖
+### 20.1 `1.0.2A`：执行 Agent 临时会话保留策略
+
+**产品目标**：让用户决定 AgentBC 任务结束后是否保留 Executor 创建的临时会话，
+减少 Codex、Claude、Hermes 的任务会话堆积，同时保留安全恢复能力。
+
+**固定入口**：交互式 setup 询问是否保留，默认保留；独立命令为
+`agentbc session retention status|enable|disable`；配置为
+`sessions.retain_executor_sessions`。
+
+**清理边界**：只处理执行 Agent 临时会话，永不处理派发源对话。关闭保留后，也只有
+terminal task 在 RunLease 关闭、最终报告落盘和通知入队后才能请求清理；
+`input_required`、`needs_recovery`、active、stale 会话继续保留。只能使用 Executor 官方
+CLI/API 或明确的不持久化选项，禁止扫描或递归删除 Agent 会话目录。
+
+**失败语义**：不支持或清理失败只产生 cleanup receipt 和 doctor warning，不改变原任务
+终态。Adapter 必须报告 execution session ID、删除能力和结果。
+
+详细规格以
+`~/hermes-team/codex/plan/20260805_plan_AgentBC对话溯源与执行会话保留.md` 为准。
+
+### 20.2 `1.0.5A`：OpenCode + Docker 全平台覆盖
 
 **产品目标**：短期不开发原生 Windows/Linux Runner 的情况下，让 macOS、Linux 和
 Windows Docker Desktop 用户都能以一致流程安装、派发、查看状态和取得报告。
@@ -1928,7 +1952,7 @@ Windows Docker Desktop 用户都能以一致流程安装、派发、查看状态
 容器内 status/report/logs 一致；容器重启、网络中断、volume 错配不会误报 completed、
 不会破坏 customer volume。
 
-### 20.2 `1.1.0`：GUI + 多样化通知 + 傻瓜式安装包
+### 20.3 `1.1.0`：GUI + 多样化通知 + 傻瓜式安装包
 
 **产品目标**：结束 Alpha，让不熟悉 Python、终端和 Agent 配置的用户也能完成安装、
 初始化、运行检查和日常状态查看。
@@ -1970,7 +1994,7 @@ Windows Docker Desktop 用户都能以一致流程安装、派发、查看状态
 - 四 Executor、三宿主 Docker、双机候选、安装矩阵和并发性能门禁通过；
 - 没有 P0/P1 数据安全、状态误报、升级损坏或恢复阻断问题。
 
-### 20.3 `1.1.0` 后置项目
+### 20.4 `1.1.0` 后置项目
 
 - 后台链式派发；
 - AgentBC 原生跨机派发；
