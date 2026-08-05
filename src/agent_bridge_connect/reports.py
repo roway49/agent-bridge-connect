@@ -597,20 +597,17 @@ def _render_report_md(report: dict[str, Any]) -> str:
     if not timeline:
         lines.append("- None")
 
-    session_id = report.get("session_id")
-    if session_id:
-        provenance = report.get("provenance") or {}
-        platform = provenance.get("source_platform") or report.get("assignee") or "unknown"
-        lines.extend(
-            [
-                "",
-                "## Session Traceability",
-                f"- Source platform: `{platform}`",
-                f"- Conversation ID: `{session_id}`",
-            ]
-        )
-        if platform == "hermes":
-            lines.append(f"- Restore context: `hermes session search {session_id}`")
+    provenance = report.get("provenance") or {}
+    platform = provenance.get("source_platform") or report.get("assignee") or "unavailable"
+    session_id = report.get("session_id") or "unavailable"
+    lines.extend(
+        [
+            "",
+            "## Dispatcher Traceability",
+            f"- Dispatcher platform: `{platform}`",
+            f"- Dispatcher conversation ID: `{session_id}`",
+        ]
+    )
 
     interventions = report.get("interventions") or []
     if interventions:

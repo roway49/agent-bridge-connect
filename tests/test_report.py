@@ -180,6 +180,117 @@ class ReportGenerationTests(unittest.TestCase):
         self.assertNotIn("de[REDACTED]", report)
 
 
+class DispatcherTraceabilityTests(unittest.TestCase):
+    """Dispatcher Traceability section rendering in report Markdown."""
+
+    def setUp(self):
+        self.test_dir = Path(tempfile.mkdtemp())
+        self.board = self.test_dir / "abc-tasks"
+        from agent_bridge_connect.task_board import init_board
+
+        init_board(self.board)
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def _service_task(self, session_id=None, source_platform=None, assignee="codex"):
+        from agent_bridge_connect.service import TaskService
+
+        svc = TaskService(self.board, config={"workspace_root": str(self.board)})
+        task = svc.create_task(
+            "Dispatcher trace task",
+            assignee,
+            [{"id": 1, "description": "trace"}],
+            session_id=session_id,
+            source_platform=source_platform,
+            customer_dir=False,
+        )
+        return task, svc
+
+    def _report_md(self, task_id):
+        from agent_bridge_connect.reports import generate_report_md
+
+        return generate_report_md(task_id, self.board)
+
+    def test_report_md_renders_stable_dispatcher_traceability_labels(self):
+        task, _ = self._service_task(session_id="thread-123", source_platform="codex")
+        md = self._report_md(task.id)
+
+        self.assertIn("## Dispatcher Traceability", md)
+        self.assertIn("- Dispatcher platform: `codex`", md)
+        self.assertIn("- Dispatcher conversation ID: `thread-123`", md)
+        self.assertNotIn("Session Traceability", md)
+        self.assertNotIn("- Source platform:", md)
+        self.assertNotIn("- Conversation ID:", md)
+        self.assertNotIn("hermes session search", md)
+
+    def test_report_md_renders_unavailable_when_dispatcher_id_missing(self):
+        task, _ = self._service_task(session_id=None, source_platform="codex")
+        md = self._report_md(task.id)
+
+        self.assertIn("## Dispatcher Traceability", md)
+        self.assertIn("- Dispatcher platform: `codex`", md)
+        self.assertIn("- Dispatcher conversation ID: `unavailable`", md)
+
+    def test_report_md_platform_falls_back_to_assignee_for_old_records(self):
+        from agent_bridge_connect.task_board import create_task
+
+        task = create_task("Old record", "claude", STEPS_YAML, self.board)
+        md = self._report_md(task.id)
+
+        self.assertIn("## Dispatcher Traceability", md)
+        self.assertIn("- Dispatcher platform: `claude`", md)
+        self.assertIn("- Dispatcher conversation ID: `unavailable`", md)
+
+    def test_report_md_platform_falls_back_when_provenance_lacks_platform(self):
+        task, svc = self._service_task(session_id="conv-9", source_platform=None)
+        data = svc.store.read_task(task.id)
+        data["extensions"]["agentbc.provenance"] = {"conversation_id": "conv-9"}
+        svc.store.write_task(task.id, data)
+        md = self._report_md(task.id)
+
+        self.assertIn("- Dispatcher platform: `codex`", md)
+        self.assertIn("- Dispatcher conversation ID: `conv-9`", md)
+
+    def test_report_md_renders_unavailable_for_old_record_without_any_trace(self):
+        task, svc = self._service_task(session_id=None, source_platform=None)
+        data = svc.store.read_task(task.id)
+        data["extensions"]["agentbc.provenance"] = {}
+        data["assignee"] = ""
+        svc.store.write_task(task.id, data)
+        md = self._report_md(task.id)
+
+        self.assertIn("## Dispatcher Traceability", md)
+        self.assertIn("- Dispatcher platform: `unavailable`", md)
+        self.assertIn("- Dispatcher conversation ID: `unavailable`", md)
+
+    def test_redaction_keeps_conversation_id_but_redacts_secrets(self):
+        from agent_bridge_connect.reports import redact_secrets
+
+        value = redact_secrets(
+            {
+                "session_id": "019f92f8-9e92-7251-a792-8a6390e0d380",
+                "provenance": {
+                    "source_platform": "codex",
+                    "conversation_id": "019f92f8-9e92-7251-a792-8a6390e0d380",
+                },
+                "workspace": {"config": "password=secret", "token": "sk-abcdefghijklmnopqrstuvwx"},
+            }
+        )
+
+        self.assertEqual(value["session_id"], "019f92f8-9e92-7251-a792-8a6390e0d380")
+        self.assertEqual(value["provenance"]["conversation_id"], "019f92f8-9e92-7251-a792-8a6390e0d380")
+        self.assertNotIn("secret", value["workspace"]["config"].lower())
+        self.assertNotIn("sk-abcdefghijklmnopqrstuvwx", value["workspace"]["token"])
+
+    def test_report_md_redacts_secret_like_conversation_id(self):
+        task, _ = self._service_task(session_id="sk-abcdefghijklmnopqrstuvwx", source_platform="codex")
+        md = self._report_md(task.id)
+
+        self.assertIn("## Dispatcher Traceability", md)
+        self.assertNotIn("sk-abcdefghijklmnopqrstuvwx", md)
+
+
 class NotificationTests(unittest.TestCase):
     """Test notification delivery on task events."""
 
