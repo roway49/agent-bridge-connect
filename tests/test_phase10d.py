@@ -229,6 +229,45 @@ class RunLeaseTests(unittest.TestCase):
         self.assertTrue(evidence.exists())
         self.assertEqual(self.service.get_task(self.task.id).status, "needs_recovery")
 
+    def test_terminal_compaction_preserves_dispatcher_session_id(self):
+        from agent_bridge_connect.record_management import _compact_terminal_task_json
+
+        task = self.service.create_task(
+            "Compaction trace task",
+            "shell",
+            [{"id": 1, "description": "echo"}],
+            session_id="conv-compact-1",
+            source_platform="shell",
+            customer_dir=False,
+        )
+        self.service.start_task_run(task.id, "shell")
+        self.service.finalize_task_from_agent(task.id, completed_callback(task, summary="done"))
+        task_dir = self.service.store.task_dir(task.id)
+        _compact_terminal_task_json(task_dir / "task.json")
+        data = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
+        self.assertEqual(data["session_id"], "conv-compact-1")
+        self.assertEqual(data["extensions"]["agentbc.provenance"]["source_platform"], "shell")
+
+    def test_record_clean_preserves_dispatcher_session_id(self):
+        from agent_bridge_connect.record_management import clean_terminal_records
+
+        task = self.service.create_task(
+            "Clean trace task",
+            "shell",
+            [{"id": 1, "description": "echo"}],
+            session_id="conv-clean-1",
+            source_platform="shell",
+            customer_dir=False,
+        )
+        self.service.start_task_run(task.id, "shell")
+        self.service.finalize_task_from_agent(task.id, completed_callback(task, summary="done"))
+        result = clean_terminal_records(self.board)
+        task_dir = self.service.store.task_dir(task.id)
+        data = json.loads((task_dir / "task.json").read_text(encoding="utf-8"))
+        self.assertIn(task.id, result["tasks_cleaned"])
+        self.assertEqual(data["session_id"], "conv-clean-1")
+        self.assertEqual(data["extensions"]["agentbc.provenance"]["source_platform"], "shell")
+
     def test_global_task_index_updates_after_final_callback(self):
         self.service.start_task_run(self.task.id, "shell")
         self.assertTrue(self.service.finalize_task_from_agent(
@@ -1157,9 +1196,11 @@ class Phase10dIntegrationTests(unittest.TestCase):
         self.assertIn("Dispatcher conversation ID: `thread-123`", requirements)
         self.assertIn("Status snapshot: `pending`", requirements)
         self.assertIn("non-authoritative", requirements)
-        self.assertIn("Source platform: `codex`", report)
-        self.assertIn("Conversation ID: `thread-123`", report)
+        self.assertIn("Dispatcher platform: `codex`", report)
+        self.assertIn("Dispatcher conversation ID: `thread-123`", report)
         self.assertNotIn("hermes session search", report)
+        self.assertNotIn("Source platform:", report)
+        self.assertNotIn("Conversation ID:", report)
         self.assertTrue(Path(task.workspace["artifacts_dir"]).is_dir())
         self.assertIn(f"Report: `{task.workspace['report_file']}`", requirements)
 
