@@ -658,6 +658,7 @@ class RunnerClient:
         branch: bool = False,
         source_platform: str | None = None,
         images: list[str | Path] | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         return self._request(
             {
@@ -666,6 +667,7 @@ class RunnerClient:
                 "target_assignee": target_assignee,
                 "message": message,
                 "branch": branch,
+                "session_id": session_id,
                 "source_platform": source_platform,
                 "images": [str(Path(image).expanduser()) for image in images] if images is not None else None,
                 "board_root": str(Path(board_root).expanduser()),
@@ -933,6 +935,7 @@ class RunnerState:
             target,
             request.get("message"),
             branch=bool(request.get("branch", False)),
+            session_id=request.get("session_id"),
             source_platform=request.get("source_platform"),
             images=request.get("images"),
         )
