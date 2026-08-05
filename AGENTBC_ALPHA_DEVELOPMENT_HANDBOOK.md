@@ -7,7 +7,7 @@
 > 本机唯一开发入口：`/Users/wangroway/hermes-team/codex/AgentBC_Temp/agent-worktrees/integration`
 > 本机公开主线镜像：`/Users/wangroway/Documents/Work/Agent-Bridge-Connect/agent-bridge-connect`（只读）
 > 私有分支：`private/integration`；Agent 固定分支：`agent/codex`、`agent/claude`、`agent/hermes`
-> 合入与发布主机：MacBook；本开发机禁止直接操作、推送或发布 `main`
+> 合入与发布主机：MacBook；本开发机只允许向 MacBook 推送受保护私有分支，禁止操作或发布 `main`
 > 仓库外备份：`/Users/wangroway/hermes-team/codex/data/20260805_AgentBC开发手册备份.md`
 > 公开仓库：<https://github.com/roway49/agent-bridge-connect>
 > 存放策略：手册由 `private/integration` 跟踪并在仓库外备份；MacBook 合入公开 `main` 时必须排除本文件
@@ -40,8 +40,9 @@
 
 本开发机只在固定 agent worktree 开发，并在审查后合入 `private/integration`。公开
 `main` worktree 仅用于只读比对，不在本机 checkout 其他分支、不提交、不合并、不打 tag、
-不推送、不发布。私有分支的上传、公开主线合入、候选构建、tag、Release 和 PyPI 发布
-统一由 MacBook 完成。
+不向公开远端推送、不发布。本机只允许向 MacBook 的 `origin` 快进推送
+`private/integration` 与 `agent/*`；公开主线合入、候选构建、tag、Release 和 PyPI
+发布统一由 MacBook 完成。
 
 手册作为私有运维文件由 `private/integration` 跟踪；MacBook 生成公开候选时必须显式
 排除本文件，禁止把私有手册随代码整体推入公开 `main`。仓库外备份用于误删恢复，不是
@@ -1743,16 +1744,17 @@ python3 -m twine check dist/*
 固定流程：
 
 1. 本开发机只在固定 agent 分支修改并提交，审查后合入本地 `private/integration`；
-2. 本开发机不执行 push；MacBook 主动读取/拉取已审查的私有分支或接收经批准的离线包；
+2. 本开发机只向 MacBook `origin` 快进推送 `private/integration` 或 `agent/*`，禁止删除和强推；
 3. MacBook 在私有测试工作树运行门禁，并构建带 SHA 的候选；
 4. MacBook 本机 Terminal 测真实 Executor；
 5. MacBook 排除私有手册等内部文件后，负责合入 `main`；
 6. MacBook 从唯一最终 commit 创建版本、tag、GitHub Release 和 PyPI 发布；
 7. 本开发机只安装 MacBook 产生的同一 wheel 进行日常 canary，不反向发布。
 
-本机 Git 安全护栏：`pre-commit`/`pre-merge-commit` 阻止在 `main` 上提交或合并，
-`pre-push` 阻止本仓库从开发机发起任何 push。Hook 是误操作护栏，不是权限系统；开发者
-仍必须先确认当前目录和分支。MacBook 的独立 clone 不安装这些本机 hook，不受其影响。
+本机 Git 安全护栏：`pre-commit`/`pre-merge-commit` 阻止在 `main` 上提交或合并；
+`pre-push` 只允许向 MacBook `origin` 快进推送 `private/integration` 和 `agent/*`，并阻止
+公开远端、`main`、tag、删除和非快进覆盖。Hook 是误操作护栏，不是权限系统；开发者仍
+必须先确认当前目录和分支。MacBook 的独立 clone 不安装这些本机 hook，不受其影响。
 
 SSH 自动 Gate 不应访问 MacBook 的 `~/Documents/AgentBC`，因为 macOS TCC 对 SSH 与
 本地 Terminal 的授权不同。真实 Executor 验收必须在 MacBook 本地会话执行。
@@ -1838,7 +1840,7 @@ CLI 或 Skill 中加条件分支。
 ```text
 [ ] 我在固定 agent worktree 或 private/integration，不在旧仓库或本机 main
 [ ] 如果是集成操作，当前分支严格等于 private/integration
-[ ] 本机不会执行 main commit/merge、push、tag、Release 或 PyPI 发布
+[ ] 本机只会快进推送受保护私有分支，不会操作 main、公开远端、tag、Release 或 PyPI
 [ ] 我看过当前 branch、HEAD、dirty files 和 Runner 状态
 [ ] 我确认没有活跃任务再更新安装或重启 Runner
 [ ] 我知道问题属于 Skill / CLI / Runner / Service / Store / Adapter / Report 哪一层
