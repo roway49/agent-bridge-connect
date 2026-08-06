@@ -21,7 +21,13 @@ from agent_bridge_connect.execution_contract import (
     route_executor_terminal,
     strip_callback_line,
 )
-from agent_bridge_connect.protocol import resumed_input_prompt_lines, task_step_text
+from agent_bridge_connect.permission_modes import (
+    assert_executor_permission_supported,
+    permission_flags,
+    permission_record_from_extensions,
+)
+from agent_bridge_connect.protocol import ABCError, resumed_input_prompt_lines, task_step_text
+from agent_bridge_connect.runner import RunnerClient, RunnerError
 
 from .base import CLIExecutorBase
 from ..path_provider import find_binary
@@ -111,10 +117,13 @@ class ClaudeExecutor(CLIExecutorBase):
                 "returncode": completed.returncode,
                 "version": version,
                 "transport": self.transport,
-                "safe_mode": self.safe_mode,
-                "permission_mode": self.permission_mode,
+                "configured_safe_mode": self.safe_mode,
+                "configured_permission_mode": self.permission_mode,
                 "output_format": self.output_format,
-                "dangerous_permissions_allowed": False,
+                "task_permission": None,
+                "dangerous_permissions_supported": None,
+                "dangerous_permissions_allowed": None,
+                "dangerous_permissions_policy": "explicit_persisted_full_task_only",
                 "capability_level": "L1",
             },
         )
@@ -147,9 +156,19 @@ class ClaudeExecutor(CLIExecutorBase):
         self._task_packets[run_id] = dict(task_packet)
         self._start_run_lease(task_packet, run_id, "claude")
         prompt = _build_prompt(task_packet)
-        command = self._build_command(prompt, root, task_packet)
+        permission = permission_record_from_extensions(task_packet.get("extensions"))
+        try:
+            assert_executor_permission_supported(
+                "claude", permission["effective_mode"], self.agent_bin
+            )
+        except ABCError as exc:
+            self._close_run_lease(run_id)
+            return StartResult(ok=False, run_id="", message=str(exc))
+        command = self._build_command(prompt, root, task_packet, permission)
 
         try:
+            if task_packet.get("runner_authorization_required") is True:
+                RunnerClient().authorize_command("claude", command, root, task_packet)
             self._heartbeat_run(run_id)
             completed = subprocess.run(
                 command,
@@ -183,7 +202,7 @@ class ClaudeExecutor(CLIExecutorBase):
                 },
             )
             return StartResult(ok=True, run_id=run_id, message="claude execution needs recovery")
-        except OSError as exc:
+        except (OSError, RunnerError) as exc:
             self._close_run_lease(run_id)
             return StartResult(ok=False, run_id="", message=f"failed to start claude: {exc}")
 
@@ -227,18 +246,35 @@ class ClaudeExecutor(CLIExecutorBase):
         return StartResult(ok=True, run_id=run_id, message=f"claude execution {status}")
 
     def get_extensions(self) -> dict:
+        task_permission = None
+        if self._last_run_id is not None:
+            task_permission = permission_record_from_extensions(
+                self._task_packets.get(self._last_run_id, {}).get("extensions")
+            )
         metadata: dict[str, Any] = {
             "agent_bin": str(self.agent_bin) if self.agent_bin is not None else "",
             "capability_level": self.capabilities().level,
             "last_run_id": self._last_run_id,
             "model": self.model,
             "effort": self.effort,
-            "permission_mode": self.permission_mode,
-            "safe_mode": self.safe_mode,
+            "configured_permission_mode": self.permission_mode,
+            "configured_safe_mode": self.safe_mode,
+            "task_permission": task_permission,
             "output_format": self.output_format,
             "max_budget_usd": self.max_budget_usd,
             "transport": self.transport,
-            "dangerous_permissions_allowed": False,
+            "dangerous_permissions_supported": (
+                True
+                if task_permission is not None
+                and task_permission["effective_mode"] == "full"
+                else None
+            ),
+            "dangerous_permissions_allowed": (
+                task_permission["effective_mode"] == "full"
+                if task_permission is not None
+                else None
+            ),
+            "dangerous_permissions_policy": "explicit_persisted_full_task_only",
             "resume": False,
         }
         if self._last_run_id is not None:
@@ -250,19 +286,20 @@ class ClaudeExecutor(CLIExecutorBase):
         prompt: str,
         workspace_root: Path,
         task_packet: dict[str, Any],
+        permission: dict[str, str] | None = None,
     ) -> list[str]:
         if self.agent_bin is None:
             raise RuntimeError("claude unavailable")
+        selected = permission or permission_record_from_extensions(task_packet.get("extensions"))
         command = [str(self.agent_bin), "-p"]
-        if self.safe_mode:
-            command.append("--safe-mode")
+        command.extend(permission_flags("claude", selected["effective_mode"]))
         command.append("--no-session-persistence")
-        command.extend(["--permission-mode", self.permission_mode])
         command.extend(["--output-format", self.output_format])
         if self.output_format == "stream-json":
             command.append("--verbose")
-        for writable_root in _claude_writable_roots(task_packet, workspace_root):
-            command.extend(["--add-dir", str(writable_root)])
+        if selected["effective_mode"] == "safe":
+            for writable_root in _claude_writable_roots(task_packet, workspace_root):
+                command.extend(["--add-dir", str(writable_root)])
         if self.model:
             command.extend(["--model", self.model])
         if self.effort:
@@ -284,8 +321,9 @@ class ClaudeExecutor(CLIExecutorBase):
             "workspace": str(workspace),
             "returncode": returncode,
             "model": self.model,
-            "permission_mode": self.permission_mode,
-            "safe_mode": self.safe_mode,
+            "permission": permission_record_from_extensions(
+                self._task_packets.get(run_id, {}).get("extensions")
+            ),
             "output_format": self.output_format,
             "transport": self.transport,
         }

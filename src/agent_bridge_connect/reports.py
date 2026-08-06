@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .permission_modes import permission_record_from_extensions
 from .protocol import task_step_text
 from .run_lease import (
     RunLeaseState,
@@ -101,6 +102,7 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
     waiting_duration_s = _waiting_duration_seconds(extensions, duration_end)
     execution_duration_s = round(max(wall_duration_s - waiting_duration_s, 0.0), 3)
     input_request = extensions.get("agentbc.input") if isinstance(extensions.get("agentbc.input"), dict) else {}
+    permission = permission_record_from_extensions(extensions)
 
     report = {
         "task_id": task.get("id", task_id),
@@ -133,6 +135,7 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "waiting_duration_s": waiting_duration_s,
         "wall_duration_s": wall_duration_s,
         "input": input_request,
+        "permission": permission,
         "run_lease_state": lease_state,
         "time_since_last_heartbeat_s": heartbeat_age,
         "recovery_recommendation": (
@@ -188,6 +191,7 @@ def generate_task_brief(task_id: str, board_root: Path) -> dict[str, Any]:
             "artifacts": report["artifacts"],
             "interventions": report["interventions"],
             "workspace": report.get("workspace") or {},
+            "permission": report.get("permission") or {},
         },
         "changed_files": changed_files,
         "verification": verification,
@@ -560,6 +564,9 @@ def _render_report_md(report: dict[str, Any]) -> str:
         f"- Failed steps: `{_format_step_ids(report.get('failed_steps'))}`",
         f"- Blocked steps: `{_format_step_ids(report.get('blocked_steps'))}`",
         f"- Assignee: `{report.get('assignee', '')}`",
+        f"- Requested permission mode: `{(report.get('permission') or {}).get('requested_mode', '')}`",
+        f"- Effective permission mode: `{(report.get('permission') or {}).get('effective_mode', '')}`",
+        f"- Permission selection source: `{(report.get('permission') or {}).get('selection_source', '')}`",
         f"- Created: `{_format_report_timestamp(created_at)}`",
         f"- Completed: `{_format_report_timestamp(completed_at) if completed_at else 'not completed'}`",
         f"- Duration: `{_format_duration(report.get('duration_s'))}`",
