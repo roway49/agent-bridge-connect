@@ -373,6 +373,9 @@ Task List 的 `timer` 只是展示计时，不推动任务状态，也不证明 
 | `needs_recovery` | 任务未能正确启动或继续执行 | Agent 一定没有生成文件 |
 | `failed` | 任务启动过，但正常结束流程无法确认 | 产物一定不可用 |
 
+`input_required` 不是终态，而是 running 的可恢复等待子状态。它必须继续留在 active
+cohort，不能写 `agentbc.final_callback`，也不能触发终态 Report/Notification。
+
 `cancelled/rejected` 仍存在于底层协议和人工干预路径，但不属于
 `terminal_states.py::TASK_TERMINAL_STATES` 的三种通知终态。状态集合仍有分散，新增
 状态前必须先统一定义，禁止再增加第四套列表。
@@ -383,7 +386,7 @@ Task List 的 `timer` 只是展示计时，不推动任务状态，也不证明 
 
 - 灰色：pending、inactive 或 completed；
 - 绿色：启动宽限期内，或最近进度不超过 300 秒；
-- 黄色：进度文件缺失，或 300～600 秒未更新但进程未证明丢失；
+- 黄色：等待 `input_required`，进度文件缺失，或 300～600 秒未更新但进程未证明丢失；
 - 橙色：超过 600 秒未响应，但 Runner/进程尚未证明丢失；
 - 红色：`needs_recovery`、`failed`，或 RunLease 证明进程丢失。
 
@@ -395,10 +398,14 @@ Task List 的 `timer` 只是展示计时，不推动任务状态，也不证明 
 | 文件 | 模块 | 用途 | 生命周期 |
 | --- | --- | --- | --- |
 | `lease.json` | `TaskStore` | 防止同一任务被两个 worker 同时领取 | 领取时创建，终态时释放 |
-| `run_lease.json` | `run_lease.py` | Executor PID、PGID、heartbeat、孤儿状态 | Executor 启动到退出/恢复判定 |
+| `run_lease.json` | `run_lease.py` | Executor PID、PGID、heartbeat、孤儿或 suspended 状态 | Executor 启动到退出/等待/恢复判定 |
 
 两者名称接近但职责不同。后续可将前者在代码层改称 `claim_lease`，但完成兼容设计和
 回归测试前不要直接改文件格式。
+
+合法 `input_required` 会释放 `lease.json` 的领取权，并把 `run_lease.json` 持久化为
+`suspended`。suspended 不参与 stale/orphaned 计时；Runner 重启后仍从 task extension 和
+RunLease 恢复等待事实。收到响应后创建新的 Executor run，而不是恢复旧进程。
 
 ### 5.5 状态与健康协议预期变化
 
@@ -496,6 +503,14 @@ Report 与产物质量继续由用户或下一 Agent 验收。
 - 缺少、重复或无效完成信号，以及非零退出，默认进入 `failed`；
 - 只有 Adapter 能给出结构化 `retryable=true` 的传输/基础设施失败才进入恢复语义；
 - 权限、审批或预算耗尽但没有合法 `input_required` 声明时仍为 `failed`；
+- Hermes 迭代预算耗尽（`max_iterations_reached(N/M)`、`budget_exhausted`、
+  `Iteration budget exhausted (N/M)`、`Reached maximum iterations (N)`）但没有
+  合法 final marker 时，统一分类为 `iteration_budget_exhausted`（`retryable=false`）；
+  Adapter 同时在结果与 `extensions.executor.hermes` 记录
+  `iteration_used/iteration_limit/iteration_exhausted/iteration_source`（不含密钥或正文）；
+- Hermes 校验 final marker 前先剥离已知的 `Query:`/任务 prompt 回声（prompt 内含示例
+  marker），只检查实际最终回复；真实回复内仍出现多个 marker 时照旧判
+  `completion_marker_duplicate`；
 - RunLease 可拒绝晚到或与 cancel/recovery 冲突的完成声明；
 - `recover` 只重置为可重试状态，不自动执行；必须重新 dispatch 同一 ID。
 
@@ -506,9 +521,46 @@ Report 与产物质量继续由用户或下一 Agent 验收。
 私有候选 `d06b150` 增加 30 秒 worker finalize 宽限：Executor PID 已退出但 worker
 仍活着时，不立即误判 failed。进入公开版前必须保留对应回归测试。
 
-### 6.5 Handoff
+### 6.5 Input Required + Respond
 
-handoff 只允许从 `completed` 或 `input_required` 的当前 chain head 发起：
+合法 `input_required` marker 至少指出一个 blocked step。Core 在 `agentbc.input` 中只保留
+一个 active request：`input_id`、`executor_run_id`、`blocked_step_id`、`type`、脱敏
+`summary`、`created_at`、`deadline_at`、`status=waiting`，以及可选的脱敏
+`requested_permission`。默认 deadline 是 24 小时。
+
+等待路径必须满足：
+
+1. 保留已完成 step，只把 marker 指出的 step 记为 blocked；
+2. 释放 claim lease，把 RunLease 置为 suspended，并暂停 stale 与执行耗时；
+3. 不写 `agentbc.final_callback`，不写终态 Report，不发终态通知；
+4. 立即发送非终态 input notification，包含 Task ID、blocked step/type、脱敏摘要、deadline
+   和精确 `agentbc task respond TASK_ID --input INPUT_ID --message "<response>"`；
+5. Task List 保持黄色、open；read-only list/status/report 不得推进 24 小时到期状态。
+
+用户响应的唯一运行入口是：
+
+```bash
+agentbc task respond TASK_ID --input INPUT_ID --message "..." --config ~/.abc/config.toml
+agentbc task respond TASK_ID --input INPUT_ID --approve --config ~/.abc/config.toml
+agentbc task respond TASK_ID --input INPUT_ID --deny --config ~/.abc/config.toml
+```
+
+三种响应形式互斥。Runner 在一个锁域内验证 current chain head、current input ID、waiting、
+deadline 和无 active executor，写入脱敏 response audit，只把 blocked step 重置 pending，转为
+running/resuming 并派发同一 Task ID、同一 worktree 的新 Executor turn。重复响应返回
+`already_answered`，不重复派发；旧/错误 input ID 返回 `stale_input`。新 prompt 同时包含上次
+请求、用户响应和已完成 step 证据。
+
+Runner 启动后及周期 maintenance 负责扫描 deadline。到期转 `needs_recovery` 并写精确证据；
+Task List、status、report 等只读渲染不得执行该变更。resume dispatch/context 失败同样进入
+`needs_recovery`。最终成功时才写唯一真实 `agentbc.final_callback`、Report 和终态通知。
+`task resume` 仍只处理 pause，`task retry --step` 仍只处理单 step。本流程不引入任何
+inherit/safe/full permission mode，也不保留通用 Executor session。
+
+### 6.6 Handoff
+
+handoff 只允许从 `completed` 的当前 chain head 发起。活跃 `input_required` 必须返回
+`input_pending`，先响应并完成同一任务，再决定是否 handoff：
 
 - 默认禁止从 stale iteration 继续；
 - 多 head 时必须消除歧义或显式使用 branch；
@@ -521,7 +573,7 @@ handoff 只允许从 `completed` 或 `input_required` 的当前 chain head 发�
 依赖既有产物的继续工作必须 handoff。`create_task()` 会拒绝把已有托管 artifact root
 当作新根任务，避免 Agent 偷偷新建孤立 ID。
 
-### 6.6 Close、Cancel 与 Recover
+### 6.7 Close、Cancel 与 Recover
 
 `close` 是让任务退出当前记录体系，`cancel` 是保留取消状态和证据。
 
@@ -634,6 +686,9 @@ Runner 在首个任务派发时注册本轮 cohort 并打开一个 Task List Ter
 - **【协议目标】** IPC 外层统一为 `protocol/request_id/op/payload`，Runner health 返回
   protocol/completion/schema 版本；不兼容时派发前失败；
 - **【运行目标】** Runner 自动记录进程和输出活动，不要求 Agent 定时 heartbeat；
+- **【当前输入恢复】** `RunnerState.respond_and_dispatch()` 原子记录 response 并派发同一
+  Task ID；`maintain_waiting_inputs()` 是 24 小时 deadline 状态变更的唯一维护入口，Runner
+  restart 后继续读取持久化等待请求；
 - **【Docker边界】** Docker Runner 只运行容器内登记的 Executor，不自动调用宿主机
   Codex/Claude/Hermes，也不继承宿主凭据；
 - **【不可偏离】** token、过期时间、原子发布、命令 allowlist、task-scoped roots、
@@ -658,7 +713,7 @@ Runner 在首个任务派发时注册本轮 cohort 并打开一个 Task List Ter
 | --- | --- | --- | --- |
 | Codex | `codex exec --json` | 结构化事件、多图、图片生成/编辑、模型选项 | workspace-write、额外 writable roots、禁止依赖聊天会话 |
 | Claude | headless print / safe mode | 文本与代码、模型/effort 配置基础 | 禁止 bypass permissions，Alpha 使用保守安全模式 |
-| Hermes | direct/runner transport | profile/provider/model、文本、单图输入 | profile 差异、日志权限、runner/direct 语义明确 |
+| Hermes | direct/runner transport | profile/provider/model、文本、单图输入 | profile 差异、日志权限、runner/direct 语义明确；final marker 只校验剥离 prompt 回声后的实际回复；继承 Hermes max-turn 配置，不传 `--max-turns/--ignore-user-config`；迭代预算耗尽输出结构化诊断 |
 
 当前私有基线的三者 Prompt 必须共同包含：
 
@@ -669,6 +724,7 @@ Runner 在首个任务派发时注册本轮 cohort 并打开一个 Task List Ter
 - 遇到路径拒绝不得复制工程；
 - 当前版本要求的严格 final marker；
 - 退出码与 final marker 共同决定完成；
+- resumed turn 注入 prior request、脱敏 user response 和每个 step 的当前状态；
 - 长任务可低频写进度，不要求高频心跳。
 
 **【已确认冗余】** Codex/Hermes 当前把公共规则放在 step 循环中，多步骤任务会重复注入
@@ -727,6 +783,10 @@ Docker Desktop 完成 smoke。不得宣传为原生 Windows/Linux Runner。
 全局 Index 不记录 artifacts 和 task_file。先凭简短描述定位 task/report，再从 Report
 获取详细路径，避免复杂任务把索引撑大。
 
+Report 同时展示 `execution_duration`、`waiting_duration` 和 wall duration；等待区间只计入
+`waiting_duration`，不得让 24 小时输入窗口虚增执行耗时。waiting 期间不自动生成终态
+Report，但显式只读 `task report` 可以根据持久化状态渲染非终态视图。
+
 ### 9.2 10KB 的真实含义
 
 Record 预算限制每次迭代的内部运行记录，不是 Report 和用户产物。`task.json` 终态时
@@ -753,6 +813,10 @@ Record 预算限制每次迭代的内部运行记录，不是 Report 和用户�
 
 `cli.py` 中 `_notify_terminal/_build_notification_payload/...` 是薄转发兼容层，业务实现
 仍在 `notifications.py`。后续可删除无调用包装，但不要在 CLI 复制通知算法。
+
+`notify_input_required()` 是并列的非终态即时通知入口：不参与终态错峰，不填 report path，
+必须带 `terminal=false` 的投递证据与精确 respond 命令。它不能调用 `notify_terminal()`，
+也不能让 dashboard cohort 退出。
 
 ### 9.5 多样化通知预期变化
 
@@ -987,6 +1051,8 @@ refresh_task_index()
 - `runner.py::RunnerClient._request()`
 - `runner.py::RunnerState.create_and_dispatch()`
 - `runner.py::RunnerState.dispatch_task()`
+- `runner.py::RunnerState.respond_and_dispatch()`
+- `runner.py::RunnerState.maintain_waiting_inputs()`
 - `runner.py::RunnerState.handoff_and_dispatch()`
 - `runner.py::RunnerState._atomic_dispatch_task()`
 - `runner.py::RunnerState.dispatch_worker()`
@@ -1016,6 +1082,8 @@ return accepted_metadata
 
 `dispatch_task()` 对既有 `needs_recovery/failed` 任务先 `requeue_task()`，再派发同一 ID。
 `handoff_and_dispatch()` 先由 Service 验证 chain head 并创建下一迭代，再走同一原子派发。
+`respond_and_dispatch()` 不创建 iteration：验证并审计当前 input 后，以 resuming 状态派发同一
+任务；任何启动或上下文失败都在该任务落 `input_resume_dispatch_failed`。
 
 **上游引用**
 
@@ -1066,6 +1134,10 @@ else:
 notify_once_if_this_worker_finalized()
 refresh_task_list()
 ```
+
+当 final marker 声明 `input_required` 时，worker 走 suspension 分支并调用
+`notify_input_required()`；它不得调用 terminal report/notification。respond 后的新 worker
+允许选择 `running + internal_status=resuming`，并在 `start_task_run()` 中取得新的 claim/run。
 
 **上游引用**
 
@@ -1156,6 +1228,9 @@ return finalize_task_from_agent(task_id, merged)
 reject_if_close_intent()
 reject_dangerous_callback_paths()
 ignore_late_callback_after_cancel_or_recovery()
+if final_state == "input_required":
+    persist_agentbc_input_and_suspend_lease()
+    return_without_final_callback_report()
 write_terminal_task_and_event()
 write_report_files()
 cleanup_progress_and_empty_managed_artifact()
@@ -1181,6 +1256,7 @@ refresh_index()
 - Agent 提供的路径不得覆盖 Path Plan；
 - `finalized=False` 时不得重复通知；
 - Report 生成 bookkeeping 失败不能轻易推翻已确认的正常 CLI 退出。
+- input_required 不得进入 `agentbc.final_callback` 或 `task.finalized` event。
 
 #### G. 失败、恢复与 RunLease 对账
 
@@ -1190,6 +1266,7 @@ refresh_index()
 - `service.py::TaskService.mark_task_failed()`
 - `service.py::TaskService.requeue_task()`
 - `run_lease.py::create_lease/heartbeat/reconcile_task()`
+- `run_lease.py::suspend_lease()`
 - `executors/base.py::CLIExecutorBase._start_run_lease/_heartbeat_run/_close_run_lease()`
 
 **核心实现**
@@ -1212,6 +1289,10 @@ recover:
     reset_task_to_pending_like_state()
     # 不自动 dispatch
 ```
+
+`suspended` 是逻辑等待，不是 stale。`heartbeat/is_stale/is_orphaned/reconcile_task` 都必须
+短路 suspended；响应或 deadline recovery 才关闭它。deadline 只由 Runner maintenance
+推进，禁止在 report/list/status 读取中推进。
 
 `reconcile_task()` 读取 `run_lease.json` 和进程状态。公开 Alpha 主干中 Executor PID
 丢失会直接 orphan；私有候选 `d06b150` 增加 worker finalize 宽限，避免 Executor 已退、
@@ -1276,7 +1357,9 @@ Task List cohort 存于独立 dashboard state 文件。Runner 首个派发注册
 
 ```python
 # handoff
-require_source_status(completed_or_input_required)
+if source_status == input_required:
+    raise input_pending
+require_source_status(completed)
 chain = resolve_chain(source)
 require_current_head_unless_explicit_branch()
 create_task(
@@ -1318,6 +1401,7 @@ delete_managed_artifact_and_release_code_only_for_root_001()
 - `reports.py::write_report_files()`
 - `task_index.py::refresh_task_index()`
 - `notifications.py::notify_terminal()`
+- `notifications.py::notify_input_required()`
 
 **核心实现**
 
@@ -1333,6 +1417,10 @@ FileNotifier.send(payload)
 delay_if_previous_terminal_within_10s()
 DialogNotifier.send(payload)
 append_delivery_result_event()
+
+if task.status == "input_required":
+    build_actionable_input_notification()
+    send_immediately_without_terminal_delay()
 ```
 
 **引用**
@@ -1396,13 +1484,14 @@ run_setup():
 | 派发 accepted | `RunnerState._atomic_dispatch_task` | CLI create/dispatch | worker、recovery、Dashboard |
 | Executor 启动 | `command_worker_run` | Runner dispatch_worker | Registry、Adapter、RunLease |
 | 正常 completed | `finalize_task_from_executor_exit` | worker | callback、Report、Notification |
+| input wait/respond | `respond_to_input/respond_and_dispatch` | CLI/Runner/worker | RunLease、prompt、Notification、Dashboard |
 | needs_recovery | `mark_task_needs_recovery` | worker/Runner/probe | Report、recover、RunLease |
 | failed | `mark_task_failed` | worker/reconcile | callback supersede、Report |
 | 健康颜色 | `task_health` | status/list | temp、RunLease、Dashboard |
 | handoff | `handoff_task` | CLI/Runner | chain、Path Plan、images |
 | close | `plan/reserve/commit_task_close` | CLI | Runner cancel、cleanup、ID pool |
 | 报告 | `write_report_files` | Service/CLI/reconcile | redaction、budget、Index |
-| 通知 | `notify_terminal` | worker | File/Dialog notifier、delay |
+| 通知 | `notify_terminal/notify_input_required` | worker | File/Dialog notifier、delay、respond command |
 | Executor 路径 | `find_binary` | setup/Runner/Adapter probe | config、restart |
 | Skill 安装 | `run_setup/install_*_skill` | setup/update | package templates、profiles |
 
@@ -1733,6 +1822,8 @@ python3 -m twine check dist/*
 
 - v1/v2 task、completion 和 Runner IPC 版本矩阵；
 - 缺失/重复/错误 finish、input_required、非零退出、transport retryable；
+- input suspension、restart persistence、wrong/stale/duplicate response、deny、24h fake-clock expiry、
+  waiting-duration exclusion、resume failure、handoff rejection 和 response 后最终完成；
 - Docker amd64/arm64 与三类宿主 Docker smoke；
 - GUI/CLI/report/notification 同源一致性；
 - Email/Webhook 去重、失败回执和 secret redaction；

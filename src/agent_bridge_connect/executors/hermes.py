@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import subprocess
 import uuid
@@ -17,12 +18,14 @@ from agent_bridge_connect.adapters import (
 )
 from agent_bridge_connect.execution_contract import (
     FINAL_CALLBACK_PREFIX,
+    CallbackValidation,
+    ExecutorTerminalResult,
     extract_callback_validation_from_output,
     route_executor_terminal,
     strip_callback_line,
 )
 from agent_bridge_connect.media import task_image_paths
-from agent_bridge_connect.protocol import task_step_text
+from agent_bridge_connect.protocol import resumed_input_prompt_lines, task_step_text
 
 from .base import CLIExecutorBase
 from ..path_provider import find_binary
@@ -227,21 +230,28 @@ class HermesExecutor(CLIExecutorBase):
         stdout = completed.stdout or ""
         stderr = completed.stderr or ""
         failure = _runtime_failure_details(stdout, stderr)
-        summary = _extract_summary(stdout)
+        final_response = _extract_final_response(stdout, task_packet)
+        iteration = _iteration_budget_diagnostics(stdout, stderr)
+        summary = _extract_summary(final_response)
         validation = extract_callback_validation_from_output(
-            stdout,
+            final_response,
             task_packet,
             run_id,
         )
-        terminal = route_executor_terminal(
+        terminal = _route_hermes_terminal(
             validation,
             completed.returncode,
-            executor_name="hermes",
             stderr=stderr,
-            runtime_failure=failure,
+            failure=failure,
+            iteration=iteration,
         )
         status = terminal.status
-        self._store_run(run_id, root, completed.returncode)
+        self._store_run(
+            run_id,
+            root,
+            completed.returncode,
+            iteration=iteration,
+        )
         self._runs[run_id] = PollResult(
             status=status,
             progress={"steps_total": len(steps), "returncode": completed.returncode},
@@ -250,11 +260,12 @@ class HermesExecutor(CLIExecutorBase):
                 "stderr": stderr,
                 "returncode": completed.returncode,
                 "summary": summary,
-                "parsed": _parse_output(stdout),
+                "parsed": _parse_output(final_response),
                 "failure": terminal.failure,
                 "agent_callback": terminal.callback,
                 "marker_valid": validation.valid,
                 "marker_seen": validation.marker_seen,
+                "iteration": iteration,
                 "extensions": self.get_extensions(),
             },
         )
@@ -307,19 +318,21 @@ class HermesExecutor(CLIExecutorBase):
                 "message": "Hermes execution was cancelled through AgentBC Runner.",
                 "retryable": True,
             }
-        summary = _extract_summary(stdout)
         task_packet = self._task_packets.get(run_id, {"task_id": "", "steps": [], "workspace": {}})
+        final_response = _extract_final_response(stdout, task_packet)
+        iteration = _iteration_budget_diagnostics(stdout, stderr)
+        summary = _extract_summary(final_response)
         validation = extract_callback_validation_from_output(
-            stdout,
+            final_response,
             task_packet,
             run_id,
         )
-        terminal = route_executor_terminal(
+        terminal = _route_hermes_terminal(
             validation,
             returncode if isinstance(returncode, int) else 1,
-            executor_name="hermes",
             stderr=stderr,
-            runtime_failure=failure,
+            failure=failure,
+            iteration=iteration,
         )
         status = "cancelled" if remote_status == "cancelled" else terminal.status
         self._store_run(
@@ -327,6 +340,7 @@ class HermesExecutor(CLIExecutorBase):
             Path(str(remote.get("cwd") or ".")),
             returncode,
             "runner",
+            iteration=iteration,
         )
         result = PollResult(
             status=status,
@@ -340,11 +354,12 @@ class HermesExecutor(CLIExecutorBase):
                 "stderr": stderr,
                 "returncode": returncode,
                 "summary": summary,
-                "parsed": _parse_output(stdout),
+                "parsed": _parse_output(final_response),
                 "failure": failure if remote_status == "cancelled" else terminal.failure,
                 "agent_callback": None if remote_status == "cancelled" else terminal.callback,
                 "marker_valid": validation.valid,
                 "marker_seen": validation.marker_seen,
+                "iteration": iteration,
                 "transport": "runner",
                 "extensions": self.get_extensions(),
             },
@@ -442,7 +457,10 @@ class HermesExecutor(CLIExecutorBase):
             "transport": self.transport,
         }
         if self._last_run_id is not None:
-            metadata["last_run"] = self._run_metadata[self._last_run_id]
+            last_run = self._run_metadata[self._last_run_id]
+            metadata["last_run"] = last_run
+            if isinstance(last_run.get("iteration"), dict):
+                metadata["iteration"] = last_run["iteration"]
         return {
             "executor.hermes": metadata,
             "executor": {"hermes": metadata},
@@ -454,14 +472,18 @@ class HermesExecutor(CLIExecutorBase):
         workspace: Path | None,
         returncode: int | None,
         transport: str = "direct",
+        iteration: dict[str, Any] | None = None,
     ) -> None:
         self._last_run_id = run_id
-        self._run_metadata[run_id] = {
+        metadata: dict[str, Any] = {
             "run_id": run_id,
             "workspace": str(workspace) if workspace is not None else "",
             "returncode": returncode,
             "transport": transport,
         }
+        if iteration is not None:
+            metadata["iteration"] = iteration
+        self._run_metadata[run_id] = metadata
 
 
 def _find_hermes_binary() -> Path | None:
@@ -526,8 +548,11 @@ def _build_prompt(task_packet: dict[str, Any]) -> str:
                 "Inspect that image as a task input. Do not copy it merely to make it accessible.",
             ]
         )
+    resume_context = resumed_input_prompt_lines(task_packet)
+    if resume_context:
+        lines.extend(["", *resume_context, ""])
     for index, step in enumerate(task_packet.get("steps") or [], 1):
-        lines.append(f"{index}. {task_step_text(step)}")
+        lines.append(f"{index}. {task_step_text(step)} [status: {step.get('status', 'pending')}]")
         lines.extend(
             [
                 "",
@@ -571,6 +596,141 @@ def _build_prompt(task_packet: dict[str, Any]) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def _extract_final_response(stdout: str, task_packet: dict[str, Any]) -> str:
+    """Return the actual Hermes assistant response from raw CLI output.
+
+    Hermes single-query mode prefixes the output with ``Query: <prompt>`` in
+    its human-facing path, and models may repeat the task prompt verbatim
+    ahead of their real answer. The prompt embeds the example final marker, so
+    validating the raw stdout would count that echoed example plus the real
+    marker as a duplicate and fail. Strip the known leading Query/task-prompt
+    echo so marker validation inspects the actual final response only; a
+    genuinely duplicated marker inside that response still fails as
+    ``completion_marker_duplicate``.
+    """
+    output = (stdout or "").strip()
+    if not output:
+        return output
+    prompt = _build_prompt(task_packet)
+    if output.startswith("Query:"):
+        candidate = output[len("Query:"):].lstrip()
+        if prompt and candidate.startswith(prompt):
+            candidate = candidate[len(prompt):]
+        output = candidate
+    elif prompt and output.startswith(prompt):
+        output = output[len(prompt):]
+    return output.lstrip()
+
+
+_ITERATION_MAX_REASON_RE = re.compile(r"max_iterations_reached\((\d+)/(\d+)\)")
+_ITERATION_BUDGET_MSG_RE = re.compile(
+    r"iteration budget exhausted[^\d]{0,40}?(\d+)/(\d+)",
+    re.IGNORECASE,
+)
+_ITERATION_REACHED_MAX_RE = re.compile(
+    r"reached\s+maximum\s+iterations\s*\((\d+)\)",
+    re.IGNORECASE,
+)
+
+
+def _iteration_budget_diagnostics(stdout: str, stderr: str) -> dict[str, Any]:
+    """Detect the documented Hermes iteration-budget exhaustion forms.
+
+    Hermes reports exhaustion as the turn-exit reason ``max_iterations_reached
+    (N/M)``, the ``budget_exhausted`` reason, a human ``Iteration budget
+    exhausted (N/M)`` status line, or ``Reached maximum iterations (N)``.
+    Returns a diagnostics dict with ``iteration_exhausted``,
+    ``iteration_used``, ``iteration_limit`` and ``iteration_source``. No
+    credentials or conversation content are included.
+    """
+    combined = f"{stdout}\n{stderr}"
+    reason = _ITERATION_MAX_REASON_RE.search(combined)
+    if reason:
+        return {
+            "iteration_exhausted": True,
+            "iteration_used": int(reason.group(1)),
+            "iteration_limit": int(reason.group(2)),
+            "iteration_source": "max_iterations_reached",
+        }
+    if re.search(r"\bbudget_exhausted\b", combined):
+        return {
+            "iteration_exhausted": True,
+            "iteration_used": None,
+            "iteration_limit": None,
+            "iteration_source": "budget_exhausted",
+        }
+    message = _ITERATION_BUDGET_MSG_RE.search(combined)
+    if message:
+        return {
+            "iteration_exhausted": True,
+            "iteration_used": int(message.group(1)),
+            "iteration_limit": int(message.group(2)),
+            "iteration_source": "iteration_budget_message",
+        }
+    reached = _ITERATION_REACHED_MAX_RE.search(combined)
+    if reached:
+        limit = int(reached.group(1))
+        return {
+            "iteration_exhausted": True,
+            "iteration_used": limit,
+            "iteration_limit": limit,
+            "iteration_source": "reached_maximum_iterations",
+        }
+    return {
+        "iteration_exhausted": False,
+        "iteration_used": None,
+        "iteration_limit": None,
+        "iteration_source": "none",
+    }
+
+
+def _route_hermes_terminal(
+    validation: CallbackValidation,
+    returncode: int,
+    *,
+    stderr: str,
+    failure: dict[str, Any] | None,
+    iteration: dict[str, Any],
+) -> ExecutorTerminalResult:
+    """Route the Hermes terminal with iteration-budget classification.
+
+    A valid completed/input_required marker routes to its declared state
+    normally and a retryable transport/runtime failure keeps ``needs_recovery``.
+    Budget exhaustion without a valid callback is classified as
+    ``iteration_budget_exhausted`` instead of the generic missing/invalid
+    marker failure, preserving zero-exit strictness.
+    """
+    terminal = route_executor_terminal(
+        validation,
+        returncode,
+        executor_name="hermes",
+        stderr=stderr,
+        runtime_failure=failure,
+    )
+    if (
+        iteration.get("iteration_exhausted")
+        and terminal.callback is None
+        and not (terminal.failure or {}).get("retryable")
+    ):
+        used = iteration.get("iteration_used")
+        limit = iteration.get("iteration_limit")
+        ratio = f"{used}/{limit}" if used is not None and limit is not None else "unknown"
+        return ExecutorTerminalResult(
+            status="failed",
+            callback=None,
+            failure={
+                "kind": "iteration_budget_exhausted",
+                "layer": "flow_contract",
+                "message": (
+                    f"Hermes iteration budget exhausted ({ratio}) before a "
+                    "valid final marker was emitted"
+                ),
+                "retryable": False,
+            },
+        )
+    return terminal
 
 
 def _parse_output(output: str) -> Any:

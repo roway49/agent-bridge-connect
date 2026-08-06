@@ -40,6 +40,54 @@ def notify_terminal(
     )
 
 
+def notify_input_required(service: Any, task_id: str) -> None:
+    """Immediately deliver an actionable, explicitly nonterminal input notice."""
+    payload = build_input_required_notification(service, task_id)
+    file_result = FileNotifier(service.board_root / "notifications.jsonl").send(payload)
+    dialog_result = DialogNotifier().send(payload)
+    service.store.append_event(
+        task_id,
+        {
+            "event_type": "notification_delivery",
+            "task_id": task_id,
+            "notification_event": "task.input_required",
+            "terminal": False,
+            "file_ok": file_result.ok,
+            "dialog_ok": dialog_result.ok,
+            "dialog_message": dialog_result.message,
+            "dialog_delay_s": 0,
+            "created_at": utc_now(),
+        },
+    )
+
+
+def build_input_required_notification(service: Any, task_id: str) -> dict[str, str]:
+    task = service.get_task(task_id)
+    request = (task.extensions or {}).get("agentbc.input")
+    if not isinstance(request, dict) or request.get("status") != "waiting":
+        raise ValueError(f"Task {task_id} has no waiting input request")
+    input_id = str(request.get("input_id") or "")
+    command = f"agentbc task respond {task_id} --input {input_id} --message \"<response>\""
+    body = "\n".join(
+        [
+            f"Task: {task_id} input required",
+            f"Blocked step/type: {request.get('blocked_step_id', '')} / {request.get('type', '')}",
+            f"Summary: {compact_notification_text(str(request.get('summary') or ''), 180)}",
+            f"Deadline: {request.get('deadline_at', '')}",
+            f"Respond: {command}",
+        ]
+    )
+    return {
+        "task_id": task_id,
+        "event_type": "task.input_required",
+        "title": "Agent-Bridge-Connect",
+        "level": "input",
+        "message": body,
+        "report_path": "",
+        "respond_command": command,
+    }
+
+
 def build_notification_payload(
     service: Any,
     task_id: str,

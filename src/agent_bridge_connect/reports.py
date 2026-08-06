@@ -95,6 +95,12 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         and completed_step_count == len(steps)
         and report_ready
     )
+    generated_at = _utc_now()
+    duration_end = completed_at or generated_at
+    wall_duration_s = _duration_seconds(created_at, duration_end, steps)
+    waiting_duration_s = _waiting_duration_seconds(extensions, duration_end)
+    execution_duration_s = round(max(wall_duration_s - waiting_duration_s, 0.0), 3)
+    input_request = extensions.get("agentbc.input") if isinstance(extensions.get("agentbc.input"), dict) else {}
 
     report = {
         "task_id": task.get("id", task_id),
@@ -122,15 +128,23 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "failure_code": str(latest_error.get("code") or ""),
         "failed_steps": failed_steps,
         "blocked_steps": blocked_steps,
-        "duration_s": _duration_seconds(created_at, completed_at, steps),
+        "duration_s": execution_duration_s,
+        "execution_duration_s": execution_duration_s,
+        "waiting_duration_s": waiting_duration_s,
+        "wall_duration_s": wall_duration_s,
+        "input": input_request,
         "run_lease_state": lease_state,
         "time_since_last_heartbeat_s": heartbeat_age,
         "recovery_recommendation": (
             f"Recovery required. Fix the latest system error, then run agentbc task dispatch {task_id}."
             if public_status == "needs_recovery"
-            else recovery_recommendation(lease_state)
+            else (
+                f"Respond with agentbc task respond {task_id} --input {input_request.get('input_id', '')} --message \"<response>\"."
+                if public_status == "input_required"
+                else recovery_recommendation(lease_state)
+            )
         ),
-        "generated_at": _utc_now(),
+        "generated_at": generated_at,
         "summary": {
             "steps_total": len(steps),
             "steps_done": completed_step_count,
@@ -181,7 +195,9 @@ def generate_task_brief(task_id: str, board_root: Path) -> dict[str, Any]:
         "run_lease_state": report["run_lease_state"],
         "time_since_last_heartbeat_s": report["time_since_last_heartbeat_s"],
         "recovery_recommendation": report["recovery_recommendation"],
-        "available_actions": _available_actions(report["task_id"], report["status"]),
+        "available_actions": _available_actions(
+            report["task_id"], report["status"], report.get("input")
+        ),
     }
     return redact_secrets(brief)
 
@@ -416,7 +432,11 @@ def _collect_brief_values(value: Any, names: set[str]) -> list[Any]:
     return unique
 
 
-def _available_actions(task_id: str, status: str) -> list[str]:
+def _available_actions(
+    task_id: str,
+    status: str,
+    input_request: dict[str, Any] | None = None,
+) -> list[str]:
     inspect_actions = [
         f"agentbc task status {task_id} --json",
         f"agentbc task report {task_id} --format json",
@@ -430,7 +450,9 @@ def _available_actions(task_id: str, status: str) -> list[str]:
             *inspect_actions,
         ]
     if status == "input_required":
+        request = input_request if isinstance(input_request, dict) else {}
         return [
+            f"agentbc task respond {task_id} --input {request.get('input_id', '<input-id>')} --message \"<response>\"",
             f"agentbc task status {task_id} --json",
             f"agentbc task retry {task_id} --step <id>",
             *inspect_actions,
@@ -483,6 +505,32 @@ def _duration_seconds(created_at: Any, completed_at: Any, steps: list[dict[str, 
     )
 
 
+def _waiting_duration_seconds(extensions: dict[str, Any], end_at: Any) -> float:
+    end = _parse_timestamp(end_at)
+    if end is None:
+        return 0.0
+    requests: list[dict[str, Any]] = []
+    history = extensions.get("agentbc.input_history")
+    if isinstance(history, list):
+        requests.extend(item for item in history if isinstance(item, dict))
+    current = extensions.get("agentbc.input")
+    if isinstance(current, dict):
+        requests.append(current)
+    total = 0.0
+    seen: set[str] = set()
+    for request in requests:
+        input_id = str(request.get("input_id") or "")
+        if input_id and input_id in seen:
+            continue
+        if input_id:
+            seen.add(input_id)
+        start = _parse_timestamp(request.get("created_at"))
+        stop = _parse_timestamp(request.get("responded_at")) or end
+        if start is not None:
+            total += max((min(stop, end) - start).total_seconds(), 0.0)
+    return round(total, 3)
+
+
 def _parse_timestamp(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
@@ -515,6 +563,8 @@ def _render_report_md(report: dict[str, Any]) -> str:
         f"- Created: `{_format_report_timestamp(created_at)}`",
         f"- Completed: `{_format_report_timestamp(completed_at) if completed_at else 'not completed'}`",
         f"- Duration: `{_format_duration(report.get('duration_s'))}`",
+        f"- Execution duration: `{_format_duration(report.get('execution_duration_s'))}`",
+        f"- Waiting duration: `{_format_duration(report.get('waiting_duration_s'))}`",
         f"- Run lease: `{report.get('run_lease_state', 'closed')}`",
         f"- Last heartbeat age: `{_format_heartbeat_age(report.get('time_since_last_heartbeat_s'))}`",
         f"- Recovery: {report.get('recovery_recommendation', '')}",
@@ -561,6 +611,20 @@ def _render_report_md(report: dict[str, Any]) -> str:
                 f"- Base workspace: `{lineage.get('base_workspace_root', workspace.get('root', ''))}`",
                 f"- Base artifacts: `{lineage.get('base_artifacts_dir', workspace.get('artifacts_dir', ''))}`",
                 f"- Iteration: `{lineage.get('iteration_index', 1)}`",
+            ]
+        )
+
+    input_request = report.get("input") or {}
+    if input_request:
+        lines.extend(
+            [
+                "",
+                "## Input Lifecycle",
+                f"- Input ID: `{input_request.get('input_id', '')}`",
+                f"- Status: `{input_request.get('status', '')}`",
+                f"- Blocked step/type: `{input_request.get('blocked_step_id', '')}` / `{input_request.get('type', '')}`",
+                f"- Summary: {input_request.get('summary', '')}",
+                f"- Deadline: `{input_request.get('deadline_at', '')}`",
             ]
         )
 
@@ -627,7 +691,9 @@ def _render_report_md(report: dict[str, Any]) -> str:
         [
             "",
             "## Duration",
-            f"- Duration: `{_format_duration(report.get('duration_s'))}`",
+            f"- Execution duration: `{_format_duration(report.get('execution_duration_s'))}`",
+            f"- Waiting duration: `{_format_duration(report.get('waiting_duration_s'))}`",
+            f"- Wall duration: `{_format_duration(report.get('wall_duration_s'))}`",
             "",
         ]
     )
