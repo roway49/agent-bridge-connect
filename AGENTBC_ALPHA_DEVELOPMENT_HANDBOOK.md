@@ -554,8 +554,22 @@ running/resuming 并派发同一 Task ID、同一 worktree 的新 Executor turn�
 Runner 启动后及周期 maintenance 负责扫描 deadline。到期转 `needs_recovery` 并写精确证据；
 Task List、status、report 等只读渲染不得执行该变更。resume dispatch/context 失败同样进入
 `needs_recovery`。最终成功时才写唯一真实 `agentbc.final_callback`、Report 和终态通知。
-`task resume` 仍只处理 pause，`task retry --step` 仍只处理单 step。本流程不引入任何
-inherit/safe/full permission mode，也不保留通用 Executor session。
+`task resume` 仍只处理 pause，`task retry --step` 仍只处理单 step。input response、retry、
+recover 和 re-dispatch 都保留当前任务的 `agentbc.permission`，不能重新套用配置默认值；
+本流程仍不保留通用 Executor session。
+
+### 6.5.1 执行权限契约
+
+权限契约只有 `inherit`、`safe`、`full` 三个规范值，持久化在向后兼容的
+`extensions["agentbc.permission"]`：`requested_mode`、`effective_mode`、
+`selection_source`。优先级固定为显式 task option > handoff 源任务 > 配置默认值 > legacy
+`safe` 回退；requested/effective 不一致时禁止静默降级。`inherit` 不注入 AgentBC permission、
+approval、sandbox、safe-mode、yolo 或 writable-root 覆盖；`safe` 保持原有保守行为；`full`
+必须持久化并审计，只允许已安装 CLI 帮助中明确支持的最强非交互机制。未知值在创建/派发前
+失败，旧配置和旧任务永远不会因升级静默获得 `full`。
+
+权限模式不改变 Path Plan、Runner cwd/allowed-root 授权、RunLease、strict final marker、
+secret redaction、input_required、model/effort/budget/tool/timeout/session/transport 等合同。
 
 ### 6.6 Handoff
 
@@ -566,6 +580,7 @@ handoff 只允许从 `completed` 的当前 chain head 发起。活跃 `input_req
 - 多 head 时必须消除歧义或显式使用 branch；
 - 保留 task code、创建日、project/artifact root 和 lineage；
 - iteration 自动加一；
+- 未给 `--permission-mode` 时继承源任务权限，显式值覆盖；
 - Task Brief 引用上一迭代 task/report；
 - compact record 已清理时，可由 `agentbc task report` 恢复上下文；
 - 图片输入默认继承，也可显式覆盖。
@@ -645,8 +660,15 @@ IPC 使用同一用户下的原子文件邮箱：
 ### 7.2 安全边界
 
 - 只允许运行登记过的 Executor 可执行文件；
-- 命令必须匹配各 Executor 的固定子命令和 flags；
-- 禁止 Claude dangerous permission flags、Hermes yolo/oneshot 等危险参数；
+- 命令必须匹配各 Executor 的固定子命令和该任务权限映射；
+- Runner 从持久化 current task 重新读取 requested/effective/source，拒绝缺失、stale、篡改或
+  不匹配的授权；inherit/safe 继续拒绝危险参数，只有持久化 `full` 可接受精确映射；
+- 权限命令按语义而不是原始拼写比较：Codex 的 `-s`/`--sandbox`、`-a`/`--ask-for-approval`
+  及其等号写法必须归一，Claude 的 permission/safe/settings 入口和 Hermes 的 yolo、hook、
+  config/rules/safe-mode/oneshot 入口同样纳入；重复、冲突、缺值、raw config/settings、profile
+  或未授权替代映射一律 fail closed；
+- 不接受用户原始 command flags；审计事件只记录 task id、executor、requested/effective、
+  selection source 和时间，不记录 prompt、command 或 secret；
 - `subprocess.Popen(argv)`，不使用 `shell=True`；
 - cwd 必须位于 stable roots 或任务 Path Plan 推导的 task-scoped roots；
 - managed report write 只允许符合任务报告命名的文件；
@@ -711,9 +733,12 @@ Runner 在首个任务派发时注册本轮 cohort 并打开一个 Task List Ter
 
 | Executor | 当前模式 | 主要能力 | 重点约束 |
 | --- | --- | --- | --- |
-| Codex | `codex exec --json` | 结构化事件、多图、图片生成/编辑、模型选项 | workspace-write、额外 writable roots、禁止依赖聊天会话 |
-| Claude | headless print / safe mode | 文本与代码、模型/effort 配置基础 | 禁止 bypass permissions，Alpha 使用保守安全模式 |
-| Hermes | direct/runner transport | profile/provider/model、文本、单图输入 | profile 差异、日志权限、runner/direct 语义明确；final marker 只校验剥离 prompt 回声后的实际回复；继承 Hermes max-turn 配置，不传 `--max-turns/--ignore-user-config`；迭代预算耗尽输出结构化诊断 |
+| Codex | `codex exec --json` | 结构化事件、多图、图片生成/编辑、模型选项 | safe=`--sandbox workspace-write`；full=`--dangerously-bypass-approvals-and-sandbox`；inherit 不覆盖 |
+| Claude | headless print | 文本与代码、模型/effort 配置基础 | safe=`--safe-mode --permission-mode acceptEdits`；full=`--dangerously-skip-permissions`；inherit 不覆盖 |
+| Hermes | direct/runner transport | profile/provider/model、文本、单图输入 | safe/inherit 都保留正常危险命令审批且不启用 troubleshooting safe-mode；full=`--yolo`；final marker 只校验实际回复 |
+
+full 映射必须由最终配置指向的安装版 CLI `--help`/子命令帮助探测；缺少精确机制返回
+`unsupported_permission_mode`，禁止猜测、降级或改动模型、预算、工具、超时、会话和 transport。
 
 当前私有基线的三者 Prompt 必须共同包含：
 
@@ -881,7 +906,7 @@ Notification Event 只包含已经确定的 task/status/report 摘要；各 chan
 | `executor_registry.py` | Adapter 注册和配置过滤 | unknown key 必须报错 |
 | `executors/base.py` | 阻塞 CLI Executor 公共行为 | 内存缓存不能当持久事实 |
 | `executors/codex.py` | Codex CLI 翻译与事件解析 | 上游格式变化要真实 smoke |
-| `executors/claude.py` | Claude CLI 翻译与安全模式 | 禁止 dangerous permission mode |
+| `executors/claude.py` | Claude CLI 翻译与安全模式 | dangerous capability 与当前 task 授权必须分开报告；只允许持久化 `full` |
 | `executors/hermes.py` | Hermes transport、profile/provider、单图 | profile 和 transport 是主要复杂度 |
 | `executors/mock.py` | 测试替身 | 不能替代真实 Executor Gate |
 | `executors/shell.py` | package smoke 最小执行器 | 不对用户宣传为 Agent |
@@ -1455,6 +1480,7 @@ probe = executor.probe()
 
 run_setup():
     scan_agents()
+    explain_inherit_safe_full_and_select_non_full_default()
     write_config_atomically()
     install_canonical_skills_atomically()
     install_all_hermes_profiles_for_alpha()
@@ -1464,6 +1490,7 @@ run_setup():
 **引用**
 
 - setup/update/show；
+- `agentbc setup --non-interactive --permission-mode <inherit|safe|full>`；
 - Runner 启动时构造 executable allowlist；
 - worker 构造 Adapter；
 - 三类 Adapter probe 复用 `find_binary()`。

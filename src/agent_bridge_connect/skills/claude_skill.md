@@ -16,7 +16,13 @@ Use AgentBC when the user asks Claude to dispatch, continue, monitor, recover, o
 - `agentbc task handoff <id> --to <agent>` may continue only from the current chain head. If AgentBC returns `stale_handoff_source`, use the suggested head task after user confirmation; do not create a replacement task.
 - Any request that depends on, reviews, or modifies deliverables from an existing AgentBC task is a handoff, even if the user does not say "handoff". Resolve and confirm the exact current chain head before dispatch. Never use `task create` with an existing managed artifact directory as `--customer-path`; Core returns `handoff_required` for that misuse.
 - Use `--branch` only when the user explicitly requests an intentional branch.
-- Never use Claude `bypassPermissions`, `--dangerously-skip-permissions`, or `--allow-dangerously-skip-permissions` for AgentBC production dispatch.
+- Never pass Claude `bypassPermissions`, `--dangerously-skip-permissions`, or `--allow-dangerously-skip-permissions` as raw dispatch flags. AgentBC may translate an explicitly persisted `--permission-mode full` task authorization after Runner validation.
+
+## Execution Permission Modes
+
+AgentBC supports exactly `inherit`, `safe`, and `full`. `inherit` leaves the executor's user/global permission settings untouched. `safe` is the conservative default and preserves Claude `--safe-mode` plus `acceptEdits`. `full` grants the installed executor's maximum documented noninteractive access and must be explicitly chosen and audited. Use only `--permission-mode <inherit|safe|full>` on `task create` and `task handoff`; never inject executor-native flags. A handoff inherits its source mode unless this option is present. Legacy tasks remain `safe`. The default can be set noninteractively with `agentbc setup --non-interactive --permission-mode safe` without making `full` implicit.
+
+Runner compares canonical permission semantics across long and equals forms and rejects duplicate, conflicting, raw settings/config, safe-mode, or alternate bypass arguments. Claude diagnostics distinguish installed full capability from the requested/effective/source values of the current persisted task; static executor defaults are not task authorization.
 
 ## Dispatch Flow
 

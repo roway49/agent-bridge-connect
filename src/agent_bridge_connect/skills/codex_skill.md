@@ -15,6 +15,15 @@ Use the installed `agentbc` CLI. Do not use the optional `abc` alias unless setu
 - If Runner is unavailable, report `runner_unavailable` and stop. Never silently run Hermes directly inside the current agent sandbox.
 - Do not mark a task failed only because it exceeded a wall-clock duration; inspect its RunLease and recovery state.
 
+## Execution Permission Modes
+
+AgentBC has exactly three task permission modes: `inherit`, `safe`, and `full`.
+`inherit` adds no AgentBC permission, approval, sandbox, safe-mode, or yolo override and uses the executor's existing user/global settings. `safe` is the conservative default and preserves the established executor behavior. `full` is an explicit, audited task authorization for the installed executor's strongest documented noninteractive access; warn the user before selecting it.
+
+Use the single `--permission-mode <inherit|safe|full>` option on `task create` or `task handoff` only when the user chose a task override. Otherwise omit it so a handoff inherits its source task and a new task uses the configured default. Never pass raw executor permission flags. Configure the noninteractive default with `agentbc setup --non-interactive --permission-mode safe` (or `inherit`/`full` after an explicit choice). Legacy tasks remain `safe`.
+
+Runner canonicalizes documented long, short, and equals forms before authorization. Alternate native spellings such as Codex `-s danger-full-access`, duplicate/conflicting flags, raw config/settings/profile overrides, hook-trust bypass, and Hermes `--accept-hooks`/`--oneshot` never substitute for the persisted mapping and fail closed.
+
 ## Dispatch Hermes
 
 Write a temporary steps YAML file, then atomically create and dispatch the task. Before every new task, set exactly one path field:

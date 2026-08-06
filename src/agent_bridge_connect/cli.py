@@ -22,6 +22,7 @@ from .config import (
 )
 from .executor_registry import get_executor
 from .path_model import DEFAULT_CUSTOMER_PATH, derive_customer_path_plan
+from .permission_modes import CANONICAL_PERMISSION_MODES, PERMISSION_EXTENSION_KEY
 from .protocol import ABCError
 from .service import TaskService, load_steps, task_to_status
 from .task_id import is_task_like, split_task_ref
@@ -62,6 +63,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--non-interactive",
         action="store_true",
         help=argparse.SUPPRESS,
+    )
+    setup.add_argument(
+        "--permission-mode",
+        choices=CANONICAL_PERMISSION_MODES,
+        help="Set the default execution permission mode: inherit, safe, or full.",
     )
 
     doctor = sub.add_parser("doctor", help="Inspect build, configuration, and Runner identity without changing state.")
@@ -106,6 +112,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     task_create.add_argument("--session-id")
     task_create.add_argument("--source-platform")
+    task_create.add_argument(
+        "--permission-mode",
+        choices=CANONICAL_PERMISSION_MODES,
+        help="Override the configured permission mode for this task.",
+    )
     task_create.add_argument(
         "--customer-dir",
         choices=["true", "false"],
@@ -247,6 +258,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     task_handoff.add_argument("--session-id")
     task_handoff.add_argument("--source-platform")
+    task_handoff.add_argument(
+        "--permission-mode",
+        choices=CANONICAL_PERMISSION_MODES,
+        help="Override the inherited permission mode for this handoff task.",
+    )
     task_handoff.add_argument("--branch", action="store_true", help="Intentionally create a branch from a non-head task.")
     task_handoff.add_argument("--dispatch", action="store_true", help="Atomically create and submit the handoff task to Runner.")
     task_handoff.add_argument("--config", type=Path)
@@ -298,6 +314,7 @@ def build_parser() -> argparse.ArgumentParser:
     worker_run.add_argument("--config", type=Path)
     worker_run.add_argument("--task-id")
     worker_run.add_argument("--detach", action="store_true")
+    worker_run.add_argument("--runner-authorize", action="store_true", help=argparse.SUPPRESS)
     worker_run.add_argument(
         "--monitor",
         action=argparse.BooleanOptionalAction,
@@ -392,6 +409,7 @@ def command_task_create(args: argparse.Namespace) -> int:
                 images=_image_args(args),
                 interval_s=getattr(args, "interval", 2),
                 monitor=getattr(args, "monitor", False),
+                permission_mode=_permission_mode_arg(args),
             )
         except (ABCError, RunnerError) as exc:
             print(f"atomic_dispatch_error: {exc}")
@@ -409,6 +427,7 @@ def command_task_create(args: argparse.Namespace) -> int:
             customer_dir=customer_dir,
             customer_path=customer_path,
             images=_image_args(args),
+            permission_mode=_permission_mode_arg(args),
         )
     except ABCError as exc:
         print(f"task_create_error: {exc}")
@@ -815,7 +834,10 @@ def _decorate_task_status(task, board_root: Path) -> dict:
     status["report_ready"] = report_ready
     status["run_lease_state"] = execution.get("lease_state", "closed")
     status["execution"] = execution
-    status["debug"] = {"execution": execution}
+    status["debug"] = {
+        "execution": execution,
+        "permission": (status.get("extensions") or {}).get(PERMISSION_EXTENSION_KEY) or {},
+    }
     return status
 
 
@@ -890,6 +912,7 @@ def command_task_intervention(args: argparse.Namespace) -> int:
                 session_id=session_id,
                 source_platform=source_platform,
                 images=_image_args(args, inherit_when_missing=True),
+                permission_mode=_permission_mode_arg(args),
             )
         except RunnerError as exc:
             print(f"atomic_dispatch_error: {exc}")
@@ -947,6 +970,7 @@ def command_task_intervention(args: argparse.Namespace) -> int:
                 session_id=session_id,
                 source_platform=source_platform,
                 images=_image_args(args, inherit_when_missing=True),
+                permission_mode=_permission_mode_arg(args),
             )
             print(f"handoff_created: {args.id} -> {task.id}")
             print(f"assignee: {task.assignee}")
@@ -1018,6 +1042,11 @@ def _image_args(
     if isinstance(value, (list, tuple)):
         return [Path(image).expanduser() for image in value]
     return None if inherit_when_missing else []
+
+
+def _permission_mode_arg(args: argparse.Namespace) -> str | None:
+    value = getattr(args, "permission_mode", None)
+    return value if isinstance(value, str) else None
 
 
 def _finish_task_close_cleanup(task: Any, board_root: str | Path) -> None:
@@ -1253,6 +1282,9 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     "workspace": _task_workspace(claimed_task, service.board_root, service.config),
                     "task_board": {"root": str(service.board_root)},
                     "extensions": claimed_task.extensions,
+                    "runner_authorization_required": (
+                        getattr(args, "runner_authorize", False) is True
+                    ),
                 }
             )
             if not start.ok:
@@ -1573,6 +1605,14 @@ def _print_task_status(status: dict, as_json: bool = False) -> None:
     print(f"{status['id']}  {status['title']}")
     print(f"Status: {status['status']}\tAssignee: {status['assignee']}")
     print(f"Updated: {status['updated_at']}")
+    permission = (status.get("extensions") or {}).get(PERMISSION_EXTENSION_KEY) or {}
+    if permission:
+        print(
+            "Permission: "
+            f"requested={permission.get('requested_mode', '-')} "
+            f"effective={permission.get('effective_mode', '-')} "
+            f"source={permission.get('selection_source', '-')}"
+        )
     if status.get("chain_root_task_id"):
         heads = ", ".join(status.get("head_task_ids") or []) or "-"
         print(
@@ -1868,7 +1908,10 @@ def main(argv: list[str] | None = None) -> int:
         elif args.clean:
             result = run_clean(interactive=interactive)
         else:
-            result = run_setup(interactive=interactive)
+            result = run_setup(
+                interactive=interactive,
+                permission_mode=getattr(args, "permission_mode", None),
+            )
             from .runner import start_runner_background
 
             runner_result = start_runner_background(config_path=result.get("config_path"))

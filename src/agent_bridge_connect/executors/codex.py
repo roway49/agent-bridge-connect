@@ -22,7 +22,13 @@ from agent_bridge_connect.execution_contract import (
     strip_callback_line,
 )
 from agent_bridge_connect.media import task_image_paths
-from agent_bridge_connect.protocol import resumed_input_prompt_lines, task_step_text
+from agent_bridge_connect.permission_modes import (
+    assert_executor_permission_supported,
+    permission_flags,
+    permission_record_from_extensions,
+)
+from agent_bridge_connect.protocol import ABCError, resumed_input_prompt_lines, task_step_text
+from agent_bridge_connect.runner import RunnerClient, RunnerError
 
 from .base import CLIExecutorBase
 from ..path_provider import find_binary
@@ -112,27 +118,24 @@ class CodexExecutor(CLIExecutorBase):
         self._task_packets[run_id] = dict(task_packet)
         self._start_run_lease(task_packet, run_id, "codex")
         prompt = _build_prompt(task_packet)
-        command = [
-            str(self.agent_bin),
-            "exec",
-            "--json",
-            "--sandbox",
-            "workspace-write",
-            "--skip-git-repo-check",
-        ]
-        for writable_root in _codex_writable_roots(task_packet, root):
-            command.extend(["--add-dir", str(writable_root)])
-        images = task_image_paths(task_packet)
-        prompt_input: str | None = None
-        if images:
-            command.append("-")
-            command.append("--image")
-            command.extend(str(image) for image in images)
-            prompt_input = prompt
-        else:
-            command.append(prompt)
+        permission = permission_record_from_extensions(task_packet.get("extensions"))
+        try:
+            assert_executor_permission_supported(
+                "codex", permission["effective_mode"], self.agent_bin
+            )
+        except ABCError as exc:
+            self._close_run_lease(run_id)
+            return StartResult(ok=False, run_id="", message=str(exc))
+        command, prompt_input = self._build_command(
+            task_packet,
+            prompt,
+            root,
+            permission,
+        )
 
         try:
+            if task_packet.get("runner_authorization_required") is True:
+                RunnerClient().authorize_command("codex", command, root, task_packet)
             self._heartbeat_run(run_id)
             completed = subprocess.run(
                 command,
@@ -164,7 +167,7 @@ class CodexExecutor(CLIExecutorBase):
                 },
             )
             return StartResult(ok=True, run_id=run_id, message="codex execution needs recovery")
-        except OSError as exc:
+        except (OSError, RunnerError) as exc:
             self._close_run_lease(run_id)
             return StartResult(ok=False, run_id="", message=f"failed to start codex: {exc}")
 
@@ -204,6 +207,33 @@ class CodexExecutor(CLIExecutorBase):
         self._close_run_lease(run_id)
         return StartResult(ok=True, run_id=run_id, message=f"codex execution {status}")
 
+    def _build_command(
+        self,
+        task_packet: dict[str, Any],
+        prompt: str,
+        root: Path,
+        permission: dict[str, str] | None = None,
+    ) -> tuple[list[str], str | None]:
+        if self.agent_bin is None:
+            raise RuntimeError("codex unavailable")
+        selected = permission or permission_record_from_extensions(task_packet.get("extensions"))
+        command = [str(self.agent_bin), "exec", "--json"]
+        command.extend(permission_flags("codex", selected["effective_mode"]))
+        command.append("--skip-git-repo-check")
+        if selected["effective_mode"] == "safe":
+            for writable_root in _codex_writable_roots(task_packet, root):
+                command.extend(["--add-dir", str(writable_root)])
+        images = task_image_paths(task_packet)
+        prompt_input: str | None = None
+        if images:
+            command.append("-")
+            command.append("--image")
+            command.extend(str(image) for image in images)
+            prompt_input = prompt
+        else:
+            command.append(prompt)
+        return command, prompt_input
+
     def get_extensions(self) -> dict:
         """Return metadata suitable for storage at extensions.executor.codex."""
         metadata: dict[str, Any] = {
@@ -227,7 +257,9 @@ class CodexExecutor(CLIExecutorBase):
         self._run_metadata[run_id] = {
             "run_id": run_id,
             "workspace": str(workspace),
-            "sandbox": "workspace-write",
+            "permission": permission_record_from_extensions(
+                self._task_packets.get(run_id, {}).get("extensions")
+            ),
             "writable_roots": [
                 str(path) for path in _codex_writable_roots(self._task_packets.get(run_id, {}), workspace)
             ],
