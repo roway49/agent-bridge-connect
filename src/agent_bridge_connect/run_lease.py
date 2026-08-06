@@ -17,6 +17,7 @@ from .task_store import TaskStore
 
 class RunLeaseState:
     ACTIVE = "active"
+    SUSPENDED = "suspended"
     STALE = "stale"
     ORPHANED = "orphaned"
     CLOSING = "closing"
@@ -72,7 +73,7 @@ def create_lease(task_id: str, executor_id: str, pid: int, work_dir: str) -> Run
 
 def heartbeat(lease: RunLease) -> None:
     """Update last_heartbeat_at to now."""
-    if lease.state in {RunLeaseState.CLOSING, RunLeaseState.CLOSED}:
+    if lease.state in {RunLeaseState.SUSPENDED, RunLeaseState.CLOSING, RunLeaseState.CLOSED}:
         return
     lease.last_heartbeat_at = _utc_now()
     lease.state = RunLeaseState.ACTIVE
@@ -81,14 +82,14 @@ def heartbeat(lease: RunLease) -> None:
 
 def is_stale(lease: RunLease, heartbeat_timeout_s: int = 120) -> bool:
     """Return True if heartbeat expired but not confirmed dead."""
-    if lease.state in {RunLeaseState.CLOSING, RunLeaseState.CLOSED}:
+    if lease.state in {RunLeaseState.SUSPENDED, RunLeaseState.CLOSING, RunLeaseState.CLOSED}:
         return False
     return heartbeat_age_s(lease) > max(heartbeat_timeout_s, 0)
 
 
 def is_orphaned(lease: RunLease, recovery_timeout_s: int = 600) -> bool:
     """Return True if stale for longer than recovery window."""
-    if lease.state in {RunLeaseState.CLOSING, RunLeaseState.CLOSED}:
+    if lease.state in {RunLeaseState.SUSPENDED, RunLeaseState.CLOSING, RunLeaseState.CLOSED}:
         return False
     return heartbeat_age_s(lease) > max(recovery_timeout_s, 0)
 
@@ -100,6 +101,8 @@ def reconcile_task(task_id: str, board_root: Path) -> str:
     if lease is None:
         return RunLeaseState.CLOSED
     if lease.state in {RunLeaseState.CLOSING, RunLeaseState.CLOSED}:
+        return lease.state
+    if lease.state == RunLeaseState.SUSPENDED:
         return lease.state
 
     store = TaskStore(root)
@@ -238,6 +241,29 @@ def close_lease(lease: RunLease, board_root: Path | None = None) -> None:
         save_lease(lease, board_root)
 
 
+def suspend_lease(
+    task_id: str,
+    board_root: Path,
+    *,
+    executor_run_id: str,
+    executor_id: str,
+    work_dir: str,
+) -> RunLease:
+    """Persist a non-stale logical wait after an executor has yielded for input."""
+    root = Path(board_root).expanduser().resolve()
+    lease = load_lease(task_id, root)
+    if lease is None:
+        lease = create_lease(task_id, executor_id, 0, work_dir)
+    lease.run_id = executor_run_id or lease.run_id
+    lease.executor_id = executor_id or lease.executor_id
+    lease.pid = 0
+    lease.pgid = 0
+    lease.cleanup_strategy = "none"
+    lease.state = RunLeaseState.SUSPENDED
+    save_lease(lease, root)
+    return lease
+
+
 def recover_task(task_id: str, board_root: Path, from_snapshot: bool = False) -> dict[str, Any]:
     """Prepare a task for explicit recovery; optionally restore its latest snapshot."""
     root = Path(board_root).expanduser().resolve()
@@ -306,6 +332,8 @@ def heartbeat_age_s(lease: RunLease) -> float:
 def recovery_recommendation(state: str) -> str:
     if state == RunLeaseState.ACTIVE:
         return "Continue waiting while heartbeat remains healthy."
+    if state == RunLeaseState.SUSPENDED:
+        return "Waiting for the requested user response; stale detection is paused."
     if state == RunLeaseState.STALE:
         return "Review executor state; continue waiting, recover, cancel, or reassign."
     if state == RunLeaseState.ORPHANED:

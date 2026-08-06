@@ -14,7 +14,7 @@ from typing import Any
 from .terminal_states import TASK_TERMINAL_STATES
 
 
-ACTIVE_STATUSES = {"running", "assigned", "working", "pause_pending", "paused", "in_progress"}
+ACTIVE_STATUSES = {"running", "assigned", "working", "input_required", "pause_pending", "paused", "in_progress"}
 TERMINAL_STATUSES = TASK_TERMINAL_STATES
 DEFAULT_STALE_AFTER_S = 300
 DEFAULT_LONG_STALE_AFTER_S = 600
@@ -114,6 +114,18 @@ def task_health(
         return base
     if status == "failed":
         base.update({"state": "failed", "color": "red"})
+        return base
+    if status == "input_required":
+        request = dict(((getattr(task, "extensions", None) or {}).get("agentbc.input") or {}))
+        base.update(
+            {
+                "state": "waiting_for_input",
+                "color": "yellow",
+                "run_lease_state": "suspended",
+                "message": str(request.get("summary") or "waiting for user response"),
+                "source": "input",
+            }
+        )
         return base
     if status in TERMINAL_STATUSES:
         base.update({"state": status, "color": "gray" if status == "completed" else "red"})

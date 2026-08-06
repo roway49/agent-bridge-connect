@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .execution_contract import AGENT_FINAL_STATES, FINAL_CALLBACK_VERSION
-from .notifications import notify_terminal
+from .notifications import notify_input_required, notify_terminal
 from .protocol import ABCError
 from .reports import write_report_files
 
@@ -57,12 +57,19 @@ def apply_agent_completion(
         if executor_run_id:
             callback["executor_run_id"] = str(executor_run_id)
         finalized = service.finalize_task_from_agent(task_id, callback)
-        event_type = "task.finalized"
-        level = "done" if final_state == "completed" else "info"
+        if final_state == "input_required":
+            event_type = "task.input_required"
+            level = "input"
+        else:
+            event_type = "task.finalized"
+            level = "done" if final_state == "completed" else "info"
 
     task = service.get_task(task_id)
     if notify and finalized:
-        notify_terminal(service, task_id, event_type, level, clean_summary)
+        if final_state == "input_required":
+            notify_input_required(service, task_id)
+        else:
+            notify_terminal(service, task_id, event_type, level, clean_summary)
     return {
         "ok": True,
         "task_id": task.id,

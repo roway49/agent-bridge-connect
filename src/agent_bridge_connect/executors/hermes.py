@@ -22,7 +22,7 @@ from agent_bridge_connect.execution_contract import (
     strip_callback_line,
 )
 from agent_bridge_connect.media import task_image_paths
-from agent_bridge_connect.protocol import task_step_text
+from agent_bridge_connect.protocol import resumed_input_prompt_lines, task_step_text
 
 from .base import CLIExecutorBase
 from ..path_provider import find_binary
@@ -526,8 +526,11 @@ def _build_prompt(task_packet: dict[str, Any]) -> str:
                 "Inspect that image as a task input. Do not copy it merely to make it accessible.",
             ]
         )
+    resume_context = resumed_input_prompt_lines(task_packet)
+    if resume_context:
+        lines.extend(["", *resume_context, ""])
     for index, step in enumerate(task_packet.get("steps") or [], 1):
-        lines.append(f"{index}. {task_step_text(step)}")
+        lines.append(f"{index}. {task_step_text(step)} [status: {step.get('status', 'pending')}]")
         lines.extend(
             [
                 "",
