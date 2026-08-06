@@ -496,6 +496,14 @@ Report 与产物质量继续由用户或下一 Agent 验收。
 - 缺少、重复或无效完成信号，以及非零退出，默认进入 `failed`；
 - 只有 Adapter 能给出结构化 `retryable=true` 的传输/基础设施失败才进入恢复语义；
 - 权限、审批或预算耗尽但没有合法 `input_required` 声明时仍为 `failed`；
+- Hermes 迭代预算耗尽（`max_iterations_reached(N/M)`、`budget_exhausted`、
+  `Iteration budget exhausted (N/M)`、`Reached maximum iterations (N)`）但没有
+  合法 final marker 时，统一分类为 `iteration_budget_exhausted`（`retryable=false`）；
+  Adapter 同时在结果与 `extensions.executor.hermes` 记录
+  `iteration_used/iteration_limit/iteration_exhausted/iteration_source`（不含密钥或正文）；
+- Hermes 校验 final marker 前先剥离已知的 `Query:`/任务 prompt 回声（prompt 内含示例
+  marker），只检查实际最终回复；真实回复内仍出现多个 marker 时照旧判
+  `completion_marker_duplicate`；
 - RunLease 可拒绝晚到或与 cancel/recovery 冲突的完成声明；
 - `recover` 只重置为可重试状态，不自动执行；必须重新 dispatch 同一 ID。
 
@@ -658,7 +666,7 @@ Runner 在首个任务派发时注册本轮 cohort 并打开一个 Task List Ter
 | --- | --- | --- | --- |
 | Codex | `codex exec --json` | 结构化事件、多图、图片生成/编辑、模型选项 | workspace-write、额外 writable roots、禁止依赖聊天会话 |
 | Claude | headless print / safe mode | 文本与代码、模型/effort 配置基础 | 禁止 bypass permissions，Alpha 使用保守安全模式 |
-| Hermes | direct/runner transport | profile/provider/model、文本、单图输入 | profile 差异、日志权限、runner/direct 语义明确 |
+| Hermes | direct/runner transport | profile/provider/model、文本、单图输入 | profile 差异、日志权限、runner/direct 语义明确；final marker 只校验剥离 prompt 回声后的实际回复；继承 Hermes max-turn 配置，不传 `--max-turns/--ignore-user-config`；迭代预算耗尽输出结构化诊断 |
 
 当前私有基线的三者 Prompt 必须共同包含：
 
