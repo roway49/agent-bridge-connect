@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +23,7 @@ from .terminal_states import TASK_TERMINAL_STATES
 
 RUNNING_TASK_STATUSES = {
     "running",
+    "input_required",
     "assigned",
     "working",
     "pause_pending",
@@ -39,7 +40,8 @@ PUBLIC_TASK_STATUSES = {
     "cancelled",
     "needs_recovery",
 }
-HANDOFF_SOURCE_STATUSES = {"completed", "input_required"}
+HANDOFF_SOURCE_STATUSES = {"completed"}
+DEFAULT_INPUT_WAIT_SECONDS = 24 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -409,16 +411,29 @@ class TaskService:
 
         task = self.get_task(task_id)
         validate_path_plan_workspace(task.workspace or {})
-        if _normalize_status(task.status) not in {"pending", "needs_recovery"}:
+        execution = dict((task.extensions or {}).get("agentbc.execution") or {})
+        is_resuming = (
+            _normalize_status(task.status) == "running"
+            and execution.get("internal_status") == "resuming"
+        )
+        if _normalize_status(task.status) not in {"pending", "needs_recovery"} and not is_resuming:
             raise ABCError("invalid_transition", f"Cannot start task in state: {task.status}")
-        validate_transition("pending" if _normalize_status(task.status) == "pending" else "needs_recovery", "running")
+        source_status = (
+            "running"
+            if is_resuming
+            else "pending" if _normalize_status(task.status) == "pending" else "needs_recovery"
+        )
+        validate_transition(source_status, "running")
         lease = self.store.acquire_lease(task_id, executor_id)
         if lease is None:
             raise ABCError("task_leased", f"Task is already leased: {task_id}", {"task_id": task_id})
         task.status = "running"
         task.assignee = executor_id
         task.updated_at = _utc_now()
-        task.extensions = _merge_execution(task.extensions, {"internal_status": "running"})
+        task.extensions = _merge_execution(
+            task.extensions,
+            {"internal_status": "running", "lease_state": "active"},
+        )
         self.store.write_task(task_id, _without_none(task.to_dict()))
         write_task_progress(task, state="running", message="task started", source="runner")
         self.store.append_event(
@@ -563,6 +578,8 @@ class TaskService:
         summary = str(compact_diagnostic_details(str(callback.get("summary") or ""))).strip()
         if not summary:
             raise ABCError("invalid_agent_callback", "Agent callback summary is required")
+        if final_state == "input_required":
+            return self._suspend_task_for_input(task, callback, summary)
         if not report_file:
             raise ABCError("invalid_agent_callback", "Agent callback report_file is required")
         existing_callback = (task.extensions or {}).get("agentbc.final_callback")
@@ -698,6 +715,226 @@ class TaskService:
         self._refresh_task_index()
         return True
 
+    def _suspend_task_for_input(
+        self,
+        task: TaskModel,
+        callback: dict[str, Any],
+        summary: str,
+    ) -> bool:
+        """Persist one actionable wait without creating terminal artifacts."""
+        from .reports import redact_secrets
+        from .run_lease import suspend_lease
+        from .task_health import clear_task_progress
+
+        task_id = task.id
+        extensions = dict(task.extensions or {})
+        previous = extensions.get("agentbc.input")
+        history = list(extensions.get("agentbc.input_history") or [])
+        if isinstance(previous, dict):
+            history.append(previous)
+
+        blocked_results = [
+            item
+            for item in callback.get("step_results") or []
+            if isinstance(item, dict) and item.get("status") == "blocked"
+        ]
+        blocked_step_id = int(blocked_results[0]["id"])
+        input_details = callback.get("input") if isinstance(callback.get("input"), dict) else {}
+        input_type = str(
+            input_details.get("type")
+            or callback.get("input_type")
+            or "message"
+        ).strip() or "message"
+        requested_permission = str(
+            input_details.get("requested_permission")
+            or callback.get("requested_permission")
+            or ""
+        ).strip()
+        created_at = str(callback.get("finished_at") or _utc_now())
+        deadline_at = (
+            _parse_timestamp(created_at) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)
+        ).isoformat().replace("+00:00", "Z")
+        executor_run_id = str(callback.get("executor_run_id") or "")
+        request: dict[str, Any] = {
+            "input_id": f"input-{uuid.uuid4().hex}",
+            "executor_run_id": executor_run_id,
+            "blocked_step_id": blocked_step_id,
+            "type": input_type,
+            "summary": str(redact_secrets(summary)),
+            "created_at": created_at,
+            "deadline_at": deadline_at,
+            "status": "waiting",
+        }
+        if requested_permission:
+            request["requested_permission"] = str(redact_secrets(requested_permission))
+
+        task.status = "input_required"
+        task.updated_at = created_at
+        task.steps = _finalize_steps(task.steps, callback["step_results"])
+        extensions.pop("agentbc.completion_intent", None)
+        extensions.pop("agentbc.final_callback", None)
+        extensions["agentbc.input"] = request
+        if history:
+            extensions["agentbc.input_history"] = history
+        task.extensions = _merge_execution(
+            extensions,
+            {
+                "internal_status": "waiting",
+                "lease_state": "suspended",
+                "waiting_since": created_at,
+            },
+        )
+        self._release_lease(task_id)
+        self.store.write_task(task_id, _without_none(task.to_dict()))
+        suspend_lease(
+            task_id,
+            self.board_root,
+            executor_run_id=executor_run_id,
+            executor_id=task.assignee,
+            work_dir=str((task.workspace or {}).get("project_root") or (task.workspace or {}).get("root") or self.board_root),
+        )
+        clear_task_progress(task)
+        self.store.append_event(
+            task_id,
+            {
+                "event_type": "task.input_required",
+                "task_id": task_id,
+                "created_at": created_at,
+                "input_id": request["input_id"],
+                "blocked_step_id": blocked_step_id,
+                "input_type": input_type,
+                "deadline_at": deadline_at,
+            },
+        )
+        self._refresh_task_index()
+        return True
+
+    def respond_to_input(
+        self,
+        task_id: str,
+        input_id: str,
+        *,
+        response_type: str,
+        message: str = "",
+    ) -> dict[str, Any]:
+        """Atomically record a redacted answer and prepare the same task for resume."""
+        from .reports import redact_secrets
+        from .run_lease import RunLeaseState, load_lease
+        from .task_health import write_task_progress
+
+        task = self.get_task(task_id)
+        request = (task.extensions or {}).get("agentbc.input")
+        if not isinstance(request, dict):
+            raise ABCError("input_not_pending", f"Task {task.id} has no input request")
+        current_input_id = str(request.get("input_id") or "")
+        if input_id != current_input_id:
+            raise ABCError(
+                "stale_input",
+                f"Input {input_id} is not current for task {task.id}",
+                {"task_id": task.id, "input_id": input_id, "current_input_id": current_input_id},
+            )
+        if str(request.get("status") or "") == "answered":
+            return {
+                "ok": True,
+                "task_id": task.id,
+                "input_id": current_input_id,
+                "status": "already_answered",
+                "dispatch_required": False,
+            }
+        if _normalize_status(task.status) != "input_required" or request.get("status") != "waiting":
+            raise ABCError("input_not_pending", f"Input {input_id} is not waiting")
+        chain = self.resolve_chain(task.id)
+        if not chain.requested_is_head or len(chain.head_task_ids) != 1:
+            raise ABCError("stale_input", f"Task {task.id} is not the current chain head", chain.to_dict())
+        now = _utc_now()
+        if _parse_timestamp(str(request.get("deadline_at") or "")) <= _parse_timestamp(now):
+            raise ABCError("input_expired", f"Input {input_id} reached its response deadline")
+        lease = load_lease(task.id, self.board_root)
+        if lease is not None and lease.state not in {RunLeaseState.SUSPENDED, RunLeaseState.CLOSED}:
+            raise ABCError(
+                "executor_active",
+                f"Task {task.id} still has an active executor",
+                {"task_id": task.id, "run_id": lease.run_id, "run_lease_state": lease.state},
+            )
+        response_type = str(response_type or "").strip()
+        if response_type not in {"message", "approve", "deny"}:
+            raise ABCError("invalid_input_response", f"Unsupported response type: {response_type}")
+        clean_message = str(redact_secrets(message)).strip() if response_type == "message" else response_type
+        if response_type == "message" and not clean_message:
+            raise ABCError("invalid_input_response", "--message requires non-empty text")
+
+        answered = dict(request)
+        answered["status"] = "answered"
+        answered["responded_at"] = now
+        answered["response"] = {"type": response_type, "summary": clean_message}
+        extensions = dict(task.extensions or {})
+        extensions["agentbc.input"] = answered
+        task.steps = [
+            {**step, "status": "pending"} if step.get("status") == "blocked" else dict(step)
+            for step in task.steps
+        ]
+        task.status = "running"
+        task.updated_at = now
+        task.extensions = _merge_execution(
+            extensions,
+            {
+                "internal_status": "resuming",
+                "lease_state": "suspended",
+                "resuming_at": now,
+            },
+        )
+        self.store.write_task(task.id, _without_none(task.to_dict()))
+        self.store.append_event(
+            task.id,
+            {
+                "event_type": "task.input_answered",
+                "task_id": task.id,
+                "input_id": current_input_id,
+                "response_type": response_type,
+                "created_at": now,
+            },
+        )
+        write_task_progress(task, state="resuming", message="user response received; resuming task", source="runner")
+        self._refresh_task_index()
+        return {
+            "ok": True,
+            "task_id": task.id,
+            "input_id": current_input_id,
+            "status": "resuming",
+            "dispatch_required": True,
+        }
+
+    def expire_waiting_inputs(self, *, now: str | None = None) -> list[dict[str, Any]]:
+        """Runner maintenance hook for durable 24-hour input deadlines."""
+        current_at = _parse_timestamp(now or _utc_now())
+        expired: list[dict[str, Any]] = []
+        for task in self.list_tasks(status="input_required"):
+            request = (task.extensions or {}).get("agentbc.input")
+            if not isinstance(request, dict) or request.get("status") != "waiting":
+                continue
+            deadline_at = _parse_timestamp(str(request.get("deadline_at") or ""))
+            if deadline_at > current_at:
+                continue
+            expired_request = dict(request)
+            expired_request["status"] = "expired"
+            expired_request["expired_at"] = now or _utc_now()
+            task.extensions = dict(task.extensions or {})
+            task.extensions["agentbc.input"] = expired_request
+            self.store.write_task(task.id, _without_none(task.to_dict()))
+            changed = self.mark_task_needs_recovery(
+                task.id,
+                "input_deadline_expired",
+                f"Input {request.get('input_id', '')} was not answered before {request.get('deadline_at', '')}",
+                {
+                    "input_id": request.get("input_id", ""),
+                    "blocked_step_id": request.get("blocked_step_id"),
+                    "deadline_at": request.get("deadline_at", ""),
+                },
+            )
+            if changed:
+                expired.append({"task_id": task.id, "input_id": request.get("input_id", "")})
+        return expired
+
     def mark_task_failed(
         self,
         task_id: str,
@@ -791,7 +1028,14 @@ class TaskService:
             }
         )
         _supersede_final_callback(task, "needs_recovery", compact_message)
-        task.extensions = _merge_execution(task.extensions, {"internal_status": "needs_recovery"})
+        execution_updates = {"internal_status": "needs_recovery"}
+        from .run_lease import RunLeaseState, close_lease, load_lease
+
+        run_lease = load_lease(task_id, self.board_root)
+        if run_lease is not None and run_lease.state == RunLeaseState.SUSPENDED:
+            close_lease(run_lease, self.board_root)
+            execution_updates["lease_state"] = RunLeaseState.CLOSED
+        task.extensions = _merge_execution(task.extensions, execution_updates)
         self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)
@@ -1087,10 +1331,20 @@ class TaskService:
             empty_message="target assignee is required",
         )
         normalized_source_status = _normalize_status(source.status)
+        if normalized_source_status == "input_required":
+            request = (source.extensions or {}).get("agentbc.input")
+            raise ABCError(
+                "input_pending",
+                f"Task {source.id} is waiting for input; respond before handoff.",
+                {
+                    "source_task_id": source.id,
+                    "input_id": request.get("input_id", "") if isinstance(request, dict) else "",
+                },
+            )
         if normalized_source_status not in HANDOFF_SOURCE_STATUSES:
             raise ABCError(
                 "handoff_source_not_ready",
-                f"Task {source.id} is {normalized_source_status}; handoff requires completed or input_required.",
+                f"Task {source.id} is {normalized_source_status}; handoff requires completed.",
                 {
                     "source_task_id": source.id,
                     "status": normalized_source_status,

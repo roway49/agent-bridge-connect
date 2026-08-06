@@ -613,6 +613,29 @@ class RunnerClient:
             }
         )
 
+    def respond_task(
+        self,
+        task_id: str,
+        input_id: str,
+        response_type: str,
+        message: str,
+        board_root: str | Path,
+        config_path: str | Path | None,
+        interval_s: float = 2.0,
+    ) -> dict[str, Any]:
+        return self._request(
+            {
+                "op": "respond_task",
+                "task_id": task_id,
+                "input_id": input_id,
+                "response_type": response_type,
+                "message": message,
+                "board_root": str(Path(board_root).expanduser()),
+                "config_path": str(Path(config_path).expanduser()) if config_path else "",
+                "interval_s": interval_s,
+            }
+        )
+
     def create_and_dispatch(
         self,
         title: str,
@@ -739,6 +762,9 @@ class RunnerState:
         self.enable_task_dashboard = bool(enable_task_dashboard)
         self.runs: dict[str, dict[str, Any]] = {}
         self.lock = threading.RLock()
+        from .config import DEFAULT_BOARD_ROOT
+
+        self.known_boards: set[Path] = {DEFAULT_BOARD_ROOT.expanduser().resolve()}
         (self.state_root / "runs").mkdir(parents=True, exist_ok=True)
 
     def submit(
@@ -760,6 +786,7 @@ class RunnerState:
         config_path: str,
         interval_s: float,
         monitor: bool,
+        resuming: bool = False,
     ) -> dict[str, Any]:
         if executor not in self.allowed_executables:
             raise RunnerError(f"runner does not allow executor: {executor}")
@@ -782,7 +809,9 @@ class RunnerState:
         self._validate_task_path_plan(task)
         if task.get("assignee") != executor:
             raise RunnerError(f"task {task_id} is not assigned to {executor}")
-        if task.get("status") != "pending":
+        execution = dict((task.get("extensions") or {}).get("agentbc.execution") or {})
+        is_resuming = task.get("status") == "running" and execution.get("internal_status") == "resuming"
+        if task.get("status") != "pending" and not (resuming and is_resuming):
             raise RunnerError(f"task {task_id} is not pending")
         workspace = Path(str((task.get("workspace") or {}).get("project_root") or (task.get("workspace") or {}).get("root") or "")).expanduser().resolve()
         if bool((task.get("workspace") or {}).get("customer_dir")) and not workspace.is_dir():
@@ -915,6 +944,114 @@ class RunnerState:
         )
         self._ensure_task_list_dashboard(board, task_id=task_id)
         return dispatched
+
+    def respond_and_dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Record an input answer and launch the same task under one Runner lock."""
+        from .config import load_config
+        from .notifications import notify_terminal
+        from .reports import write_report_files
+        from .service import TaskService
+
+        board = self._atomic_board(str(request.get("board_root") or ""))
+        config = self._atomic_config(str(request.get("config_path") or ""))
+        task_id = str(request.get("task_id") or "")
+        with self.lock:
+            service = TaskService(board, config=load_config(config))
+            expired = service.expire_waiting_inputs()
+            if any(item.get("task_id") == task_id for item in expired):
+                write_report_files(task_id, board)
+                notify_terminal(
+                    service,
+                    task_id,
+                    "task.recovery_required",
+                    "warning",
+                    "Input response deadline expired",
+                )
+                self._refresh_task_list_dashboard(board)
+                raise RunnerError(f"input deadline expired for task {task_id}")
+            try:
+                result = service.respond_to_input(
+                    task_id,
+                    str(request.get("input_id") or ""),
+                    response_type=str(request.get("response_type") or ""),
+                    message=str(request.get("message") or ""),
+                )
+            except ABCError as exc:
+                raise RunnerError(f"{exc.code}: {exc}") from exc
+            if not result.get("dispatch_required"):
+                return result
+            task = service.get_task(task_id)
+            try:
+                self._validate_task_path_plan(task.to_dict())
+                dispatched = self.dispatch_worker(
+                    task.id,
+                    task.assignee,
+                    str(board),
+                    str(config) if config else "",
+                    float(request.get("interval_s") or 2.0),
+                    False,
+                    resuming=True,
+                )
+            except RunnerError as exc:
+                service.mark_task_needs_recovery(
+                    task.id,
+                    "input_resume_dispatch_failed",
+                    str(exc),
+                    {
+                        "input_id": result.get("input_id", ""),
+                        "executor": task.assignee,
+                        "phase": "resume_dispatch",
+                    },
+                )
+                write_report_files(task.id, board)
+                notify_terminal(
+                    service,
+                    task.id,
+                    "task.recovery_required",
+                    "warning",
+                    f"Resume dispatch failed: {exc}",
+                )
+                self._refresh_task_list_dashboard(board)
+                raise
+            self._ensure_task_list_dashboard(board, task_id=task.id)
+            return {
+                **result,
+                **dispatched,
+                "task_id": task.id,
+                "status": "running",
+                "same_task": True,
+            }
+
+    def maintain_waiting_inputs(self, *, now: str | None = None) -> list[dict[str, Any]]:
+        """Expire durable input waits only from Runner-owned maintenance."""
+        from .notifications import notify_terminal
+        from .reports import write_report_files
+        from .service import TaskService
+
+        expired: list[dict[str, Any]] = []
+        with self.lock:
+            for board in sorted(self.known_boards, key=str):
+                try:
+                    service = TaskService(board)
+                    items = service.expire_waiting_inputs(now=now)
+                except (ABCError, OSError, ValueError):
+                    continue
+                for item in items:
+                    task_id = str(item.get("task_id") or "")
+                    try:
+                        write_report_files(task_id, board)
+                        notify_terminal(
+                            service,
+                            task_id,
+                            "task.recovery_required",
+                            "warning",
+                            "Input response deadline expired",
+                        )
+                        self._refresh_task_list_dashboard(board)
+                    except (ABCError, OSError, ValueError):
+                        pass
+                    expired.append(item)
+        return expired
 
     def handoff_and_dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
         from .config import load_config
@@ -1050,6 +1187,7 @@ class RunnerState:
         default_board = DEFAULT_BOARD_ROOT.expanduser().resolve()
         if board != default_board and not any(_is_within(board, root) for root in self.allowed_roots):
             raise RunnerError(f"task board is outside allowed roots: {board}")
+        self.known_boards.add(board)
         return board
 
     def _atomic_config(self, value: str) -> Path | None:
@@ -1549,6 +1687,7 @@ class RunnerService:
             self._release_singleton_pid()
             raise
         self._stop = threading.Event()
+        self._last_maintenance_at = 0.0
 
     def serve_forever(self) -> None:
         while not self._stop.is_set():
@@ -1560,6 +1699,10 @@ class RunnerService:
                 self._stop.wait(self.interval_s)
 
     def serve_once(self) -> bool:
+        now = time.monotonic()
+        if now - self._last_maintenance_at >= 60.0:
+            self.runner_state.maintain_waiting_inputs()
+            self._last_maintenance_at = now
         handled = False
         for request_path in sorted(self.requests_dir.glob("*.json")):
             processing_path = self.processing_dir / request_path.name
@@ -1750,9 +1893,12 @@ def _dispatch_request(state: RunnerState, request: dict[str, Any]) -> dict[str, 
             str(request.get("config_path") or ""),
             float(request.get("interval_s") or 2.0),
             bool(request.get("monitor", False)),
+            bool(request.get("resuming", False)),
         )
     if operation == "dispatch_task":
         return state.dispatch_task(request)
+    if operation == "respond_task":
+        return state.respond_and_dispatch(request)
     if operation == "create_and_dispatch":
         return state.create_and_dispatch(request)
     if operation == "handoff_and_dispatch":

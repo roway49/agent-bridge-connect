@@ -163,3 +163,18 @@ def task_step_text(step: Any) -> str:
         if value is not None and str(value).strip():
             return str(value).strip()
     return ""
+
+
+def resumed_input_prompt_lines(task_packet: dict[str, Any]) -> list[str]:
+    """Return durable request/response context for a resumed executor turn."""
+    extensions = task_packet.get("extensions") if isinstance(task_packet.get("extensions"), dict) else {}
+    request = extensions.get("agentbc.input") if isinstance(extensions.get("agentbc.input"), dict) else {}
+    response = request.get("response") if isinstance(request.get("response"), dict) else {}
+    if request.get("status") != "answered" or not response:
+        return []
+    return [
+        "Resume context:",
+        f"- Prior input request ({request.get('type', 'message')}, step {request.get('blocked_step_id', '')}): {request.get('summary', '')}",
+        f"- User response ({response.get('type', 'message')}): {response.get('summary', '')}",
+        "- Keep completed-step evidence intact and continue only pending steps.",
+    ]

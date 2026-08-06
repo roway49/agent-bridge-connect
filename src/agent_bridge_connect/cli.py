@@ -166,6 +166,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Open a separate Terminal window for live task output after dispatch.",
     )
 
+    task_respond = task_sub.add_parser(
+        "respond",
+        help="Answer the current input request and resume the same task through Runner.",
+    )
+    add_task_root(task_respond)
+    task_respond.add_argument("id")
+    task_respond.add_argument("--input", required=True, dest="input_id")
+    response = task_respond.add_mutually_exclusive_group(required=True)
+    response.add_argument("--message")
+    response.add_argument("--approve", action="store_true")
+    response.add_argument("--deny", action="store_true")
+    task_respond.add_argument("--config", type=Path)
+    task_respond.add_argument("--interval", type=float, default=2)
+
     task_report = task_sub.add_parser("report", help="Generate and print a task report.")
     add_task_root(task_report)
     task_report.add_argument("id")
@@ -707,6 +721,37 @@ def command_task_dispatch(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_task_respond(args: argparse.Namespace) -> int:
+    from .runner import RunnerClient, RunnerError
+
+    if args.message is not None:
+        response_type, message = "message", str(args.message)
+    elif args.approve:
+        response_type, message = "approve", ""
+    else:
+        response_type, message = "deny", ""
+    try:
+        result = RunnerClient().respond_task(
+            args.id,
+            args.input_id,
+            response_type,
+            message,
+            args.root,
+            _optional_path_arg(getattr(args, "config", None)),
+            getattr(args, "interval", 2),
+        )
+    except (ABCError, RunnerError) as exc:
+        print(f"respond_error: {exc}")
+        return 1
+    print(f"response: {result.get('status', '')}")
+    print(f"task_id: {result.get('task_id', args.id)}")
+    print(f"input_id: {result.get('input_id', args.input_id)}")
+    if result.get("dispatch_required"):
+        print(f"worker_run_id: {result.get('run_id', '')}")
+        print(f"same_task: {'yes' if result.get('same_task') else 'no'}")
+    return 0
+
+
 def _execution_snapshot(task_id: str, board_root: Path, status: dict) -> dict:
     from .run_lease import load_lease
     from .runner import RunnerClient, RunnerError
@@ -1176,9 +1221,15 @@ def command_worker_run(args: argparse.Namespace) -> int:
         requested_task_id = raw_task_id if isinstance(raw_task_id, str) and raw_task_id else None
         if requested_task_id:
             requested = service.get_task(requested_task_id)
+            requested_execution = dict((requested.extensions or {}).get("agentbc.execution") or {})
+            requested_is_resuming = (
+                requested.status == "running"
+                and requested_execution.get("internal_status") == "resuming"
+            )
             pending = (
                 [requested]
-                if requested.status == "pending" and requested.assignee == args.executor
+                if (requested.status == "pending" or requested_is_resuming)
+                and requested.assignee == args.executor
                 else []
             )
         else:
@@ -1205,11 +1256,19 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 }
             )
             if not start.ok:
+                start_code = (
+                    "input_resume_start_failed"
+                    if requested_task_id and requested_is_resuming
+                    else "executor_start_failed"
+                )
                 recovery_marked = service.mark_task_needs_recovery(
                     task.id,
-                    "executor_start_failed",
+                    start_code,
                     start.message,
-                    {"executor": args.executor},
+                    {
+                        "executor": args.executor,
+                        "phase": "resume_start" if start_code == "input_resume_start_failed" else "start",
+                    },
                 )
                 if recovery_marked:
                     _write_terminal_report(task.id, service.board_root)
@@ -1272,14 +1331,19 @@ def command_worker_run(args: argparse.Namespace) -> int:
             final_status = finalized.status
             if final_status == "completed":
                 event_type, level = "task.finalized", "done"
-            elif final_status in {"input_required", "cancelled"}:
+            elif final_status == "input_required":
+                event_type, level = "task.input_required", "input"
+            elif final_status == "cancelled":
                 event_type, level = "task.finalized", "info"
             elif final_status == "needs_recovery":
                 event_type, level = "task.recovery_required", "warning"
             else:
                 event_type, level = "task.failed", "error"
             if finalized_from_worker:
-                _notify_terminal(service, task.id, event_type, level, summary)
+                if final_status == "input_required":
+                    _notify_input_required(service, task.id)
+                else:
+                    _notify_terminal(service, task.id, event_type, level, summary)
             _request_task_list_refresh(service.board_root)
             print(f"{final_status}: {task.id}")
         except ABCError as exc:
@@ -1718,6 +1782,12 @@ def _notify_terminal(
     notify_terminal(service, task_id, event_type, level, message)
 
 
+def _notify_input_required(service: TaskService, task_id: str) -> None:
+    from .notifications import notify_input_required
+
+    notify_input_required(service, task_id)
+
+
 def _request_task_list_refresh(board_root: str | Path) -> None:
     from .task_health import request_dashboard_refresh
 
@@ -1855,6 +1925,8 @@ def main(argv: list[str] | None = None) -> int:
             return command_task_progress(args)
         if args.task_command == "dispatch":
             return command_task_dispatch(args)
+        if args.task_command == "respond":
+            return command_task_respond(args)
         if args.task_command == "preflight":
             return command_task_preflight(args)
         if args.task_command == "recover":
