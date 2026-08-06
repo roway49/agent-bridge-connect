@@ -88,6 +88,14 @@ agentbc task logs 4XMC
 
 Agent callback 是可选元数据，Runner 观察到的执行器退出才是正常完成依据。
 
+每份报告与 task brief 都包含 `Dispatcher Traceability`（派发者溯源）小节，带两个标签：
+`Dispatcher platform`（派发平台）和 `Dispatcher conversation ID`（派发会话 ID）。它们描述
+创建或 handoff 任务的控制端会话，而不是执行器的临时会话。`Dispatcher platform` 是派发平台，
+例如 `codex`、`claude` 或 `hermes`。`Dispatcher conversation ID` 在派发者提供可信会话 ID 时
+显示该 ID，否则显示 `unavailable`。AgentBC 记录的是 handoff 当前派发者会话，而不是源任务
+会话，并且绝不从进程、路径、历史记录或上一个任务中猜测会话 ID。派发者溯源与执行器临时会话
+相互独立，AgentBC 不会删除派发者会话。
+
 ## Task List 与健康状态
 
 ```bash

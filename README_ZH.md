@@ -124,6 +124,12 @@ Agent callback 仅作为可选元数据，正常情况下以执行器进程退�
 
 `accepted` 等派发响应不代表任务完成。任务状态、报告、产物和通知才是事实来源。
 
+每份报告与 task brief 都包含 `Dispatcher Traceability`（派发者溯源）小节，标注创建或 handoff
+任务的控制端：`Dispatcher platform`（派发平台）和 `Dispatcher conversation ID`（派发会话 ID）。
+这些标签描述的是当前派发者会话，而不是源任务会话，也不是执行器的临时会话。当没有可信的
+派发者 ID 时会话 ID 显示为 `unavailable`；AgentBC 绝不从进程、路径、历史记录或上一个任务中
+猜测该 ID，handoff 记录的是当前派发者会话。AgentBC 不会删除派发者会话。
+
 ## 路径与数据模型
 
 控制 Agent 只需提供明确的用户路径或字面值 `"default path"`，Runner 据此生成

@@ -110,6 +110,17 @@ Reports show marker validity, completed-step count, failure code, failed/blocked
 steps, and `Flow contract satisfied`. That field is `yes` only for a valid
 completed marker with all task steps done after the report is generated.
 
+Every report and task brief also carries a `Dispatcher Traceability` section with
+two labels: `Dispatcher platform` and `Dispatcher conversation ID`. They describe
+the controller conversation that created or handed off the task, not the executor's
+temporary session. `Dispatcher platform` is the source platform such as `codex`,
+`claude`, or `hermes`. `Dispatcher conversation ID` is the trusted conversation ID
+from that dispatcher when one is available; it shows `unavailable` otherwise.
+AgentBC records a handoff's current dispatcher conversation, never the source task
+conversation, and never guesses a conversation ID from processes, paths, history,
+or a previous task. Dispatcher traceability is separate from executor temporary
+sessions, and AgentBC does not delete the dispatcher conversation.
+
 ## Task List And Health
 
 ```bash

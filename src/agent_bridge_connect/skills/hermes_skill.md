@@ -143,6 +143,10 @@ agentbc task create \
 禁止根据任务标题、当前目录或猜测的项目名自行创建工程路径。`--workspace` 和 `--output-dir`
 已废弃；新任务只传 `--customer-path`，不要让派发 agent 自行填写 `--customer-dir`。
 
+`--session-id` 只在当前 Hermes 派发者暴露可信会话 ID 时传入，例如用户明确提供的 ID 或
+受信任的 `HERMES_SESSION_ID` 环境变量。没有可信 ID 时省略 `--session-id`；禁止从进程、
+路径、历史记录或上一个任务中猜测会话 ID。handoff 记录的是当前派发者会话，而不是源任务会话。
+
 执行者必须遵循上面的“执行者路由”规则。只有用户没有指定执行者时才使用
 `--assignee hermes`；用户明确指定 Claude 或 Codex 时，必须分别使用 `--assignee claude`
 或 `--assignee codex`。
@@ -238,6 +242,21 @@ AgentBC 的紧凑运行状态位于 `~/Documents/AgentBC/workspace/record`；可
 `record`。目录内自动生成的 `README.md` 会说明文件用途。`agentbc record clean` 仅清理
 已结束任务的运行诊断信息，保留核心索引和 `task.json` 状态；不要清理仍在等待输入或恢复的任务。
 
+## 派发者溯源（Dispatcher Traceability）
+
+报告与 task brief 会标注创建或 handoff 任务的控制端：`Dispatcher platform`（派发平台）与
+`Dispatcher conversation ID`（派发会话 ID）。这两个标签描述的是当前派发者会话，不是源任务会话，
+也不是执行器的临时会话。
+
+- 始终传入当前控制端对应的正确 `--source-platform` 值：Hermes 用 `hermes`，Claude 用 `claude`，
+  Codex 用 `codex`。
+- `--session-id` 只在当前派发者暴露可信会话 ID 时传入（例如用户明确提供的 ID，或受信任的
+  `HERMES_SESSION_ID` 环境变量）；没有可信 ID 时省略，报告显示 `unavailable`。
+- 禁止从进程、路径、历史记录或上一个任务中猜测会话 ID。handoff 记录的是当前派发者会话，
+  而不是源任务会话。
+- 派发者溯源与执行器临时会话相互独立。AgentBC 不会删除派发者会话，也不会在此保留、预算或
+  清理执行器的临时会话。
+
 ## 人工干预
 
 ```bash
@@ -260,6 +279,10 @@ agentbc task reassign 4XMC-001 --to <target-agent>
 ```bash
 agentbc task handoff 4XMC-001 --to <target-agent> --message "复核产物并完成验收" --source-platform hermes --dispatch
 ```
+
+handoff 同样必须传入 `--source-platform hermes`。`--session-id` 只在当前 Hermes 派发者
+暴露可信会话 ID 时传入；handoff 记录的是当前派发者会话，而不是源任务会话。没有可信 ID
+时省略 `--session-id`，禁止编造。
 
 `--to` 必须遵循上面的“执行者路由”精确映射。用户指定 Claude 时只能使用
 `--to claude`，指定 Codex 时只能使用 `--to codex`，指定 Hermes 时只能使用

@@ -31,8 +31,8 @@ Runner compares canonical permission semantics across long and equals forms and 
 3. For a new task, provide only `--customer-path`: use `"default path"` only when the user supplied no file or directory path. Otherwise pass the exact absolute user path. Existing file paths are valid and Runner converts them to the parent project directory. Do not set `--customer-dir`; Runner derives it.
 3a. For image input, add the exact absolute image path with repeatable `--image`. If no separate project path exists, use that image path as `--customer-path`. Codex accepts multiple images; Hermes currently accepts one per iteration. Never copy an image into AgentBC workspace to dispatch it.
 4. For a new task, write a YAML steps file with a top-level `steps:` list and at least one `description`. Do not use `.txt`, top-level `description`, or `action` for new tasks.
-5. For a new task, use `agentbc task create --assignee <target-executor> --steps <steps-yaml> --source-platform claude --customer-path <path-or-default-path> --dispatch`.
-6. For continuation, use `agentbc task handoff <confirmed-task-id> --to <target-executor> --source-platform claude --dispatch`.
+5. For a new task, use `agentbc task create --assignee <target-executor> --steps <steps-yaml> --source-platform claude --customer-path <path-or-default-path> --dispatch`. Pass `--session-id` only when the current Claude dispatcher exposes a trusted conversation ID (for example the `CLAUDE_SESSION_ID` environment variable when it is present and trusted, or an ID the user explicitly provides). Omit `--session-id` when no trusted ID is available; never guess it from processes, paths, history, or a previous task.
+6. For continuation, use `agentbc task handoff <confirmed-task-id> --to <target-executor> --source-platform claude --dispatch`. A handoff records the current dispatcher conversation, not the source task conversation. Pass `--session-id` only when the current Claude dispatcher exposes a trusted conversation ID; otherwise omit it.
 7. If Bash is denied by Claude Code auto mode, do not wait for a separate approval notification and do not inspect AgentBC source code or CLI help. Report that Claude Code's permission classifier blocked the dispatch command, then show the exact command for the user to run or ask the user to retry in a permission mode that allows `agentbc`.
 8. If Runner returns a path rejection, stop and report the Runner path problem. Do not copy the project or file into the AgentBC workspace, add `--customer-dir`, change `--customer-path`, or create a duplicate task to bypass the rejection.
 9. When AgentBC returns `accepted`, report the created task id, assignee, report path, and project/artifact root if shown, then stop. Do not wait for completion or keep reasoning about the task.
@@ -89,6 +89,24 @@ For a native image task, add this command shape:
 ```
 
 Image generation and editing requirements must name final bitmap files under the task artifact root as acceptance evidence.
+
+## Dispatcher Traceability
+
+Reports and task briefs label the controller that created or handed off the task:
+`Dispatcher platform` and `Dispatcher conversation ID`. These labels describe the
+current dispatcher conversation, not the source task conversation and not the
+executor's temporary session.
+
+- Always pass the correct `--source-platform` value for the current controller: `claude` for Claude
+  Code, `codex` for Codex, `hermes` for Hermes.
+- Pass `--session-id` only when the current Claude dispatcher exposes a trusted conversation ID, such
+  as the `CLAUDE_SESSION_ID` environment variable when it is present and trusted, or an ID the user
+  explicitly provides. Omit `--session-id` when no trusted ID is available; the report then shows
+  `unavailable`.
+- Never guess a conversation ID from processes, paths, history, or a previous task. A handoff records
+  the current dispatcher conversation, not the source task conversation.
+- Dispatcher traceability is separate from executor temporary sessions. AgentBC does not delete the
+  dispatcher conversation, and it does not retain, budget, or clean executor temporary sessions here.
 
 ## Final Callback Contract
 
