@@ -589,7 +589,7 @@ class SetupModeTests(unittest.TestCase):
                  mock.patch.object(setup, "_configure_alias", return_value={"status": "skipped"}), \
                  mock.patch.object(setup, "discover_codex", return_value={"found": False}), \
                  mock.patch.object(setup, "probe_codex", return_value={}):
-                result = setup.run_setup(interactive=True)
+                result = setup.run_setup(interactive=True, permission_mode="safe")
 
         install_hermes.assert_called_once_with(interactive=True)
         install_claude.assert_called_once_with(interactive=True)
