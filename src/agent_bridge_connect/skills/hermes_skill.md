@@ -38,6 +38,19 @@ steps:
 不要判断用户工程路径是否可用；路径权限是 Runner 底层防呆逻辑，派发 agent 只负责传入
 `--customer-path`。
 
+## 执行权限模式
+
+AgentBC 只有 `inherit`、`safe`、`full` 三种规范权限模式。`inherit` 不注入 AgentBC 的
+permission、approval、sandbox、safe-mode 或 yolo 覆盖，沿用 executor 现有的用户/全局设置；
+`safe` 是保守默认值，Hermes 继续走原有危险命令审批路径；`full` 会授予已安装 executor
+文档支持的最大非交互访问，必须明确选择并写入审计。`task create` 与 `task handoff` 统一只用
+`--permission-mode <inherit|safe|full>`，禁止直接拼接 `--yolo` 等 executor 原生参数。
+handoff 未显式指定时继承源任务；legacy 任务固定回退到 `safe`。非交互默认值可用
+`agentbc setup --non-interactive --permission-mode safe` 设置，不能让 `full` 成为隐式选择。
+Runner 会规范化检查长参数、短别名和等号写法；重复/冲突参数、`--accept-hooks`、
+`--ignore-user-config`、`--ignore-rules`、`--safe-mode`、`-z`/`--oneshot` 不能替代持久化映射，
+也不能绕过 `inherit` 或 `safe`，发现后统一 fail closed。
+
 ## 派发任务
 
 ### 执行者路由

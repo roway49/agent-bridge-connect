@@ -25,7 +25,12 @@ from agent_bridge_connect.execution_contract import (
     strip_callback_line,
 )
 from agent_bridge_connect.media import task_image_paths
-from agent_bridge_connect.protocol import resumed_input_prompt_lines, task_step_text
+from agent_bridge_connect.permission_modes import (
+    assert_executor_permission_supported,
+    permission_flags,
+    permission_record_from_extensions,
+)
+from agent_bridge_connect.protocol import ABCError, resumed_input_prompt_lines, task_step_text
 
 from .base import CLIExecutorBase
 from ..path_provider import find_binary
@@ -177,6 +182,13 @@ class HermesExecutor(CLIExecutorBase):
         images = task_image_paths(task_packet)
         if len(images) > 1:
             return StartResult(ok=False, run_id="", message="Hermes CLI accepts one image input per task iteration")
+        permission = permission_record_from_extensions(task_packet.get("extensions"))
+        try:
+            assert_executor_permission_supported(
+                "hermes", permission["effective_mode"], self.agent_bin
+            )
+        except ABCError as exc:
+            return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
 
         if self._should_use_runner():
             return self._start_with_runner(task_packet, root)
@@ -187,9 +199,11 @@ class HermesExecutor(CLIExecutorBase):
         self._task_packets[run_id] = dict(task_packet)
         self._start_run_lease(task_packet, run_id, "hermes")
         prompt = _build_prompt(task_packet)
-        command = self._build_command(prompt, images=images)
+        command = self._build_command(prompt, images=images, permission=permission)
 
         try:
+            if task_packet.get("runner_authorization_required") is True:
+                self._runner_client.authorize_command("hermes", command, root or Path.cwd(), task_packet)
             self._heartbeat_run(run_id)
             completed = subprocess.run(
                 command,
@@ -222,7 +236,7 @@ class HermesExecutor(CLIExecutorBase):
                 },
             )
             return StartResult(ok=True, run_id=run_id, message="hermes execution needs recovery")
-        except OSError as exc:
+        except (OSError, RunnerError) as exc:
             self._close_run_lease(run_id)
             return StartResult(ok=False, run_id="", message=f"failed to start hermes: {exc}")
 
@@ -386,7 +400,12 @@ class HermesExecutor(CLIExecutorBase):
         root: Path | None,
     ) -> StartResult:
         prompt = _build_prompt(task_packet)
-        command = self._build_command(prompt, images=task_image_paths(task_packet))
+        permission = permission_record_from_extensions(task_packet.get("extensions"))
+        command = self._build_command(
+            prompt,
+            images=task_image_paths(task_packet),
+            permission=permission,
+        )
         try:
             remote = self._runner_client.submit("hermes", command, root or Path.cwd(), task=task_packet)
         except RunnerError as exc:
@@ -420,13 +439,20 @@ class HermesExecutor(CLIExecutorBase):
             return None, "Runner does not allow the Hermes executor"
         return health, ""
 
-    def _build_command(self, prompt: str, images: list[Path] | None = None) -> list[str]:
+    def _build_command(
+        self,
+        prompt: str,
+        images: list[Path] | None = None,
+        permission: dict[str, str] | None = None,
+    ) -> list[str]:
         if self.agent_bin is None:
             raise RuntimeError("hermes unavailable")
         command = [str(self.agent_bin)]
         if self.profile:
             command.extend(["-p", self.profile])
         command.append("chat")
+        selected = permission or permission_record_from_extensions(None)
+        command.extend(permission_flags("hermes", selected["effective_mode"]))
         if images:
             command.extend(["--image", str(images[0])])
         if self.quiet:
@@ -455,6 +481,13 @@ class HermesExecutor(CLIExecutorBase):
             "model": self.model,
             "auth_owner": "hermes_cli",
             "transport": self.transport,
+            "permission": (
+                permission_record_from_extensions(
+                    self._task_packets.get(self._last_run_id, {}).get("extensions")
+                )
+                if self._last_run_id is not None
+                else None
+            ),
         }
         if self._last_run_id is not None:
             last_run = self._run_metadata[self._last_run_id]

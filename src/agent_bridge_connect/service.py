@@ -7,11 +7,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .config import DEFAULT_BOARD_ROOT, init_board
+from .config import DEFAULT_BOARD_ROOT, get_executor_config, init_board
 from .execution_contract import validate_callback_payload
 from .executor_registry import get_executor
 from .media import media_extension, normalize_image_inputs, task_image_paths
 from .path_model import build_path_plan, validate_path_plan_workspace
+from .permission_modes import (
+    PERMISSION_EXTENSION_KEY,
+    assert_executor_permission_supported,
+    build_permission_record,
+    permission_record_from_extensions,
+)
 from .protocol import ABCError, PreflightResult, TaskModel, task_step_text
 from .schema import validate_task
 from .state_machine import validate_transition
@@ -87,6 +93,8 @@ class TaskService:
         artifacts_dir: str | Path | None = None,
         lineage: dict[str, Any] | None = None,
         images: list[str | Path] | None = None,
+        permission_mode: str | None = None,
+        inherited_permission: dict[str, Any] | None = None,
     ) -> TaskModel:
         title = title.strip()
         assignee = _normalize_executor_ref(
@@ -141,6 +149,11 @@ class TaskService:
             allowed_roots=(workspace.get("agentbc_root"), workspace.get("project_root")),
         )
         task_lineage = _build_lineage(task_id, workspace, lineage_data if lineage is not None else None)
+        permission = build_permission_record(
+            explicit_mode=permission_mode,
+            config=self.config,
+            inherited=inherited_permission,
+        )
         task = TaskModel(
             id=task_id,
             title=title,
@@ -159,6 +172,7 @@ class TaskService:
                 },
                 "agentbc.lineage": task_lineage,
                 "agentbc.execution": {"internal_status": "pending"},
+                PERMISSION_EXTENSION_KEY: permission,
                 **media_extension(normalized_images),
             },
         )
@@ -203,6 +217,21 @@ class TaskService:
 
     def get_task(self, task_id: str) -> TaskModel:
         return TaskModel.from_dict(self.store.read_task(task_id))
+
+    def ensure_task_permission(self, task_id: str) -> TaskModel:
+        """Validate and persist the conservative fallback for legacy task records."""
+        task = self.get_task(task_id)
+        permission = permission_record_from_extensions(task.extensions)
+        if PERMISSION_EXTENSION_KEY not in (task.extensions or {}):
+            task.extensions = dict(task.extensions or {})
+            task.extensions[PERMISSION_EXTENSION_KEY] = permission
+            task.updated_at = _utc_now()
+            self.store.write_task(task.id, _without_none(task.to_dict()))
+            task_file = str((task.workspace or {}).get("task_file") or "").strip()
+            if task_file:
+                _write_task_requirements(task, Path(task_file).expanduser())
+            self._refresh_task_index()
+        return task
 
     def _reject_managed_artifact_new_root(
         self,
@@ -1322,6 +1351,7 @@ class TaskService:
         source_platform: str | None = None,
         images: list[str | Path] | None = None,
         session_id: str | None = None,
+        permission_mode: str | None = None,
     ) -> TaskModel:
         source = self.get_task(source_task_id)
         target_assignee = _normalize_executor_ref(
@@ -1383,6 +1413,7 @@ class TaskService:
                     {**chain.to_dict(), "suggested_command": suggested},
                 )
         workspace = source.workspace or {}
+        source_permission = permission_record_from_extensions(source.extensions)
         validate_path_plan_workspace(workspace)
         report_file = workspace.get("report_file") or str(self.store.task_dir(source.id) / f"{source.id}-report.md")
         task_file = workspace.get("task_file") or report_file
@@ -1416,6 +1447,8 @@ class TaskService:
             customer_path=workspace.get("customer_path") or None,
             lineage=_next_lineage(source, workspace, branch=branch),
             images=images if images is not None else task_image_paths(source.to_dict()),
+            permission_mode=permission_mode,
+            inherited_permission=source_permission if permission_mode is None else None,
         )
         now = _utc_now()
         self.store.append_event(
@@ -1457,7 +1490,18 @@ class TaskService:
         if _normalize_status(task.status) in TASK_TERMINAL_STATES:
             errors.append(f"task is terminal: {task.status}")
         try:
-            get_executor(task.assignee)
+            permission = permission_record_from_extensions(task.extensions)
+            executor = get_executor(
+                task.assignee,
+                get_executor_config(self.config, task.assignee),
+            )
+            assert_executor_permission_supported(
+                task.assignee,
+                permission["effective_mode"],
+                getattr(executor, "agent_bin", None),
+            )
+        except ABCError as exc:
+            errors.append(f"{exc.code}: {exc}")
         except (TypeError, ValueError):
             errors.append(f"assignee does not exist: {task.assignee}")
         return PreflightResult(ok=not errors, errors=errors)
@@ -1570,6 +1614,7 @@ def create_task(
     artifacts_dir: str | Path | None = None,
     lineage: dict[str, Any] | None = None,
     images: list[str | Path] | None = None,
+    permission_mode: str | None = None,
 ) -> TaskModel:
     return TaskService(board_root).create_task(
         title,
@@ -1584,6 +1629,7 @@ def create_task(
         artifacts_dir=artifacts_dir,
         lineage=lineage,
         images=images,
+        permission_mode=permission_mode,
     )
 
 
@@ -1654,6 +1700,7 @@ def handoff_task(
     source_platform: str | None = None,
     images: list[str | Path] | None = None,
     session_id: str | None = None,
+    permission_mode: str | None = None,
 ) -> TaskModel:
     return TaskService(board_root).handoff_task(
         source_task_id,
@@ -1663,6 +1710,7 @@ def handoff_task(
         session_id=session_id,
         source_platform=source_platform,
         images=images,
+        permission_mode=permission_mode,
     )
 
 
@@ -1693,6 +1741,12 @@ def task_to_status(task: TaskModel) -> dict[str, Any]:
     raw_status = str(data.get("status", "pending"))
     data["status"] = _normalize_status(raw_status)
     data["steps"] = [dict(step, status=step.get("status", "pending")) for step in data.get("steps", [])]
+    extensions = dict(data.get("extensions") or {})
+    extensions.setdefault(
+        PERMISSION_EXTENSION_KEY,
+        permission_record_from_extensions(extensions),
+    )
+    data["extensions"] = extensions
     if raw_status != data["status"]:
         extensions = dict(data.get("extensions") or {})
         data["extensions"] = _merge_execution(extensions, {"internal_status": raw_status})
@@ -1877,6 +1931,7 @@ def _write_task_requirements(task: TaskModel, path: Path) -> None:
     provenance = task.extensions.get("agentbc.provenance") or {}
     lineage = task.extensions.get("agentbc.lineage") or {}
     images = task_image_paths(task.to_dict())
+    permission = permission_record_from_extensions(task.extensions)
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         f"# Task Requirements: {task.title}",
@@ -1888,6 +1943,9 @@ def _write_task_requirements(task: TaskModel, path: Path) -> None:
         f"- Status snapshot: `{task.status}` (non-authoritative; use `agentbc task status {task.id}` or the report for current state)",
         f"- Dispatcher platform: `{provenance.get('source_platform', task.created_by)}`",
         f"- Dispatcher conversation ID: `{task.session_id or 'unavailable'}`",
+        f"- Requested permission mode: `{permission['requested_mode']}`",
+        f"- Effective permission mode: `{permission['effective_mode']}`",
+        f"- Permission selection source: `{permission['selection_source']}`",
         f"- Customer directory: `{workspace.get('customer_dir', '')}`",
         f"- Customer path: `{workspace.get('customer_path', '')}`",
         f"- Project root: `{workspace.get('project_root', workspace.get('root', ''))}`",

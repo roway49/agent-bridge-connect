@@ -43,11 +43,31 @@ class RunnerStateTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def _authorized_task(self, executor="hermes", mode="safe", workspace=None):
+        from agent_bridge_connect.service import TaskService
+
+        board = self.root / "permission-board"
+        project = Path(workspace or self.root)
+        service = TaskService(board, config={"workspace_root": str(self.root)})
+        task = service.create_task(
+            "Runner permission authorization",
+            executor,
+            [{"id": 1, "description": "run"}],
+            customer_dir=True,
+            customer_path=project,
+            permission_mode=mode,
+        )
+        packet = task.to_dict()
+        packet["task_id"] = task.id
+        packet["task_board"] = {"root": str(board)}
+        return packet
+
     def test_submit_and_poll_to_completion(self):
         result = self.state.submit(
             "hermes",
             [str(self.fake_hermes), "chat", "-q", "hello"],
             str(self.root),
+            task=self._authorized_task(),
         )
         terminal = self._wait_terminal(result["run_id"])
         self.assertEqual(terminal["status"], "completed")
@@ -57,17 +77,19 @@ class RunnerStateTests(unittest.TestCase):
     def test_rejects_unsafe_flags_and_cwd(self):
         from agent_bridge_connect.runner import RunnerError
 
-        with self.assertRaisesRegex(RunnerError, "unsafe hermes flags"):
+        with self.assertRaisesRegex(RunnerError, "do not match"):
             self.state.submit(
                 "hermes",
                 [str(self.fake_hermes), "chat", "-q", "hello", "--yolo"],
                 str(self.root),
+                task=self._authorized_task(),
             )
         with self.assertRaisesRegex(RunnerError, "outside allowed roots"):
             self.state.submit(
                 "hermes",
                 [str(self.fake_hermes), "chat", "-q", "hello"],
                 self.root.anchor,
+                task=self._authorized_task(),
             )
 
     def test_claude_command_requires_safe_print_mode(self):
@@ -86,6 +108,7 @@ class RunnerStateTests(unittest.TestCase):
                 "hello",
             ],
             str(self.root),
+            task=self._authorized_task("claude"),
         )
         terminal = self._wait_terminal(result["run_id"])
         self.assertEqual(terminal["stdout"], "CLAUDE_OK")
@@ -95,12 +118,14 @@ class RunnerStateTests(unittest.TestCase):
                 "claude",
                 [str(self.fake_claude), "--safe-mode", "hello"],
                 str(self.root),
+                task=self._authorized_task("claude"),
             )
-        with self.assertRaisesRegex(RunnerError, "requires flags: --safe-mode"):
+        with self.assertRaisesRegex(RunnerError, "do not match"):
             self.state.submit(
                 "claude",
                 [str(self.fake_claude), "-p", "hello"],
                 str(self.root),
+                task=self._authorized_task("claude"),
             )
 
     def test_claude_runner_rejects_dangerous_permissions(self):
@@ -116,13 +141,14 @@ class RunnerStateTests(unittest.TestCase):
             "text",
             "hello",
         ]
-        with self.assertRaisesRegex(RunnerError, "unsafe claude flags"):
+        with self.assertRaisesRegex(RunnerError, "do not match"):
             self.state.submit(
                 "claude",
                 [*base, "--dangerously-skip-permissions"],
                 str(self.root),
+                task=self._authorized_task("claude"),
             )
-        with self.assertRaisesRegex(RunnerError, "unsafe claude permission mode"):
+        with self.assertRaisesRegex(RunnerError, "do not match"):
             self.state.submit(
                 "claude",
                 [
@@ -134,11 +160,14 @@ class RunnerStateTests(unittest.TestCase):
                     "hello",
                 ],
                 str(self.root),
+                task=self._authorized_task("claude"),
             )
 
     def test_cancel_terminates_process_group(self):
         command = [str(self.fake_hermes), "sleep", "chat", "-q", "hello"]
-        result = self.state.submit("hermes", command, str(self.root))
+        result = self.state.submit(
+            "hermes", command, str(self.root), task=self._authorized_task()
+        )
         cancelled = self.state.cancel(result["run_id"])
         self.assertIn(cancelled["status"], {"cancelling", "cancelled"})
         terminal = self._wait_terminal(result["run_id"])
@@ -269,10 +298,13 @@ class RunnerStateTests(unittest.TestCase):
                 customer_path=workspace,
             )
             command = [str(self.fake_hermes), "chat", "-q", "hello"]
-            with self.assertRaisesRegex(RunnerError, "outside allowed roots"):
+            with self.assertRaisesRegex(RunnerError, "missing persisted"):
                 self.state.submit("hermes", command, str(workspace))
 
-            result = self.state.submit("hermes", command, str(workspace), task=task.to_dict())
+            packet = task.to_dict()
+            packet["task_id"] = task.id
+            packet["task_board"] = {"root": str(board)}
+            result = self.state.submit("hermes", command, str(workspace), task=packet)
             terminal = self._wait_terminal(result["run_id"])
 
         self.assertEqual(terminal["status"], "completed")
@@ -757,6 +789,7 @@ class RunnerStateTests(unittest.TestCase):
                 "hermes",
                 [str(self.fake_hermes), "chat", "-q", "hello"],
                 self.root,
+                task=self._authorized_task(),
             )
             terminal = self._wait_client_terminal(client, submitted["run_id"])
             self.assertEqual(terminal["stdout"], "RUNNER_OK")

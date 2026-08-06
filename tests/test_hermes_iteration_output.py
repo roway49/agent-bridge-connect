@@ -69,6 +69,7 @@ class HermesOutputExtractionTests(unittest.TestCase):
             patch.object(executor, "_start_run_lease"),
             patch.object(executor, "_heartbeat_run"),
             patch.object(executor, "_close_run_lease"),
+            patch.object(executor._runner_client, "authorize_command", return_value={"ok": True}),
             patch(
                 "agent_bridge_connect.executors.hermes.subprocess.run",
                 return_value=completed,

@@ -589,7 +589,7 @@ class SetupModeTests(unittest.TestCase):
                  mock.patch.object(setup, "_configure_alias", return_value={"status": "skipped"}), \
                  mock.patch.object(setup, "discover_codex", return_value={"found": False}), \
                  mock.patch.object(setup, "probe_codex", return_value={}):
-                result = setup.run_setup(interactive=True)
+                result = setup.run_setup(interactive=True, permission_mode="safe")
 
         install_hermes.assert_called_once_with(interactive=True)
         install_claude.assert_called_once_with(interactive=True)
@@ -624,7 +624,7 @@ class SetupModeTests(unittest.TestCase):
             from agent_bridge_connect import setup
 
             with contextlib.redirect_stdout(io.StringIO()), \
-                 mock.patch("builtins.input", side_effect=["y"] * 10), \
+                 mock.patch("builtins.input", side_effect=["safe", *(["y"] * 10)]), \
                  mock.patch.object(setup, "_configure_alias", return_value={"status": "skipped"}):
                 result = setup.run_setup(interactive=True)
 

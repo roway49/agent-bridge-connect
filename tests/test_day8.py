@@ -2,8 +2,10 @@
 
 import re
 import shutil
+import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -96,14 +98,19 @@ class CodexExecutorTests(unittest.TestCase):
     def test_codex_start_returns_run_id(self):
         """CodexExecutor.start() should return a valid StartResult."""
         from agent_bridge_connect.executors.codex import CodexExecutor
-        executor = CodexExecutor()
+        executor = CodexExecutor(command=sys.executable)
         task_packet = {
             "task_id": "4XMC-001",
             "title": "Test",
             "steps": [{"id": 1, "description": "Write hello.txt"}],
             "workspace": {"root": "/tmp"}
         }
-        result = executor.start(task_packet)
+        completed = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch(
+            "agent_bridge_connect.executors.codex.subprocess.run",
+            return_value=completed,
+        ):
+            result = executor.start(task_packet)
         # Should return StartResult (ok may be False if codex not configured)
         self.assertIsNotNone(result)
 

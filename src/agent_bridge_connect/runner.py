@@ -19,6 +19,11 @@ from pathlib import Path
 from typing import Any
 
 from .path_provider import find_binary
+from .permission_modes import (
+    assert_executor_permission_supported,
+    permission_record_from_extensions,
+    validate_permission_command,
+)
 from .protocol import ABCError
 
 
@@ -26,11 +31,6 @@ MAX_REQUEST_BYTES = 1024 * 1024
 MAX_OUTPUT_BYTES = 1024 * 1024
 MAX_MANAGED_FILE_BYTES = 10 * 1024
 TERMINAL_STATES = {"completed", "failed", "cancelled"}
-BANNED_HERMES_FLAGS = {"--yolo", "--oneshot", "-z", "--accept-hooks"}
-BANNED_CLAUDE_FLAGS = {
-    "--dangerously-skip-permissions",
-    "--allow-dangerously-skip-permissions",
-}
 MANAGED_RECORD_NAME_RE = re.compile(r"[23456789ABCDEFGHJKMNPQRSTVWXYZ]{4,}-\d{3}-report\.md\Z")
 LEGACY_RUNNER_LAUNCH_AGENT_LABEL = "com.agentbc.runner"
 
@@ -38,21 +38,18 @@ _EXECUTOR_COMMAND_RULES: dict[str, dict[str, Any]] = {
     "hermes": {
         "required_subcommand": "chat",
         "required_flags": {"-q"},
-        "banned_flags": BANNED_HERMES_FLAGS,
         "description": "Hermes chat -q (non-interactive headless mode)",
     },
     "codex": {
         "required_subcommand": "exec",
         "required_flags": {"--json"},
-        "banned_flags": set(),
         "description": "Codex exec --json (structured JSONL output)",
     },
     "claude": {
         "required_subcommand": None,
-        "required_flags": {"--safe-mode"},
+        "required_flags": set(),
         "required_any_flags": {"-p", "--print"},
-        "banned_flags": BANNED_CLAUDE_FLAGS,
-        "description": "Claude -p --safe-mode (headless print mode)",
+        "description": "Claude -p (headless print mode)",
     },
 }
 
@@ -564,6 +561,23 @@ class RunnerClient:
             }
         )
 
+    def authorize_command(
+        self,
+        executor: str,
+        command: list[str],
+        cwd: str | Path,
+        task: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._request(
+            {
+                "op": "authorize_command",
+                "executor": executor,
+                "command": command,
+                "cwd": str(Path(cwd).expanduser()),
+                "task": task,
+            }
+        )
+
     def show_task(self, task_id: str, board_root: str | Path) -> dict[str, Any]:
         return self._request(
             {
@@ -650,6 +664,7 @@ class RunnerClient:
         images: list[str | Path] | None = None,
         interval_s: float = 2.0,
         monitor: bool = False,
+        permission_mode: str | None = None,
     ) -> dict[str, Any]:
         return self._request(
             {
@@ -666,6 +681,7 @@ class RunnerClient:
                 "images": [str(Path(image).expanduser()) for image in images or []],
                 "interval_s": interval_s,
                 "monitor": monitor,
+                "permission_mode": permission_mode,
             }
         )
 
@@ -682,6 +698,7 @@ class RunnerClient:
         source_platform: str | None = None,
         images: list[str | Path] | None = None,
         session_id: str | None = None,
+        permission_mode: str | None = None,
     ) -> dict[str, Any]:
         return self._request(
             {
@@ -697,6 +714,7 @@ class RunnerClient:
                 "config_path": str(Path(config_path).expanduser()) if config_path else "",
                 "interval_s": interval_s,
                 "monitor": monitor,
+                "permission_mode": permission_mode,
             }
         )
 
@@ -778,6 +796,17 @@ class RunnerState:
         self._validate_request(executor, command, work_dir, task)
         return self._spawn_process(executor, command, work_dir, f"runner-{executor}")
 
+    def authorize_command(
+        self,
+        executor: str,
+        command: list[str],
+        cwd: str,
+        task: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        work_dir = Path(cwd).expanduser().resolve()
+        self._validate_request(executor, command, work_dir, task)
+        return {"ok": True, "executor": executor, "authorized": True}
+
     def dispatch_worker(
         self,
         task_id: str,
@@ -791,7 +820,7 @@ class RunnerState:
         if executor not in self.allowed_executables:
             raise RunnerError(f"runner does not allow executor: {executor}")
         board = Path(board_root).expanduser().resolve()
-        from .config import DEFAULT_BOARD_ROOT
+        from .config import DEFAULT_BOARD_ROOT, load_config
 
         default_board = DEFAULT_BOARD_ROOT.expanduser().resolve()
         if board != default_board and not any(_is_within(board, root) for root in self.allowed_roots):
@@ -799,9 +828,11 @@ class RunnerState:
         from .service import TaskService
         from .task_store import TaskStore
 
-        service = TaskService(board)
+        config = Path(config_path).expanduser().resolve() if config_path else None
+        loaded_config = load_config(config)
+        service = TaskService(board, config=loaded_config)
         try:
-            task_model = service.get_task(task_id)
+            task_model = service.ensure_task_permission(task_id)
         except Exception as exc:
             raise RunnerError(f"runner task unavailable: {task_id}") from exc
         task = task_model.to_dict()
@@ -817,12 +848,32 @@ class RunnerState:
         if bool((task.get("workspace") or {}).get("customer_dir")) and not workspace.is_dir():
             raise RunnerError(f"task project root does not exist: {workspace}")
         workspace.mkdir(parents=True, exist_ok=True)
-        config = Path(config_path).expanduser().resolve() if config_path else None
         if config is not None:
             allowed_config_root = (Path.home() / ".abc").resolve()
             if not _is_within(config, allowed_config_root):
                 raise RunnerError("worker config is outside ~/.abc")
         self._validate_executor_config(executor, config)
+        permission = permission_record_from_extensions(task_model.extensions, allow_legacy=False)
+        try:
+            assert_executor_permission_supported(
+                executor,
+                permission["effective_mode"],
+                self.allowed_executables.get(executor),
+            )
+        except ABCError as exc:
+            raise RunnerError(f"{exc.code}: {exc}") from exc
+        TaskStore(board).append_event(
+            task_id,
+            {
+                "event_type": "permission_audit",
+                "task_id": task_id,
+                "executor": executor,
+                "requested_mode": permission["requested_mode"],
+                "effective_mode": permission["effective_mode"],
+                "selection_source": permission["selection_source"],
+                "created_at": _utc_now(),
+            },
+        )
         command = [
             sys.executable,
             "-m",
@@ -838,6 +889,7 @@ class RunnerState:
             str(max(interval_s, 0.1)),
             "--task-id",
             task_id,
+            "--runner-authorize",
         ]
         if config is not None:
             command.extend(["--config", str(config)])
@@ -911,6 +963,7 @@ class RunnerState:
             customer_dir=customer_dir,
             customer_path=customer_path or None,
             images=request.get("images") or [],
+            permission_mode=request.get("permission_mode"),
         )
         return self._atomic_dispatch_task(service, task, config, request)
 
@@ -1075,6 +1128,7 @@ class RunnerState:
             session_id=request.get("session_id"),
             source_platform=request.get("source_platform"),
             images=request.get("images"),
+            permission_mode=request.get("permission_mode"),
         )
         return self._atomic_dispatch_task(service, task, config, request)
 
@@ -1514,9 +1568,9 @@ class RunnerState:
         expected = self.allowed_executables.get(executor)
         if expected is None or Path(command[0]).expanduser().resolve() != expected:
             raise RunnerError("runner executable is not allowlisted")
+        persisted_task, permission = self._persisted_permission_authorization(executor, task)
         allowed_roots = list(self.allowed_roots)
-        if task:
-            allowed_roots.extend(self._task_scoped_allowed_roots(task))
+        allowed_roots.extend(self._task_scoped_allowed_roots(persisted_task))
         if not cwd.is_dir() or not any(_is_within(cwd, root) for root in allowed_roots):
             raise RunnerError(f"runner cwd is outside allowed roots: {cwd}")
         required_subcommand = rules.get("required_subcommand")
@@ -1535,14 +1589,61 @@ class RunnerState:
             raise RunnerError(
                 f"{executor} runner requires one of: {', '.join(sorted(required_any))}"
             )
-        banned: set[str] = rules["banned_flags"]
-        found_banned = sorted(banned & set(command))
-        if found_banned:
+        try:
+            validate_permission_command(executor, command, permission)
+        except ABCError as exc:
+            raise RunnerError(f"{exc.code}: {exc}") from exc
+
+    def _persisted_permission_authorization(
+        self,
+        executor: str,
+        task: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        if not isinstance(task, dict):
             raise RunnerError(
-                f"unsafe {executor} flags are prohibited: {', '.join(found_banned)}"
+                "unsupported_permission_mode: missing persisted task permission authorization"
             )
-        if executor == "claude":
-            self._validate_claude_permissions(command)
+        task_id = str(task.get("task_id") or task.get("id") or "").strip()
+        task_board = task.get("task_board") if isinstance(task.get("task_board"), dict) else {}
+        board_value = str(task_board.get("root") or "").strip()
+        if not task_id or not board_value:
+            raise RunnerError(
+                "unsupported_permission_mode: task id and task board are required for authorization"
+            )
+        board = Path(board_value).expanduser().resolve()
+        from .config import DEFAULT_BOARD_ROOT
+        from .task_store import TaskStore
+
+        default_board = DEFAULT_BOARD_ROOT.expanduser().resolve()
+        if board != default_board and not any(_is_within(board, root) for root in self.allowed_roots):
+            raise RunnerError("task board is outside allowed roots")
+        try:
+            persisted = TaskStore(board).read_task(task_id)
+        except ABCError as exc:
+            raise RunnerError(
+                f"unsupported_permission_mode: persisted task authorization unavailable: {task_id}"
+            ) from exc
+        if str(persisted.get("assignee") or "") != executor:
+            raise RunnerError(
+                "unsupported_permission_mode: persisted task executor does not match command executor"
+            )
+        try:
+            supplied_permission = permission_record_from_extensions(
+                task.get("extensions") if isinstance(task.get("extensions"), dict) else {},
+                allow_legacy=False,
+            )
+            persisted_permission = permission_record_from_extensions(
+                persisted.get("extensions") if isinstance(persisted.get("extensions"), dict) else {},
+                allow_legacy=False,
+            )
+        except ABCError as exc:
+            raise RunnerError(f"{exc.code}: {exc}") from exc
+        if supplied_permission != persisted_permission:
+            raise RunnerError(
+                "unsupported_permission_mode: stale or command-injected permission authorization"
+            )
+        self._validate_task_path_plan(persisted)
+        return persisted, persisted_permission
 
     def process_sample(self, patterns: list[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
         patterns = list(patterns or ["agentbc", "hermes", "codex", "claude"])
@@ -1596,17 +1697,6 @@ class RunnerState:
             "ps_ok": result.returncode == 0,
             "ps_error": result.stderr.strip(),
         }
-
-    def _validate_claude_permissions(self, command: list[str]) -> None:
-        for item in command:
-            if item == "--permission-mode=bypassPermissions":
-                raise RunnerError("unsafe claude permission mode is prohibited: bypassPermissions")
-        for index, item in enumerate(command):
-            if item != "--permission-mode":
-                continue
-            value = command[index + 1] if index + 1 < len(command) else ""
-            if value == "bypassPermissions":
-                raise RunnerError("unsafe claude permission mode is prohibited: bypassPermissions")
 
     def _wait_for_process(self, run_id, process, stdout_file, stderr_file) -> None:
         returncode = process.wait()
@@ -1877,6 +1967,14 @@ def _dispatch_request(state: RunnerState, request: dict[str, Any]) -> dict[str, 
     if operation == "submit":
         task = request.get("task")
         return state.submit(
+            str(request.get("executor") or ""),
+            request.get("command") or [],
+            str(request.get("cwd") or ""),
+            task if isinstance(task, dict) else None,
+        )
+    if operation == "authorize_command":
+        task = request.get("task")
+        return state.authorize_command(
             str(request.get("executor") or ""),
             request.get("command") or [],
             str(request.get("cwd") or ""),

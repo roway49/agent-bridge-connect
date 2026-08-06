@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .protocol import ABCError
+
 try:
     import tomllib
 except ModuleNotFoundError:  # Python 3.10 and earlier
@@ -37,6 +39,13 @@ def validate_config(config: dict[str, Any]) -> list[str]:
     workspace_root = config.get("workspace_root")
     if workspace_root is not None and not isinstance(workspace_root, str):
         errors.append("workspace_root must be a string")
+    if "permission_mode" in config:
+        from .permission_modes import normalize_permission_mode
+
+        try:
+            normalize_permission_mode(config.get("permission_mode"))
+        except ABCError as exc:  # validation returns errors instead of raising
+            errors.append(str(exc))
     return errors
 
 

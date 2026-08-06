@@ -8,6 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from .path_provider import find_binary
+from .permission_modes import (
+    DEFAULT_PERMISSION_MODE,
+    configured_permission_mode,
+    normalize_permission_mode,
+)
+from .protocol import ABCError
 
 try:
     import tomllib
@@ -166,12 +172,14 @@ def probe_claude() -> dict[str, Any]:
             "has_safe_mode": False,
             "output_formats": [],
             "permission_modes": [],
-            "dangerous_permissions_blocked": True,
+            "dangerous_permissions_supported": False,
+            "dangerous_permissions_policy": "explicit_persisted_full_task_only",
             "capability_grade": RuntimeCapability.BACKGROUND_SINGLE,
             "status": "not_found",
         }
     help_text = _command_output(_run_command(Path(discovery["path"]), "--help"))
     lower_help = help_text.lower()
+    full_supported = "--dangerously-skip-permissions" in lower_help
     return {
         "has_print": "-p, --print" in lower_help or "--print" in lower_help,
         "has_safe_mode": "--safe-mode" in lower_help,
@@ -182,10 +190,18 @@ def probe_claude() -> dict[str, Any]:
         ],
         "permission_modes": [
             value
-            for value in ("acceptEdits", "auto", "default", "dontAsk", "plan")
+            for value in (
+                "acceptEdits",
+                "auto",
+                "bypassPermissions",
+                "manual",
+                "dontAsk",
+                "plan",
+            )
             if value.lower() in lower_help
         ],
-        "dangerous_permissions_blocked": True,
+        "dangerous_permissions_supported": full_supported,
+        "dangerous_permissions_policy": "explicit_persisted_full_task_only",
         "default_permission_mode": "acceptEdits",
         "default_output_format": "text",
         "capability_grade": RuntimeCapability.BACKGROUND_SINGLE,
@@ -276,16 +292,23 @@ def run_show() -> dict[str, Any]:
     agents = scan_all_agents()
     workspace_root = str(_effective_workspace_root(config))
     _print_scan_report(agents, workspace_root)
+    permission_mode, permission_source = configured_permission_mode(config)
+    _print_permission_mode_help(permission_mode)
     return {
         "ok": True,
         "mode": "show",
         "agents": agents,
         "config_path": str(config_path),
         "workspace_root": workspace_root,
+        "permission_mode": permission_mode,
+        "permission_source": permission_source,
     }
 
 
-def run_setup(interactive: bool = True) -> dict[str, Any]:
+def run_setup(
+    interactive: bool = True,
+    permission_mode: str | None = None,
+) -> dict[str, Any]:
     """Scan agents, write AgentBC config, and optionally install integrations."""
     config_path = _config_path()
     config = _load_config(config_path)
@@ -294,6 +317,13 @@ def run_setup(interactive: bool = True) -> dict[str, Any]:
     config["board_root"] = str(_effective_workspace_root(config) / "record")
     workspace_root = str(_effective_workspace_root(config))
     _print_scan_report(agents, workspace_root)
+    previous_permission = config.get("permission_mode")
+    selected_permission = _select_permission_mode(
+        config,
+        explicit_mode=permission_mode,
+        interactive=interactive,
+    )
+    config["permission_mode"] = selected_permission
     executors = config.setdefault("executors", {})
     enabled: list[str] = []
     skipped: list[str] = []
@@ -314,7 +344,7 @@ def run_setup(interactive: bool = True) -> dict[str, Any]:
         enabled.append(agent["name"])
 
     config_written = False
-    if enabled or not config_path.exists():
+    if enabled or not config_path.exists() or previous_permission != selected_permission:
         _write_config(config_path, config)
         config_written = True
     from .config import init_board
@@ -374,6 +404,7 @@ def run_setup(interactive: bool = True) -> dict[str, Any]:
         "config_path": str(config_path),
         "config_written": config_written,
         "workspace_root": workspace_root,
+        "permission_mode": selected_permission,
         "codex": codex,
         "capabilities": capabilities,
         "agents": agents,
@@ -932,6 +963,7 @@ def _default_config(
     return {
         "board_root": str(_default_workspace_root() / "record"),
         "workspace_root": str(_default_workspace_root()),
+        "permission_mode": DEFAULT_PERMISSION_MODE,
         "executors": {
             "codex": {
                 "type": "codex",
@@ -1203,7 +1235,12 @@ def _print_scan_report(agents: list[dict[str, Any]], workspace_root: str) -> Non
             f"safe_mode={safe} "
             f"default_permission={capabilities.get('default_permission_mode', 'acceptEdits')} "
             f"default_output={capabilities.get('default_output_format', 'text')} "
-            "dangerous_permissions=blocked"
+            "dangerous_permissions="
+            + (
+                "explicit-persisted-full-task-only"
+                if capabilities.get("dangerous_permissions_supported")
+                else "unsupported"
+            )
         )
     print()
     enabled = [agent["name"] for agent in agents if agent["enabled"]]
@@ -1211,6 +1248,42 @@ def _print_scan_report(agents: list[dict[str, Any]], workspace_root: str) -> Non
     print(f"enabled executors: {', '.join(enabled) if enabled else '-'}")
     print(f"detected but not enabled: {', '.join(disabled) if disabled else '-'}")
     print(f"workspace root: {workspace_root}")
+
+
+def _print_permission_mode_help(selected: str) -> None:
+    print()
+    print("Execution permission modes:")
+    print("  inherit  use the executor's existing user/global permission settings")
+    print("  safe     keep AgentBC's conservative executor behavior")
+    print("  full     grant the executor its maximum documented noninteractive access")
+    print("  WARNING: full is auditable per task and can bypass executor safety checks.")
+    print(f"default permission mode: {selected}")
+
+
+def _select_permission_mode(
+    config: dict[str, Any],
+    *,
+    explicit_mode: str | None,
+    interactive: bool,
+) -> str:
+    current, _ = configured_permission_mode(config)
+    _print_permission_mode_help(current)
+    if explicit_mode is not None:
+        return normalize_permission_mode(explicit_mode)
+    if not interactive:
+        return current
+    while True:
+        try:
+            answer = input(f"Default permission mode [inherit/safe/full] ({current}): ")
+        except (EOFError, KeyboardInterrupt):
+            return current
+        value = answer.strip().lower()
+        if not value:
+            return current
+        try:
+            return normalize_permission_mode(value)
+        except ABCError:
+            print("Choose inherit, safe, or full.")
 
 
 def _print_selectable_items(title: str, items: list[dict[str, Any]]) -> None:
