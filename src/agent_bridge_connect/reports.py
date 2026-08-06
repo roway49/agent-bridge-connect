@@ -142,7 +142,7 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
             f"Recovery required. Fix the latest system error, then run agentbc task dispatch {task_id}."
             if public_status == "needs_recovery"
             else (
-                f"Respond with agentbc task respond {task_id} --input {input_request.get('input_id', '')} --message \"<response>\"."
+                _input_recovery_recommendation(task_id, input_request)
                 if public_status == "input_required"
                 else recovery_recommendation(lease_state)
             )
@@ -455,9 +455,14 @@ def _available_actions(
         ]
     if status == "input_required":
         request = input_request if isinstance(input_request, dict) else {}
+        response_command = _input_response_command(task_id, request)
+        if not response_command:
+            return [
+                *inspect_actions,
+                f"agentbc task close {task_id}",
+            ]
         return [
-            f"agentbc task respond {task_id} --input {request.get('input_id', '<input-id>')} --message \"<response>\"",
-            f"agentbc task status {task_id} --json",
+            response_command,
             f"agentbc task retry {task_id} --step <id>",
             *inspect_actions,
         ]
@@ -468,6 +473,26 @@ def _available_actions(
             *inspect_actions,
         ]
     return inspect_actions
+
+
+def _input_response_command(task_id: str, input_request: dict[str, Any]) -> str:
+    input_id = str(input_request.get("input_id") or "").strip()
+    if not input_id:
+        return ""
+    return (
+        f"agentbc task respond {task_id} --input {input_id} "
+        '--message "<response>"'
+    )
+
+
+def _input_recovery_recommendation(task_id: str, input_request: dict[str, Any]) -> str:
+    command = _input_response_command(task_id, input_request)
+    if command:
+        return f"Respond with {command}."
+    return (
+        "Legacy input_required record has no response ID. Preserve its task and report "
+        f"evidence, then close it with agentbc task close {task_id} or create a replacement task."
+    )
 
 
 def _completed_at(task: dict[str, Any], events: list[dict[str, Any]]) -> str | None:

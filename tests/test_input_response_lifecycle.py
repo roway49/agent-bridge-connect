@@ -12,9 +12,9 @@ from unittest import mock
 from agent_bridge_connect.adapters import DeliveryResult
 from agent_bridge_connect.cli import build_parser
 from agent_bridge_connect.executors.codex import _build_prompt as build_codex_prompt
-from agent_bridge_connect.notifications import notify_input_required
+from agent_bridge_connect.notifications import build_input_required_notification, notify_input_required
 from agent_bridge_connect.protocol import ABCError
-from agent_bridge_connect.reports import generate_report
+from agent_bridge_connect.reports import generate_report, generate_task_brief
 from agent_bridge_connect.run_lease import (
     RunLeaseState,
     create_lease,
@@ -133,6 +133,28 @@ class InputResponseLifecycleTests(unittest.TestCase):
         health = self.service.task_summary(self.task.id)["health"]
         self.assertEqual((health["state"], health["color"]), ("waiting_for_input", "yellow"))
         self.assertTrue(self.service.task_summary(self.task.id)["is_active"])
+
+    def test_legacy_input_required_without_id_never_emits_blank_response_command(self) -> None:
+        task = self.service.get_task(self.task.id)
+        task.extensions.pop("agentbc.input", None)
+        self.service.store.write_task(task.id, task.to_dict())
+
+        report = generate_report(task.id, self.board)
+        brief = generate_task_brief(task.id, self.board)
+        actions = "\n".join(brief["available_actions"])
+
+        self.assertIn("Legacy input_required record has no response ID", report["recovery_recommendation"])
+        self.assertNotIn("--input  ", report["recovery_recommendation"])
+        self.assertNotIn("task respond", actions)
+        self.assertIn(f"agentbc task close {task.id}", actions)
+
+    def test_notification_rejects_waiting_request_without_response_id(self) -> None:
+        task = self.service.get_task(self.task.id)
+        task.extensions["agentbc.input"] = {"status": "waiting"}
+        self.service.store.write_task(task.id, task.to_dict())
+
+        with self.assertRaisesRegex(ValueError, "no response ID"):
+            build_input_required_notification(self.service, task.id)
 
     def test_response_resets_only_blocked_steps_and_preserves_completed_evidence(self) -> None:
         request = self._input()
