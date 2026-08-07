@@ -526,15 +526,17 @@ Report 与产物质量继续由用户或下一 Agent 验收。
 合法 `input_required` marker 至少指出一个 blocked step。Core 在 `agentbc.input` 中只保留
 一个 active request：`input_id`、`executor_run_id`、`blocked_step_id`、`type`、脱敏
 `summary`、`created_at`、`deadline_at`、`status=waiting`，以及可选的脱敏
-`requested_permission`。默认 deadline 是 24 小时。
+`requested_permission`。`choice` 还必须保存具体 `reason`、两个按钮 label 和逐项
+description；默认 deadline 是 24 小时。
 
 等待路径必须满足：
 
 1. 保留已完成 step，只把 marker 指出的 step 记为 blocked；
 2. 释放 claim lease，把 RunLease 置为 suspended，并暂停 stale 与执行耗时；
 3. 不写 `agentbc.final_callback`，不写终态 Report，不发终态通知；
-4. 立即发送非终态 input notification，包含 Task ID、blocked step/type、脱敏摘要、deadline
-   和精确 `agentbc task respond TASK_ID --input INPUT_ID --message "<response>"`；
+4. 立即发送非终态 input notification。桌面窗口只展示 Task ID、blocked step、具体阻塞原因、
+   两个方案说明和直接操作按钮，不展示 deadline 或 CLI respond 命令；deadline 与精确
+   `agentbc task respond` 仍保存在通知事件、任务状态和报告中作为运维兜底；
 5. Task List 保持黄色、open；read-only list/status/report 不得推进 24 小时到期状态。
 
 用户响应的唯一运行入口是：
@@ -840,7 +842,8 @@ Record 预算限制每次迭代的内部运行记录，不是 Report 和用户�
 仍在 `notifications.py`。后续可删除无调用包装，但不要在 CLI 复制通知算法。
 
 `notify_input_required()` 是并列的非终态即时通知入口：不参与终态错峰，不填 report path，
-必须带 `terminal=false` 的投递证据与精确 respond 命令。它不能调用 `notify_terminal()`，
+必须带 `terminal=false` 的投递证据，并在结构化字段中保留精确 respond 命令。桌面文案不得
+暴露 deadline/命令；它不能调用 `notify_terminal()`，
 也不能让 dashboard cohort 退出。
 
 ### 9.5 多样化通知预期变化

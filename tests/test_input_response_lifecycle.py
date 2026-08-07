@@ -90,7 +90,9 @@ class InputResponseLifecycleTests(unittest.TestCase):
             [self.base],
             {"shell": Path("/bin/true")},
         )
-        state.known_boards.add(self.board.resolve())
+        # RunnerState includes the user's default board for production discovery.
+        # Unit tests must replace that set so fake clocks can never mutate live tasks.
+        state.known_boards = {self.board.resolve()}
         return state
 
     def test_suspension_has_request_without_final_callback_or_terminal_report(self) -> None:
@@ -127,9 +129,11 @@ class InputResponseLifecycleTests(unittest.TestCase):
             f"agentbc task respond {self.task.id} --input {request['input_id']} --approve"
         )
         self.assertEqual(notification["event_type"], "task.input_required")
-        self.assertIn(exact_command, notification["message"])
-        self.assertIn("--deny", notification["message"])
-        self.assertIn(request["deadline_at"], notification["message"])
+        self.assertEqual(notification["respond_command"], f"{exact_command} (or --deny)")
+        self.assertEqual(notification["deadline_at"], request["deadline_at"])
+        self.assertNotIn("Respond:", notification["message"])
+        self.assertNotIn("Deadline:", notification["message"])
+        self.assertIn("Why this is blocked:", notification["message"])
         health = self.service.task_summary(self.task.id)["health"]
         self.assertEqual((health["state"], health["color"]), ("waiting_for_input", "yellow"))
         self.assertTrue(self.service.task_summary(self.task.id)["is_active"])
@@ -146,7 +150,14 @@ class InputResponseLifecycleTests(unittest.TestCase):
             "task_id": choice_task.id,
             "final_state": "input_required",
             "summary": "Choose an option",
-            "input": {"type": "choice", "options": ["Option A", "Option B"]},
+            "input": {
+                "type": "choice",
+                "reason": "The implementation cannot continue until the output format is selected.",
+                "options": [
+                    {"label": "Option A", "description": "Write a compact text result."},
+                    {"label": "Option B", "description": "Write a detailed JSON result."},
+                ],
+            },
             "step_results": [{"id": 1, "status": "blocked"}],
         }
         self.assertTrue(self.service.finalize_task_from_agent(choice_task.id, callback))
@@ -154,11 +165,29 @@ class InputResponseLifecycleTests(unittest.TestCase):
         request = self.service.get_task(choice_task.id).extensions["agentbc.input"]
         notification = build_input_required_notification(self.service, choice_task.id)
         self.assertEqual(request["type"], "choice")
+        self.assertEqual(
+            request["reason"],
+            "The implementation cannot continue until the output format is selected.",
+        )
         self.assertEqual(request["options"], ["Option A", "Option B"])
+        self.assertEqual(
+            request["option_descriptions"],
+            ["Write a compact text result.", "Write a detailed JSON result."],
+        )
         self.assertEqual(notification["input_options"], ["Option A", "Option B"])
-        self.assertIn("Options: Option A | Option B", notification["message"])
+        self.assertEqual(
+            notification["input_option_descriptions"],
+            ["Write a compact text result.", "Write a detailed JSON result."],
+        )
+        self.assertIn("Why this is blocked:", notification["message"])
+        self.assertIn("• Option A — Write a compact text result.", notification["message"])
+        self.assertIn("• Option B — Write a detailed JSON result.", notification["message"])
+        self.assertNotIn("Deadline:", notification["message"])
+        self.assertNotIn("Respond:", notification["message"])
         self.assertIn("--message", notification["respond_command"])
-        self.assertIn("- Options: Option A | Option B", generate_report_md(choice_task.id, self.board))
+        report_md = generate_report_md(choice_task.id, self.board)
+        self.assertIn("- Decision reason: The implementation cannot continue", report_md)
+        self.assertIn("- Option `Option A`: Write a compact text result.", report_md)
 
     def test_input_dialog_action_responds_and_resumes_same_task(self) -> None:
         request = self._input()

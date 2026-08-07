@@ -654,10 +654,21 @@ def _render_report_md(report: dict[str, Any]) -> str:
             f"- Blocked step/type: `{input_request.get('blocked_step_id', '')}` / `{input_request.get('type', '')}`",
             f"- Summary: {input_request.get('summary', '')}",
         ]
+        if input_request.get("reason"):
+            input_lines.append(f"- Decision reason: {input_request.get('reason', '')}")
         if input_request.get("options"):
-            input_lines.append(
-                f"- Options: {' | '.join(str(option) for option in input_request.get('options', []))}"
-            )
+            options = [str(option) for option in input_request.get("options", [])]
+            descriptions = [
+                str(description)
+                for description in input_request.get("option_descriptions", [])
+            ]
+            if len(descriptions) == len(options):
+                input_lines.extend(
+                    f"- Option `{label}`: {description}"
+                    for label, description in zip(options, descriptions)
+                )
+            else:
+                input_lines.append(f"- Options: {' | '.join(options)}")
         input_lines.append(f"- Deadline: `{input_request.get('deadline_at', '')}`")
         lines.extend(["", "## Input Lifecycle", *input_lines])
 
