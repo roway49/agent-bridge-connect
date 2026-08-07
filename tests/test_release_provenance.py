@@ -556,6 +556,15 @@ class NoPublishBehaviourTests(unittest.TestCase):
         self.assertIn('--repo "${{ github.repository }}"', workflow)
         self.assertIn("--clobber", workflow)
 
+    def test_pypi_upload_excludes_release_manifest(self) -> None:
+        """Only Python distributions are handed to the PyPI publisher."""
+        workflow = (
+            _REPO / ".github" / "workflows" / "publish-pypi.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("mkdir -p dist/pypi", workflow)
+        self.assertIn("cp dist/*.whl dist/*.tar.gz dist/pypi/", workflow)
+        self.assertIn("packages-dir: dist/pypi/", workflow)
+
     def test_build_source_distinguishes_events(self) -> None:
         """build_source is set from CI context to differentiate events."""
         workflow = (

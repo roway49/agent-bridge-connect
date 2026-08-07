@@ -142,5 +142,12 @@ jobs:
             dist/*.tar.gz \
             dist/release-manifest.json
 
+      - name: Prepare PyPI distributions
+        run: |
+          mkdir -p dist/pypi
+          cp dist/*.whl dist/*.tar.gz dist/pypi/
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
+        with:
+          packages-dir: dist/pypi/
