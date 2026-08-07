@@ -163,16 +163,76 @@ class HermesOutputExtractionTests(unittest.TestCase):
     def test_extract_final_response_variants(self) -> None:
         prompt = _build_prompt(self.packet)
         marker = self._marker()
+        live_cli_output = (
+            "Warning: Unknown toolsets: messaging\n"
+            "Query: Execute task TEST-001 and finish every declared step.\n"
+            "Your final response must end with exactly one single-line terminal marker:\n"
+            f"{FINAL_CALLBACK_PREFIX} {{\"version\":1,\"task_id\":\"TEST-001\"}}\n"
+            "Initializing agent...\r\n"
+            "Working through the requested files.\n"
+            f"{marker}"
+        )
         cases = [
             (f"{prompt}\n{marker}", marker),
             (f"Query: {prompt}\n{marker}", marker),
             (marker, marker),
             (f"Query: {marker}", marker),
+            (live_cli_output, f"Working through the requested files.\n{marker}"),
             ("", ""),
         ]
         for output, expected in cases:
             with self.subTest(output=output[:48]):
                 self.assertEqual(_extract_final_response(output, self.packet), expected)
+
+    def test_live_cli_warning_and_wrapped_query_validates_after_initialization(self) -> None:
+        echoed_marker = (
+            f'{FINAL_CALLBACK_PREFIX} {{"version":1,"task_id":"TEST-001",'
+            '"final_state":"completed"}}'
+        )
+        output = (
+            "Warning: Unknown toolsets: messaging\n"
+            "Query: Execute task TEST-001 and finish every declared step.\n"
+            "The terminal wrapped this long prompt before its marker example:\n"
+            f"{echoed_marker}\n"
+            "Initializing agent...\n"
+            "Completed the requested verification.\n"
+            f"{self._marker()}"
+        )
+        raw_validation = extract_callback_validation_from_output(
+            output,
+            self.packet,
+            "run",
+        )
+        self.assertFalse(raw_validation.valid)
+        self.assertEqual(raw_validation.code, "completion_marker_duplicate")
+
+        for transport, poll in (
+            ("direct", self._run_direct(output)),
+            ("runner", self._run_runner(output)),
+        ):
+            with self.subTest(transport=transport):
+                self.assertEqual(poll.status, "completed")
+                self.assertTrue(poll.result["marker_valid"])
+                self.assertIsNone(poll.result["failure"])
+
+    def test_duplicate_markers_after_initialization_still_fail(self) -> None:
+        output = (
+            "Warning: Unknown toolsets: messaging\n"
+            "Query: wrapped prompt\n"
+            "Initializing agent...\n"
+            f"{self._marker()}\n"
+            f"{self._marker()}"
+        )
+        for transport, poll in (
+            ("direct", self._run_direct(output)),
+            ("runner", self._run_runner(output)),
+        ):
+            with self.subTest(transport=transport):
+                self.assertEqual(poll.status, "failed")
+                self.assertEqual(
+                    poll.result["failure"]["kind"],
+                    "completion_marker_duplicate",
+                )
 
     def test_direct_and_runner_parity(self) -> None:
         prompt = _build_prompt(self.packet)
