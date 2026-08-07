@@ -2,9 +2,6 @@
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-VERSION=$(python3 "$SCRIPT_DIR/build_provenance.py" print-product-version --repo-root "$SCRIPT_DIR/..")
-BUNDLE_NAME="agentbc-$VERSION-macos-local-alpha"
-ARCHIVE="$BUNDLE_NAME.tar.gz"
 BASE_URL=${1:-${AGENTBC_ALPHA_BASE_URL:-}}
 EXPECTED_SHA256=${AGENTBC_EXPECTED_SHA256:-}
 RUN_SMOKE=${AGENTBC_RUN_SMOKE:-1}
@@ -15,6 +12,22 @@ if [ -z "$BASE_URL" ]; then
 fi
 
 BASE_URL=${BASE_URL%/}
+VERSION=${AGENTBC_PRODUCT_VERSION:-}
+if [ -z "$VERSION" ] && [ -f "$SCRIPT_DIR/build_provenance.py" ]; then
+  VERSION=$(python3 "$SCRIPT_DIR/build_provenance.py" print-product-version --repo-root "$SCRIPT_DIR/..")
+fi
+if [ -z "$VERSION" ]; then
+  VERSION=${BASE_URL##*/}
+fi
+case "$VERSION" in
+  v[0-9]*.[0-9]*.[0-9]*[A-Z]*) ;;
+  *)
+    echo "could not determine AgentBC product version from release URL; set AGENTBC_PRODUCT_VERSION" >&2
+    exit 2
+    ;;
+esac
+BUNDLE_NAME="agentbc-$VERSION-macos-local-alpha"
+ARCHIVE="$BUNDLE_NAME.tar.gz"
 DOWNLOAD_ROOT=${AGENTBC_ALPHA_DOWNLOAD_ROOT:-"$(mktemp -d "${TMPDIR:-/tmp}/agentbc-alpha-download.XXXXXX")"}
 mkdir -p "$DOWNLOAD_ROOT"
 

@@ -1,9 +1,9 @@
 # Changelog
 
-## 1.0.1A - 2026-08-08
+## 1.0.1A2 - 2026-08-08
 
-> Internal candidate updated through 2026-08-08. The existing public
-> `v1.0.1A` tag, GitHub Release, and PyPI `1.0.1a1` artifacts remain immutable;
+> Stability revision published from the 1.0.1A cutoff. The original
+> `v1.0.1A` tag, GitHub Release, and PyPI `1.0.1a1` artifacts remain immutable.
 
 ### Added
 
@@ -50,6 +50,10 @@
 
 ### Fixed
 
+- Packaged build identity now uses the same integer schema contract as
+  `agentbc doctor`, so release provenance is recognized after installation.
+- The standalone GitHub Release installer now resolves the product version
+  from the release URL when the source-tree provenance helper is unavailable.
 - Prevented a live worker from being marked failed during the short interval
   between executor exit and Core finalization.
 - Isolated test and uninstall Runner spools so skip-runner and fallback cleanup
@@ -69,7 +73,7 @@
 
 ### Validation
 
-- `541` automated tests pass in the current candidate, including strict flow,
+- `542` automated tests pass in the current candidate, including strict flow,
   permission, input takeover, notification, RunLease race, Runner spool,
   release provenance, and Hermes real-output regression suites.
 - The candidate passes Ruff, compileall, shell syntax, Twine, clean-wheel smoke,

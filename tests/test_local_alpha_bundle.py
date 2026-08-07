@@ -42,6 +42,9 @@ class LocalAlphaBundleTests(unittest.TestCase):
     def test_url_installer_binds_manifest_to_pinned_checksum(self) -> None:
         installer = (ROOT / "scripts" / "install_alpha_from_url.sh").read_text(encoding="utf-8")
         self.assertIn("AGENTBC_EXPECTED_SHA256", installer)
+        self.assertIn("AGENTBC_PRODUCT_VERSION", installer)
+        self.assertIn('VERSION=${BASE_URL##*/}', installer)
+        self.assertIn('[ -f "$SCRIPT_DIR/build_provenance.py" ]', installer)
         self.assertIn('shasum -a 256 -c "$ARCHIVE.sha256"', installer)
         self.assertIn('echo "install: completed (setup included)"', installer)
         self.assertNotIn('echo "next: agentbc setup"', installer)
@@ -54,6 +57,7 @@ class LocalAlphaBundleTests(unittest.TestCase):
     def test_local_server_rebuilds_before_serving_by_default(self) -> None:
         server = (ROOT / "scripts" / "serve_local_alpha.sh").read_text(encoding="utf-8")
         self.assertIn("AGENTBC_ALPHA_SKIP_BUILD", server)
+        self.assertIn("AGENTBC_PRODUCT_VERSION=$VERSION", server)
         self.assertIn('"$SCRIPT_DIR/build_local_alpha_bundle.sh" "$DIST_ROOT"', server)
 
     def test_bundle_publishes_product_and_fallback_uninstall_paths(self) -> None:

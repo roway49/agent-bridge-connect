@@ -24,7 +24,7 @@ PYTHONPATH=src PYTHONPYCACHEPREFIX=/tmp/agentbc-pycache \
   python3 -m compileall -q src
 git diff --check
 ./scripts/build_local_alpha_bundle.sh
-./dist/agentbc-1.0.1A-macos-local-alpha/run_local_alpha_smoke.sh
+./dist/agentbc-v1.0.1A2-macos-local-alpha/run_local_alpha_smoke.sh
 ```
 
 The package smoke test does not require Codex, Claude Code, or Hermes. Changes

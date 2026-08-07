@@ -28,20 +28,24 @@ import build_provenance as bp  # noqa: E402
 
 
 class TagVersionMappingTests(unittest.TestCase):
-    """vX.Y.ZS  ⇄  X.Y.Zs1  round-trip and edge cases."""
+    """vX.Y.ZS[N]  ⇄  X.Y.ZsN  round-trip and edge cases."""
 
     def test_tag_to_python(self) -> None:
         self.assertEqual(bp.tag_to_python_version("v1.0.1A"), "1.0.1a1")
+        self.assertEqual(bp.tag_to_python_version("v1.0.1A2"), "1.0.1a2")
         self.assertEqual(bp.tag_to_python_version("v2.3.4B"), "2.3.4b1")
+        self.assertEqual(bp.tag_to_python_version("v2.3.4B12"), "2.3.4b12")
         self.assertEqual(bp.tag_to_python_version("v0.0.0Z"), "0.0.0z1")
 
     def test_python_to_tag(self) -> None:
         self.assertEqual(bp.python_to_tag_version("1.0.1a1"), "v1.0.1A")
+        self.assertEqual(bp.python_to_tag_version("1.0.1a2"), "v1.0.1A2")
         self.assertEqual(bp.python_to_tag_version("2.3.4b1"), "v2.3.4B")
+        self.assertEqual(bp.python_to_tag_version("2.3.4b12"), "v2.3.4B12")
         self.assertEqual(bp.python_to_tag_version("0.0.0z1"), "v0.0.0Z")
 
     def test_round_trip_tag_first(self) -> None:
-        for tag in ("v1.0.1A", "v2.3.4B", "v5.6.7C"):
+        for tag in ("v1.0.1A", "v1.0.1A2", "v2.3.4B12", "v5.6.7C"):
             with self.subTest(tag=tag):
                 self.assertEqual(
                     bp.python_to_tag_version(bp.tag_to_python_version(tag)),
@@ -49,7 +53,7 @@ class TagVersionMappingTests(unittest.TestCase):
                 )
 
     def test_round_trip_version_first(self) -> None:
-        for ver in ("1.0.1a1", "2.3.4b1", "5.6.7c1"):
+        for ver in ("1.0.1a1", "1.0.1a2", "2.3.4b12", "5.6.7c1"):
             with self.subTest(version=ver):
                 self.assertEqual(
                     bp.tag_to_python_version(bp.python_to_tag_version(ver)),
@@ -64,23 +68,31 @@ class TagVersionMappingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bp.tag_to_python_version("1.0.1A")
 
-    def test_tag_rejects_extra_suffix(self) -> None:
+    def test_tag_rejects_invalid_serial(self) -> None:
         with self.assertRaises(ValueError):
-            bp.tag_to_python_version("v1.0.1A2")
+            bp.tag_to_python_version("v1.0.1A0")
+        with self.assertRaises(ValueError):
+            bp.tag_to_python_version("v1.0.1A02")
+        with self.assertRaises(ValueError):
+            bp.tag_to_python_version("v1.0.1A2x")
 
     def test_version_rejects_no_pre_release(self) -> None:
         with self.assertRaises(ValueError):
             bp.python_to_tag_version("1.0.1")
 
-    def test_version_rejects_double_digit_suffix(self) -> None:
+    def test_version_rejects_invalid_serial(self) -> None:
         with self.assertRaises(ValueError):
-            bp.python_to_tag_version("1.0.1a12")
+            bp.python_to_tag_version("1.0.1a0")
+        with self.assertRaises(ValueError):
+            bp.python_to_tag_version("1.0.1a02")
 
     def test_mapping_is_deterministic(self) -> None:
         """Repeated calls give identical results."""
         for _ in range(100):
             self.assertEqual(bp.tag_to_python_version("v1.0.1A"), "1.0.1a1")
             self.assertEqual(bp.python_to_tag_version("1.0.1a1"), "v1.0.1A")
+            self.assertEqual(bp.tag_to_python_version("v1.0.1A2"), "1.0.1a2")
+            self.assertEqual(bp.python_to_tag_version("1.0.1a2"), "v1.0.1A2")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -101,8 +113,8 @@ class PackageVersionTests(unittest.TestCase):
 
     def test_version_is_valid_pre_release(self) -> None:
         pv = bp.get_package_version(_REPO)
-        self.assertRegex(pv, r"^\d+\.\d+\.\d+[a-z]1$",
-                         f"package version {pv!r} must be X.Y.Zs1")
+        self.assertRegex(pv, r"^\d+\.\d+\.\d+[a-z][1-9]\d*$",
+                         f"package version {pv!r} must be X.Y.ZsN")
 
     def test_print_package_version(self) -> None:
         result = subprocess.run(
@@ -186,6 +198,17 @@ class BuildIdentityTests(unittest.TestCase):
         self.assertTrue(out.is_file())
         data = json.loads(out.read_text(encoding="utf-8"))
         self.assertEqual(data["build_source"], "test")
+
+    def test_generated_build_info_matches_runtime_reader_contract(self) -> None:
+        from agent_bridge_connect.doctor import _read_build_info
+
+        self._init_git_repo()
+        out = bp.write_build_info(self.repo, build_source="test")
+        data, state = _read_build_info(out)
+        self.assertEqual(state, "valid")
+        self.assertIsNotNone(data)
+        assert data is not None
+        self.assertEqual(data["schema_version"], 1)
 
     def test_source_tree_sha256_deterministic(self) -> None:
         """Same git tree always produces the same hash."""

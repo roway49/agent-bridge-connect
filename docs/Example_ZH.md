@@ -2,7 +2,7 @@
 
 中文 | [English](Example.md)
 
-本页通过真实操作录屏展示 AgentBC `1.0.1A` 的典型协作流程。这里重点呈现
+本页通过真实操作录屏展示 AgentBC `1.0.1A2` 的典型协作流程。这里重点呈现
 实际使用体验；完整命令与行为说明请参阅[功能展示](FEATURE_SHOW_ZH.md)和
 [用户指南](USER_GUIDE_ZH.md)。
 
@@ -47,4 +47,3 @@ Task List 集中展示当前批次的任务状态。用户可以随时关闭仍�
 任务 ID 快速定位结果，同时避免把 AgentBC 运行文件混入用户工程。
 
 ![查看 AgentBC 任务产物和报告](assets/artifacts.gif)
-
