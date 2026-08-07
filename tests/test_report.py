@@ -380,6 +380,55 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(run.call_args_list[1].args[0], ["/usr/bin/open", "/tmp/REPORT.md"])
         self.assertIn("Open Report", result.message)
 
+    def test_dialog_notifier_collects_message_input(self):
+        from agent_bridge_connect.notifiers.dialog import DialogNotifier
+
+        notifier = DialogNotifier()
+        with mock.patch("agent_bridge_connect.notifiers.dialog.subprocess.run") as run:
+            run.return_value = mock.Mock(
+                returncode=0,
+                stdout="button returned:Submit\ngave up:false\ntext returned:选择方案 A",
+                stderr="",
+            )
+            result = notifier.send(
+                {
+                    "event_type": "task.input_required",
+                    "message": "Choose an option",
+                    "input_type": "message",
+                }
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.details, {"action": "message", "message": "选择方案 A"})
+        self.assertIn('default answer ""', run.call_args.kwargs["input"])
+        self.assertIn('buttons {"Later", "Submit"}', run.call_args.kwargs["input"])
+
+    def test_dialog_notifier_collects_permission_decision(self):
+        from agent_bridge_connect.notifiers.dialog import DialogNotifier
+
+        notifier = DialogNotifier()
+        with mock.patch("agent_bridge_connect.notifiers.dialog.subprocess.run") as run:
+            run.return_value = mock.Mock(
+                returncode=0,
+                stdout="button returned:Deny\ngave up:false",
+                stderr="",
+            )
+            result = notifier.send(
+                {
+                    "event_type": "task.input_required",
+                    "message": "Allow access?",
+                    "input_type": "permission",
+                }
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.details, {"action": "deny"})
+        self.assertIn(
+            'buttons {"Later", "Deny", "Approve"}',
+            run.call_args.kwargs["input"],
+        )
+        self.assertIn('default button "Later"', run.call_args.kwargs["input"])
+
     def test_dialog_notifier_reports_osascript_failure(self):
         from agent_bridge_connect.notifiers.dialog import DialogNotifier
 

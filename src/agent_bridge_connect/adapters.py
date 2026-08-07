@@ -62,6 +62,7 @@ class DeliveryResult:
     ok: bool
     message: str = ""
     delivery_id: str = ""
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 class ExecutorPort(ABC):

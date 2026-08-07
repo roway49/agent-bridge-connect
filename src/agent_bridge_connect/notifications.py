@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from .notifiers.dialog import DialogNotifier
 from .notifiers.file import FileNotifier
+from .reports import redact_secrets
 from .terminal_states import TASK_TERMINAL_STATES, terminal_status_label
 
 
@@ -40,11 +41,20 @@ def notify_terminal(
     )
 
 
-def notify_input_required(service: Any, task_id: str) -> None:
+InputResponder = Callable[[str, str, str], dict[str, Any]]
+
+
+def notify_input_required(
+    service: Any,
+    task_id: str,
+    *,
+    responder: InputResponder | None = None,
+) -> dict[str, Any]:
     """Immediately deliver an actionable, explicitly nonterminal input notice."""
     payload = build_input_required_notification(service, task_id)
     file_result = FileNotifier(service.board_root / "notifications.jsonl").send(payload)
     dialog_result = DialogNotifier().send(payload)
+    action = str(dialog_result.details.get("action") or "dismissed")
     service.store.append_event(
         task_id,
         {
@@ -55,10 +65,55 @@ def notify_input_required(service: Any, task_id: str) -> None:
             "file_ok": file_result.ok,
             "dialog_ok": dialog_result.ok,
             "dialog_message": dialog_result.message,
+            "dialog_action": action,
             "dialog_delay_s": 0,
             "created_at": utc_now(),
         },
     )
+    response_result: dict[str, Any] = {}
+    response_error = ""
+    if responder is not None and action in {"message", "approve", "deny"}:
+        try:
+            response_result = responder(
+                str(payload["input_id"]),
+                action,
+                str(dialog_result.details.get("message") or ""),
+            )
+        except Exception as exc:
+            response_error = compact_notification_text(str(redact_secrets(str(exc))), 240)
+            DialogNotifier().send(
+                {
+                    "task_id": task_id,
+                    "event_type": "task.input_response_failed",
+                    "title": "Agent-Bridge-Connect",
+                    "level": "warning",
+                    "message": (
+                        f"Task: {task_id} remains waiting for input\n"
+                        f"Response failed: {response_error}\n"
+                        f"Fallback: {payload['respond_command']}"
+                    ),
+                    "report_path": str(payload.get("report_path") or ""),
+                }
+            )
+        service.store.append_event(
+            task_id,
+            {
+                "event_type": "task.input_dialog_response",
+                "task_id": task_id,
+                "input_id": str(payload["input_id"]),
+                "response_type": action,
+                "response_status": str(response_result.get("status") or ""),
+                "response_task_id": str(response_result.get("task_id") or ""),
+                "same_task": bool(response_result.get("same_task", False)),
+                "response_error": response_error,
+                "created_at": utc_now(),
+            },
+        )
+    return {
+        "dialog_action": action,
+        "response": response_result,
+        "response_error": response_error,
+    }
 
 
 def build_input_required_notification(service: Any, task_id: str) -> dict[str, str]:
@@ -69,7 +124,15 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, s
     input_id = str(request.get("input_id") or "")
     if not input_id:
         raise ValueError(f"Task {task_id} input request has no response ID")
-    command = f"agentbc task respond {task_id} --input {input_id} --message \"<response>\""
+    input_type = str(request.get("type") or "message").strip().lower()
+    if input_type == "permission":
+        command = (
+            f"agentbc task respond {task_id} --input {input_id} --approve"
+            f" (or --deny)"
+        )
+    else:
+        command = f"agentbc task respond {task_id} --input {input_id} --message \"<response>\""
+    workspace = task.workspace or {}
     body = "\n".join(
         [
             f"Task: {task_id} input required",
@@ -85,8 +148,10 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, s
         "title": "Agent-Bridge-Connect",
         "level": "input",
         "message": body,
-        "report_path": "",
+        "report_path": str(workspace.get("report_file") or ""),
         "respond_command": command,
+        "input_id": input_id,
+        "input_type": input_type,
     }
 
 

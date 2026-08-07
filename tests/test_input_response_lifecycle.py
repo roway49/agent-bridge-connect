@@ -124,15 +124,104 @@ class InputResponseLifecycleTests(unittest.TestCase):
         )
         request = self._input()
         exact_command = (
-            f"agentbc task respond {self.task.id} --input {request['input_id']} "
-            '--message "<response>"'
+            f"agentbc task respond {self.task.id} --input {request['input_id']} --approve"
         )
         self.assertEqual(notification["event_type"], "task.input_required")
         self.assertIn(exact_command, notification["message"])
+        self.assertIn("--deny", notification["message"])
         self.assertIn(request["deadline_at"], notification["message"])
         health = self.service.task_summary(self.task.id)["health"]
         self.assertEqual((health["state"], health["color"]), ("waiting_for_input", "yellow"))
         self.assertTrue(self.service.task_summary(self.task.id)["is_active"])
+
+    def test_input_dialog_action_responds_and_resumes_same_task(self) -> None:
+        request = self._input()
+        response = {
+            "task_id": self.task.id,
+            "input_id": request["input_id"],
+            "status": "running",
+            "same_task": True,
+        }
+        responder = mock.Mock(return_value=response)
+        with mock.patch(
+            "agent_bridge_connect.notifications.DialogNotifier.send",
+            return_value=DeliveryResult(
+                True,
+                "shown",
+                details={"action": "approve"},
+            ),
+        ):
+            result = notify_input_required(
+                self.service,
+                self.task.id,
+                responder=responder,
+            )
+
+        responder.assert_called_once_with(request["input_id"], "approve", "")
+        self.assertEqual(result["response"]["status"], "running")
+        events = self.service.store.read_events(self.task.id)
+        self.assertEqual(events[-2]["dialog_action"], "approve")
+        event = events[-1]
+        self.assertEqual(event["event_type"], "task.input_dialog_response")
+        self.assertEqual(event["response_status"], "running")
+        self.assertTrue(event["same_task"])
+
+    def test_dismissed_input_dialog_keeps_task_waiting(self) -> None:
+        responder = mock.Mock()
+        with mock.patch(
+            "agent_bridge_connect.notifications.DialogNotifier.send",
+            return_value=DeliveryResult(
+                True,
+                "shown",
+                details={"action": "dismissed"},
+            ),
+        ):
+            notify_input_required(self.service, self.task.id, responder=responder)
+
+        responder.assert_not_called()
+        self.assertEqual(self.service.get_task(self.task.id).status, "input_required")
+        self.assertEqual(load_lease(self.task.id, self.board).state, RunLeaseState.SUSPENDED)
+
+    def test_worker_notification_wires_dialog_response_to_runner(self) -> None:
+        from agent_bridge_connect.cli import _notify_input_required
+
+        request = self._input()
+        with (
+            mock.patch(
+                "agent_bridge_connect.notifications.DialogNotifier.send",
+                return_value=DeliveryResult(
+                    True,
+                    "shown",
+                    details={"action": "approve"},
+                ),
+            ),
+            mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.respond_task",
+                return_value={
+                    "task_id": self.task.id,
+                    "input_id": request["input_id"],
+                    "status": "running",
+                    "same_task": True,
+                },
+            ) as respond,
+        ):
+            result = _notify_input_required(
+                self.service,
+                self.task.id,
+                config_path=self.base / "config.toml",
+                interval_s=3.0,
+            )
+
+        respond.assert_called_once_with(
+            self.task.id,
+            request["input_id"],
+            "approve",
+            "",
+            self.service.board_root,
+            self.base / "config.toml",
+            3.0,
+        )
+        self.assertEqual(result["response"]["status"], "running")
 
     def test_legacy_input_required_without_id_never_emits_blank_response_command(self) -> None:
         task = self.service.get_task(self.task.id)
