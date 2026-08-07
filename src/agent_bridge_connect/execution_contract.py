@@ -10,6 +10,9 @@ FINAL_CALLBACK_PREFIX = "AGENTBC_FINAL_CALLBACK:"
 FINAL_CALLBACK_VERSION = 1
 AGENT_FINAL_STATES = frozenset({"completed", "input_required", "cancelled"})
 STEP_RESULT_STATUSES = frozenset({"done", "failed", "blocked", "pending"})
+CHOICE_INPUT_TYPE = "choice"
+CHOICE_OPTION_COUNT = 2
+MAX_CHOICE_OPTION_LENGTH = 48
 
 
 @dataclass(frozen=True)
@@ -128,13 +131,41 @@ def validate_callback_payload(
                 "completion_marker_steps_incomplete",
                 f"Completed marker contains non-done steps: {', '.join(map(str, incomplete))}",
             )
-    elif final_state == "input_required" and not any(
-        item.get("status") == "blocked" for item in normalized_results
-    ):
-        return _invalid(
-            "completion_marker_input_step_missing",
-            "input_required marker must identify at least one blocked step",
-        )
+    elif final_state == "input_required":
+        if not any(item.get("status") == "blocked" for item in normalized_results):
+            return _invalid(
+                "completion_marker_input_step_missing",
+                "input_required marker must identify at least one blocked step",
+            )
+        input_details = callback.get("input")
+        if isinstance(input_details, dict) and str(input_details.get("type") or "").strip().lower() == CHOICE_INPUT_TYPE:
+            raw_options = input_details.get("options")
+            if not isinstance(raw_options, list) or len(raw_options) != CHOICE_OPTION_COUNT:
+                return _invalid(
+                    "completion_marker_choice_options_invalid",
+                    "choice input must declare exactly two options",
+                )
+            options: list[str] = []
+            for option in raw_options:
+                if not isinstance(option, str) or not option.strip():
+                    return _invalid(
+                        "completion_marker_choice_options_invalid",
+                        "choice input options must be non-empty strings",
+                    )
+                clean_option = option.strip()
+                if len(clean_option) > MAX_CHOICE_OPTION_LENGTH:
+                    return _invalid(
+                        "completion_marker_choice_options_invalid",
+                        f"choice input options must be at most {MAX_CHOICE_OPTION_LENGTH} characters",
+                    )
+                options.append(clean_option)
+            if len(set(options)) != CHOICE_OPTION_COUNT:
+                return _invalid(
+                    "completion_marker_choice_options_invalid",
+                    "choice input options must be distinct",
+                )
+            callback = dict(callback)
+            callback["input"] = {**input_details, "type": CHOICE_INPUT_TYPE, "options": options}
 
     normalized = dict(callback)
     normalized["summary"] = summary.strip()

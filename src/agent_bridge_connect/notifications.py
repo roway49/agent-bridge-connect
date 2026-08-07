@@ -116,7 +116,7 @@ def notify_input_required(
     }
 
 
-def build_input_required_notification(service: Any, task_id: str) -> dict[str, str]:
+def build_input_required_notification(service: Any, task_id: str) -> dict[str, Any]:
     task = service.get_task(task_id)
     request = (task.extensions or {}).get("agentbc.input")
     if not isinstance(request, dict) or request.get("status") != "waiting":
@@ -125,6 +125,11 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, s
     if not input_id:
         raise ValueError(f"Task {task_id} input request has no response ID")
     input_type = str(request.get("type") or "message").strip().lower()
+    input_options = (
+        [str(option).strip() for option in request.get("options", []) if str(option).strip()]
+        if input_type == "choice" and isinstance(request.get("options"), list)
+        else []
+    )
     if input_type == "permission":
         command = (
             f"agentbc task respond {task_id} --input {input_id} --approve"
@@ -133,15 +138,20 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, s
     else:
         command = f"agentbc task respond {task_id} --input {input_id} --message \"<response>\""
     workspace = task.workspace or {}
-    body = "\n".join(
+    body_lines = [
+        f"Task: {task_id} input required",
+        f"Blocked step/type: {request.get('blocked_step_id', '')} / {request.get('type', '')}",
+        f"Summary: {compact_notification_text(str(request.get('summary') or ''), 180)}",
+    ]
+    if input_options:
+        body_lines.append(f"Options: {' | '.join(input_options)}")
+    body_lines.extend(
         [
-            f"Task: {task_id} input required",
-            f"Blocked step/type: {request.get('blocked_step_id', '')} / {request.get('type', '')}",
-            f"Summary: {compact_notification_text(str(request.get('summary') or ''), 180)}",
             f"Deadline: {request.get('deadline_at', '')}",
             f"Respond: {command}",
         ]
     )
+    body = "\n".join(body_lines)
     return {
         "task_id": task_id,
         "event_type": "task.input_required",
@@ -152,6 +162,7 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, s
         "respond_command": command,
         "input_id": input_id,
         "input_type": input_type,
+        "input_options": input_options,
     }
 
 

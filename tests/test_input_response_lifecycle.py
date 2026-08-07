@@ -14,7 +14,7 @@ from agent_bridge_connect.cli import build_parser
 from agent_bridge_connect.executors.codex import _build_prompt as build_codex_prompt
 from agent_bridge_connect.notifications import build_input_required_notification, notify_input_required
 from agent_bridge_connect.protocol import ABCError
-from agent_bridge_connect.reports import generate_report, generate_task_brief
+from agent_bridge_connect.reports import generate_report, generate_report_md, generate_task_brief
 from agent_bridge_connect.run_lease import (
     RunLeaseState,
     create_lease,
@@ -133,6 +133,32 @@ class InputResponseLifecycleTests(unittest.TestCase):
         health = self.service.task_summary(self.task.id)["health"]
         self.assertEqual((health["state"], health["color"]), ("waiting_for_input", "yellow"))
         self.assertTrue(self.service.task_summary(self.task.id)["is_active"])
+
+    def test_choice_options_are_preserved_and_exposed_to_the_dialog(self) -> None:
+        choice_task = self.service.create_task(
+            "choice input",
+            "shell",
+            [{"id": 1, "description": "choose"}],
+            customer_path=self.project,
+        )
+        callback = {
+            "version": 1,
+            "task_id": choice_task.id,
+            "final_state": "input_required",
+            "summary": "Choose an option",
+            "input": {"type": "choice", "options": ["Option A", "Option B"]},
+            "step_results": [{"id": 1, "status": "blocked"}],
+        }
+        self.assertTrue(self.service.finalize_task_from_agent(choice_task.id, callback))
+
+        request = self.service.get_task(choice_task.id).extensions["agentbc.input"]
+        notification = build_input_required_notification(self.service, choice_task.id)
+        self.assertEqual(request["type"], "choice")
+        self.assertEqual(request["options"], ["Option A", "Option B"])
+        self.assertEqual(notification["input_options"], ["Option A", "Option B"])
+        self.assertIn("Options: Option A | Option B", notification["message"])
+        self.assertIn("--message", notification["respond_command"])
+        self.assertIn("- Options: Option A | Option B", generate_report_md(choice_task.id, self.board))
 
     def test_input_dialog_action_responds_and_resumes_same_task(self) -> None:
         request = self._input()

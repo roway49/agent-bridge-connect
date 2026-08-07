@@ -148,7 +148,10 @@ Use the exact running task ID and list every declared task step exactly once as
 `done` for `completed`. Missing/invalid JSON, mismatched IDs, or missing,
 duplicate, unknown, or non-done steps fail the task. Use `input_required` only
 with at least one declared step marked `blocked`; permission or approval prose
-without that valid marker fails. Explicit retryable transport/infrastructure
+without that valid marker fails. For a two-option user decision, add
+`"input":{"type":"choice","options":["Option A","Option B"]}` to the marker;
+the two distinct labels must each be 48 characters or fewer. Use `message` for
+free text and `permission` only for approve/deny. Explicit retryable transport/infrastructure
 failures may remain `needs_recovery` and are never auto-retried. Core validates
 the flow declaration only, not Git state, tests, files, artifact quality, or user
 acceptance.

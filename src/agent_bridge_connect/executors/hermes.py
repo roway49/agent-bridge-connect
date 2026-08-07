@@ -625,6 +625,7 @@ def _build_prompt(task_packet: dict[str, Any]) -> str:
                 f'"step_results":[{step_results}]}}'
             ),
             "Use final_state input_required only with at least one declared step status blocked; plain permission or approval prose is not a valid stop.",
+            'For a two-option user decision, include "input":{"type":"choice","options":["Option A","Option B"]}; the two distinct option labels must each be 48 characters or fewer. Use type message for free text and type permission only for approve/deny.',
             "A zero CLI exit without a valid marker fails the task. completed means flow execution ended, not user acceptance or quality approval.",
         ]
     )
