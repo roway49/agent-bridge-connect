@@ -37,6 +37,9 @@ from ..path_provider import find_binary
 from ..runner import RunnerClient, RunnerError
 
 SAFETY_TIMEOUT_S = 24 * 60 * 60
+_HERMES_INITIALIZING_LINE_RE = re.compile(
+    r"(?m)^[ \t]*Initializing agent\.\.\.[ \t]*\r?$"
+)
 
 
 class HermesExecutor(CLIExecutorBase):
@@ -635,18 +638,21 @@ def _build_prompt(task_packet: dict[str, Any]) -> str:
 def _extract_final_response(stdout: str, task_packet: dict[str, Any]) -> str:
     """Return the actual Hermes assistant response from raw CLI output.
 
-    Hermes single-query mode prefixes the output with ``Query: <prompt>`` in
-    its human-facing path, and models may repeat the task prompt verbatim
-    ahead of their real answer. The prompt embeds the example final marker, so
+    Hermes single-query mode may print warnings, a terminal-wrapped
+    ``Query: <prompt>`` echo, and an ``Initializing agent...`` boundary before
+    the actual response. The prompt embeds the example final marker, so
     validating the raw stdout would count that echoed example plus the real
-    marker as a duplicate and fail. Strip the known leading Query/task-prompt
-    echo so marker validation inspects the actual final response only; a
-    genuinely duplicated marker inside that response still fails as
-    ``completion_marker_duplicate``.
+    marker as a duplicate and fail. Prefer the explicit initialization
+    boundary when present, then retain the older Query/task-prompt fallback
+    for output variants without it. A genuinely duplicated marker inside the
+    actual response still fails as ``completion_marker_duplicate``.
     """
     output = (stdout or "").strip()
     if not output:
         return output
+    initialization = _HERMES_INITIALIZING_LINE_RE.search(output)
+    if initialization is not None:
+        return output[initialization.end():].lstrip()
     prompt = _build_prompt(task_packet)
     if output.startswith("Query:"):
         candidate = output[len("Query:"):].lstrip()
