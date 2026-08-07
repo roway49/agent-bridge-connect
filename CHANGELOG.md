@@ -1,5 +1,98 @@
 # Changelog
 
+## Unreleased - 1.0.1A Stability Closeout
+
+> Internal candidate updated through 2026-08-08. The existing public
+> `v1.0.1A` tag, GitHub Release, and PyPI `1.0.1a1` artifacts remain immutable;
+> this validated candidate becomes the development baseline for `1.0.2A`.
+
+### Added
+
+- A strict, versioned `AGENTBC_FINAL_CALLBACK` flow contract. A task reaches
+  `completed` only when exactly one valid marker names the running task and
+  declares every configured step exactly once as `done`; a zero exit code no
+  longer implies completion by itself.
+- A resumable `input_required` lifecycle with persisted input IDs, blocked-step
+  evidence, typed message/permission/choice requests, suspended RunLease state,
+  and same-task continuation after `agentbc task respond`.
+- Audited `inherit`, `safe`, and `full` permission modes across task creation,
+  handoff, setup, Runner authorization, reports, and all three supported
+  executors. Dangerous native argument aliases and conflicting overrides fail
+  closed.
+- Dispatcher traceability in both task briefs and final reports. AgentBC records
+  the dispatcher platform and a trusted current conversation ID when available;
+  handoffs do not inherit the previous iteration's dispatcher conversation.
+- Read-only `agentbc doctor` and `agentbc doctor --json` diagnostics for package,
+  installation source, configuration, workspace, Runner availability, and
+  CLI/Runner identity drift.
+- Reproducible release-provenance checks, pinned Gate tooling, and regression
+  coverage for clean builds, wheel/sdist metadata, checksums, and guarded
+  publication.
+
+### Changed
+
+- `input_required` is now an active, recoverable waiting state instead of a
+  terminal result. Completed step evidence is retained, the blocked step is
+  reset on response, and user-waiting time is excluded from execution time.
+- macOS input notifications now show the concrete reason and two described
+  choices directly. Choosing `Later` or allowing the five-minute dialog to time
+  out dismisses only the dialog and leaves the request waiting for later
+  takeover; internal deadline and CLI response details are no longer shown in
+  the choice dialog.
+- Reports now expose flow-marker validity, completed-step count, failure code,
+  failed or blocked steps, permission selection, dispatcher traceability,
+  execution/waiting duration, and RunLease recovery guidance.
+- Task List health remains yellow while a task is waiting for input or has not
+  produced progress within the observation window, and returns to green on a
+  later valid heartbeat.
+- Runner finalization now treats executor callbacks as staged evidence until
+  process exit and reconciles completion, cancellation, recovery, and late
+  callback races before writing the terminal report.
+
+### Fixed
+
+- Prevented a live worker from being marked failed during the short interval
+  between executor exit and Core finalization.
+- Isolated test and uninstall Runner spools so skip-runner and fallback cleanup
+  cannot stop or remove the user's active Runner state.
+- Classified Hermes iteration-budget exhaustion consistently and exposed
+  bounded diagnostics without imposing an AgentBC-specific turn limit.
+- Prevented Hermes prompt examples from being counted as real terminal markers.
+  Validation now uses the assistant response after the CLI
+  `Initializing agent...` boundary, including when warnings and terminal line
+  wrapping precede it, while genuine duplicate markers in the response still
+  fail.
+- Kept legacy `input_required` records safe and actionable without generating
+  blank response commands or converting a dismissed dialog into completion or
+  failure.
+- Preserved terminal task state when bounded record compaction, notification
+  delivery, or late executor output occurs after finalization.
+
+### Validation
+
+- `541` automated tests pass in the current candidate, including strict flow,
+  permission, input takeover, notification, RunLease race, Runner spool,
+  release provenance, and Hermes real-output regression suites.
+- The candidate passes Ruff, compileall, shell syntax, Twine, clean-wheel smoke,
+  and the MacBook x86_64 Gate before installation on the ARM64 development
+  machine.
+- Real executor canaries verified Codex/Claude/Hermes dispatch, strict Hermes
+  completion, and concurrent Claude/Hermes `input_required` suspension. User
+  takeover and final deliverable quality remain separate acceptance steps.
+
+### Known Limitations
+
+- The internal candidate wheel does not yet embed `_build_info.json`; `doctor`
+  therefore reports build identity as a warning. Candidate provenance remains
+  bound by `candidate.env`, Gate logs, and artifact checksums until `1.0.2A`.
+- The raw `extensions.agentbc.execution.lease_state` snapshot may remain stale
+  after finalization. The normalized task status, `execution` view, and
+  `run_lease.json` are authoritative; extension synchronization is tracked for
+  `1.0.2A`.
+- User-configurable Claude budget management, execution-session retention,
+  `delete`, `update`, Homebrew, OpenCode, Docker, GUI, and notification-channel
+  expansion remain outside the frozen `1.0.1A` scope.
+
 ## 1.0.1A - Public Alpha
 
 - Local-first task coordination for Codex, Claude Code, and Hermes through one
