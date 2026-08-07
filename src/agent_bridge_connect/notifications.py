@@ -67,6 +67,8 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, s
     if not isinstance(request, dict) or request.get("status") != "waiting":
         raise ValueError(f"Task {task_id} has no waiting input request")
     input_id = str(request.get("input_id") or "")
+    if not input_id:
+        raise ValueError(f"Task {task_id} input request has no response ID")
     command = f"agentbc task respond {task_id} --input {input_id} --message \"<response>\""
     body = "\n".join(
         [
