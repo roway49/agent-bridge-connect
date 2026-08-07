@@ -131,7 +131,10 @@ AGENTBC_FINAL_CALLBACK: {"version":1,"task_id":"4XMC-001","final_state":"complet
 appears exactly once with status `done`. Missing or invalid JSON, wrong task IDs,
 duplicate/unknown/missing steps, and non-`done` completion steps fail the flow.
 `input_required` must be explicit and identify at least one declared step as
-`blocked`; permission or approval prose alone is a failure.
+`blocked`; permission or approval prose alone is a failure. A two-option choice
+can declare `"input":{"type":"choice","options":["A","B"]}` so the desktop
+dialog renders direct option buttons. Input dialogs remain visible for up to
+five minutes; dismissing or timing out leaves the task waiting for a CLI response.
 
 1. Runner confirms that execution started.
 2. The executor emits and exits with its final marker.

@@ -15,8 +15,9 @@ _INPUT_EVENT = "task.input_required"
 
 
 class DialogNotifier:
-    def __init__(self, timeout_s: int = 30):
+    def __init__(self, timeout_s: int = 30, input_timeout_s: int = 300):
         self.timeout_s = max(timeout_s, 1)
+        self.input_timeout_s = max(input_timeout_s, 1)
         self.osascript = Path("/usr/bin/osascript")
         self.open_command = Path("/usr/bin/open")
 
@@ -28,15 +29,24 @@ class DialogNotifier:
         body = str(clean.get("message", ""))
         report_path = str(clean.get("report_path") or "").strip()
         input_type = str(clean.get("input_type") or "message").strip().lower()
-        script = self._dialog_script(event_type, input_type)
+        input_options = tuple(
+            str(option).strip()
+            for option in clean.get("input_options", [])
+            if str(option).strip()
+        ) if isinstance(clean.get("input_options"), list) else ()
+        if input_type == "choice" and len(input_options) != 2:
+            input_type = "message"
+            input_options = ()
+        dialog_timeout_s = self.input_timeout_s if event_type == _INPUT_EVENT else self.timeout_s
+        script = self._dialog_script(event_type, input_type, dialog_timeout_s)
         try:
             result = subprocess.run(
-                [str(self.osascript), "-", title, body],
+                [str(self.osascript), "-", title, body, *input_options],
                 input=script,
                 text=True,
                 capture_output=True,
                 check=False,
-                timeout=self.timeout_s + 5,
+                timeout=dialog_timeout_s + 5,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return DeliveryResult(False, f"dialog notification failed: {exc}")
@@ -64,11 +74,14 @@ class DialogNotifier:
         gave_up = gave_up_match.group(1).lower() == "true" if gave_up_match else False
         message = f"dialog shown; button={button}; gave_up={str(gave_up).lower()}"
         if event_type == _INPUT_EVENT:
-            action = self._input_action(button, input_type, gave_up)
+            action = self._input_action(button, input_type, gave_up, input_options)
             details = {"action": action}
             if action == "message":
-                text_match = _TEXT_RE.search(stdout)
-                response = text_match.group(1).strip() if text_match else ""
+                if input_type == "choice":
+                    response = button if button in input_options else ""
+                else:
+                    text_match = _TEXT_RE.search(stdout)
+                    response = text_match.group(1).strip() if text_match else ""
                 if not response:
                     return DeliveryResult(
                         True,
@@ -96,11 +109,24 @@ class DialogNotifier:
             message = f"{message}; opened report={report_path}"
         return DeliveryResult(True, message, f"dialog:{event_type}")
 
-    def _dialog_script(self, event_type: str, input_type: str) -> str:
+    def _dialog_script(self, event_type: str, input_type: str, timeout_s: int) -> str:
         if event_type == _INPUT_EVENT and input_type == "permission":
             dialog = (
                 'buttons {"Later", "Deny", "Approve"} default button "Later" '
-                f'giving up after {self.timeout_s} with icon caution'
+                f'giving up after {timeout_s} with icon caution'
+            )
+            return (
+                "on run argv\n"
+                "  set dialogResult to display dialog (item 2 of argv) "
+                f"with title (item 1 of argv) {dialog}\n"
+                '  return "button returned:" & (button returned of dialogResult) & linefeed & '
+                '"gave up:" & ((gave up of dialogResult) as text)\n'
+                "end run\n"
+            )
+        elif event_type == _INPUT_EVENT and input_type == "choice":
+            dialog = (
+                'buttons {"Later", (item 3 of argv), (item 4 of argv)} default button "Later" '
+                f'giving up after {timeout_s} with icon caution'
             )
             return (
                 "on run argv\n"
@@ -113,7 +139,7 @@ class DialogNotifier:
         elif event_type == _INPUT_EVENT:
             dialog = (
                 'default answer "" buttons {"Later", "Submit"} default button "Submit" '
-                f'giving up after {self.timeout_s} with icon caution'
+                f'giving up after {timeout_s} with icon caution'
             )
             return (
                 "on run argv\n"
@@ -127,7 +153,7 @@ class DialogNotifier:
         else:
             dialog = (
                 'buttons {"OK", "Open Report"} default button "Open Report" '
-                f'giving up after {self.timeout_s} with icon note'
+                f'giving up after {timeout_s} with icon note'
             )
         return (
             "on run argv\n"
@@ -137,9 +163,16 @@ class DialogNotifier:
         )
 
     @staticmethod
-    def _input_action(button: str, input_type: str, gave_up: bool) -> str:
+    def _input_action(
+        button: str,
+        input_type: str,
+        gave_up: bool,
+        input_options: tuple[str, ...] = (),
+    ) -> str:
         if gave_up or button in {"Later", "unknown"}:
             return "dismissed"
         if input_type == "permission":
             return "approve" if button == "Approve" else "deny" if button == "Deny" else "dismissed"
+        if input_type == "choice":
+            return "message" if button in input_options else "dismissed"
         return "message" if button == "Submit" else "dismissed"

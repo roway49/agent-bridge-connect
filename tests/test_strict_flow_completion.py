@@ -42,6 +42,7 @@ class ExecutorFlowContractTests(unittest.TestCase):
         task_id: str = "TEST-001",
         final_state: str = "completed",
         step_results: list[dict] | None = None,
+        input_details: dict | None = None,
     ) -> str:
         payload = {
             "version": 1,
@@ -52,6 +53,8 @@ class ExecutorFlowContractTests(unittest.TestCase):
             if step_results is not None
             else [{"id": 1, "status": "done"}, {"id": 2, "status": "done"}],
         }
+        if input_details is not None:
+            payload["input"] = input_details
         return f"{FINAL_CALLBACK_PREFIX} {json.dumps(payload)}"
 
     def _run_executor(
@@ -122,6 +125,42 @@ class ExecutorFlowContractTests(unittest.TestCase):
             with self.subTest(executor=executor_name):
                 poll = self._run_executor(executor_name, marker)
                 self.assertEqual(poll.status, "input_required")
+
+    def test_choice_input_requires_exactly_two_distinct_short_labels(self) -> None:
+        step_results = [{"id": 1, "status": "done"}, {"id": 2, "status": "blocked"}]
+        valid = self._marker(
+            final_state="input_required",
+            step_results=step_results,
+            input_details={"type": "choice", "options": ["Option A", "Option B"]},
+        )
+        validation = extract_callback_validation_from_output(valid, self.packet, "choice-run")
+        self.assertTrue(validation.valid)
+        self.assertEqual(
+            validation.callback["input"],
+            {"type": "choice", "options": ["Option A", "Option B"]},
+        )
+
+        invalid_options = (
+            [],
+            ["only one"],
+            ["same", "same"],
+            ["", "Option B"],
+            ["A" * 49, "Option B"],
+        )
+        for options in invalid_options:
+            with self.subTest(options=options):
+                marker = self._marker(
+                    final_state="input_required",
+                    step_results=step_results,
+                    input_details={"type": "choice", "options": options},
+                )
+                validation = extract_callback_validation_from_output(
+                    marker,
+                    self.packet,
+                    "choice-run",
+                )
+                self.assertFalse(validation.valid)
+                self.assertEqual(validation.code, "completion_marker_choice_options_invalid")
 
     def test_all_executors_keep_explicit_transport_failure_recoverable(self) -> None:
         output = "executor stopped before a final marker"

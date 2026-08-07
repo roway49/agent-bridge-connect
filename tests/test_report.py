@@ -354,6 +354,7 @@ class NotificationTests(unittest.TestCase):
             })
         self.assertTrue(result.ok)
         self.assertEqual(notifier.timeout_s, 30)
+        self.assertEqual(notifier.input_timeout_s, 300)
         self.assertEqual(run.call_args_list[0].args[0][2], "Agent-Bridge-Connect")
         self.assertEqual(run.call_args_list[0].args[0][3], "Task completed")
 
@@ -402,6 +403,38 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(result.details, {"action": "message", "message": "选择方案 A"})
         self.assertIn('default answer ""', run.call_args.kwargs["input"])
         self.assertIn('buttons {"Later", "Submit"}', run.call_args.kwargs["input"])
+
+    def test_dialog_notifier_renders_two_choice_buttons_for_five_minutes(self):
+        from agent_bridge_connect.notifiers.dialog import DialogNotifier
+
+        notifier = DialogNotifier()
+        with mock.patch("agent_bridge_connect.notifiers.dialog.subprocess.run") as run:
+            run.return_value = mock.Mock(
+                returncode=0,
+                stdout="button returned:Option B\ngave up:false",
+                stderr="",
+            )
+            result = notifier.send(
+                {
+                    "event_type": "task.input_required",
+                    "message": "Choose an option",
+                    "input_type": "choice",
+                    "input_options": ["Option A", "Option B"],
+                }
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.details, {"action": "message", "message": "Option B"})
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/usr/bin/osascript", "-", "Agent-Bridge-Connect", "Choose an option", "Option A", "Option B"],
+        )
+        self.assertEqual(run.call_args.kwargs["timeout"], 305)
+        self.assertIn(
+            'buttons {"Later", (item 3 of argv), (item 4 of argv)}',
+            run.call_args.kwargs["input"],
+        )
+        self.assertIn("giving up after 300", run.call_args.kwargs["input"])
 
     def test_dialog_notifier_collects_permission_decision(self):
         from agent_bridge_connect.notifiers.dialog import DialogNotifier

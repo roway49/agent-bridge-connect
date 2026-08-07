@@ -648,17 +648,18 @@ def _render_report_md(report: dict[str, Any]) -> str:
 
     input_request = report.get("input") or {}
     if input_request:
-        lines.extend(
-            [
-                "",
-                "## Input Lifecycle",
-                f"- Input ID: `{input_request.get('input_id', '')}`",
-                f"- Status: `{input_request.get('status', '')}`",
-                f"- Blocked step/type: `{input_request.get('blocked_step_id', '')}` / `{input_request.get('type', '')}`",
-                f"- Summary: {input_request.get('summary', '')}",
-                f"- Deadline: `{input_request.get('deadline_at', '')}`",
-            ]
-        )
+        input_lines = [
+            f"- Input ID: `{input_request.get('input_id', '')}`",
+            f"- Status: `{input_request.get('status', '')}`",
+            f"- Blocked step/type: `{input_request.get('blocked_step_id', '')}` / `{input_request.get('type', '')}`",
+            f"- Summary: {input_request.get('summary', '')}",
+        ]
+        if input_request.get("options"):
+            input_lines.append(
+                f"- Options: {' | '.join(str(option) for option in input_request.get('options', []))}"
+            )
+        input_lines.append(f"- Deadline: `{input_request.get('deadline_at', '')}`")
+        lines.extend(["", "## Input Lifecycle", *input_lines])
 
     lines.extend(
         [

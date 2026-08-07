@@ -106,6 +106,13 @@ infrastructure failures may become `needs_recovery`, but AgentBC never dispatche
 a retry automatically. Flow validation does not inspect Git, tests, files, or
 artifact quality.
 
+For a two-option decision, include
+`"input":{"type":"choice","options":["Option A","Option B"]}` in the
+`input_required` marker. AgentBC renders both labels as direct desktop buttons;
+free-text requests continue to use `type: message`, and approve/deny requests use
+`type: permission`. Input dialogs wait up to five minutes, and dismissal or timeout
+keeps the same task waiting for `agentbc task respond`.
+
 Reports show marker validity, completed-step count, failure code, failed/blocked
 steps, and `Flow contract satisfied`. That field is `yes` only for a valid
 completed marker with all task steps done after the report is generated.
