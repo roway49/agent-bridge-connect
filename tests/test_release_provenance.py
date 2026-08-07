@@ -536,15 +536,25 @@ class NoPublishBehaviourTests(unittest.TestCase):
             capture_output=True, text=True, check=True,
         ).stdout.strip()
 
-    def test_publish_job_guarded_by_release_event(self) -> None:
-        """Publish workflow YAML has if: condition on the publish job."""
+    def test_publish_job_requires_release_or_confirmed_tag_recovery(self) -> None:
+        """Publish is limited to releases or explicit tagged recovery runs."""
         workflow = (
             _REPO / ".github" / "workflows" / "publish-pypi.yml"
         ).read_text(encoding="utf-8")
-        self.assertIn("github.event_name", workflow,
-                      "publish job must have an if: condition")
-        # The publish job must only trigger on release published.
-        self.assertIn("release", workflow.split("publish:")[1].split("steps:")[0])
+        publish_guard = workflow.split("\n  publish:\n", 1)[1].split(
+            "\n    steps:\n", 1
+        )[0]
+        self.assertIn("github.event_name == 'release'", publish_guard)
+        self.assertIn("github.event_name == 'workflow_dispatch'", publish_guard)
+        self.assertIn("inputs.publish", publish_guard)
+        self.assertIn("inputs.release_tag != ''", publish_guard)
+
+    def test_release_upload_is_repo_explicit_and_recoverable(self) -> None:
+        workflow = (
+            _REPO / ".github" / "workflows" / "publish-pypi.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn('--repo "${{ github.repository }}"', workflow)
+        self.assertIn("--clobber", workflow)
 
     def test_build_source_distinguishes_events(self) -> None:
         """build_source is set from CI context to differentiate events."""
@@ -555,13 +565,14 @@ class NoPublishBehaviourTests(unittest.TestCase):
         self.assertIn("github-release", workflow)
         self.assertIn("github-manual", workflow)
 
-    def test_validate_only_runs_on_release(self) -> None:
-        """Provenance validation step guarded by release event."""
+    def test_tagged_recovery_checks_out_and_validates_existing_tag(self) -> None:
+        """Manual publish recovery must build and validate the named tag."""
         workflow = (
             _REPO / ".github" / "workflows" / "publish-pypi.yml"
         ).read_text(encoding="utf-8")
-        self.assertIn("provenance validation", workflow.lower())
-        self.assertIn("release", workflow.lower())
+        self.assertIn("inputs.release_tag || github.ref", workflow)
+        self.assertIn('validate --tag "$RELEASE_TAG"', workflow)
+        self.assertIn("github-release-recovery", workflow)
 
     def test_workflow_dispatch_triggers_build(self) -> None:
         """workflow_dispatch is listed as a trigger."""
