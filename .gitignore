@@ -37,5 +37,8 @@ shaders/
 work/
 agentbc_tasks/
 
+# Internal development handbook remains private.
+AGENTBC_ALPHA_DEVELOPMENT_HANDBOOK.md
+
 # Generated at build time — never commit a stale identity.
 _build_info.json
