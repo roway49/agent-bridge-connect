@@ -1,10 +1,9 @@
 # Changelog
 
-## Unreleased - 1.0.1A Stability Closeout
+## 1.0.1A - 2026-08-08
 
 > Internal candidate updated through 2026-08-08. The existing public
 > `v1.0.1A` tag, GitHub Release, and PyPI `1.0.1a1` artifacts remain immutable;
-> this validated candidate becomes the development baseline for `1.0.2A`.
 
 ### Added
 
@@ -79,19 +78,6 @@
 - Real executor canaries verified Codex/Claude/Hermes dispatch, strict Hermes
   completion, and concurrent Claude/Hermes `input_required` suspension. User
   takeover and final deliverable quality remain separate acceptance steps.
-
-### Known Limitations
-
-- The internal candidate wheel does not yet embed `_build_info.json`; `doctor`
-  therefore reports build identity as a warning. Candidate provenance remains
-  bound by `candidate.env`, Gate logs, and artifact checksums until `1.0.2A`.
-- The raw `extensions.agentbc.execution.lease_state` snapshot may remain stale
-  after finalization. The normalized task status, `execution` view, and
-  `run_lease.json` are authoritative; extension synchronization is tracked for
-  `1.0.2A`.
-- User-configurable Claude budget management, execution-session retention,
-  `delete`, `update`, Homebrew, OpenCode, Docker, GUI, and notification-channel
-  expansion remain outside the frozen `1.0.1A` scope.
 
 ## 1.0.1A - Public Alpha
 
