@@ -149,9 +149,11 @@ Use the exact running task ID and list every declared task step exactly once as
 duplicate, unknown, or non-done steps fail the task. Use `input_required` only
 with at least one declared step marked `blocked`; permission or approval prose
 without that valid marker fails. For a two-option user decision, add
-`"input":{"type":"choice","options":["Option A","Option B"]}` to the marker;
-the two distinct labels must each be 48 characters or fewer. Use `message` for
-free text and `permission` only for approve/deny. Explicit retryable transport/infrastructure
+`"input":{"type":"choice","reason":"why the user must decide","options":[{"label":"Option A","description":"what A does or changes"},{"label":"Option B","description":"what B does or changes"}]}`
+to the marker. The reason and both descriptions must be concrete and non-empty;
+the two distinct labels must each be 48 characters or fewer, and descriptions
+must each be 160 characters or fewer. Use `message` for free text and
+`permission` only for approve/deny. Explicit retryable transport/infrastructure
 failures may remain `needs_recovery` and are never auto-retried. Core validates
 the flow declaration only, not Git state, tests, files, artifact quality, or user
 acceptance.

@@ -132,9 +132,13 @@ appears exactly once with status `done`. Missing or invalid JSON, wrong task IDs
 duplicate/unknown/missing steps, and non-`done` completion steps fail the flow.
 `input_required` must be explicit and identify at least one declared step as
 `blocked`; permission or approval prose alone is a failure. A two-option choice
-can declare `"input":{"type":"choice","options":["A","B"]}` so the desktop
-dialog renders direct option buttons. Input dialogs remain visible for up to
-five minutes; dismissing or timing out leaves the task waiting for a CLI response.
+declares a concrete decision reason and two label/description objects, for example
+`"input":{"type":"choice","reason":"why a decision is required","options":[{"label":"A","description":"what A does"},{"label":"B","description":"what B does"}]}`.
+The desktop dialog explains the reason and both outcomes, then renders the two
+labels as direct buttons. Operational deadline and CLI fallback fields remain in
+the task record/report but are not shown in the desktop dialog. Input dialogs
+remain visible for up to five minutes; dismissing or timing out leaves the task
+waiting for a CLI response.
 
 1. Runner confirms that execution started.
 2. The executor emits and exits with its final marker.

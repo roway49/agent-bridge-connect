@@ -130,6 +130,17 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         if input_type == "choice" and isinstance(request.get("options"), list)
         else []
     )
+    option_descriptions = (
+        [
+            compact_notification_text(str(description).strip(), 160)
+            for description in request.get("option_descriptions", [])
+            if str(description).strip()
+        ]
+        if input_type == "choice" and isinstance(request.get("option_descriptions"), list)
+        else []
+    )
+    if len(option_descriptions) != len(input_options):
+        option_descriptions = []
     if input_type == "permission":
         command = (
             f"agentbc task respond {task_id} --input {input_id} --approve"
@@ -138,19 +149,42 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
     else:
         command = f"agentbc task respond {task_id} --input {input_id} --message \"<response>\""
     workspace = task.workspace or {}
-    body_lines = [
-        f"Task: {task_id} input required",
-        f"Blocked step/type: {request.get('blocked_step_id', '')} / {request.get('type', '')}",
-        f"Summary: {compact_notification_text(str(request.get('summary') or ''), 180)}",
-    ]
-    if input_options:
-        body_lines.append(f"Options: {' | '.join(input_options)}")
-    body_lines.extend(
-        [
-            f"Deadline: {request.get('deadline_at', '')}",
-            f"Respond: {command}",
+    blocked_step = request.get("blocked_step_id", "")
+    summary = compact_notification_text(str(request.get("summary") or ""), 240)
+    if input_type == "choice":
+        reason = compact_notification_text(str(request.get("reason") or summary), 240)
+        body_lines = [
+            f"Task: {task_id} needs your decision",
+            f"Blocked step: {blocked_step}",
+            "Why this is blocked:",
+            reason,
+            "Choices:",
         ]
-    )
+        if option_descriptions:
+            body_lines.extend(
+                f"• {label} — {description}"
+                for label, description in zip(input_options, option_descriptions)
+            )
+        else:
+            body_lines.extend(f"• {label}" for label in input_options)
+        body_lines.append("Choose one below to resume this same task.")
+    else:
+        body_lines = [
+            f"Task: {task_id} needs your input",
+            f"Blocked step: {blocked_step}",
+            "Why this is blocked:",
+            summary,
+        ]
+        if input_type == "permission" and request.get("requested_permission"):
+            body_lines.extend(
+                [
+                    "Requested access:",
+                    compact_notification_text(str(request.get("requested_permission") or ""), 180),
+                    "Choose Approve or Deny below.",
+                ]
+            )
+        else:
+            body_lines.append("Enter your response below to resume this same task.")
     body = "\n".join(body_lines)
     return {
         "task_id": task_id,
@@ -160,9 +194,12 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         "message": body,
         "report_path": str(workspace.get("report_file") or ""),
         "respond_command": command,
+        "deadline_at": str(request.get("deadline_at") or ""),
         "input_id": input_id,
         "input_type": input_type,
+        "input_reason": str(request.get("reason") or ""),
         "input_options": input_options,
+        "input_option_descriptions": option_descriptions,
     }
 
 

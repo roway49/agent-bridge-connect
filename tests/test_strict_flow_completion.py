@@ -131,28 +131,55 @@ class ExecutorFlowContractTests(unittest.TestCase):
         valid = self._marker(
             final_state="input_required",
             step_results=step_results,
-            input_details={"type": "choice", "options": ["Option A", "Option B"]},
+            input_details={
+                "type": "choice",
+                "reason": "The user must select the output format.",
+                "options": [
+                    {"label": "Option A", "description": "Write a text result."},
+                    {"label": "Option B", "description": "Write a JSON result."},
+                ],
+            },
         )
         validation = extract_callback_validation_from_output(valid, self.packet, "choice-run")
         self.assertTrue(validation.valid)
         self.assertEqual(
             validation.callback["input"],
-            {"type": "choice", "options": ["Option A", "Option B"]},
+            {
+                "type": "choice",
+                "reason": "The user must select the output format.",
+                "options": [
+                    {"label": "Option A", "description": "Write a text result."},
+                    {"label": "Option B", "description": "Write a JSON result."},
+                ],
+            },
         )
 
         invalid_options = (
             [],
-            ["only one"],
-            ["same", "same"],
-            ["", "Option B"],
-            ["A" * 49, "Option B"],
+            [{"label": "only one", "description": "Only one option."}],
+            [
+                {"label": "same", "description": "First."},
+                {"label": "same", "description": "Second."},
+            ],
+            [
+                {"label": "", "description": "Empty label."},
+                {"label": "Option B", "description": "Second."},
+            ],
+            [
+                {"label": "A" * 49, "description": "Too long."},
+                {"label": "Option B", "description": "Second."},
+            ],
         )
         for options in invalid_options:
             with self.subTest(options=options):
                 marker = self._marker(
                     final_state="input_required",
                     step_results=step_results,
-                    input_details={"type": "choice", "options": options},
+                    input_details={
+                        "type": "choice",
+                        "reason": "A decision is required.",
+                        "options": options,
+                    },
                 )
                 validation = extract_callback_validation_from_output(
                     marker,
@@ -161,6 +188,45 @@ class ExecutorFlowContractTests(unittest.TestCase):
                 )
                 self.assertFalse(validation.valid)
                 self.assertEqual(validation.code, "completion_marker_choice_options_invalid")
+
+        missing_reason = self._marker(
+            final_state="input_required",
+            step_results=step_results,
+            input_details={
+                "type": "choice",
+                "options": [
+                    {"label": "Option A", "description": "First."},
+                    {"label": "Option B", "description": "Second."},
+                ],
+            },
+        )
+        validation = extract_callback_validation_from_output(
+            missing_reason,
+            self.packet,
+            "choice-run",
+        )
+        self.assertFalse(validation.valid)
+        self.assertEqual(validation.code, "completion_marker_choice_reason_invalid")
+
+        missing_description = self._marker(
+            final_state="input_required",
+            step_results=step_results,
+            input_details={
+                "type": "choice",
+                "reason": "A decision is required.",
+                "options": [
+                    {"label": "Option A", "description": ""},
+                    {"label": "Option B", "description": "Second."},
+                ],
+            },
+        )
+        validation = extract_callback_validation_from_output(
+            missing_description,
+            self.packet,
+            "choice-run",
+        )
+        self.assertFalse(validation.valid)
+        self.assertEqual(validation.code, "completion_marker_choice_description_invalid")
 
     def test_all_executors_keep_explicit_transport_failure_recoverable(self) -> None:
         output = "executor stopped before a final marker"
