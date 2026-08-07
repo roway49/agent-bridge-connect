@@ -279,6 +279,120 @@ class HermesSkillTests(unittest.TestCase):
         self.assertFalse(self.skill_path.exists())
 
 
+class DispatcherTraceabilitySkillTests(unittest.TestCase):
+    """TRACE-001: packaged skills must document dispatcher traceability."""
+
+    SKILLS = {
+        "codex": "codex_skill.md",
+        "claude": "claude_skill.md",
+        "hermes": "hermes_skill.md",
+    }
+
+    # English text appears in the Codex and Claude skills; the Hermes skill is Chinese.
+    EN = {"codex", "claude"}
+
+    def _skill_text(self, platform: str) -> str:
+        path = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "agent_bridge_connect"
+            / "skills"
+            / self.SKILLS[platform]
+        )
+        return path.read_text(encoding="utf-8")
+
+    def test_each_packaged_skill_passes_its_correct_source_platform_on_create(self):
+        for platform in ("codex", "claude", "hermes"):
+            with self.subTest(platform=platform):
+                text = self._skill_text(platform)
+                self.assertIn(f"--source-platform {platform}", text)
+                self.assertIn("--customer-path", text)
+                self.assertIn("--dispatch", text)
+
+    def test_each_packaged_skill_passes_its_correct_source_platform_on_handoff(self):
+        for platform in ("codex", "claude", "hermes"):
+            with self.subTest(platform=platform):
+                text = self._skill_text(platform)
+                self.assertIn("task handoff", text)
+                self.assertIn(f"--source-platform {platform}", text)
+
+    def test_each_packaged_skill_documents_session_id_omission_rule(self):
+        for platform in ("codex", "claude", "hermes"):
+            with self.subTest(platform=platform):
+                text = self._skill_text(platform)
+                self.assertIn("--session-id", text)
+                self.assertIn("unavailable", text)
+                if platform in self.EN:
+                    self.assertIn("trusted", text)
+                else:
+                    self.assertIn("可信", text)
+
+    def test_each_packaged_skill_forbids_fabricated_session_ids(self):
+        for platform in ("codex", "claude", "hermes"):
+            with self.subTest(platform=platform):
+                text = self._skill_text(platform)
+                if platform in self.EN:
+                    self.assertIn("never guess", text)
+                else:
+                    self.assertIn("禁止", text)
+
+    def test_each_packaged_skill_says_handoff_records_current_dispatcher_conversation(self):
+        for platform in ("codex", "claude", "hermes"):
+            with self.subTest(platform=platform):
+                text = self._skill_text(platform)
+                if platform in self.EN:
+                    self.assertIn("current dispatcher conversation", text)
+                    self.assertIn("not the source task conversation", text)
+                else:
+                    self.assertIn("当前派发者会话", text)
+                    self.assertIn("而不是源任务会话", text)
+
+    def test_each_packaged_skill_keeps_dispatcher_trace_separate_from_executor_sessions(self):
+        for platform in ("codex", "claude", "hermes"):
+            with self.subTest(platform=platform):
+                text = self._skill_text(platform)
+                if platform in self.EN:
+                    self.assertIn("dispatcher conversation", text)
+                    self.assertIn("does not delete", text)
+                else:
+                    self.assertIn("派发者会话", text)
+                    self.assertIn("不会删除", text)
+
+    def test_packaged_skills_have_no_hardcoded_trusted_id_examples(self):
+        for platform in ("codex", "claude", "hermes"):
+            with self.subTest(platform=platform):
+                text = self._skill_text(platform)
+                self.assertNotIn("--session-id 019f", text)
+                self.assertNotIn("--session-id \"019f", text)
+                self.assertNotIn("--session-id '019f", text)
+
+
+class IdempotentCodexSkillTests(unittest.TestCase):
+    def setUp(self):
+        self.test_dir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def test_install_codex_skill_is_idempotent(self):
+        from agent_bridge_connect.setup import install_codex_skill
+
+        root = self.test_dir / "codex" / "skills" / "agentbc"
+        first = install_codex_skill(root, interactive=False)
+        second = install_codex_skill(root, interactive=False)
+
+        self.assertTrue(first["installed"])
+        self.assertTrue(first["changed"])
+        self.assertEqual(second["status"], "already_installed")
+        skill = root / "SKILL.md"
+        self.assertTrue(skill.is_file())
+        text = skill.read_text(encoding="utf-8")
+        self.assertIn("--source-platform codex", text)
+        self.assertIn("--session-id", text)
+        self.assertIn("Dispatcher Traceability", text)
+        self.assertTrue((root / "agents" / "openai.yaml").is_file())
+
+
 class SetupModeTests(unittest.TestCase):
     def test_hermes_setup_enables_visible_runner_output(self):
         from agent_bridge_connect.setup import _executor_config_for

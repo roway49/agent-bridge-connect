@@ -150,6 +150,15 @@ automatically retries a recovery state.
 A dispatch response such as `accepted` is not task completion. Task status,
 reports, artifacts, and notifications are the source of truth.
 
+Every report and task brief includes a `Dispatcher Traceability` section labeling
+the controller that created or handed off the task: `Dispatcher platform` and
+`Dispatcher conversation ID`. These labels describe the current dispatcher
+conversation, not the source task conversation and not the executor's temporary
+session. The conversation ID shows `unavailable` when no trusted dispatcher ID
+was available; AgentBC never guesses it from processes, paths, history, or a
+previous task, and a handoff records the current dispatcher conversation.
+AgentBC does not delete the dispatcher conversation.
+
 ## Path And Data Model
 
 The controller supplies either an explicit user path or the literal
