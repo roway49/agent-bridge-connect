@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import shlex
 import subprocess
 import uuid
 from pathlib import Path
@@ -15,7 +14,6 @@ from agent_bridge_connect.adapters import (
     StartResult,
 )
 from agent_bridge_connect.execution_contract import (
-    FINAL_CALLBACK_PREFIX,
     detect_retryable_transport_failure,
     extract_callback_validation_from_events,
     route_executor_terminal,
@@ -27,7 +25,8 @@ from agent_bridge_connect.permission_modes import (
     permission_flags,
     permission_record_from_extensions,
 )
-from agent_bridge_connect.protocol import ABCError, resumed_input_prompt_lines, task_step_text
+from agent_bridge_connect.protocol import ABCError
+from agent_bridge_connect.prompt_contract import PromptPlatformExtras, build_prompt_contract
 from agent_bridge_connect.runner import RunnerClient, RunnerError
 
 from .base import CLIExecutorBase
@@ -306,89 +305,21 @@ def _codex_writable_roots(task_packet: dict[str, Any], workspace_root: Path) -> 
 
 
 def _build_prompt(task_packet: dict[str, Any]) -> str:
-    title = str(task_packet.get("title") or task_packet.get("task_id") or "Untitled task")
-    workspace = task_packet.get("workspace") if isinstance(task_packet.get("workspace"), dict) else {}
-    task_board = task_packet.get("task_board") if isinstance(task_packet.get("task_board"), dict) else {}
-    board_root = str(task_board.get("root") or "")
-    task_id = str(task_packet.get("task_id") or "")
-    image_inputs = task_image_paths(task_packet)
-    lineage = {}
-    if isinstance(task_packet.get("extensions"), dict):
-        lineage = (task_packet["extensions"].get("agentbc.lineage") or {}) if isinstance(task_packet["extensions"].get("agentbc.lineage"), dict) else {}
-    progress_command = (
-        f"agentbc task progress {shlex.quote(task_id)} --root {shlex.quote(board_root)} "
-        '--summary "describe current progress"'
-    )
-    lines = [
-        "You are executing a structured task.",
-        "",
-        f"Task: {title}",
-        f"Project root: {workspace.get('project_root') or workspace.get('root', '')}",
-        f"Artifact root: {workspace.get('artifact_root') or workspace.get('artifacts_dir', '')}",
-        f"Report directory: {workspace.get('report_root') or workspace.get('output_dir', '')}",
-        f"Task brief: {workspace.get('task_file', '')}",
-        f"Report: {workspace.get('report_file', '')}",
-        "",
-        "Steps:",
-    ]
-    if image_inputs:
-        lines.extend(
-            [
-                "",
-                "Image inputs are attached through the native Codex CLI image interface:",
-                *[f"- {image}" for image in image_inputs],
-                "Inspect those images as task inputs. Do not copy them merely to make them accessible.",
-            ]
-        )
-    resume_context = resumed_input_prompt_lines(task_packet)
-    if resume_context:
-        lines.extend(["", *resume_context, ""])
-    for index, step in enumerate(task_packet.get("steps") or [], 1):
-        lines.append(f"{index}. {task_step_text(step)} [status: {step.get('status', 'pending')}]")
-        lines.extend(
-            [
-                "",
-                "Write user deliverables only under the Artifact root named above. Never write deliverables directly in the AgentBC workspace root, report directory, or record directory.",
-                "If customer_dir is true, edit the existing project in place and do not copy it into the AgentBC workspace.",
-                "If any path is rejected as outside allowed roots, stop and report the configuration problem; never copy the project/file to an allowed AgentBC directory to bypass the rejection.",
-                "If this task continues an existing deliverable, modify the existing baseline instead of creating a sibling project directory.",
-                "For image generation or image editing work, use the native image-generation capability and save the final bitmap deliverables under the Artifact root; do not return only prose or preview links.",
-                "AgentBC Core owns the execution report. Do not write or replace REPORT.md.",
-                "After completing all steps, write a summary of what you did.",
-                "For long-running work, refresh AgentBC progress at least every few minutes:",
-                progress_command,
-            ]
-        )
-    if lineage:
-        lines.extend(
-            [
-                "",
-                f"Iteration chain root: {lineage.get('chain_root_task_id', '')}",
-                f"Base task: {lineage.get('base_task_id', '')}",
-                f"Task code: {lineage.get('task_code', workspace.get('task_code', ''))}",
-                f"Iteration: {lineage.get('iteration_index', workspace.get('iteration', ''))}",
-                f"Base artifact root: {lineage.get('base_artifacts_dir', workspace.get('artifacts_dir', ''))}",
-            ]
-        )
-    step_results = ",".join(
-        f'{{"id":{step.get("id", index)},"status":"done"}}'
-        for index, step in enumerate(task_packet.get("steps") or [], 1)
-    )
-    lines.extend(
-        [
-            "",
-            "Your final response must end with exactly one single-line terminal marker and no text after it:",
-            (
-                f'{FINAL_CALLBACK_PREFIX} {{"version":1,"task_id":{json.dumps(task_id)},'
-                f'"final_state":"completed","summary":"concise summary",'
-                f'"step_results":[{step_results}]}}'
+    """Build the Codex prompt: shared contract plus Codex platform notes."""
+    return build_prompt_contract(
+        task_packet,
+        PromptPlatformExtras(
+            opening="You are executing a structured task.",
+            image_note="Image inputs are attached through the native Codex CLI image interface:",
+            image_inputs=tuple(str(image) for image in task_image_paths(task_packet)),
+            image_rule=(
+                "For image generation or image editing work, use the native image-generation "
+                "capability and save the final bitmap deliverables under the Artifact root; do not "
+                "return only prose or preview links."
             ),
-            "Use final_state input_required only with at least one declared step status blocked; plain permission or approval prose is not a valid stop.",
-            'For a two-option user decision, include "input":{"type":"choice","reason":"why the user must decide","options":[{"label":"Option A","description":"what A does or changes"},{"label":"Option B","description":"what B does or changes"}]}; give a concrete reason and a concrete description for each option. Labels must be distinct and at most 48 characters; descriptions must be at most 160 characters. Use type message for free text and type permission only for approve/deny.',
-            "A zero CLI exit without a valid marker fails the task. completed means flow execution ended, not user acceptance or quality approval.",
-        ]
+            summary_line="After completing all steps, write a summary of what you did.",
+        ),
     )
-    return "\n".join(lines)
 
 
 def _parse_jsonl(output: str | bytes) -> list[dict[str, Any]]:
