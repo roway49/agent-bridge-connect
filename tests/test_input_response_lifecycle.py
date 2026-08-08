@@ -447,8 +447,34 @@ class InputResponseLifecycleTests(unittest.TestCase):
         task.status = "running"
         task.steps[1]["status"] = "pending"
         task.extensions["agentbc.input"] = request
+        # Authoritative RunLease run intervals: one run before input, one after.
+        task.extensions = dict(task.extensions or {})
+        execution = dict((task.extensions.get("agentbc.execution") or {}))
+        execution["run_intervals"] = [
+            {
+                "run_id": "shell-first-run",
+                "executor_id": "shell",
+                "started_at": "2025-12-31T23:00:00Z",
+                "ended_at": "2026-01-01T00:00:00Z",
+                "duration_s": 60 * 60,
+                "state": "closed",
+            },
+            {
+                "run_id": "shell-second-run",
+                "executor_id": "shell",
+                "started_at": "2026-01-01T02:00:00Z",
+                "ended_at": "2026-01-01T03:00:00Z",
+                "duration_s": 60 * 60,
+                "state": "closed",
+            },
+        ]
+        task.extensions["agentbc.execution"] = execution
         self.service.store.write_task(task.id, task.to_dict())
+        # The on-disk run lease reflects only the final (second) run.
         lease = load_lease(task.id, self.board)
+        lease.run_id = "shell-second-run"
+        lease.started_at = "2026-01-01T02:00:00Z"
+        lease.last_heartbeat_at = "2026-01-01T03:00:00Z"
         lease.state = RunLeaseState.CLOSED
         save_lease(lease, self.board)
 
@@ -470,6 +496,9 @@ class InputResponseLifecycleTests(unittest.TestCase):
         self.assertEqual(report["wall_duration_s"], 4 * 60 * 60)
         self.assertEqual(report["waiting_duration_s"], 2 * 60 * 60)
         self.assertEqual(report["execution_duration_s"], 2 * 60 * 60)
+        self.assertEqual(report["last_run_duration_s"], 60 * 60)
+        self.assertEqual(report["execution_evidence"], "authoritative")
+        self.assertEqual(report["run_count"], 2)
 
     def test_resume_launch_failure_becomes_recovery_with_precise_evidence(self) -> None:
         request = self._input()

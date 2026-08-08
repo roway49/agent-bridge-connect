@@ -8,6 +8,7 @@ from .notifiers.dialog import DialogNotifier
 from .notifiers.file import FileNotifier
 from .reports import redact_secrets
 from .terminal_states import TASK_TERMINAL_STATES, terminal_status_label
+from .timing_view import build_timing_view
 
 
 def notify_terminal(
@@ -209,7 +210,7 @@ def build_notification_payload(
     event_type: str,
     level: str,
     message: str,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     task = service.get_task(task_id)
     workspace = task.workspace or {}
     extensions = task.extensions or {}
@@ -219,16 +220,18 @@ def build_notification_payload(
     executor = str(task.assignee or "unknown")
     report_path = str(workspace.get("report_file") or "")
     status = terminal_status_label(task.status) or str(task.status or level or "unknown")
+    timing = build_timing_view(task, service.board_root)
+    duration_text = format_duration_seconds(timing.get("wall_duration_s"))
     body = "\n".join(
         [
             f"Task: {task_id} {status}",
             f"Title: {compact_notification_text(task.title, 96)}",
             f"Dispatcher/Executor: {dispatcher} -> {executor}",
-            f"Duration: {format_elapsed(task.created_at, task.updated_at)}",
+            f"Duration: {duration_text}",
             f"Report: {report_path}",
         ]
     )
-    return {
+    payload = {
         "task_id": task_id,
         "event_type": event_type,
         "title": "Agent-Bridge-Connect",
@@ -236,6 +239,14 @@ def build_notification_payload(
         "message": body,
         "report_path": report_path,
     }
+    payload.update(
+        {
+            key: _notification_float(timing.get(key))
+            for key in ("wall_duration_s", "execution_duration_s", "waiting_duration_s", "last_run_duration_s")
+        }
+    )
+    payload["execution_evidence"] = str(timing.get("evidence_quality") or "unknown")
+    return payload
 
 
 def should_show_dialog_notification(service: Any, task_id: str, level: str) -> bool:
@@ -288,6 +299,14 @@ def format_elapsed(start: str, end: str) -> str:
     if start_dt is None or end_dt is None:
         return "unknown"
     seconds = max(int(round((end_dt - start_dt).total_seconds())), 0)
+    return format_duration_seconds(seconds)
+
+
+def format_duration_seconds(value: Any) -> str:
+    try:
+        seconds = max(int(round(float(value))), 0)
+    except (TypeError, ValueError):
+        return "unknown"
     hours, remainder = divmod(seconds, 3600)
     minutes, secs = divmod(remainder, 60)
     if hours:
@@ -295,6 +314,13 @@ def format_elapsed(start: str, end: str) -> str:
     if minutes:
         return f"{minutes}m {secs:02d}s"
     return f"{secs}s"
+
+
+def _notification_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def parse_timestamp(value: str) -> datetime | None:

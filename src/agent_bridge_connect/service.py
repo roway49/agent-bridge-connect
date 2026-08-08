@@ -311,10 +311,10 @@ class TaskService:
             tasks = [task for task in tasks if task.status == status]
         if current_only:
             tasks = [task for task in tasks if _is_running_status(task.status)]
-        return [_task_summary(task) for task in tasks]
+        return [_task_summary(task, self.board_root) for task in tasks]
 
     def task_summary(self, task_id: str) -> dict[str, Any]:
-        return _task_summary(self.get_task(task_id))
+        return _task_summary(self.get_task(task_id), self.board_root)
 
     def resolve_chain(self, task_id: str) -> ChainResolution:
         requested = self.get_task(task_id)
@@ -356,14 +356,14 @@ class TaskService:
             head_task_ids=head_task_ids,
             current_head_task_id=current_head_task_id,
             requested_is_head=requested.id in head_task_ids,
-            members=[_task_summary(task) for task in tasks],
+            members=[_task_summary(task, self.board_root) for task in tasks],
             anomalies=anomalies,
         )
 
     def resolve_task(self, task_id: str | None = None) -> dict[str, Any]:
         tasks = self.list_tasks()
         running_tasks = [task for task in tasks if _is_running_status(task.status)]
-        active_candidates = [_task_summary(task) for task in running_tasks]
+        active_candidates = [_task_summary(task, self.board_root) for task in running_tasks]
         if task_id:
             task = self.get_task(task_id)
             return {
@@ -417,7 +417,7 @@ class TaskService:
             return {
                 "resolved_task_id": None,
                 "resolution_mode": "ambiguous",
-                "active_candidates": [_task_summary(task) for task in latest_candidates],
+                "active_candidates": [_task_summary(task, self.board_root) for task in latest_candidates],
                 "has_active_task": False,
                 "message": "Ambiguous current task. Multiple recently updated tasks match; pass an explicit task id.",
                 "current_task": None,
@@ -679,6 +679,7 @@ class TaskService:
         task.updated_at = str(callback.get("finished_at") or _utc_now())
         task.steps = _finalize_steps(task.steps, callback["step_results"])
         task.extensions = dict(task.extensions or {})
+        task.extensions = self._record_run_interval(task_id, task.extensions)
         task.extensions.pop("agentbc.completion_intent", None)
         task.extensions["agentbc.final_callback"] = {
             "version": callback["version"],
@@ -817,6 +818,7 @@ class TaskService:
         task.status = "input_required"
         task.updated_at = created_at
         task.steps = _finalize_steps(task.steps, callback["step_results"])
+        extensions = self._record_run_interval(task_id, extensions)
         extensions.pop("agentbc.completion_intent", None)
         extensions.pop("agentbc.final_callback", None)
         extensions["agentbc.input"] = request
@@ -1014,6 +1016,7 @@ class TaskService:
             }
         )
         _supersede_final_callback(task, "failed", compact_message)
+        task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
         task.extensions = _merge_execution(task.extensions, {"internal_status": "failed"})
         self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
@@ -1081,6 +1084,7 @@ class TaskService:
         if run_lease is not None and run_lease.state == RunLeaseState.SUSPENDED:
             close_lease(run_lease, self.board_root)
             execution_updates["lease_state"] = RunLeaseState.CLOSED
+        task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
         task.extensions = _merge_execution(task.extensions, execution_updates)
         self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
@@ -1169,6 +1173,7 @@ class TaskService:
         validate_transition(task.status, "cancelled")
         task.status = "cancelled"
         task.updated_at = _utc_now()
+        task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
         self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
         cleanup_cancelled_task_files(task)
@@ -1549,6 +1554,55 @@ class TaskService:
         if lease and lease.get("lease_token"):
             self.store.release_lease(task_id, str(lease["lease_token"]))
 
+    def _record_run_interval(
+        self,
+        task_id: str,
+        extensions: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Append the current authoritative RunLease interval to the execution ledger.
+
+        REPORT-001: execution duration accumulates from these RunLease intervals
+        instead of ``created_at``/``completed_at`` wall time minus input waiting.
+        Idempotent per run id so a lifecycle transition never double counts a run.
+        """
+        from .run_lease import RunLeaseState, load_lease
+
+        merged = dict(extensions or {})
+        lease = load_lease(task_id, self.board_root)
+        if lease is None:
+            return merged
+        ledger = _execution_ledger(merged)
+        if any(str(item.get("run_id") or "") == lease.run_id for item in ledger):
+            return merged
+        started_raw = lease.started_at
+        if not isinstance(started_raw, str) or not started_raw:
+            return merged
+        started = _parse_timestamp(started_raw)
+        if started == datetime.min.replace(tzinfo=timezone.utc):
+            return merged
+        if lease.state == RunLeaseState.ACTIVE:
+            end_raw = _utc_now()
+            state = RunLeaseState.ACTIVE
+        else:
+            end_raw = lease.last_heartbeat_at
+            state = lease.state
+        if not isinstance(end_raw, str) or not end_raw:
+            return merged
+        ended = _parse_timestamp(end_raw)
+        if ended == datetime.min.replace(tzinfo=timezone.utc):
+            return merged
+        ledger.append(
+            {
+                "run_id": lease.run_id,
+                "executor_id": lease.executor_id,
+                "started_at": lease.started_at,
+                "ended_at": end_raw,
+                "duration_s": round(max((ended - started).total_seconds(), 0.0), 3),
+                "state": state,
+            }
+        )
+        return _merge_execution(merged, {"run_intervals": ledger[:8]})
+
     def _append_intervention(
         self,
         task_id: str,
@@ -1593,6 +1647,11 @@ class TaskService:
 
     def _task_status_with_chain(self, task: TaskModel) -> dict[str, Any]:
         status = task_to_status(task)
+        from .timing_view import build_timing_view
+
+        timing = build_timing_view(task, self.board_root)
+        status["timing"] = timing
+        status["run_lease_state"] = timing["lease_state"]
         try:
             chain = self.resolve_chain(task.id)
         except ABCError:
@@ -2094,7 +2153,7 @@ def _chain_heads(tasks: list[TaskModel]) -> list[TaskModel]:
     return sorted(heads.values(), key=_task_sort_key)
 
 
-def _task_summary(task: TaskModel) -> dict[str, Any]:
+def _task_summary(task: TaskModel, board_root: str | Path | None = None) -> dict[str, Any]:
     from .task_health import task_health
 
     workspace = task.workspace or {}
@@ -2105,7 +2164,7 @@ def _task_summary(task: TaskModel) -> dict[str, Any]:
     dispatcher = str(provenance.get("source_platform") or task.created_by or "user")
     health = task_health(task)
     is_active = _is_running_status(task.status) or health.get("state") == "starting"
-    return {
+    summary = {
         "task_id": task.id,
         "task_code": workspace.get("task_code") or lineage.get("task_code") or _task_code_for(task),
         "iteration": workspace.get("iteration") or lineage.get("iteration_index") or "",
@@ -2131,6 +2190,12 @@ def _task_summary(task: TaskModel) -> dict[str, Any]:
         "health_state": health.get("state", ""),
         "health_color": health.get("color", "gray"),
     }
+    if board_root is not None:
+        from .timing_view import build_timing_view
+
+        summary["timing"] = build_timing_view(task, board_root)
+        summary["lease_state"] = summary["timing"]["lease_state"]
+    return summary
 
 
 def _lineage_for(task: TaskModel) -> dict[str, Any]:
@@ -2265,6 +2330,16 @@ def _merge_execution(extensions: dict[str, Any] | None, updates: dict[str, Any])
     execution.update({key: value for key, value in updates.items() if value is not None})
     merged["agentbc.execution"] = execution
     return merged
+
+
+def _execution_ledger(extensions: dict[str, Any]) -> list[dict[str, Any]]:
+    execution = extensions.get("agentbc.execution")
+    if not isinstance(execution, dict):
+        return []
+    intervals = execution.get("run_intervals")
+    if not isinstance(intervals, list):
+        return []
+    return [item for item in intervals if isinstance(item, dict)]
 
 
 def _finalize_steps(

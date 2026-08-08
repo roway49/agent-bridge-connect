@@ -778,6 +778,8 @@ def _execution_snapshot(task_id: str, board_root: Path, status: dict) -> dict:
     extensions = status.get("extensions") or {}
     execution = dict(extensions.get("agentbc.execution") or {})
     lease = load_lease(task_id, Path(board_root))
+    # OBS-001: the current lease state always comes from the authoritative
+    # run_lease.json. Stale extension snapshots are historical evidence only.
     if lease is not None:
         execution.update(
             {
@@ -788,6 +790,8 @@ def _execution_snapshot(task_id: str, board_root: Path, status: dict) -> dict:
                 "last_heartbeat_at": lease.last_heartbeat_at,
             }
         )
+    else:
+        execution["lease_state"] = "closed"
     run_id = execution.get("executor_run_id") or execution.get("worker_run_id")
     if run_id:
         try:
@@ -807,6 +811,8 @@ def _execution_snapshot(task_id: str, board_root: Path, status: dict) -> dict:
 
 
 def _decorate_task_status(task, board_root: Path) -> dict:
+    from .timing_view import build_timing_view
+
     status = task_to_status(task)
     try:
         chain = TaskService(board_root).resolve_chain(task.id).to_dict()
@@ -827,15 +833,19 @@ def _decorate_task_status(task, board_root: Path) -> dict:
     status["task_date"] = lineage.get("task_date") or ((status.get("workspace") or {}).get("task_date"))
     status["chain_task_id"] = lineage.get("chain_task_id") or ((status.get("workspace") or {}).get("chain_task_id"))
     execution = _execution_snapshot(task.id, board_root, status)
+    timing = build_timing_view(task, board_root)
+    execution["lease_state"] = timing["lease_state"]
     report_file = str(((status.get("workspace") or {}).get("report_file")) or "")
     report_ready = bool(report_file) and Path(report_file).expanduser().exists()
     final_callback = ((status.get("extensions") or {}).get("agentbc.final_callback") or {})
     status["has_final_callback"] = bool(final_callback)
     status["report_ready"] = report_ready
-    status["run_lease_state"] = execution.get("lease_state", "closed")
+    status["run_lease_state"] = timing["lease_state"]
     status["execution"] = execution
+    status["timing"] = timing
     status["debug"] = {
         "execution": execution,
+        "timing": timing,
         "permission": (status.get("extensions") or {}).get(PERMISSION_EXTENSION_KEY) or {},
     }
     return status
@@ -1631,6 +1641,16 @@ def _print_task_status(status: dict, as_json: bool = False) -> None:
         f"Report ready: {'yes' if status.get('report_ready') else 'no'}\t"
         f"Run lease: {status.get('run_lease_state', 'closed')}"
     )
+    timing = status.get("timing") or {}
+    if timing:
+        print(
+            "Timing: "
+            f"wall={_format_seconds_compact(timing.get('wall_duration_s'))}\t"
+            f"execution={_format_seconds_compact(timing.get('execution_duration_s'))}\t"
+            f"waiting={_format_seconds_compact(timing.get('waiting_duration_s'))}\t"
+            f"last_run={_format_seconds_compact(timing.get('last_run_duration_s'))}\t"
+            f"evidence={timing.get('evidence_quality', 'unknown')}"
+        )
     health = status.get("health") or {}
     if health:
         age = health.get("last_progress_age_s")
@@ -1707,7 +1727,11 @@ def _format_task_candidate(summary: dict, *, color: bool = False, timer_now: str
 
 
 def _task_list_timer(summary: dict, timer_now: str | None = None) -> str:
-    """Display-only timer for the task list monitor; it is not task health."""
+    """Display-only timer for the task list monitor; it is not task health.
+
+    Uses the shared timing view's lifecycle (wall) duration so the task list
+    renders the same source value as status/report/notification.
+    """
     status = str(summary.get("status") or "")
     terminal_label = terminal_status_label(status)
     if terminal_label:
@@ -1716,6 +1740,12 @@ def _task_list_timer(summary: dict, timer_now: str | None = None) -> str:
         return "input"
     if status == "cancelled":
         return "cancelled"
+    timing = summary.get("timing")
+    if isinstance(timing, dict):
+        wall = timing.get("wall_duration_s")
+        if wall is not None:
+            return _format_seconds_compact(wall)
+        return "unknown"
     start = str(summary.get("created_at") or "")
     if not start:
         return "unknown"
@@ -1729,6 +1759,14 @@ def _format_elapsed_compact(start: str, end: str) -> str:
     if parsed_start is None or parsed_end is None:
         return "unknown"
     seconds = max(int(round((parsed_end - parsed_start).total_seconds())), 0)
+    return _format_seconds_compact(seconds)
+
+
+def _format_seconds_compact(value: Any) -> str:
+    try:
+        seconds = max(int(round(float(value))), 0)
+    except (TypeError, ValueError):
+        return "unknown"
     hours, remainder = divmod(seconds, 3600)
     minutes, secs = divmod(remainder, 60)
     if hours:
