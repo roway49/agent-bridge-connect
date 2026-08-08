@@ -10,7 +10,7 @@
 - `agentbc uninstall`：卸载 AgentBC，并分别选择是否删除托管数据。
 - `agentbc init`：初始化托管运行记录目录。
 - `agentbc record clean`：清理符合条件的运行时诊断记录。
-- `agentbc task`：创建、检查、handoff、干预、关闭和恢复任务。
+- `agentbc task`：创建、检查、handoff、干预、关闭、删除和恢复任务。
 - `agentbc worker`：执行 task board worker 操作。
 - `agentbc runner`：启动、停止、检查、采样和显示 Runner 工作。
 
@@ -120,12 +120,20 @@ AgentBC 只观察未响应任务，不会自动取消，因为强制终止可能
 agentbc task pause 4XMC
 agentbc task resume 4XMC
 agentbc task close 4XMC
+agentbc task delete 4XMC --dry-run
+agentbc task delete 4XMC --confirm
 agentbc task recover 4XMC
 ```
 
 close 只针对当前排队中或活跃的 head。关闭根任务会释放任务码并删除 AgentBC 自有文件；
 关闭后续 chain 迭代会保留历史，并提示工程改动无法回滚。用户工程文件永远不会
 被 AgentBC 删除。
+
+delete 只接受任务码，不接受 iteration ID。整条链的每次迭代都必须处于
+`completed`、`failed`、`cancelled` 或 `rejected`；存在排队中、活跃、等待输入或
+等待恢复的迭代时会拒绝整条链。`--dry-run` 零写入，并列出将删除与保留的对象；
+`--confirm` 只删除 AgentBC 自有 record、report、index entry 和 managed artifact，
+成功后释放任务码。用户工程始终保留。
 
 ## Record 与进程压力
 
