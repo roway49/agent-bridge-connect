@@ -356,7 +356,6 @@ def _build_prompt(task_packet: dict[str, Any]) -> str:
                 "Keep required long-running commands in the foreground with a tool timeout longer than the expected runtime.",
                 "If Claude Code moves a command to the background, use BashOutput repeatedly until it exits. Never end this turn while a required background command is still running.",
             ),
-            rules_section=True,
         ),
     )
 

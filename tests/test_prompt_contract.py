@@ -13,11 +13,15 @@ must stay stable across the PROMPT-001 shared-builder refactor:
 - image input notes (Codex multi-image, Hermes single-image, Claude none)
 - permission-mode independence (permission lives in CLI argv, not prompt text)
 
-BEFORE sizes recorded from the current implementation (10-step task):
-- Codex:  12,892 chars, common rules repeated 10x (once per step)
-- Hermes: 12,930 chars, common rules repeated 10x (once per step)
-- Claude:  3,676 chars, common rules emitted once
-PROMPT-001 removes the per-step repetition and targets <= ~3,000 chars.
+AFTER sizes recorded from the shared-builder implementation (10-step task,
+common rules emitted exactly once for every executor):
+- Codex:   3,192 chars total (was 12,892 with the rules repeated 10x)
+- Hermes:  3,203 chars total (was 12,930 with the rules repeated 10x)
+- Claude:  3,676 chars total (unchanged; rules were already emitted once)
+- Shared builder default extras: 3,004 chars total, 2,604 chars of common
+  contract text after removing the ten variable step lines.
+PROMPT-001 keeps the common contract text for a ten-step task at or below the
+approximately 3,000-character budget and forbids per-step repetition.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from agent_bridge_connect.execution_contract import FINAL_CALLBACK_PREFIX
 from agent_bridge_connect.executors.claude import _build_prompt as claude_prompt
 from agent_bridge_connect.executors.codex import _build_prompt as codex_prompt
 from agent_bridge_connect.executors.hermes import _build_prompt as hermes_prompt
+from agent_bridge_connect.prompt_contract import build_prompt_contract
 
 # --- exact contract rule texts ----------------------------------------------
 
@@ -104,35 +109,27 @@ Report directory: /tmp/abc-report/2026-08-08/TEST
 Task brief: /tmp/abc-report/2026-08-08/TEST/TEST-001-task.md
 Report: /tmp/abc-report/2026-08-08/TEST/TEST-001-report.md
 
+Rules:
+- Write user deliverables only under the Artifact root named above. Never write deliverables directly in the AgentBC workspace root, report directory, or record directory.
+- If customer_dir is true, edit the existing project in place and do not copy it into the AgentBC workspace.
+- If any path is rejected as outside allowed roots, stop and report the configuration problem; never copy the project/file to an allowed AgentBC directory to bypass the rejection.
+- If this task continues an existing deliverable, modify the existing baseline instead of creating a sibling project directory.
+- AgentBC Core owns the execution report. Do not write or replace REPORT.md.
+- For image generation or image editing work, use the native image-generation capability and save the final bitmap deliverables under the Artifact root; do not return only prose or preview links.
+
 Steps:
 1. Step 1 description. [status: pending]
-
-Write user deliverables only under the Artifact root named above. Never write deliverables directly in the AgentBC workspace root, report directory, or record directory.
-If customer_dir is true, edit the existing project in place and do not copy it into the AgentBC workspace.
-If any path is rejected as outside allowed roots, stop and report the configuration problem; never copy the project/file to an allowed AgentBC directory to bypass the rejection.
-If this task continues an existing deliverable, modify the existing baseline instead of creating a sibling project directory.
-For image generation or image editing work, use the native image-generation capability and save the final bitmap deliverables under the Artifact root; do not return only prose or preview links.
-AgentBC Core owns the execution report. Do not write or replace REPORT.md.
-After completing all steps, write a summary of what you did.
-For long-running work, refresh AgentBC progress at least every few minutes:
-agentbc task progress TEST-001 --root /tmp/abc-record --summary "describe current progress"
 2. Step 2 description. [status: pending]
-
-Write user deliverables only under the Artifact root named above. Never write deliverables directly in the AgentBC workspace root, report directory, or record directory.
-If customer_dir is true, edit the existing project in place and do not copy it into the AgentBC workspace.
-If any path is rejected as outside allowed roots, stop and report the configuration problem; never copy the project/file to an allowed AgentBC directory to bypass the rejection.
-If this task continues an existing deliverable, modify the existing baseline instead of creating a sibling project directory.
-For image generation or image editing work, use the native image-generation capability and save the final bitmap deliverables under the Artifact root; do not return only prose or preview links.
-AgentBC Core owns the execution report. Do not write or replace REPORT.md.
-After completing all steps, write a summary of what you did.
-For long-running work, refresh AgentBC progress at least every few minutes:
-agentbc task progress TEST-001 --root /tmp/abc-record --summary "describe current progress"
 
 Iteration chain root: TEST-001
 Base task: TEST-001
 Task code: TEST
 Iteration: 1
 Base artifact root: /tmp/abc-worktree/artifacts
+
+After completing all steps, write a summary of what you did.
+For long-running work, refresh AgentBC progress at least every few minutes:
+agentbc task progress TEST-001 --root /tmp/abc-record --summary "describe current progress"
 
 Your final response must end with exactly one single-line terminal marker and no text after it:
 AGENTBC_FINAL_CALLBACK: {"version":1,"task_id":"TEST-001","final_state":"completed","summary":"concise summary","step_results":[{"id":1,"status":"done"},{"id":2,"status":"done"}]}
@@ -191,35 +188,27 @@ Report directory: /tmp/abc-report/2026-08-08/TEST
 Task brief: /tmp/abc-report/2026-08-08/TEST/TEST-001-task.md
 Report: /tmp/abc-report/2026-08-08/TEST/TEST-001-report.md
 
+Rules:
+- Write user deliverables only under the Artifact root named above. Never write deliverables directly in the AgentBC workspace root, report directory, or record directory.
+- If customer_dir is true, edit the existing project in place and do not copy it into the AgentBC workspace.
+- If any path is rejected as outside allowed roots, stop and report the configuration problem; never copy the project/file to an allowed AgentBC directory to bypass the rejection.
+- If this task continues an existing deliverable, modify the existing baseline instead of creating a sibling project directory.
+- AgentBC Core owns the execution report. Do not write or replace REPORT.md.
+- For image generation or image editing work, use the native image_generate capability and save the final bitmap deliverables under the Artifact root; do not return only prose or preview links.
+
 Steps:
 1. Step 1 description. [status: pending]
-
-Write user deliverables only under the Artifact root named above. Never write deliverables directly in the AgentBC workspace root, report directory, or record directory.
-If customer_dir is true, edit the existing project in place and do not copy it into the AgentBC workspace.
-If any path is rejected as outside allowed roots, stop and report the configuration problem; never copy the project/file to an allowed AgentBC directory to bypass the rejection.
-If this task continues an existing deliverable, modify the existing baseline instead of creating a sibling project directory.
-For image generation or image editing work, use the native image_generate capability and save the final bitmap deliverables under the Artifact root; do not return only prose or preview links.
-AgentBC Core owns the execution report. Do not write or replace REPORT.md.
-Return a concise execution summary and mention any files changed.
-For long-running work, refresh AgentBC progress at least every few minutes:
-agentbc task progress TEST-001 --root /tmp/abc-record --summary "describe current progress"
 2. Step 2 description. [status: pending]
-
-Write user deliverables only under the Artifact root named above. Never write deliverables directly in the AgentBC workspace root, report directory, or record directory.
-If customer_dir is true, edit the existing project in place and do not copy it into the AgentBC workspace.
-If any path is rejected as outside allowed roots, stop and report the configuration problem; never copy the project/file to an allowed AgentBC directory to bypass the rejection.
-If this task continues an existing deliverable, modify the existing baseline instead of creating a sibling project directory.
-For image generation or image editing work, use the native image_generate capability and save the final bitmap deliverables under the Artifact root; do not return only prose or preview links.
-AgentBC Core owns the execution report. Do not write or replace REPORT.md.
-Return a concise execution summary and mention any files changed.
-For long-running work, refresh AgentBC progress at least every few minutes:
-agentbc task progress TEST-001 --root /tmp/abc-record --summary "describe current progress"
 
 Iteration chain root: TEST-001
 Base task: TEST-001
 Task code: TEST
 Iteration: 1
 Base artifact root: /tmp/abc-worktree/artifacts
+
+Return a concise execution summary and mention any files changed.
+For long-running work, refresh AgentBC progress at least every few minutes:
+agentbc task progress TEST-001 --root /tmp/abc-record --summary "describe current progress"
 
 Your final response must end with exactly one single-line terminal marker and no text after it:
 AGENTBC_FINAL_CALLBACK: {"version":1,"task_id":"TEST-001","final_state":"completed","summary":"concise summary","step_results":[{"id":1,"status":"done"},{"id":2,"status":"done"}]}
@@ -350,11 +339,11 @@ class CodexPromptContractTests(unittest.TestCase):
     def test_golden_two_step_prompt(self):
         self.assertEqual(codex_prompt(managed_packet()), GOLDEN_CODEX)
 
-    def test_ten_step_prompt_repeats_common_rules_per_step(self):
+    def test_ten_step_prompt_emits_common_rules_once(self):
         prompt = codex_prompt(managed_packet(step_count=10))
-        self.assertEqual(prompt.count(DELIVERABLES_RULE), 10)
-        self.assertEqual(prompt.count("agentbc task progress"), 10)
-        self.assertEqual(len(prompt), 12892)
+        self.assertEqual(prompt.count(DELIVERABLES_RULE), 1)
+        self.assertEqual(prompt.count("agentbc task progress"), 1)
+        self.assertEqual(len(prompt), 3192)
 
     def test_resumed_input_context(self):
         prompt = codex_prompt(with_resume(managed_packet()))
@@ -469,11 +458,11 @@ class HermesPromptContractTests(unittest.TestCase):
     def test_golden_two_step_prompt(self):
         self.assertEqual(hermes_prompt(managed_packet()), GOLDEN_HERMES)
 
-    def test_ten_step_prompt_repeats_common_rules_per_step(self):
+    def test_ten_step_prompt_emits_common_rules_once(self):
         prompt = hermes_prompt(managed_packet(step_count=10))
-        self.assertEqual(prompt.count(DELIVERABLES_RULE), 10)
-        self.assertEqual(prompt.count("agentbc task progress"), 10)
-        self.assertEqual(len(prompt), 12930)
+        self.assertEqual(prompt.count(DELIVERABLES_RULE), 1)
+        self.assertEqual(prompt.count("agentbc task progress"), 1)
+        self.assertEqual(len(prompt), 3203)
 
     def test_resumed_input_context(self):
         prompt = hermes_prompt(with_resume(managed_packet()))
@@ -564,6 +553,40 @@ class AllPromptContractTests(unittest.TestCase):
         self.assertIn("After completing all steps, write a summary of what you did.", codex)
         self.assertIn("Return a concise execution summary and mention any files changed.", hermes)
         self.assertIn("After completing all steps, print a concise summary.", claude)
+
+
+# --- PROMPT-001 regression limits --------------------------------------------
+
+
+class PromptContractRegressionTests(unittest.TestCase):
+    """PROMPT-001 size/repetition limits for the shared prompt contract."""
+
+    ADAPTERS = (
+        ("codex", codex_prompt),
+        ("claude", claude_prompt),
+        ("hermes", hermes_prompt),
+    )
+
+    def test_ten_step_common_contract_text_within_budget(self):
+        # Common contract text for a ten-step task: shared-builder output with
+        # the ten variable step lines removed (identity, rules, lineage,
+        # progress guidance and the strict marker block). Target <= ~3,000.
+        prompt = build_prompt_contract(managed_packet(step_count=10))
+        for index in range(1, 11):
+            prompt = prompt.replace(
+                f"{index}. Step {index} description. [status: pending]", ""
+            )
+        self.assertLessEqual(len(prompt), 3000)
+
+    def test_ten_step_prompt_does_not_repeat_common_rules_per_step(self):
+        for label, build in self.ADAPTERS:
+            with self.subTest(adapter=label):
+                prompt = build(managed_packet(step_count=10))
+                self.assertEqual(prompt.count(DELIVERABLES_RULE), 1)
+                self.assertEqual(prompt.count(PATH_REJECTION_RULE), 1)
+                self.assertEqual(prompt.count(REPORT_OWNERSHIP_RULE), 1)
+                self.assertEqual(prompt.count("agentbc task progress"), 1)
+                self.assertEqual(prompt.count(MARKER_LEAD), 1)
 
 
 if __name__ == "__main__":

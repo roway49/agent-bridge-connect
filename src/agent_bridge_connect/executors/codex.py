@@ -312,9 +312,6 @@ def _build_prompt(task_packet: dict[str, Any]) -> str:
             opening="You are executing a structured task.",
             image_note="Image inputs are attached through the native Codex CLI image interface:",
             image_inputs=tuple(str(image) for image in task_image_paths(task_packet)),
-            image_inspect_line=(
-                "Inspect those images as task inputs. Do not copy them merely to make them accessible."
-            ),
             image_rule=(
                 "For image generation or image editing work, use the native image-generation "
                 "capability and save the final bitmap deliverables under the Artifact root; do not "

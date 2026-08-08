@@ -1,16 +1,16 @@
 """Shared executor prompt contract builder (PROMPT-001).
 
-Builds the common AgentBC prompt contract: task identity, steps,
-project/artifact/report ownership rules, long-task progress guidance, the
-strict v1 final marker block, and resumed-input context.
+Builds the common AgentBC prompt contract exactly once per prompt: task
+identity, steps, project/artifact/report ownership rules, long-task progress
+guidance, the strict v1 final marker block, and resumed-input context.
+Each Executor Adapter appends only its real platform differences through
+:class:`PromptPlatformExtras` (opening wording, task-id line, image input
+notes and the image-generation rule, adapter-only rules, and the summary
+line). argv and permission semantics stay in the adapter command builders.
 
-Mechanical-migration stage: this builder reproduces the previous per-Adapter
-output byte for byte. Codex and Hermes keep their legacy layout that repeats
-the common rules after every step (``rules_section=False``); Claude keeps its
-"Rules:" section layout (``rules_section=True``). The PROMPT-001 text change
-that emits the common rules exactly once per prompt lands in a separate
-commit on top of this one; the golden snapshots in
-``tests/test_prompt_contract.py`` freeze the exact current output.
+The common rules are emitted once under a "Rules:" heading and are never
+repeated per step, so a ten-step task stays close to the 3,000-character
+budget for the common contract text.
 
 The strict v1 completion contract is not weakened here: a zero CLI exit
 without a valid single-line ``AGENTBC_FINAL_CALLBACK`` marker still fails,
@@ -29,8 +29,8 @@ from typing import Any
 from agent_bridge_connect.execution_contract import FINAL_CALLBACK_PREFIX
 from agent_bridge_connect.protocol import resumed_input_prompt_lines, task_step_text
 
-#: Common rules every executor prompt must carry. Wording is the stable
-#: contract; adapters must not re-emit these lines themselves.
+#: Common rules emitted once per prompt for every executor. Wording is the
+#: stable contract; adapters must not re-emit these lines themselves.
 COMMON_RULES = (
     "Write user deliverables only under the Artifact root named above. Never write "
     "deliverables directly in the AgentBC workspace root, report directory, or record directory.",
@@ -74,25 +74,20 @@ class PromptPlatformExtras:
     task_id_line: bool = False
     image_note: str | None = None
     image_inputs: tuple[str, ...] = ()
-    image_inspect_line: str | None = None
     image_rule: str | None = None
     summary_line: str = "After completing all steps, write a summary of what you did."
     extra_rules: tuple[str, ...] = ()
-    rules_section: bool = False
 
 
 def build_prompt_contract(
     task_packet: dict[str, Any],
     extras: PromptPlatformExtras | None = None,
 ) -> str:
-    """Build the shared AgentBC prompt contract for a task packet.
+    """Build the shared AgentBC prompt contract exactly once per prompt.
 
-    Legacy layout (``rules_section=False``, Codex/Hermes): the common rules,
-    image rule, summary line and progress guidance are repeated after every
-    step. Section layout (``rules_section=True``, Claude): the common and
-    platform rules are emitted once under a "Rules:" heading before the steps.
-    Both layouts share the identity header, lineage block, strict final-marker
-    block and resumed-input context.
+    The returned text contains the common identity, steps, ownership rules,
+    progress guidance, strict v1 final marker and resumed-input context.
+    Platform differences come only from ``extras``.
     """
     platform = extras or PromptPlatformExtras()
     title = str(task_packet.get("title") or task_packet.get("task_id") or "Untitled task")
@@ -108,8 +103,6 @@ def build_prompt_contract(
         f"agentbc task progress {shlex.quote(task_id)} --root {shlex.quote(board_root)} "
         '--summary "describe current progress"'
     )
-    steps = task_packet.get("steps") or []
-    resume_context = resumed_input_prompt_lines(task_packet)
 
     lines = [platform.opening, ""]
     if platform.task_id_line:
@@ -123,45 +116,36 @@ def build_prompt_contract(
             f"Task brief: {workspace.get('task_file', '')}",
             f"Report: {workspace.get('report_file', '')}",
             "",
+            "Rules:",
         ]
     )
+    for rule in COMMON_RULES:
+        lines.append(f"- {rule}")
+    if platform.image_rule:
+        lines.append(f"- {platform.image_rule}")
+    for rule in platform.extra_rules:
+        lines.append(f"- {rule}")
 
-    if platform.rules_section:
-        lines.append("Rules:")
-        for rule in COMMON_RULES:
-            lines.append(f"- {rule}")
-        if platform.image_rule:
-            lines.append(f"- {platform.image_rule}")
-        for rule in platform.extra_rules:
-            lines.append(f"- {rule}")
-        lines.append("")
-        lines.append("Steps:")
-        if resume_context:
-            lines.extend(["", *resume_context, ""])
-        for index, step in enumerate(steps, 1):
-            lines.append(f"{index}. {task_step_text(step)} [status: {step.get('status', 'pending')}]")
-        tail = ["", platform.summary_line, PROGRESS_LEAD, progress_command]
+    if platform.image_note and platform.image_inputs:
+        lines.extend(["", platform.image_note])
+        lines.extend(f"- {image}" for image in platform.image_inputs)
+        if len(platform.image_inputs) > 1:
+            lines.append(
+                "Inspect those images as task inputs. Do not copy them merely to make them accessible."
+            )
+        else:
+            lines.append(
+                "Inspect that image as a task input. Do not copy it merely to make it accessible."
+            )
     else:
-        lines.append("Steps:")
-        if platform.image_inputs and platform.image_note:
-            lines.append("")
-            lines.append(platform.image_note)
-            lines.extend(f"- {image}" for image in platform.image_inputs)
-            if platform.image_inspect_line:
-                lines.append(platform.image_inspect_line)
-        if resume_context:
-            lines.extend(["", *resume_context, ""])
-        for index, step in enumerate(steps, 1):
-            lines.append(f"{index}. {task_step_text(step)} [status: {step.get('status', 'pending')}]")
-            # Legacy layout: the platform image rule sits between the fourth
-            # and fifth common rules; the summary and progress guidance close
-            # the per-step block.
-            lines.extend(["", *COMMON_RULES[:4]])
-            if platform.image_rule:
-                lines.append(platform.image_rule)
-            lines.append(COMMON_RULES[4])
-            lines.extend([platform.summary_line, PROGRESS_LEAD, progress_command])
-        tail = []
+        lines.append("")
+    lines.append("Steps:")
+
+    resume_context = resumed_input_prompt_lines(task_packet)
+    if resume_context:
+        lines.extend(["", *resume_context, ""])
+    for index, step in enumerate(task_packet.get("steps") or [], 1):
+        lines.append(f"{index}. {task_step_text(step)} [status: {step.get('status', 'pending')}]")
 
     if lineage:
         lines.extend(
@@ -177,11 +161,14 @@ def build_prompt_contract(
 
     step_results = ",".join(
         f'{{"id":{step.get("id", index)},"status":"done"}}'
-        for index, step in enumerate(steps, 1)
+        for index, step in enumerate(task_packet.get("steps") or [], 1)
     )
-    lines.extend(tail)
     lines.extend(
         [
+            "",
+            platform.summary_line,
+            PROGRESS_LEAD,
+            progress_command,
             "",
             MARKER_LEAD,
             (

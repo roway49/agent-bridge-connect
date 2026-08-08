@@ -581,9 +581,6 @@ def _build_prompt(task_packet: dict[str, Any]) -> str:
             opening="You are executing a structured AgentBC task.",
             image_note="An image input is attached through the native Hermes CLI image interface:",
             image_inputs=tuple(str(image) for image in task_image_paths(task_packet)[:1]),
-            image_inspect_line=(
-                "Inspect that image as a task input. Do not copy it merely to make it accessible."
-            ),
             image_rule=(
                 "For image generation or image editing work, use the native image_generate "
                 "capability and save the final bitmap deliverables under the Artifact root; do not "
