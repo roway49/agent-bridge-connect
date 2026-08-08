@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -61,7 +62,7 @@ class ExecutorFlowContractTests(unittest.TestCase):
         self, name: str, output: str, *, returncode: int = 0, stderr: str = ""
     ):
         if name == "codex":
-            executor = CodexExecutor(command="/bin/true")
+            executor = CodexExecutor(command=sys.executable)
             stdout = json.dumps(
                 {
                     "type": "item.completed",
@@ -70,11 +71,11 @@ class ExecutorFlowContractTests(unittest.TestCase):
             )
             module = "agent_bridge_connect.executors.codex.subprocess.run"
         elif name == "claude":
-            executor = ClaudeExecutor(command="/bin/true", transport="direct")
+            executor = ClaudeExecutor(command=sys.executable, transport="direct")
             stdout = output
             module = "agent_bridge_connect.executors.claude.subprocess.run"
         else:
-            executor = HermesExecutor(command="/bin/true", transport="direct")
+            executor = HermesExecutor(command=sys.executable, transport="direct")
             stdout = output
             module = "agent_bridge_connect.executors.hermes.subprocess.run"
         completed = subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)

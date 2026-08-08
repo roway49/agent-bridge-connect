@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.1A3 - 2026-08-08
+
+- Removed host-installed Codex, Claude, and Hermes dependencies from the release-check test suite.
+- Replaced non-portable executor test paths with isolated interpreter or temporary fixture paths.
+- Standardized executor probe diagnostics with stable binary path and discovery-source fields.
+- Preserved explicit macOS system and application candidates as platform adapters rather than user-local assumptions.
+
 ## 1.0.1A2 - 2026-08-08
 
 > Stability revision published from the 1.0.1A cutoff. The original

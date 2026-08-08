@@ -2,7 +2,7 @@
 
 [中文](Example_ZH.md) | English
 
-This page uses real interaction recordings to show typical AgentBC `1.0.1A2`
+This page uses real interaction recordings to show typical AgentBC `1.0.1A3`
 workflows. It focuses on the user experience; see the
 [Feature Show](FEATURE_SHOW.md) and [User Guide](USER_GUIDE.md) for complete
 commands and behavior.

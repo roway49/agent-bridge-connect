@@ -400,7 +400,7 @@ class SetupModeTests(unittest.TestCase):
         config = _executor_config_for(
             {
                 "name": "hermes",
-                "path": "/opt/hermes",
+                "path": str(self.test_dir / "bin" / "hermes"),
                 "binary": "hermes",
                 "source": "test",
                 "capability_level": "L2",
@@ -416,7 +416,7 @@ class SetupModeTests(unittest.TestCase):
         config = _executor_config_for(
             {
                 "name": "claude",
-                "path": "/opt/claude",
+                "path": str(self.test_dir / "bin" / "claude"),
                 "binary": "claude",
                 "source": "test",
                 "capability_level": "L1",
@@ -663,7 +663,7 @@ class SetupModeTests(unittest.TestCase):
                 "display": "Hermes Agent",
                 "found": True,
                 "supported_executor": True,
-                "path": "/opt/hermes",
+                "path": str(self.test_dir / "bin" / "hermes"),
                 "binary": "hermes",
                 "version": "test",
                 "source": "test",
@@ -676,7 +676,7 @@ class SetupModeTests(unittest.TestCase):
                 "display": "Claude Code",
                 "found": True,
                 "supported_executor": True,
-                "path": "/opt/claude",
+                "path": str(self.test_dir / "bin" / "claude"),
                 "binary": "claude",
                 "version": "test",
                 "source": "test",

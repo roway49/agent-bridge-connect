@@ -72,11 +72,9 @@ class HermesExecutor(CLIExecutorBase):
             raise ValueError(f"Unsupported Hermes transport: {transport}")
         self.transport = transport
         configured_command = _optional_text(command)
-        self.agent_bin = (
-            Path(configured_command).expanduser()
-            if configured_command
-            else _find_hermes_binary()
-        )
+        self._discovery = _discover_hermes_binary(configured_command)
+        resolved = configured_command or str(self._discovery.get("path") or "")
+        self.agent_bin = Path(resolved).expanduser() if resolved else None
         self._version = ""
         self._last_run_id: str | None = None
         self._run_metadata: dict[str, dict[str, Any]] = {}
@@ -94,7 +92,13 @@ class HermesExecutor(CLIExecutorBase):
             return ProbeResult(
                 ok=False,
                 message="hermes unavailable",
-                details={"candidates": [str(path) for path in self.COMMON_PATHS]},
+                details={
+                    "agent_bin": "",
+                    "agent_bin_source": self._discovery.get("source") or "not_found",
+                    "candidates": [str(path) for path in self.COMMON_PATHS],
+                    "searched_paths": self._discovery.get("searched_paths") or [],
+                    "manual_override": self._discovery.get("manual_override") or "",
+                },
             )
 
         runner_health, runner_error = self._probe_runner()
@@ -104,6 +108,7 @@ class HermesExecutor(CLIExecutorBase):
                 message="Hermes available through AgentBC Runner",
                 details={
                     "agent_bin": str(self.agent_bin),
+                    "agent_bin_source": self._discovery.get("source") or "unknown",
                     "profile_mode": "explicit" if self.profile else "inherit",
                     "profile": self.profile,
                     "auth_owner": "hermes_cli",
@@ -117,6 +122,7 @@ class HermesExecutor(CLIExecutorBase):
                 message=f"AgentBC Runner unavailable: {runner_error}",
                 details={
                     "agent_bin": str(self.agent_bin),
+                    "agent_bin_source": self._discovery.get("source") or "unknown",
                     "transport": "runner",
                     "failure_kind": "runner_unavailable",
                 },
@@ -134,7 +140,10 @@ class HermesExecutor(CLIExecutorBase):
             return ProbeResult(
                 ok=False,
                 message=f"hermes unavailable: {exc}",
-                details={"agent_bin": str(self.agent_bin)},
+                details={
+                    "agent_bin": str(self.agent_bin),
+                    "agent_bin_source": self._discovery.get("source") or "unknown",
+                },
             )
 
         version = (completed.stdout or completed.stderr).strip()
@@ -145,6 +154,7 @@ class HermesExecutor(CLIExecutorBase):
             message=version or f"hermes exited with {completed.returncode}",
             details={
                 "agent_bin": str(self.agent_bin),
+                "agent_bin_source": self._discovery.get("source") or "unknown",
                 "returncode": completed.returncode,
                 "version": version,
                 "profile_mode": "explicit" if self.profile else "inherit",
@@ -476,6 +486,7 @@ class HermesExecutor(CLIExecutorBase):
             "version": self._version,
             "runtime": "cli",
             "agent_bin": str(self.agent_bin) if self.agent_bin is not None else "",
+            "agent_bin_source": self._discovery.get("source") or "not_found",
             "capability_level": self.capabilities().level,
             "last_run_id": self._last_run_id,
             "profile_mode": "explicit" if self.profile else "inherit",
@@ -522,11 +533,25 @@ class HermesExecutor(CLIExecutorBase):
         self._run_metadata[run_id] = metadata
 
 
-def _find_hermes_binary() -> Path | None:
-    discovery = find_binary(
+def _discover_hermes_binary(configured_command: str | None = None) -> dict[str, Any]:
+    if configured_command:
+        path = Path(configured_command).expanduser()
+        return {
+            "name": "hermes",
+            "found": path.is_file(),
+            "path": str(path),
+            "source": "configured",
+            "searched_paths": [str(path)],
+            "manual_override": "AGENTBC_HERMES_BIN=/your/path/hermes",
+        }
+    return find_binary(
         "hermes",
         extra_paths=[str(path) for path in HermesExecutor.COMMON_PATHS],
     )
+
+
+def _find_hermes_binary() -> Path | None:
+    discovery = _discover_hermes_binary()
     if discovery["found"]:
         return Path(discovery["path"])
     return None

@@ -5,7 +5,7 @@ version-control history and review executor changes before accepting them.
 
 ## Supported Version
 
-Security fixes currently target the latest `1.0.1A2` source and Alpha bundle.
+Security fixes currently target the latest `1.0.1A3` source and Alpha bundle.
 Older development snapshots are not supported.
 
 ## Report A Vulnerability

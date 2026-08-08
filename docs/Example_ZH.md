@@ -2,7 +2,7 @@
 
 中文 | [English](Example.md)
 
-本页通过真实操作录屏展示 AgentBC `1.0.1A2` 的典型协作流程。这里重点呈现
+本页通过真实操作录屏展示 AgentBC `1.0.1A3` 的典型协作流程。这里重点呈现
 实际使用体验；完整命令与行为说明请参阅[功能展示](FEATURE_SHOW_ZH.md)和
 [用户指南](USER_GUIDE_ZH.md)。
 

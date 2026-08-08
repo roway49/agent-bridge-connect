@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -295,13 +296,13 @@ class ExecutorPermissionMappingTests(unittest.TestCase):
             "extensions": {PERMISSION_EXTENSION_KEY: self._record("inherit")},
             "workspace": {"root": str(self.root), "project_root": str(self.root)},
         }
-        codex, _ = CodexExecutor(command="/bin/true")._build_command(
+        codex, _ = CodexExecutor(command=sys.executable)._build_command(
             packet, "prompt", self.root
         )
-        claude = ClaudeExecutor(command="/bin/true")._build_command(
+        claude = ClaudeExecutor(command=sys.executable)._build_command(
             "prompt", self.root, packet
         )
-        hermes = HermesExecutor(command="/bin/true", transport="direct")._build_command(
+        hermes = HermesExecutor(command=sys.executable, transport="direct")._build_command(
             "prompt", permission=self._record("inherit")
         )
         combined = " ".join([*codex, *claude, *hermes])
@@ -324,10 +325,10 @@ class ExecutorPermissionMappingTests(unittest.TestCase):
             "extensions": {PERMISSION_EXTENSION_KEY: self._record("safe")},
             "workspace": {"root": str(self.root), "project_root": str(self.root)},
         }
-        codex, _ = CodexExecutor(command="/bin/true")._build_command(
+        codex, _ = CodexExecutor(command=sys.executable)._build_command(
             packet, "prompt", self.root
         )
-        claude = ClaudeExecutor(command="/bin/true")._build_command(
+        claude = ClaudeExecutor(command=sys.executable)._build_command(
             "prompt", self.root, packet
         )
         self.assertIn("workspace-write", codex)
@@ -339,7 +340,7 @@ class ExecutorPermissionMappingTests(unittest.TestCase):
         completed = mock.Mock(returncode=0, stdout="usage without full flag", stderr="")
         with mock.patch("agent_bridge_connect.permission_modes.subprocess.run", return_value=completed):
             with self.assertRaises(ABCError) as raised:
-                assert_executor_permission_supported("codex", "full", "/bin/true")
+                assert_executor_permission_supported("codex", "full", sys.executable)
         self.assertEqual(raised.exception.code, "unsupported_permission_mode")
 
 
@@ -358,7 +359,7 @@ class CanonicalPermissionArgumentTests(unittest.TestCase):
         return raised.exception
 
     def test_codex_short_long_equals_and_attached_sandbox_forms_are_canonical(self) -> None:
-        base = ["/bin/codex", "exec", "--json"]
+        base = ["codex", "exec", "--json"]
         for arguments in (
             ["--sandbox", "workspace-write"],
             ["-s", "workspace-write"],
@@ -383,7 +384,7 @@ class CanonicalPermissionArgumentTests(unittest.TestCase):
         )
 
     def test_codex_raw_duplicate_conflicting_and_config_overrides_fail_closed(self) -> None:
-        base = ["/bin/codex", "exec", "--json"]
+        base = ["codex", "exec", "--json"]
         for mode, arguments in (
             ("safe", ["--sandbox", "workspace-write", "-s=workspace-write"]),
             (
@@ -410,7 +411,7 @@ class CanonicalPermissionArgumentTests(unittest.TestCase):
         self.assertIn("<redacted>", str(error.details))
 
     def test_claude_long_equals_duplicate_and_conflicting_forms_fail_closed(self) -> None:
-        base = ["/bin/claude", "-p"]
+        base = ["claude", "-p"]
         self.assertAccepted(
             "claude",
             "safe",
@@ -450,7 +451,7 @@ class CanonicalPermissionArgumentTests(unittest.TestCase):
                 self.assertRejected("claude", mode, [*base, *arguments])
 
     def test_hermes_modes_reject_yolo_aliases_and_customization_bypasses(self) -> None:
-        base = ["/bin/hermes", "chat", "-q", "prompt"]
+        base = ["hermes", "chat", "-q", "prompt"]
         self.assertAccepted("hermes", "inherit", base)
         self.assertAccepted("hermes", "safe", base)
         self.assertAccepted("hermes", "full", [*base, "--yolo"])
@@ -474,6 +475,28 @@ class CanonicalPermissionArgumentTests(unittest.TestCase):
 
 
 class ClaudePermissionDiagnosticTests(unittest.TestCase):
+    def test_probe_not_found_has_stable_path_diagnostics(self) -> None:
+        from agent_bridge_connect.executors.claude import ClaudeExecutor
+
+        missing = {
+            "found": False,
+            "path": "",
+            "source": "not_found",
+            "searched_paths": ["fixture/claude"],
+            "manual_override": "AGENTBC_CLAUDE_BIN=/your/path/claude",
+        }
+        with mock.patch(
+            "agent_bridge_connect.executors.claude._discover_claude_binary",
+            return_value=missing,
+        ):
+            result = ClaudeExecutor().probe()
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.details["agent_bin"], "")
+        self.assertEqual(result.details["agent_bin_source"], "not_found")
+        self.assertEqual(result.details["searched_paths"], ["fixture/claude"])
+        self.assertIn("AGENTBC_CLAUDE_BIN", result.details["manual_override"])
+
     def test_setup_probe_reports_full_support_as_explicit_task_scoped(self) -> None:
         from agent_bridge_connect.setup import probe_claude
 
@@ -485,7 +508,7 @@ class ClaudePermissionDiagnosticTests(unittest.TestCase):
         with (
             mock.patch(
                 "agent_bridge_connect.setup.discover_claude",
-                return_value={"found": True, "path": "/bin/claude", "version": "test"},
+                return_value={"found": True, "path": sys.executable, "version": "test"},
             ),
             mock.patch("agent_bridge_connect.setup._run_command", return_value=completed),
         ):
@@ -500,12 +523,13 @@ class ClaudePermissionDiagnosticTests(unittest.TestCase):
     def test_executor_diagnostics_separate_config_capability_and_task_authority(self) -> None:
         from agent_bridge_connect.executors.claude import ClaudeExecutor
 
-        executor = ClaudeExecutor(command="/bin/claude", transport="direct")
+        executor = ClaudeExecutor(command=sys.executable, transport="direct")
         with mock.patch(
             "agent_bridge_connect.executors.claude.subprocess.run",
             return_value=mock.Mock(returncode=0, stdout="claude 2", stderr=""),
         ):
             probe = executor.probe()
+        self.assertEqual(probe.details["agent_bin_source"], "configured")
         self.assertIsNone(probe.details["dangerous_permissions_allowed"])
         self.assertEqual(
             probe.details["dangerous_permissions_policy"],
