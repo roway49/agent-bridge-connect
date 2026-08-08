@@ -18,6 +18,7 @@ from .run_lease import (
 from .task_id import split_task_ref, task_sequence
 from .task_store import TaskStore
 from .terminal_states import TASK_TERMINAL_STATES
+from .timing_view import build_timing_view
 
 
 _OPENAI_KEY_RE = re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{12,}", re.IGNORECASE)
@@ -97,10 +98,10 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         and report_ready
     )
     generated_at = _utc_now()
-    duration_end = completed_at or generated_at
-    wall_duration_s = _duration_seconds(created_at, duration_end, steps)
-    waiting_duration_s = _waiting_duration_seconds(extensions, duration_end)
-    execution_duration_s = round(max(wall_duration_s - waiting_duration_s, 0.0), 3)
+    timing = build_timing_view(task, root, now=generated_at)
+    wall_duration_s = timing["wall_duration_s"]
+    waiting_duration_s = timing["waiting_duration_s"]
+    execution_duration_s = timing["execution_duration_s"]
     input_request = extensions.get("agentbc.input") if isinstance(extensions.get("agentbc.input"), dict) else {}
     permission = permission_record_from_extensions(extensions)
 
@@ -134,6 +135,12 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "execution_duration_s": execution_duration_s,
         "waiting_duration_s": waiting_duration_s,
         "wall_duration_s": wall_duration_s,
+        "last_run_duration_s": timing["last_run_duration_s"],
+        "execution_evidence": timing["evidence_quality"],
+        "execution_duration_known": timing["execution_duration_known"],
+        "run_count": timing["run_count"],
+        "run_intervals": timing["run_intervals"],
+        "timing": timing,
         "input": input_request,
         "permission": permission,
         "run_lease_state": lease_state,
@@ -522,44 +529,6 @@ def _created_at(task: dict[str, Any], events: list[dict[str, Any]]) -> str:
     return ""
 
 
-def _duration_seconds(created_at: Any, completed_at: Any, steps: list[dict[str, Any]]) -> float:
-    start = _parse_timestamp(created_at)
-    end = _parse_timestamp(completed_at)
-    if start is not None and end is not None:
-        return round(max((end - start).total_seconds(), 0.0), 3)
-    durations = _collect_named_values(steps, "duration_s", include_scalars=True)
-    return round(
-        sum(float(value) for value in durations if isinstance(value, (int, float))),
-        3,
-    )
-
-
-def _waiting_duration_seconds(extensions: dict[str, Any], end_at: Any) -> float:
-    end = _parse_timestamp(end_at)
-    if end is None:
-        return 0.0
-    requests: list[dict[str, Any]] = []
-    history = extensions.get("agentbc.input_history")
-    if isinstance(history, list):
-        requests.extend(item for item in history if isinstance(item, dict))
-    current = extensions.get("agentbc.input")
-    if isinstance(current, dict):
-        requests.append(current)
-    total = 0.0
-    seen: set[str] = set()
-    for request in requests:
-        input_id = str(request.get("input_id") or "")
-        if input_id and input_id in seen:
-            continue
-        if input_id:
-            seen.add(input_id)
-        start = _parse_timestamp(request.get("created_at"))
-        stop = _parse_timestamp(request.get("responded_at")) or end
-        if start is not None:
-            total += max((min(stop, end) - start).total_seconds(), 0.0)
-    return round(total, 3)
-
-
 def _parse_timestamp(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
@@ -596,7 +565,10 @@ def _render_report_md(report: dict[str, Any]) -> str:
         f"- Completed: `{_format_report_timestamp(completed_at) if completed_at else 'not completed'}`",
         f"- Duration: `{_format_duration(report.get('duration_s'))}`",
         f"- Execution duration: `{_format_duration(report.get('execution_duration_s'))}`",
+        f"- Last run duration: `{_format_duration(report.get('last_run_duration_s'))}`",
+        f"- Execution evidence: `{report.get('execution_evidence') or 'unknown'}`",
         f"- Waiting duration: `{_format_duration(report.get('waiting_duration_s'))}`",
+        f"- Wall duration: `{_format_duration(report.get('wall_duration_s'))}`",
         f"- Run lease: `{report.get('run_lease_state', 'closed')}`",
         f"- Last heartbeat age: `{_format_heartbeat_age(report.get('time_since_last_heartbeat_s'))}`",
         f"- Recovery: {report.get('recovery_recommendation', '')}",
@@ -736,6 +708,8 @@ def _render_report_md(report: dict[str, Any]) -> str:
             "",
             "## Duration",
             f"- Execution duration: `{_format_duration(report.get('execution_duration_s'))}`",
+            f"- Last run duration: `{_format_duration(report.get('last_run_duration_s'))}`",
+            f"- Execution evidence: `{report.get('execution_evidence') or 'unknown'}`",
             f"- Waiting duration: `{_format_duration(report.get('waiting_duration_s'))}`",
             f"- Wall duration: `{_format_duration(report.get('wall_duration_s'))}`",
             "",
