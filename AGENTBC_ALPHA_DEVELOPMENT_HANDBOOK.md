@@ -1,10 +1,10 @@
 # AgentBC Alpha 至正式版开发手册
 
 > 文档日期：2026-08-05；最近更新：2026-08-08
-> 当前发布基线：AgentBC `1.0.1A` / Python `1.0.1a1`
+> 当前发布基线：AgentBC `1.0.1A3` / Python `1.0.1a3`
 > `1.0.1A` 开发状态：已于 2026-08-08 截止，不再接收功能或常规缺陷改动
 > `1.0.1A` 已验证代码截止：`private/integration` / `d2ce9d1f7489dadfc7458313a9216065fb1438c7`
-> 当前私有开发阶段：`1.0.2A`，以 `1.0.1A` 截止代码和随后合入的文档收口提交为基线
+> 当前私有开发阶段：`1.0.2A`，以稳定修订 `private/integration@cfddccba246e6d057172f6716ab4318ade9a40ad` 为开发基线
 > 目标范围：`1.0.2A`～`1.0.5A`，以及结束 Alpha 的 `1.1.0`
 > 本机唯一开发入口：`/Users/wangroway/hermes-team/codex/AgentBC_Temp/agent-worktrees/integration`
 > 本机公开主线镜像：`/Users/wangroway/Documents/Work/Agent-Bridge-Connect/agent-bridge-connect`（只读）
@@ -1947,6 +1947,7 @@ CLI 或 Skill 中加条件分支。
 
 ## 18. 相关文档
 
+- `1.0.2A` 需求开发清单：仓库根目录 `AGENTBC_1.0.2A_DEVELOPMENT_CHECKLIST.md`
 - 当前状态与遗留问题：
   `/Users/wangroway/hermes-team/codex/reports/20260723_reports_AgentBC项目状态与下一阶段遗留问题.md`
 - 双机开发流程：
@@ -1998,6 +1999,11 @@ CLI 或 Skill 中加条件分支。
 `private/integration@d2ce9d1f7489dadfc7458313a9216065fb1438c7`；Changelog 和本手册的
 截止说明作为随后合入的文档收口，不改变该运行候选。公开 `v1.0.1A` Tag、GitHub Release
 和 PyPI `1.0.1a1` 资产继续冻结，不移动、不覆盖，也不以相同版本重新发布。
+
+**稳定修订补充**：开发截止后另行发布的 `v1.0.1A2` 与 `v1.0.1A3` 均使用新版本号和
+独立不可变资产；`A3` 修复发布 Gate 的宿主 Agent/本地路径依赖并统一 Executor 探针字段。
+`1.0.2A` 从 `private/integration@cfddccba246e6d057172f6716ab4318ade9a40ad` 开始，不再从
+原始 `A1` 候选回退开发。
 
 **产品目标**：证明当前 AgentBC 能够正式加入日常开发流程。公开 `v1.0.1A` 标签和
 PyPI `1.0.1a1` 资产保持冻结；私有候选只做两日真实任务 Canary，不以相同版本重发。
