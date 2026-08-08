@@ -79,7 +79,9 @@ class ClaudeExecutor(CLIExecutorBase):
         self.runner_spool = runner_spool
         self.runner_token = runner_token
         configured_command = _optional_text(command)
-        self.agent_bin = Path(configured_command).expanduser() if configured_command else _find_claude_binary()
+        self._discovery = _discover_claude_binary(configured_command)
+        resolved = configured_command or str(self._discovery.get("path") or "")
+        self.agent_bin = Path(resolved).expanduser() if resolved else None
         self._version = ""
         self._last_run_id: str | None = None
         self._run_metadata: dict[str, dict[str, Any]] = {}
@@ -90,7 +92,13 @@ class ClaudeExecutor(CLIExecutorBase):
             return ProbeResult(
                 ok=False,
                 message="claude unavailable",
-                details={"candidates": [str(path) for path in self.COMMON_PATHS]},
+                details={
+                    "agent_bin": "",
+                    "agent_bin_source": self._discovery.get("source") or "not_found",
+                    "candidates": [str(path) for path in self.COMMON_PATHS],
+                    "searched_paths": self._discovery.get("searched_paths") or [],
+                    "manual_override": self._discovery.get("manual_override") or "",
+                },
             )
         try:
             completed = subprocess.run(
@@ -104,7 +112,10 @@ class ClaudeExecutor(CLIExecutorBase):
             return ProbeResult(
                 ok=False,
                 message=f"claude unavailable: {exc}",
-                details={"agent_bin": str(self.agent_bin)},
+                details={
+                    "agent_bin": str(self.agent_bin),
+                    "agent_bin_source": self._discovery.get("source") or "unknown",
+                },
             )
         version = (completed.stdout or completed.stderr).strip()
         if completed.returncode == 0:
@@ -114,6 +125,7 @@ class ClaudeExecutor(CLIExecutorBase):
             message=version or f"claude exited with {completed.returncode}",
             details={
                 "agent_bin": str(self.agent_bin),
+                "agent_bin_source": self._discovery.get("source") or "unknown",
                 "returncode": completed.returncode,
                 "version": version,
                 "transport": self.transport,
@@ -253,6 +265,7 @@ class ClaudeExecutor(CLIExecutorBase):
             )
         metadata: dict[str, Any] = {
             "agent_bin": str(self.agent_bin) if self.agent_bin is not None else "",
+            "agent_bin_source": self._discovery.get("source") or "not_found",
             "capability_level": self.capabilities().level,
             "last_run_id": self._last_run_id,
             "model": self.model,
@@ -448,8 +461,25 @@ def _claude_writable_roots(
     return roots
 
 
+def _discover_claude_binary(configured_command: str | None = None) -> dict[str, Any]:
+    if configured_command:
+        path = Path(configured_command).expanduser()
+        return {
+            "name": "claude",
+            "found": path.is_file(),
+            "path": str(path),
+            "source": "configured",
+            "searched_paths": [str(path)],
+            "manual_override": "AGENTBC_CLAUDE_BIN=/your/path/claude",
+        }
+    return find_binary(
+        "claude",
+        extra_paths=[str(path) for path in ClaudeExecutor.COMMON_PATHS],
+    )
+
+
 def _find_claude_binary() -> Path | None:
-    result = find_binary("claude", extra_paths=[str(path) for path in ClaudeExecutor.COMMON_PATHS])
+    result = _discover_claude_binary()
     if result.get("found"):
         return Path(str(result["path"])).expanduser()
     return None

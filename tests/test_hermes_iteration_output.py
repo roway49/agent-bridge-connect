@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -63,7 +64,7 @@ class HermesOutputExtractionTests(unittest.TestCase):
         returncode: int = 0,
         stderr: str = "",
     ):
-        executor = HermesExecutor(command="/bin/true", transport="direct")
+        executor = HermesExecutor(command=sys.executable, transport="direct")
         completed = subprocess.CompletedProcess([], returncode, stdout=output, stderr=stderr)
         with (
             patch.object(executor, "_start_run_lease"),
@@ -87,7 +88,7 @@ class HermesOutputExtractionTests(unittest.TestCase):
         stderr: str = "",
         remote_status: str = "completed",
     ):
-        executor = HermesExecutor(command="/bin/true", transport="runner")
+        executor = HermesExecutor(command=sys.executable, transport="runner")
         submit = {"run_id": "hermes-runner-1", "pid": 9999}
         remote = {
             "status": remote_status,
@@ -371,13 +372,13 @@ class HermesOutputExtractionTests(unittest.TestCase):
     # ---- inherited command construction ------------------------------------
 
     def test_inherited_command_construction_has_no_turn_limit_flags(self) -> None:
-        executor = HermesExecutor(command="/bin/true", transport="direct")
+        executor = HermesExecutor(command=sys.executable, transport="direct")
         prompt = _build_prompt(self.packet)
         command = executor._build_command(prompt)
         joined = " ".join(command)
         self.assertNotIn("--max-turns", joined)
         self.assertNotIn("--ignore-user-config", joined)
-        self.assertEqual(command[0], "/bin/true")
+        self.assertEqual(command[0], sys.executable)
         self.assertIn("chat", command)
         self.assertIn("-Q", command)
         self.assertIn("--source", command)
@@ -387,7 +388,7 @@ class HermesOutputExtractionTests(unittest.TestCase):
 
     def test_inherited_command_construction_keeps_profile_flags(self) -> None:
         executor = HermesExecutor(
-            command="/bin/true",
+            command=sys.executable,
             transport="direct",
             profile="pm",
             provider="openai",

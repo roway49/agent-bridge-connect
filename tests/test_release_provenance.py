@@ -33,6 +33,7 @@ class TagVersionMappingTests(unittest.TestCase):
     def test_tag_to_python(self) -> None:
         self.assertEqual(bp.tag_to_python_version("v1.0.1A"), "1.0.1a1")
         self.assertEqual(bp.tag_to_python_version("v1.0.1A2"), "1.0.1a2")
+        self.assertEqual(bp.tag_to_python_version("v1.0.1A3"), "1.0.1a3")
         self.assertEqual(bp.tag_to_python_version("v2.3.4B"), "2.3.4b1")
         self.assertEqual(bp.tag_to_python_version("v2.3.4B12"), "2.3.4b12")
         self.assertEqual(bp.tag_to_python_version("v0.0.0Z"), "0.0.0z1")
@@ -40,12 +41,13 @@ class TagVersionMappingTests(unittest.TestCase):
     def test_python_to_tag(self) -> None:
         self.assertEqual(bp.python_to_tag_version("1.0.1a1"), "v1.0.1A")
         self.assertEqual(bp.python_to_tag_version("1.0.1a2"), "v1.0.1A2")
+        self.assertEqual(bp.python_to_tag_version("1.0.1a3"), "v1.0.1A3")
         self.assertEqual(bp.python_to_tag_version("2.3.4b1"), "v2.3.4B")
         self.assertEqual(bp.python_to_tag_version("2.3.4b12"), "v2.3.4B12")
         self.assertEqual(bp.python_to_tag_version("0.0.0z1"), "v0.0.0Z")
 
     def test_round_trip_tag_first(self) -> None:
-        for tag in ("v1.0.1A", "v1.0.1A2", "v2.3.4B12", "v5.6.7C"):
+        for tag in ("v1.0.1A", "v1.0.1A2", "v1.0.1A3", "v2.3.4B12", "v5.6.7C"):
             with self.subTest(tag=tag):
                 self.assertEqual(
                     bp.python_to_tag_version(bp.tag_to_python_version(tag)),
@@ -53,7 +55,7 @@ class TagVersionMappingTests(unittest.TestCase):
                 )
 
     def test_round_trip_version_first(self) -> None:
-        for ver in ("1.0.1a1", "1.0.1a2", "2.3.4b12", "5.6.7c1"):
+        for ver in ("1.0.1a1", "1.0.1a2", "1.0.1a3", "2.3.4b12", "5.6.7c1"):
             with self.subTest(version=ver):
                 self.assertEqual(
                     bp.tag_to_python_version(bp.python_to_tag_version(ver)),

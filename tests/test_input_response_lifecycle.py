@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -88,7 +89,7 @@ class InputResponseLifecycleTests(unittest.TestCase):
         state = RunnerState(
             self.base / "runner",
             [self.base],
-            {"shell": Path("/bin/true")},
+            {"shell": Path(sys.executable)},
         )
         # RunnerState includes the user's default board for production discovery.
         # Unit tests must replace that set so fake clocks can never mutate live tasks.

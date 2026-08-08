@@ -55,6 +55,8 @@ class CodexExecutor(CLIExecutorBase):
                 ok=False,
                 message="codex unavailable",
                 details={
+                    "agent_bin": "",
+                    "agent_bin_source": self._discovery.get("source") or "not_found",
                     "searched_paths": self._discovery.get("searched_paths") or [],
                     "manual_override": self._discovery.get("manual_override") or "",
                 },
@@ -71,7 +73,10 @@ class CodexExecutor(CLIExecutorBase):
             return ProbeResult(
                 ok=False,
                 message=f"codex unavailable: {exc}",
-                details={"agent_bin": str(self.agent_bin)},
+                details={
+                    "agent_bin": str(self.agent_bin),
+                    "agent_bin_source": self._discovery.get("source") or "unknown",
+                },
             )
 
         version = (completed.stdout or completed.stderr).strip()

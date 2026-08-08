@@ -1,9 +1,11 @@
 """Phase 10a tests: HermesExecutor and VSCode capability detection."""
 
 import shutil
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 FIXTURES = Path(__file__).parent / "fixtures"
 STEPS_YAML = FIXTURES / "sample_steps.yaml"
@@ -12,16 +14,42 @@ STEPS_YAML = FIXTURES / "sample_steps.yaml"
 class HermesExecutorTests(unittest.TestCase):
     """Test HermesExecutor adapter."""
 
-    def test_hermes_probe(self):
+    @mock.patch("agent_bridge_connect.executors.hermes.subprocess.run")
+    def test_hermes_probe(self, run):
         """HermesExecutor.probe() should check hermes is available."""
         from agent_bridge_connect.executors.hermes import HermesExecutor
-        executor = HermesExecutor()
+
+        run.return_value = mock.Mock(returncode=0, stdout="Hermes test", stderr="")
+        executor = HermesExecutor(command=sys.executable, transport="direct")
         result = executor.probe()
-        self.assertIsNotNone(result)
+        self.assertTrue(result.ok)
         self.assertIn("agent_bin", result.details)
-        if result.ok:
-            self.assertEqual(result.details["profile_mode"], "inherit")
-            self.assertEqual(result.details["auth_owner"], "hermes_cli")
+        self.assertEqual(result.details["agent_bin"], sys.executable)
+        self.assertEqual(result.details["agent_bin_source"], "configured")
+        self.assertEqual(result.details["profile_mode"], "inherit")
+        self.assertEqual(result.details["auth_owner"], "hermes_cli")
+
+    def test_hermes_probe_not_found_has_stable_path_diagnostics(self):
+        from agent_bridge_connect.executors.hermes import HermesExecutor
+
+        missing = {
+            "found": False,
+            "path": "",
+            "source": "not_found",
+            "searched_paths": ["fixture/hermes"],
+            "manual_override": "AGENTBC_HERMES_BIN=/your/path/hermes",
+        }
+        with mock.patch(
+            "agent_bridge_connect.executors.hermes._discover_hermes_binary",
+            return_value=missing,
+        ):
+            result = HermesExecutor().probe()
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.details["agent_bin"], "")
+        self.assertEqual(result.details["agent_bin_source"], "not_found")
+        self.assertEqual(result.details["searched_paths"], ["fixture/hermes"])
+        self.assertIn("AGENTBC_HERMES_BIN", result.details["manual_override"])
 
     def test_hermes_capabilities(self):
         """HermesExecutor should declare L2 capabilities."""
@@ -37,8 +65,12 @@ class HermesExecutorTests(unittest.TestCase):
     def test_hermes_extensions(self):
         """HermesExecutor should store metadata under extensions.executor.hermes."""
         from agent_bridge_connect.executors.hermes import HermesExecutor
-        executor = HermesExecutor()
-        self.assertTrue(hasattr(executor, "get_extensions"))
+
+        executor = HermesExecutor(command=sys.executable)
+        executor._version = "Hermes test"
+        details = executor.get_extensions()["executor"]["hermes"]
+        self.assertEqual(details["agent_bin"], sys.executable)
+        self.assertEqual(details["agent_bin_source"], "configured")
 
 
 class VSCodeCapabilityTests(unittest.TestCase):
@@ -64,7 +96,11 @@ class VSCodeCapabilityTests(unittest.TestCase):
     def test_setup_outputs_capability_matrix(self):
         """Setup should return a capability matrix with all fields."""
         from agent_bridge_connect.setup import probe_codex
-        result = probe_codex()
+        with mock.patch(
+            "agent_bridge_connect.setup.discover_codex",
+            return_value={"found": False, "version": ""},
+        ):
+            result = probe_codex()
         # Should have capability grade info
         self.assertIn("has_json_output", result)
         self.assertIn("has_sandbox", result)

@@ -2,11 +2,11 @@
 """Build provenance: identity generation, version mapping, and release validation.
 
 Usage:
-  python3 scripts/build_provenance.py tag-to-version v1.0.1A2
-  python3 scripts/build_provenance.py version-to-tag 1.0.1a2
+  python3 scripts/build_provenance.py tag-to-version v1.0.1A3
+  python3 scripts/build_provenance.py version-to-tag 1.0.1a3
   python3 scripts/build_provenance.py generate-build-info --repo-root . --build-source local
   python3 scripts/build_provenance.py generate-manifest --repo-root . --dist-dir dist
-  python3 scripts/build_provenance.py validate --repo-root . --tag v1.0.1A2
+  python3 scripts/build_provenance.py validate --repo-root . --tag v1.0.1A3
   python3 scripts/build_provenance.py validate-dists --repo-root . --dist-dir dist
   python3 scripts/build_provenance.py print-package-version --repo-root .
   python3 scripts/build_provenance.py print-product-version --repo-root .
@@ -51,8 +51,8 @@ def tag_to_python_version(tag: str) -> str:
     '1.0.1a1'
     >>> tag_to_python_version("v2.3.4B")
     '2.3.4b1'
-    >>> tag_to_python_version("v1.0.1A2")
-    '1.0.1a2'
+    >>> tag_to_python_version("v1.0.1A3")
+    '1.0.1a3'
     """
     major, minor, patch, suffix, serial = _parse_product_tag(tag)
     return f"{major}.{minor}.{patch}{suffix}{serial}"
@@ -78,8 +78,8 @@ def python_to_tag_version(version: str) -> str:
 
     >>> python_to_tag_version("1.0.1a1")
     'v1.0.1A'
-    >>> python_to_tag_version("1.0.1a2")
-    'v1.0.1A2'
+    >>> python_to_tag_version("1.0.1a3")
+    'v1.0.1A3'
     """
     major, minor, patch, suffix, serial = _parse_python_pre(version)
     serial_suffix = "" if serial == 1 else str(serial)
@@ -325,10 +325,10 @@ def _main() -> None:
     )
     sp = parser.add_subparsers(dest="command", required=True)
 
-    p = sp.add_parser("tag-to-version", help="v1.0.1A2 → 1.0.1a2")
+    p = sp.add_parser("tag-to-version", help="v1.0.1A3 → 1.0.1a3")
     p.add_argument("tag")
 
-    p = sp.add_parser("version-to-tag", help="1.0.1a2 → v1.0.1A2")
+    p = sp.add_parser("version-to-tag", help="1.0.1a3 → v1.0.1A3")
     p.add_argument("version")
 
     p = sp.add_parser("print-package-version", help="print __version__")
