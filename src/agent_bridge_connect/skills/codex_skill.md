@@ -81,6 +81,7 @@ independently executable requirements and acceptance evidence. Do not use
 treats the step list as the task requirements contract.
 
 Always pass `--source-platform codex`; Agent UI subprocesses do not consistently export `CODEX_THREAD_ID`.
+Pass `--session-id` only when the current Codex dispatcher exposes a trusted conversation ID, such as an ID the user explicitly provides or a `CODEX_THREAD_ID` verified set in this session. Omit `--session-id` when no trusted ID is available; never guess one from running processes, paths, shell history, or a previous task's report. A handoff records the current dispatcher conversation, not the source task conversation.
 After atomic dispatch returns `accepted`, report the task ID and return control to the user immediately.
 Do not wait for completion. Runner does not open a live-log Terminal by default; use `agentbc runner show` only when the user asks to inspect live execution. The background worker sends a compact desktop dialog when the final report is ready.
 
@@ -147,13 +148,35 @@ Use the exact running task ID and list every declared task step exactly once as
 `done` for `completed`. Missing/invalid JSON, mismatched IDs, or missing,
 duplicate, unknown, or non-done steps fail the task. Use `input_required` only
 with at least one declared step marked `blocked`; permission or approval prose
-without that valid marker fails. Explicit retryable transport/infrastructure
+without that valid marker fails. For a two-option user decision, add
+`"input":{"type":"choice","reason":"why the user must decide","options":[{"label":"Option A","description":"what A does or changes"},{"label":"Option B","description":"what B does or changes"}]}`
+to the marker. The reason and both descriptions must be concrete and non-empty;
+the two distinct labels must each be 48 characters or fewer, and descriptions
+must each be 160 characters or fewer. Use `message` for free text and
+`permission` only for approve/deny. Explicit retryable transport/infrastructure
 failures may remain `needs_recovery` and are never auto-retried. Core validates
 the flow declaration only, not Git state, tests, files, artifact quality, or user
 acceptance.
 
 The `agentbc task callback` command remains compatibility metadata and does not
 replace the mandatory terminal marker.
+
+## Dispatcher Traceability
+
+Reports and task briefs label the controller that created or handed off the task:
+`Dispatcher platform` and `Dispatcher conversation ID`. These labels describe the
+current dispatcher conversation, not the source task conversation and not the
+executor's temporary session.
+
+- Always pass the correct `--source-platform` value for the current controller: `codex` for Codex,
+  `claude` for Claude Code, `hermes` for Hermes.
+- Pass `--session-id` only when the current dispatcher exposes a trusted conversation ID, such as the
+  user-supplied `CODEX_THREAD_ID` when Codex verifies it, or an ID the user explicitly provides.
+  Omit `--session-id` when no trusted ID is available; the report then shows `unavailable`.
+- Never guess a conversation ID from processes, paths, history, or a previous task. A handoff records
+  the current dispatcher conversation, not the source task conversation.
+- Dispatcher traceability is separate from executor temporary sessions. AgentBC does not delete the
+  dispatcher conversation, and it does not retain, budget, or clean executor temporary sessions here.
 
 ## Intervention
 
@@ -179,6 +202,11 @@ command. Reserve `--confirm` for explicitly approved non-interactive automation.
 ```bash
 agentbc task handoff <task-id> --to <target-agent> --message "continue or verify the task" --source-platform codex --dispatch
 ```
+
+Pass `--source-platform codex` on handoff too. Pass `--session-id` only when the
+current Codex dispatcher exposes a trusted conversation ID; a handoff records the
+current dispatcher conversation, not the source task conversation. Omit
+`--session-id` when unavailable and never fabricate one.
 
 `agentbc task handoff <task-id>` only continues from the current chain head. If
 AgentBC reports `stale_handoff_source`, use the suggested current head task ID

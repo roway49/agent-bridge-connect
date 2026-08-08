@@ -2,11 +2,11 @@
 """Build provenance: identity generation, version mapping, and release validation.
 
 Usage:
-  python3 scripts/build_provenance.py tag-to-version v1.0.1A
-  python3 scripts/build_provenance.py version-to-tag 1.0.1a1
+  python3 scripts/build_provenance.py tag-to-version v1.0.1A3
+  python3 scripts/build_provenance.py version-to-tag 1.0.1a3
   python3 scripts/build_provenance.py generate-build-info --repo-root . --build-source local
   python3 scripts/build_provenance.py generate-manifest --repo-root . --dist-dir dist
-  python3 scripts/build_provenance.py validate --repo-root . --tag v1.0.1A
+  python3 scripts/build_provenance.py validate --repo-root . --tag v1.0.1A3
   python3 scripts/build_provenance.py validate-dists --repo-root . --dist-dir dist
   python3 scripts/build_provenance.py print-package-version --repo-root .
   python3 scripts/build_provenance.py print-product-version --repo-root .
@@ -23,45 +23,67 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = 1
 
 # ── version-mapping helpers ──────────────────────────────────────────────
 
 
-def _parse_product_tag(tag: str) -> tuple[int, int, int, str]:
-    m = re.match(r"^v(\d+)\.(\d+)\.(\d+)([A-Z])$", tag)
+def _parse_product_tag(tag: str) -> tuple[int, int, int, str, int]:
+    m = re.match(r"^v(\d+)\.(\d+)\.(\d+)([A-Z])([1-9]\d*)?$", tag)
     if not m:
-        raise ValueError(f"tag does not match vX.Y.ZS pattern (S uppercase): {tag!r}")
-    return (int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4).lower())
+        raise ValueError(
+            f"tag does not match vX.Y.ZS[N] pattern "
+            f"(S uppercase, N positive): {tag!r}"
+        )
+    return (
+        int(m.group(1)),
+        int(m.group(2)),
+        int(m.group(3)),
+        m.group(4).lower(),
+        int(m.group(5) or "1"),
+    )
 
 
 def tag_to_python_version(tag: str) -> str:
-    """Convert release tag vX.Y.ZS to Python version X.Y.Zs1.
+    """Convert release tag vX.Y.ZS[N] to Python version X.Y.ZsN.
 
     >>> tag_to_python_version("v1.0.1A")
     '1.0.1a1'
     >>> tag_to_python_version("v2.3.4B")
     '2.3.4b1'
+    >>> tag_to_python_version("v1.0.1A3")
+    '1.0.1a3'
     """
-    major, minor, patch, suffix = _parse_product_tag(tag)
-    return f"{major}.{minor}.{patch}{suffix}1"
+    major, minor, patch, suffix, serial = _parse_product_tag(tag)
+    return f"{major}.{minor}.{patch}{suffix}{serial}"
 
 
-def _parse_python_pre(version: str) -> tuple[int, int, int, str]:
-    m = re.match(r"^(\d+)\.(\d+)\.(\d+)([a-z])1$", version)
+def _parse_python_pre(version: str) -> tuple[int, int, int, str, int]:
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)([a-z])([1-9]\d*)$", version)
     if not m:
-        raise ValueError(f"version does not match X.Y.Zs1 pattern: {version!r}")
-    return (int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4).upper())
+        raise ValueError(
+            f"version does not match X.Y.ZsN pattern (N positive): {version!r}"
+        )
+    return (
+        int(m.group(1)),
+        int(m.group(2)),
+        int(m.group(3)),
+        m.group(4).upper(),
+        int(m.group(5)),
+    )
 
 
 def python_to_tag_version(version: str) -> str:
-    """Convert Python version X.Y.Zs1 to release tag vX.Y.ZS.
+    """Convert Python version X.Y.ZsN to release tag vX.Y.ZS[N].
 
     >>> python_to_tag_version("1.0.1a1")
     'v1.0.1A'
+    >>> python_to_tag_version("1.0.1a3")
+    'v1.0.1A3'
     """
-    major, minor, patch, suffix = _parse_python_pre(version)
-    return f"v{major}.{minor}.{patch}{suffix}"
+    major, minor, patch, suffix, serial = _parse_python_pre(version)
+    serial_suffix = "" if serial == 1 else str(serial)
+    return f"v{major}.{minor}.{patch}{suffix}{serial_suffix}"
 
 
 # ── package-metadata helpers ─────────────────────────────────────────────
@@ -303,16 +325,16 @@ def _main() -> None:
     )
     sp = parser.add_subparsers(dest="command", required=True)
 
-    p = sp.add_parser("tag-to-version", help="v1.0.1A → 1.0.1a1")
+    p = sp.add_parser("tag-to-version", help="v1.0.1A3 → 1.0.1a3")
     p.add_argument("tag")
 
-    p = sp.add_parser("version-to-tag", help="1.0.1a1 → v1.0.1A")
+    p = sp.add_parser("version-to-tag", help="1.0.1a3 → v1.0.1A3")
     p.add_argument("version")
 
     p = sp.add_parser("print-package-version", help="print __version__")
     p.add_argument("--repo-root", default=".")
 
-    p = sp.add_parser("print-product-version", help="print version as vX.Y.ZS")
+    p = sp.add_parser("print-product-version", help="print version as vX.Y.ZS[N]")
     p.add_argument("--repo-root", default=".")
 
     p = sp.add_parser("generate-build-info")

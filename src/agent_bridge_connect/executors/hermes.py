@@ -37,6 +37,9 @@ from ..path_provider import find_binary
 from ..runner import RunnerClient, RunnerError
 
 SAFETY_TIMEOUT_S = 24 * 60 * 60
+_HERMES_INITIALIZING_LINE_RE = re.compile(
+    r"(?m)^[ \t]*Initializing agent\.\.\.[ \t]*\r?$"
+)
 
 
 class HermesExecutor(CLIExecutorBase):
@@ -69,11 +72,9 @@ class HermesExecutor(CLIExecutorBase):
             raise ValueError(f"Unsupported Hermes transport: {transport}")
         self.transport = transport
         configured_command = _optional_text(command)
-        self.agent_bin = (
-            Path(configured_command).expanduser()
-            if configured_command
-            else _find_hermes_binary()
-        )
+        self._discovery = _discover_hermes_binary(configured_command)
+        resolved = configured_command or str(self._discovery.get("path") or "")
+        self.agent_bin = Path(resolved).expanduser() if resolved else None
         self._version = ""
         self._last_run_id: str | None = None
         self._run_metadata: dict[str, dict[str, Any]] = {}
@@ -91,7 +92,13 @@ class HermesExecutor(CLIExecutorBase):
             return ProbeResult(
                 ok=False,
                 message="hermes unavailable",
-                details={"candidates": [str(path) for path in self.COMMON_PATHS]},
+                details={
+                    "agent_bin": "",
+                    "agent_bin_source": self._discovery.get("source") or "not_found",
+                    "candidates": [str(path) for path in self.COMMON_PATHS],
+                    "searched_paths": self._discovery.get("searched_paths") or [],
+                    "manual_override": self._discovery.get("manual_override") or "",
+                },
             )
 
         runner_health, runner_error = self._probe_runner()
@@ -101,6 +108,7 @@ class HermesExecutor(CLIExecutorBase):
                 message="Hermes available through AgentBC Runner",
                 details={
                     "agent_bin": str(self.agent_bin),
+                    "agent_bin_source": self._discovery.get("source") or "unknown",
                     "profile_mode": "explicit" if self.profile else "inherit",
                     "profile": self.profile,
                     "auth_owner": "hermes_cli",
@@ -114,6 +122,7 @@ class HermesExecutor(CLIExecutorBase):
                 message=f"AgentBC Runner unavailable: {runner_error}",
                 details={
                     "agent_bin": str(self.agent_bin),
+                    "agent_bin_source": self._discovery.get("source") or "unknown",
                     "transport": "runner",
                     "failure_kind": "runner_unavailable",
                 },
@@ -131,7 +140,10 @@ class HermesExecutor(CLIExecutorBase):
             return ProbeResult(
                 ok=False,
                 message=f"hermes unavailable: {exc}",
-                details={"agent_bin": str(self.agent_bin)},
+                details={
+                    "agent_bin": str(self.agent_bin),
+                    "agent_bin_source": self._discovery.get("source") or "unknown",
+                },
             )
 
         version = (completed.stdout or completed.stderr).strip()
@@ -142,6 +154,7 @@ class HermesExecutor(CLIExecutorBase):
             message=version or f"hermes exited with {completed.returncode}",
             details={
                 "agent_bin": str(self.agent_bin),
+                "agent_bin_source": self._discovery.get("source") or "unknown",
                 "returncode": completed.returncode,
                 "version": version,
                 "profile_mode": "explicit" if self.profile else "inherit",
@@ -473,6 +486,7 @@ class HermesExecutor(CLIExecutorBase):
             "version": self._version,
             "runtime": "cli",
             "agent_bin": str(self.agent_bin) if self.agent_bin is not None else "",
+            "agent_bin_source": self._discovery.get("source") or "not_found",
             "capability_level": self.capabilities().level,
             "last_run_id": self._last_run_id,
             "profile_mode": "explicit" if self.profile else "inherit",
@@ -519,11 +533,25 @@ class HermesExecutor(CLIExecutorBase):
         self._run_metadata[run_id] = metadata
 
 
-def _find_hermes_binary() -> Path | None:
-    discovery = find_binary(
+def _discover_hermes_binary(configured_command: str | None = None) -> dict[str, Any]:
+    if configured_command:
+        path = Path(configured_command).expanduser()
+        return {
+            "name": "hermes",
+            "found": path.is_file(),
+            "path": str(path),
+            "source": "configured",
+            "searched_paths": [str(path)],
+            "manual_override": "AGENTBC_HERMES_BIN=/your/path/hermes",
+        }
+    return find_binary(
         "hermes",
         extra_paths=[str(path) for path in HermesExecutor.COMMON_PATHS],
     )
+
+
+def _find_hermes_binary() -> Path | None:
+    discovery = _discover_hermes_binary()
     if discovery["found"]:
         return Path(discovery["path"])
     return None
@@ -625,6 +653,7 @@ def _build_prompt(task_packet: dict[str, Any]) -> str:
                 f'"step_results":[{step_results}]}}'
             ),
             "Use final_state input_required only with at least one declared step status blocked; plain permission or approval prose is not a valid stop.",
+            'For a two-option user decision, include "input":{"type":"choice","reason":"why the user must decide","options":[{"label":"Option A","description":"what A does or changes"},{"label":"Option B","description":"what B does or changes"}]}; give a concrete reason and a concrete description for each option. Labels must be distinct and at most 48 characters; descriptions must be at most 160 characters. Use type message for free text and type permission only for approve/deny.',
             "A zero CLI exit without a valid marker fails the task. completed means flow execution ended, not user acceptance or quality approval.",
         ]
     )
@@ -634,18 +663,21 @@ def _build_prompt(task_packet: dict[str, Any]) -> str:
 def _extract_final_response(stdout: str, task_packet: dict[str, Any]) -> str:
     """Return the actual Hermes assistant response from raw CLI output.
 
-    Hermes single-query mode prefixes the output with ``Query: <prompt>`` in
-    its human-facing path, and models may repeat the task prompt verbatim
-    ahead of their real answer. The prompt embeds the example final marker, so
+    Hermes single-query mode may print warnings, a terminal-wrapped
+    ``Query: <prompt>`` echo, and an ``Initializing agent...`` boundary before
+    the actual response. The prompt embeds the example final marker, so
     validating the raw stdout would count that echoed example plus the real
-    marker as a duplicate and fail. Strip the known leading Query/task-prompt
-    echo so marker validation inspects the actual final response only; a
-    genuinely duplicated marker inside that response still fails as
-    ``completion_marker_duplicate``.
+    marker as a duplicate and fail. Prefer the explicit initialization
+    boundary when present, then retain the older Query/task-prompt fallback
+    for output variants without it. A genuinely duplicated marker inside the
+    actual response still fails as ``completion_marker_duplicate``.
     """
     output = (stdout or "").strip()
     if not output:
         return output
+    initialization = _HERMES_INITIALIZING_LINE_RE.search(output)
+    if initialization is not None:
+        return output[initialization.end():].lstrip()
     prompt = _build_prompt(task_packet)
     if output.startswith("Query:"):
         candidate = output[len("Query:"):].lstrip()

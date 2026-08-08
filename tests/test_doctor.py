@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -329,7 +330,7 @@ class RunnerHealthIdentityTests(unittest.TestCase):
             state = RunnerState(
                 Path(temporary),
                 [Path(temporary)],
-                {"codex": Path("/bin/echo")},
+                {"codex": Path(sys.executable)},
             )
 
             health = _dispatch_request(state, {"op": "health"})

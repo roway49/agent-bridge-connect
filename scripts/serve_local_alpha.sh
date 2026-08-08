@@ -41,7 +41,7 @@ echo "directory: $DIST_ROOT"
 echo "checksum: $PINNED_SHA256"
 echo
 echo "Run this on the test MacBook connected to the same network:"
-echo "curl -fsSL $BASE_URL/install-agentbc-alpha.sh | AGENTBC_EXPECTED_SHA256=$PINNED_SHA256 sh -s -- $BASE_URL"
+echo "curl -fsSL $BASE_URL/install-agentbc-alpha.sh | AGENTBC_PRODUCT_VERSION=$VERSION AGENTBC_EXPECTED_SHA256=$PINNED_SHA256 sh -s -- $BASE_URL"
 echo
 echo "Reset the test MacBook to a clean pre-install state:"
 echo "agentbc uninstall"

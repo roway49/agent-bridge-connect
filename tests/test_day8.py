@@ -80,10 +80,24 @@ class CodexExecutorTests(unittest.TestCase):
     def test_codex_probe(self):
         """CodexExecutor.probe() should check codex is available."""
         from agent_bridge_connect.executors.codex import CodexExecutor
-        executor = CodexExecutor()
+
+        missing = {
+            "found": False,
+            "path": "",
+            "source": "not_found",
+            "searched_paths": ["fixture/codex"],
+            "manual_override": "AGENTBC_CODEX_BIN=/your/path/codex",
+        }
+        with mock.patch(
+            "agent_bridge_connect.executors.codex.find_binary",
+            return_value=missing,
+        ):
+            executor = CodexExecutor()
         result = executor.probe()
-        # May fail if codex not in PATH, but should not crash
-        self.assertIsNotNone(result)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.details["agent_bin"], "")
+        self.assertEqual(result.details["agent_bin_source"], "not_found")
+        self.assertEqual(result.details["searched_paths"], ["fixture/codex"])
 
     def test_codex_capabilities(self):
         """CodexExecutor should declare L1+ capabilities."""

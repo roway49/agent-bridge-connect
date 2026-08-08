@@ -142,7 +142,7 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
             f"Recovery required. Fix the latest system error, then run agentbc task dispatch {task_id}."
             if public_status == "needs_recovery"
             else (
-                f"Respond with agentbc task respond {task_id} --input {input_request.get('input_id', '')} --message \"<response>\"."
+                _input_recovery_recommendation(task_id, input_request)
                 if public_status == "input_required"
                 else recovery_recommendation(lease_state)
             )
@@ -455,9 +455,14 @@ def _available_actions(
         ]
     if status == "input_required":
         request = input_request if isinstance(input_request, dict) else {}
+        response_command = _input_response_command(task_id, request)
+        if not response_command:
+            return [
+                *inspect_actions,
+                f"agentbc task close {task_id}",
+            ]
         return [
-            f"agentbc task respond {task_id} --input {request.get('input_id', '<input-id>')} --message \"<response>\"",
-            f"agentbc task status {task_id} --json",
+            response_command,
             f"agentbc task retry {task_id} --step <id>",
             *inspect_actions,
         ]
@@ -468,6 +473,26 @@ def _available_actions(
             *inspect_actions,
         ]
     return inspect_actions
+
+
+def _input_response_command(task_id: str, input_request: dict[str, Any]) -> str:
+    input_id = str(input_request.get("input_id") or "").strip()
+    if not input_id:
+        return ""
+    return (
+        f"agentbc task respond {task_id} --input {input_id} "
+        '--message "<response>"'
+    )
+
+
+def _input_recovery_recommendation(task_id: str, input_request: dict[str, Any]) -> str:
+    command = _input_response_command(task_id, input_request)
+    if command:
+        return f"Respond with {command}."
+    return (
+        "Legacy input_required record has no response ID. Preserve its task and report "
+        f"evidence, then close it with agentbc task close {task_id} or create a replacement task."
+    )
 
 
 def _completed_at(task: dict[str, Any], events: list[dict[str, Any]]) -> str | None:
@@ -623,17 +648,29 @@ def _render_report_md(report: dict[str, Any]) -> str:
 
     input_request = report.get("input") or {}
     if input_request:
-        lines.extend(
-            [
-                "",
-                "## Input Lifecycle",
-                f"- Input ID: `{input_request.get('input_id', '')}`",
-                f"- Status: `{input_request.get('status', '')}`",
-                f"- Blocked step/type: `{input_request.get('blocked_step_id', '')}` / `{input_request.get('type', '')}`",
-                f"- Summary: {input_request.get('summary', '')}",
-                f"- Deadline: `{input_request.get('deadline_at', '')}`",
+        input_lines = [
+            f"- Input ID: `{input_request.get('input_id', '')}`",
+            f"- Status: `{input_request.get('status', '')}`",
+            f"- Blocked step/type: `{input_request.get('blocked_step_id', '')}` / `{input_request.get('type', '')}`",
+            f"- Summary: {input_request.get('summary', '')}",
+        ]
+        if input_request.get("reason"):
+            input_lines.append(f"- Decision reason: {input_request.get('reason', '')}")
+        if input_request.get("options"):
+            options = [str(option) for option in input_request.get("options", [])]
+            descriptions = [
+                str(description)
+                for description in input_request.get("option_descriptions", [])
             ]
-        )
+            if len(descriptions) == len(options):
+                input_lines.extend(
+                    f"- Option `{label}`: {description}"
+                    for label, description in zip(options, descriptions)
+                )
+            else:
+                input_lines.append(f"- Options: {' | '.join(options)}")
+        input_lines.append(f"- Deadline: `{input_request.get('deadline_at', '')}`")
+        lines.extend(["", "## Input Lifecycle", *input_lines])
 
     lines.extend(
         [

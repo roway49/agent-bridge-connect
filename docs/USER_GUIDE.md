@@ -106,9 +106,28 @@ infrastructure failures may become `needs_recovery`, but AgentBC never dispatche
 a retry automatically. Flow validation does not inspect Git, tests, files, or
 artifact quality.
 
+For a two-option decision, include a concrete reason and describe the outcome of
+both options: `"input":{"type":"choice","reason":"why the user must decide","options":[{"label":"Option A","description":"what A does or changes"},{"label":"Option B","description":"what B does or changes"}]}`.
+AgentBC shows the reason and descriptions above two direct option buttons. The
+deadline and CLI fallback command remain available in the task report but are not
+shown in the desktop dialog. Free-text requests continue to use `type: message`,
+approve/deny requests use `type: permission`, and input dialogs wait up to five
+minutes. Dismissal or timeout keeps the same task waiting for `agentbc task respond`.
+
 Reports show marker validity, completed-step count, failure code, failed/blocked
 steps, and `Flow contract satisfied`. That field is `yes` only for a valid
 completed marker with all task steps done after the report is generated.
+
+Every report and task brief also carries a `Dispatcher Traceability` section with
+two labels: `Dispatcher platform` and `Dispatcher conversation ID`. They describe
+the controller conversation that created or handed off the task, not the executor's
+temporary session. `Dispatcher platform` is the source platform such as `codex`,
+`claude`, or `hermes`. `Dispatcher conversation ID` is the trusted conversation ID
+from that dispatcher when one is available; it shows `unavailable` otherwise.
+AgentBC records a handoff's current dispatcher conversation, never the source task
+conversation, and never guesses a conversation ID from processes, paths, history,
+or a previous task. Dispatcher traceability is separate from executor temporary
+sessions, and AgentBC does not delete the dispatcher conversation.
 
 ## Task List And Health
 

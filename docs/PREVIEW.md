@@ -2,7 +2,7 @@
 
 [中文](PREVIEW_ZH.md) | English
 
-AgentBC `1.0.1A` establishes the local task, Runner, report, and recovery
+AgentBC `1.0.1A3` establishes the local task, Runner, report, and recovery
 foundation. The following areas are planned for later releases.
 
 ## More Agents

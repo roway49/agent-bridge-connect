@@ -28,20 +28,26 @@ import build_provenance as bp  # noqa: E402
 
 
 class TagVersionMappingTests(unittest.TestCase):
-    """vX.Y.ZS  ⇄  X.Y.Zs1  round-trip and edge cases."""
+    """vX.Y.ZS[N]  ⇄  X.Y.ZsN  round-trip and edge cases."""
 
     def test_tag_to_python(self) -> None:
         self.assertEqual(bp.tag_to_python_version("v1.0.1A"), "1.0.1a1")
+        self.assertEqual(bp.tag_to_python_version("v1.0.1A2"), "1.0.1a2")
+        self.assertEqual(bp.tag_to_python_version("v1.0.1A3"), "1.0.1a3")
         self.assertEqual(bp.tag_to_python_version("v2.3.4B"), "2.3.4b1")
+        self.assertEqual(bp.tag_to_python_version("v2.3.4B12"), "2.3.4b12")
         self.assertEqual(bp.tag_to_python_version("v0.0.0Z"), "0.0.0z1")
 
     def test_python_to_tag(self) -> None:
         self.assertEqual(bp.python_to_tag_version("1.0.1a1"), "v1.0.1A")
+        self.assertEqual(bp.python_to_tag_version("1.0.1a2"), "v1.0.1A2")
+        self.assertEqual(bp.python_to_tag_version("1.0.1a3"), "v1.0.1A3")
         self.assertEqual(bp.python_to_tag_version("2.3.4b1"), "v2.3.4B")
+        self.assertEqual(bp.python_to_tag_version("2.3.4b12"), "v2.3.4B12")
         self.assertEqual(bp.python_to_tag_version("0.0.0z1"), "v0.0.0Z")
 
     def test_round_trip_tag_first(self) -> None:
-        for tag in ("v1.0.1A", "v2.3.4B", "v5.6.7C"):
+        for tag in ("v1.0.1A", "v1.0.1A2", "v1.0.1A3", "v2.3.4B12", "v5.6.7C"):
             with self.subTest(tag=tag):
                 self.assertEqual(
                     bp.python_to_tag_version(bp.tag_to_python_version(tag)),
@@ -49,7 +55,7 @@ class TagVersionMappingTests(unittest.TestCase):
                 )
 
     def test_round_trip_version_first(self) -> None:
-        for ver in ("1.0.1a1", "2.3.4b1", "5.6.7c1"):
+        for ver in ("1.0.1a1", "1.0.1a2", "1.0.1a3", "2.3.4b12", "5.6.7c1"):
             with self.subTest(version=ver):
                 self.assertEqual(
                     bp.tag_to_python_version(bp.python_to_tag_version(ver)),
@@ -64,23 +70,31 @@ class TagVersionMappingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bp.tag_to_python_version("1.0.1A")
 
-    def test_tag_rejects_extra_suffix(self) -> None:
+    def test_tag_rejects_invalid_serial(self) -> None:
         with self.assertRaises(ValueError):
-            bp.tag_to_python_version("v1.0.1A2")
+            bp.tag_to_python_version("v1.0.1A0")
+        with self.assertRaises(ValueError):
+            bp.tag_to_python_version("v1.0.1A02")
+        with self.assertRaises(ValueError):
+            bp.tag_to_python_version("v1.0.1A2x")
 
     def test_version_rejects_no_pre_release(self) -> None:
         with self.assertRaises(ValueError):
             bp.python_to_tag_version("1.0.1")
 
-    def test_version_rejects_double_digit_suffix(self) -> None:
+    def test_version_rejects_invalid_serial(self) -> None:
         with self.assertRaises(ValueError):
-            bp.python_to_tag_version("1.0.1a12")
+            bp.python_to_tag_version("1.0.1a0")
+        with self.assertRaises(ValueError):
+            bp.python_to_tag_version("1.0.1a02")
 
     def test_mapping_is_deterministic(self) -> None:
         """Repeated calls give identical results."""
         for _ in range(100):
             self.assertEqual(bp.tag_to_python_version("v1.0.1A"), "1.0.1a1")
             self.assertEqual(bp.python_to_tag_version("1.0.1a1"), "v1.0.1A")
+            self.assertEqual(bp.tag_to_python_version("v1.0.1A2"), "1.0.1a2")
+            self.assertEqual(bp.python_to_tag_version("1.0.1a2"), "v1.0.1A2")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -101,8 +115,8 @@ class PackageVersionTests(unittest.TestCase):
 
     def test_version_is_valid_pre_release(self) -> None:
         pv = bp.get_package_version(_REPO)
-        self.assertRegex(pv, r"^\d+\.\d+\.\d+[a-z]1$",
-                         f"package version {pv!r} must be X.Y.Zs1")
+        self.assertRegex(pv, r"^\d+\.\d+\.\d+[a-z][1-9]\d*$",
+                         f"package version {pv!r} must be X.Y.ZsN")
 
     def test_print_package_version(self) -> None:
         result = subprocess.run(
@@ -186,6 +200,17 @@ class BuildIdentityTests(unittest.TestCase):
         self.assertTrue(out.is_file())
         data = json.loads(out.read_text(encoding="utf-8"))
         self.assertEqual(data["build_source"], "test")
+
+    def test_generated_build_info_matches_runtime_reader_contract(self) -> None:
+        from agent_bridge_connect.doctor import _read_build_info
+
+        self._init_git_repo()
+        out = bp.write_build_info(self.repo, build_source="test")
+        data, state = _read_build_info(out)
+        self.assertEqual(state, "valid")
+        self.assertIsNotNone(data)
+        assert data is not None
+        self.assertEqual(data["schema_version"], 1)
 
     def test_source_tree_sha256_deterministic(self) -> None:
         """Same git tree always produces the same hash."""
@@ -513,15 +538,34 @@ class NoPublishBehaviourTests(unittest.TestCase):
             capture_output=True, text=True, check=True,
         ).stdout.strip()
 
-    def test_publish_job_guarded_by_release_event(self) -> None:
-        """Publish workflow YAML has if: condition on the publish job."""
+    def test_publish_job_requires_release_or_confirmed_tag_recovery(self) -> None:
+        """Publish is limited to releases or explicit tagged recovery runs."""
         workflow = (
             _REPO / ".github" / "workflows" / "publish-pypi.yml"
         ).read_text(encoding="utf-8")
-        self.assertIn("github.event_name", workflow,
-                      "publish job must have an if: condition")
-        # The publish job must only trigger on release published.
-        self.assertIn("release", workflow.split("publish:")[1].split("steps:")[0])
+        publish_guard = workflow.split("\n  publish:\n", 1)[1].split(
+            "\n    steps:\n", 1
+        )[0]
+        self.assertIn("github.event_name == 'release'", publish_guard)
+        self.assertIn("github.event_name == 'workflow_dispatch'", publish_guard)
+        self.assertIn("inputs.publish", publish_guard)
+        self.assertIn("inputs.release_tag != ''", publish_guard)
+
+    def test_release_upload_is_repo_explicit_and_recoverable(self) -> None:
+        workflow = (
+            _REPO / ".github" / "workflows" / "publish-pypi.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn('--repo "${{ github.repository }}"', workflow)
+        self.assertIn("--clobber", workflow)
+
+    def test_pypi_upload_excludes_release_manifest(self) -> None:
+        """Only Python distributions are handed to the PyPI publisher."""
+        workflow = (
+            _REPO / ".github" / "workflows" / "publish-pypi.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("mkdir -p dist/pypi", workflow)
+        self.assertIn("cp dist/*.whl dist/*.tar.gz dist/pypi/", workflow)
+        self.assertIn("packages-dir: dist/pypi/", workflow)
 
     def test_build_source_distinguishes_events(self) -> None:
         """build_source is set from CI context to differentiate events."""
@@ -532,13 +576,14 @@ class NoPublishBehaviourTests(unittest.TestCase):
         self.assertIn("github-release", workflow)
         self.assertIn("github-manual", workflow)
 
-    def test_validate_only_runs_on_release(self) -> None:
-        """Provenance validation step guarded by release event."""
+    def test_tagged_recovery_checks_out_and_validates_existing_tag(self) -> None:
+        """Manual publish recovery must build and validate the named tag."""
         workflow = (
             _REPO / ".github" / "workflows" / "publish-pypi.yml"
         ).read_text(encoding="utf-8")
-        self.assertIn("provenance validation", workflow.lower())
-        self.assertIn("release", workflow.lower())
+        self.assertIn("inputs.release_tag || github.ref", workflow)
+        self.assertIn('validate --tag "$RELEASE_TAG"', workflow)
+        self.assertIn("github-release-recovery", workflow)
 
     def test_workflow_dispatch_triggers_build(self) -> None:
         """workflow_dispatch is listed as a trigger."""

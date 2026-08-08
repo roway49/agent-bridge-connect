@@ -10,6 +10,11 @@ FINAL_CALLBACK_PREFIX = "AGENTBC_FINAL_CALLBACK:"
 FINAL_CALLBACK_VERSION = 1
 AGENT_FINAL_STATES = frozenset({"completed", "input_required", "cancelled"})
 STEP_RESULT_STATUSES = frozenset({"done", "failed", "blocked", "pending"})
+CHOICE_INPUT_TYPE = "choice"
+CHOICE_OPTION_COUNT = 2
+MAX_CHOICE_OPTION_LENGTH = 48
+MAX_CHOICE_REASON_LENGTH = 240
+MAX_CHOICE_DESCRIPTION_LENGTH = 160
 
 
 @dataclass(frozen=True)
@@ -128,13 +133,76 @@ def validate_callback_payload(
                 "completion_marker_steps_incomplete",
                 f"Completed marker contains non-done steps: {', '.join(map(str, incomplete))}",
             )
-    elif final_state == "input_required" and not any(
-        item.get("status") == "blocked" for item in normalized_results
-    ):
-        return _invalid(
-            "completion_marker_input_step_missing",
-            "input_required marker must identify at least one blocked step",
-        )
+    elif final_state == "input_required":
+        if not any(item.get("status") == "blocked" for item in normalized_results):
+            return _invalid(
+                "completion_marker_input_step_missing",
+                "input_required marker must identify at least one blocked step",
+            )
+        input_details = callback.get("input")
+        if isinstance(input_details, dict) and str(input_details.get("type") or "").strip().lower() == CHOICE_INPUT_TYPE:
+            reason = input_details.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                return _invalid(
+                    "completion_marker_choice_reason_invalid",
+                    "choice input must explain why the user's decision is required",
+                )
+            clean_reason = reason.strip()
+            if len(clean_reason) > MAX_CHOICE_REASON_LENGTH:
+                return _invalid(
+                    "completion_marker_choice_reason_invalid",
+                    f"choice input reason must be at most {MAX_CHOICE_REASON_LENGTH} characters",
+                )
+            raw_options = input_details.get("options")
+            if not isinstance(raw_options, list) or len(raw_options) != CHOICE_OPTION_COUNT:
+                return _invalid(
+                    "completion_marker_choice_options_invalid",
+                    "choice input must declare exactly two options",
+                )
+            options: list[dict[str, str]] = []
+            for option in raw_options:
+                if not isinstance(option, dict):
+                    return _invalid(
+                        "completion_marker_choice_options_invalid",
+                        "choice input options must contain label and description objects",
+                    )
+                label = option.get("label")
+                description = option.get("description")
+                if not isinstance(label, str) or not label.strip():
+                    return _invalid(
+                        "completion_marker_choice_options_invalid",
+                        "choice input option labels must be non-empty strings",
+                    )
+                if not isinstance(description, str) or not description.strip():
+                    return _invalid(
+                        "completion_marker_choice_description_invalid",
+                        "choice input options must include non-empty descriptions",
+                    )
+                clean_label = label.strip()
+                clean_description = description.strip()
+                if len(clean_label) > MAX_CHOICE_OPTION_LENGTH:
+                    return _invalid(
+                        "completion_marker_choice_options_invalid",
+                        f"choice input option labels must be at most {MAX_CHOICE_OPTION_LENGTH} characters",
+                    )
+                if len(clean_description) > MAX_CHOICE_DESCRIPTION_LENGTH:
+                    return _invalid(
+                        "completion_marker_choice_description_invalid",
+                        f"choice input option descriptions must be at most {MAX_CHOICE_DESCRIPTION_LENGTH} characters",
+                    )
+                options.append({"label": clean_label, "description": clean_description})
+            if len({option["label"] for option in options}) != CHOICE_OPTION_COUNT:
+                return _invalid(
+                    "completion_marker_choice_options_invalid",
+                    "choice input option labels must be distinct",
+                )
+            callback = dict(callback)
+            callback["input"] = {
+                **input_details,
+                "type": CHOICE_INPUT_TYPE,
+                "reason": clean_reason,
+                "options": options,
+            }
 
     normalized = dict(callback)
     normalized["summary"] = summary.strip()

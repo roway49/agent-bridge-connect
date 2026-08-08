@@ -1373,7 +1373,12 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 event_type, level = "task.failed", "error"
             if finalized_from_worker:
                 if final_status == "input_required":
-                    _notify_input_required(service, task.id)
+                    _notify_input_required(
+                        service,
+                        task.id,
+                        config_path=getattr(args, "config", None),
+                        interval_s=getattr(args, "interval", 2),
+                    )
                 else:
                     _notify_terminal(service, task.id, event_type, level, summary)
             _request_task_list_refresh(service.board_root)
@@ -1822,10 +1827,28 @@ def _notify_terminal(
     notify_terminal(service, task_id, event_type, level, message)
 
 
-def _notify_input_required(service: TaskService, task_id: str) -> None:
+def _notify_input_required(
+    service: TaskService,
+    task_id: str,
+    *,
+    config_path: str | Path | None = None,
+    interval_s: float = 2.0,
+) -> dict[str, Any]:
     from .notifications import notify_input_required
+    from .runner import RunnerClient
 
-    notify_input_required(service, task_id)
+    def respond(input_id: str, response_type: str, message: str) -> dict[str, Any]:
+        return RunnerClient().respond_task(
+            task_id,
+            input_id,
+            response_type,
+            message,
+            service.board_root,
+            config_path,
+            interval_s,
+        )
+
+    return notify_input_required(service, task_id, responder=respond)
 
 
 def _request_task_list_refresh(board_root: str | Path) -> None:

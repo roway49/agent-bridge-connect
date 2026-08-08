@@ -773,7 +773,13 @@ class TaskService:
             input_details.get("type")
             or callback.get("input_type")
             or "message"
-        ).strip() or "message"
+        ).strip().lower() or "message"
+        input_choices = (
+            [dict(option) for option in input_details.get("options", []) if isinstance(option, dict)]
+            if input_type == "choice" and isinstance(input_details.get("options"), list)
+            else []
+        )
+        input_reason = str(input_details.get("reason") or "").strip()
         requested_permission = str(
             input_details.get("requested_permission")
             or callback.get("requested_permission")
@@ -796,6 +802,17 @@ class TaskService:
         }
         if requested_permission:
             request["requested_permission"] = str(redact_secrets(requested_permission))
+        if input_reason:
+            request["reason"] = str(redact_secrets(input_reason))
+        if input_choices:
+            request["options"] = [
+                str(redact_secrets(str(option.get("label") or "").strip()))
+                for option in input_choices
+            ]
+            request["option_descriptions"] = [
+                str(redact_secrets(str(option.get("description") or "").strip()))
+                for option in input_choices
+            ]
 
         task.status = "input_required"
         task.updated_at = created_at

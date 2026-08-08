@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -42,6 +43,7 @@ class ExecutorFlowContractTests(unittest.TestCase):
         task_id: str = "TEST-001",
         final_state: str = "completed",
         step_results: list[dict] | None = None,
+        input_details: dict | None = None,
     ) -> str:
         payload = {
             "version": 1,
@@ -52,13 +54,15 @@ class ExecutorFlowContractTests(unittest.TestCase):
             if step_results is not None
             else [{"id": 1, "status": "done"}, {"id": 2, "status": "done"}],
         }
+        if input_details is not None:
+            payload["input"] = input_details
         return f"{FINAL_CALLBACK_PREFIX} {json.dumps(payload)}"
 
     def _run_executor(
         self, name: str, output: str, *, returncode: int = 0, stderr: str = ""
     ):
         if name == "codex":
-            executor = CodexExecutor(command="/bin/true")
+            executor = CodexExecutor(command=sys.executable)
             stdout = json.dumps(
                 {
                     "type": "item.completed",
@@ -67,11 +71,11 @@ class ExecutorFlowContractTests(unittest.TestCase):
             )
             module = "agent_bridge_connect.executors.codex.subprocess.run"
         elif name == "claude":
-            executor = ClaudeExecutor(command="/bin/true", transport="direct")
+            executor = ClaudeExecutor(command=sys.executable, transport="direct")
             stdout = output
             module = "agent_bridge_connect.executors.claude.subprocess.run"
         else:
-            executor = HermesExecutor(command="/bin/true", transport="direct")
+            executor = HermesExecutor(command=sys.executable, transport="direct")
             stdout = output
             module = "agent_bridge_connect.executors.hermes.subprocess.run"
         completed = subprocess.CompletedProcess([], returncode, stdout=stdout, stderr=stderr)
@@ -122,6 +126,108 @@ class ExecutorFlowContractTests(unittest.TestCase):
             with self.subTest(executor=executor_name):
                 poll = self._run_executor(executor_name, marker)
                 self.assertEqual(poll.status, "input_required")
+
+    def test_choice_input_requires_exactly_two_distinct_short_labels(self) -> None:
+        step_results = [{"id": 1, "status": "done"}, {"id": 2, "status": "blocked"}]
+        valid = self._marker(
+            final_state="input_required",
+            step_results=step_results,
+            input_details={
+                "type": "choice",
+                "reason": "The user must select the output format.",
+                "options": [
+                    {"label": "Option A", "description": "Write a text result."},
+                    {"label": "Option B", "description": "Write a JSON result."},
+                ],
+            },
+        )
+        validation = extract_callback_validation_from_output(valid, self.packet, "choice-run")
+        self.assertTrue(validation.valid)
+        self.assertEqual(
+            validation.callback["input"],
+            {
+                "type": "choice",
+                "reason": "The user must select the output format.",
+                "options": [
+                    {"label": "Option A", "description": "Write a text result."},
+                    {"label": "Option B", "description": "Write a JSON result."},
+                ],
+            },
+        )
+
+        invalid_options = (
+            [],
+            [{"label": "only one", "description": "Only one option."}],
+            [
+                {"label": "same", "description": "First."},
+                {"label": "same", "description": "Second."},
+            ],
+            [
+                {"label": "", "description": "Empty label."},
+                {"label": "Option B", "description": "Second."},
+            ],
+            [
+                {"label": "A" * 49, "description": "Too long."},
+                {"label": "Option B", "description": "Second."},
+            ],
+        )
+        for options in invalid_options:
+            with self.subTest(options=options):
+                marker = self._marker(
+                    final_state="input_required",
+                    step_results=step_results,
+                    input_details={
+                        "type": "choice",
+                        "reason": "A decision is required.",
+                        "options": options,
+                    },
+                )
+                validation = extract_callback_validation_from_output(
+                    marker,
+                    self.packet,
+                    "choice-run",
+                )
+                self.assertFalse(validation.valid)
+                self.assertEqual(validation.code, "completion_marker_choice_options_invalid")
+
+        missing_reason = self._marker(
+            final_state="input_required",
+            step_results=step_results,
+            input_details={
+                "type": "choice",
+                "options": [
+                    {"label": "Option A", "description": "First."},
+                    {"label": "Option B", "description": "Second."},
+                ],
+            },
+        )
+        validation = extract_callback_validation_from_output(
+            missing_reason,
+            self.packet,
+            "choice-run",
+        )
+        self.assertFalse(validation.valid)
+        self.assertEqual(validation.code, "completion_marker_choice_reason_invalid")
+
+        missing_description = self._marker(
+            final_state="input_required",
+            step_results=step_results,
+            input_details={
+                "type": "choice",
+                "reason": "A decision is required.",
+                "options": [
+                    {"label": "Option A", "description": ""},
+                    {"label": "Option B", "description": "Second."},
+                ],
+            },
+        )
+        validation = extract_callback_validation_from_output(
+            missing_description,
+            self.packet,
+            "choice-run",
+        )
+        self.assertFalse(validation.valid)
+        self.assertEqual(validation.code, "completion_marker_choice_description_invalid")
 
     def test_all_executors_keep_explicit_transport_failure_recoverable(self) -> None:
         output = "executor stopped before a final marker"

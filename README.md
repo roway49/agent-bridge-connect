@@ -10,7 +10,7 @@ gateway, one report contract, and one recovery model.
 > Public Alpha. Use AgentBC on development projects with version control and
 > review agent output before accepting changes.
 
-Current release: **1.0.1A** (Python package version `1.0.1a1`).
+Current release: **1.0.1A3** (Python package version `1.0.1a3`).
 
 - Repository and releases: [GitHub](https://github.com/roway49/agent-bridge-connect)
 - Python package: [agentbc](https://pypi.org/project/agentbc/)
@@ -51,15 +51,15 @@ One command downloads, verifies, installs, and configures AgentBC:
 
 ```bash
 curl -fsSL \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A/install-agentbc-alpha.sh \
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A3/install-agentbc-alpha.sh \
   | sh -s -- \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A3
 ```
 
 For a package-managed installation from PyPI:
 
 ```bash
-python3 -m pip install agentbc==1.0.1a1
+python3 -m pip install agentbc==1.0.1a3
 agentbc setup
 ```
 
@@ -131,7 +131,14 @@ AGENTBC_FINAL_CALLBACK: {"version":1,"task_id":"4XMC-001","final_state":"complet
 appears exactly once with status `done`. Missing or invalid JSON, wrong task IDs,
 duplicate/unknown/missing steps, and non-`done` completion steps fail the flow.
 `input_required` must be explicit and identify at least one declared step as
-`blocked`; permission or approval prose alone is a failure.
+`blocked`; permission or approval prose alone is a failure. A two-option choice
+declares a concrete decision reason and two label/description objects, for example
+`"input":{"type":"choice","reason":"why a decision is required","options":[{"label":"A","description":"what A does"},{"label":"B","description":"what B does"}]}`.
+The desktop dialog explains the reason and both outcomes, then renders the two
+labels as direct buttons. Operational deadline and CLI fallback fields remain in
+the task record/report but are not shown in the desktop dialog. Input dialogs
+remain visible for up to five minutes; dismissing or timing out leaves the task
+waiting for a CLI response.
 
 1. Runner confirms that execution started.
 2. The executor emits and exits with its final marker.
@@ -149,6 +156,15 @@ automatically retries a recovery state.
 
 A dispatch response such as `accepted` is not task completion. Task status,
 reports, artifacts, and notifications are the source of truth.
+
+Every report and task brief includes a `Dispatcher Traceability` section labeling
+the controller that created or handed off the task: `Dispatcher platform` and
+`Dispatcher conversation ID`. These labels describe the current dispatcher
+conversation, not the source task conversation and not the executor's temporary
+session. The conversation ID shows `unavailable` when no trusted dispatcher ID
+was available; AgentBC never guesses it from processes, paths, history, or a
+previous task, and a handoff records the current dispatcher conversation.
+AgentBC does not delete the dispatcher conversation.
 
 ## Path And Data Model
 

@@ -2881,7 +2881,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
             stdout="Failed to initialize agent: Operation not permitted",
             stderr="",
         )
-        executor = HermesExecutor(transport="direct")
+        executor = HermesExecutor(command=sys.executable, transport="direct")
         executor._version = "Hermes 1.0"
         result = executor.start(
             {
@@ -2908,7 +2908,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
             ),
             stderr="",
         )
-        executor = HermesExecutor(transport="direct")
+        executor = HermesExecutor(command=sys.executable, transport="direct")
         executor._version = "Hermes 1.0"
         result = executor.start(
             {
@@ -2956,7 +2956,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
             "output_truncated": False,
         }
         executor = HermesExecutor(transport="runner")
-        executor.agent_bin = Path("/opt/hermes")
+        executor.agent_bin = Path(sys.executable)
         executor._version = "Hermes test"
         started = executor.start(
             {
@@ -2976,7 +2976,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
             0,
         )
         command = client.submit.call_args.args[1]
-        self.assertEqual(command[:2], ["/opt/hermes", "chat"])
+        self.assertEqual(command[:2], [sys.executable, "chat"])
 
     @mock.patch("agent_bridge_connect.executors.hermes.RunnerClient")
     def test_hermes_runner_status_error_is_transient_not_recovery(self, runner_client):
@@ -2997,7 +2997,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         }
         client.status.side_effect = RunnerError("unknown runner run: runner-hermes-transient")
         executor = HermesExecutor(transport="runner")
-        executor.agent_bin = Path("/opt/hermes")
+        executor.agent_bin = Path(sys.executable)
 
         started = executor.start(
             {
@@ -3025,7 +3025,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
             "status": "ready",
             "executors": ["hermes"],
         }
-        executor = HermesExecutor(command="/sandbox/hermes", transport="runner")
+        executor = HermesExecutor(command=sys.executable, transport="runner")
 
         result = executor.probe()
 
@@ -3040,7 +3040,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         from agent_bridge_connect.runner import RunnerError
 
         runner_client.return_value.health.side_effect = RunnerError("not running")
-        executor = HermesExecutor(command="/sandbox/hermes", transport="runner")
+        executor = HermesExecutor(command=sys.executable, transport="runner")
 
         result = executor.probe()
 
@@ -3064,7 +3064,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
             ),
             stderr="",
         )
-        executor = HermesExecutor(transport="direct")
+        executor = HermesExecutor(command=sys.executable, transport="direct")
         executor._version = "Hermes 1.0"
         result = executor.start(
             {
@@ -3125,7 +3125,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
             ),
             stderr="",
         )
-        executor = ClaudeExecutor(command="/opt/claude", transport="direct")
+        executor = ClaudeExecutor(command=sys.executable, transport="direct")
         result = executor.start(
             {
                 "task_id": self.task.id,
@@ -3141,7 +3141,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         command = run.call_args.args[0]
         self.assertTrue(result.ok)
-        self.assertEqual(command[:2], ["/opt/claude", "-p"])
+        self.assertEqual(command[:2], [sys.executable, "-p"])
         self.assertIn("--safe-mode", command)
         self.assertIn("--no-session-persistence", command)
         self.assertEqual(command[command.index("--permission-mode") + 1], "acceptEdits")
@@ -3160,7 +3160,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
     def test_claude_normal_exit_without_final_callback_fails(self, run):
         from agent_bridge_connect.executors.claude import ClaudeExecutor
 
-        executor = ClaudeExecutor(command="/opt/claude", transport="direct")
+        executor = ClaudeExecutor(command=sys.executable, transport="direct")
         packet = {
             "task_id": self.task.id,
             "title": self.task.title,
@@ -3191,7 +3191,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
             stderr="",
         )
         executor = ClaudeExecutor(
-            command="/opt/claude",
+            command=sys.executable,
             transport="direct",
             output_format="json",
         )
@@ -3213,7 +3213,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         from agent_bridge_connect.executors.hermes import HermesExecutor
 
         run.return_value = mock.Mock(returncode=0, stdout="Hermes 1.0", stderr="")
-        executor = HermesExecutor(transport="direct")
+        executor = HermesExecutor(command=sys.executable, transport="direct")
         result = executor.probe()
         self.assertTrue(result.ok)
         self.assertEqual(result.details["profile_mode"], "inherit")
@@ -3225,8 +3225,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         from agent_bridge_connect.executors.hermes import HermesExecutor
 
         run.return_value = mock.Mock(returncode=0, stdout="done", stderr="")
-        executor = HermesExecutor(transport="direct")
-        executor.agent_bin = Path("/opt/hermes")
+        executor = HermesExecutor(command=sys.executable, transport="direct")
         result = executor.start(
             {
                 "task_id": self.task.id,
@@ -3240,7 +3239,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
             call.args[0] for call in run.call_args_list if "chat" in call.args[0]
         )
         self.assertTrue(result.ok)
-        self.assertEqual(command[:2], ["/opt/hermes", "chat"])
+        self.assertEqual(command[:2], [sys.executable, "chat"])
         self.assertIn("-Q", command)
         self.assertNotIn("-p", command)
         self.assertNotIn("-z", command)
@@ -3257,7 +3256,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
             model="test-model",
             transport="direct",
         )
-        executor.agent_bin = Path("/opt/hermes")
+        executor.agent_bin = Path(sys.executable)
         executor.start(
             {
                 "task_id": self.task.id,
@@ -3270,7 +3269,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         command = next(
             call.args[0] for call in run.call_args_list if "chat" in call.args[0]
         )
-        self.assertEqual(command[:3], ["/opt/hermes", "-p", "pm"])
+        self.assertEqual(command[:3], [sys.executable, "-p", "pm"])
         self.assertEqual(command[command.index("--provider") + 1], "nous")
         self.assertEqual(command[command.index("--model") + 1], "test-model")
 
@@ -3287,14 +3286,14 @@ class Phase10dIntegrationTests(unittest.TestCase):
             "hermes",
             {
                 "type": "hermes",
-                "command": "/opt/hermes",
+                "command": sys.executable,
                 "runtime_source": "npm_global",
                 "profile": "pm",
                 "provider": "nous",
                 "quiet": False,
             },
         )
-        self.assertEqual(executor.agent_bin, Path("/opt/hermes"))
+        self.assertEqual(executor.agent_bin, Path(sys.executable))
         self.assertEqual(executor.profile, "pm")
         self.assertEqual(executor.provider, "nous")
         self.assertFalse(executor.quiet)
@@ -3306,7 +3305,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
             "claude",
             {
                 "type": "claude",
-                "command": "/opt/claude",
+                "command": sys.executable,
                 "permission_mode": "acceptEdits",
                 "safe_mode": True,
                 "output_format": "text",
@@ -3315,7 +3314,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
                 "runtime_source": "test",
             },
         )
-        self.assertEqual(executor.agent_bin, Path("/opt/claude"))
+        self.assertEqual(executor.agent_bin, Path(sys.executable))
         self.assertEqual(executor.permission_mode, "acceptEdits")
         self.assertTrue(executor.safe_mode)
         self.assertEqual(executor.output_format, "text")
@@ -3418,7 +3417,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
             ),
             stderr="",
         )
-        executor = HermesExecutor(transport="direct")
+        executor = HermesExecutor(command=sys.executable, transport="direct")
         executor._version = "Hermes test"
         with mock.patch.object(
             executor,

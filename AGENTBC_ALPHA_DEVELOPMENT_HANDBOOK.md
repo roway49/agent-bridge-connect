@@ -1,8 +1,10 @@
 # AgentBC Alpha 至正式版开发手册
 
-> 文档日期：2026-08-05
-> 当前发布基线：AgentBC `1.0.1A` / Python `1.0.1a1`
-> 当前私有开发基线：`private/integration` / `99ea49b`
+> 文档日期：2026-08-05；最近更新：2026-08-08
+> 当前发布基线：AgentBC `1.0.1A3` / Python `1.0.1a3`
+> `1.0.1A` 开发状态：已于 2026-08-08 截止，不再接收功能或常规缺陷改动
+> `1.0.1A` 已验证代码截止：`private/integration` / `d2ce9d1f7489dadfc7458313a9216065fb1438c7`
+> 当前私有开发阶段：`1.0.2A`，以稳定修订 `private/integration@cfddccba246e6d057172f6716ab4318ade9a40ad` 为开发基线
 > 目标范围：`1.0.2A`～`1.0.5A`，以及结束 Alpha 的 `1.1.0`
 > 本机唯一开发入口：`/Users/wangroway/hermes-team/codex/AgentBC_Temp/agent-worktrees/integration`
 > 本机公开主线镜像：`/Users/wangroway/Documents/Work/Agent-Bridge-Connect/agent-bridge-connect`（只读）
@@ -526,15 +528,17 @@ Report 与产物质量继续由用户或下一 Agent 验收。
 合法 `input_required` marker 至少指出一个 blocked step。Core 在 `agentbc.input` 中只保留
 一个 active request：`input_id`、`executor_run_id`、`blocked_step_id`、`type`、脱敏
 `summary`、`created_at`、`deadline_at`、`status=waiting`，以及可选的脱敏
-`requested_permission`。默认 deadline 是 24 小时。
+`requested_permission`。`choice` 还必须保存具体 `reason`、两个按钮 label 和逐项
+description；默认 deadline 是 24 小时。
 
 等待路径必须满足：
 
 1. 保留已完成 step，只把 marker 指出的 step 记为 blocked；
 2. 释放 claim lease，把 RunLease 置为 suspended，并暂停 stale 与执行耗时；
 3. 不写 `agentbc.final_callback`，不写终态 Report，不发终态通知；
-4. 立即发送非终态 input notification，包含 Task ID、blocked step/type、脱敏摘要、deadline
-   和精确 `agentbc task respond TASK_ID --input INPUT_ID --message "<response>"`；
+4. 立即发送非终态 input notification。桌面窗口只展示 Task ID、blocked step、具体阻塞原因、
+   两个方案说明和直接操作按钮，不展示 deadline 或 CLI respond 命令；deadline 与精确
+   `agentbc task respond` 仍保存在通知事件、任务状态和报告中作为运维兜底；
 5. Task List 保持黄色、open；read-only list/status/report 不得推进 24 小时到期状态。
 
 用户响应的唯一运行入口是：
@@ -840,7 +844,8 @@ Record 预算限制每次迭代的内部运行记录，不是 Report 和用户�
 仍在 `notifications.py`。后续可删除无调用包装，但不要在 CLI 复制通知算法。
 
 `notify_input_required()` 是并列的非终态即时通知入口：不参与终态错峰，不填 report path，
-必须带 `terminal=false` 的投递证据与精确 respond 命令。它不能调用 `notify_terminal()`，
+必须带 `terminal=false` 的投递证据，并在结构化字段中保留精确 respond 命令。桌面文案不得
+暴露 deadline/命令；它不能调用 `notify_terminal()`，
 也不能让 dashboard cohort 退出。
 
 ### 9.5 多样化通知预期变化
@@ -1922,8 +1927,10 @@ SSH 自动 Gate 不应访问 MacBook 的 `~/Documents/AgentBC`，因为 macOS TC
 
 ## 17. 后续版本建议顺序
 
-1. `1.0.1A` 先完成派发源 Conversation ID 双文档溯源和两日真实任务 Canary，只修复阻断日常开发流程的 P0/P1 回归；
-2. `1.0.2A` 收口 delete、doctor、预算、执行时长、执行会话保留、Skill 漂移和 prompt 去重；
+1. `1.0.1A` 已于 2026-08-08 完成派发源 Conversation ID 双文档溯源、真实任务
+   Canary 和阻断日常开发流程的 P0/P1 修复，并正式截止；
+2. `1.0.2A` 从截止基线继续收口 delete、doctor 构建身份与 Skill 漂移、预算、执行
+   时长、执行会话保留和 prompt 去重；
 3. `1.0.3A` 完成 update/Homebrew、协议 fixtures 和模块机械拆分第一阶段；
 4. `1.0.4A` 让 completion/liveness/schema v2 进入私有及真实 Executor 预览；
 5. `1.0.5A` 发布 OpenCode 与 Docker profile，优先覆盖 macOS/Linux/Windows
@@ -1940,6 +1947,7 @@ CLI 或 Skill 中加条件分支。
 
 ## 18. 相关文档
 
+- `1.0.2A` 需求开发清单：仓库根目录 `AGENTBC_1.0.2A_DEVELOPMENT_CHECKLIST.md`
 - 当前状态与遗留问题：
   `/Users/wangroway/hermes-team/codex/reports/20260723_reports_AgentBC项目状态与下一阶段遗留问题.md`
 - 双机开发流程：
@@ -1973,7 +1981,7 @@ CLI 或 Skill 中加条件分支。
 [ ] 我标明 task/schema/completion/Runner protocol 版本和 v1 兼容策略
 [ ] 我没有让 Agent 重抄 Core 已知的 ID、步骤、路径或版本
 [ ] 我没有让 GUI、通知、Report 或 Index 反向覆盖任务状态
-[ ] 我知道本次改动属于 1.0.1A 稳定性收口或 1.0.2/1.0.3/1.0.4/1.0.5/1.1.0 哪个版本目标
+[ ] 我知道 1.0.1A 已截止，本次改动明确属于 1.0.2/1.0.3/1.0.4/1.0.5/1.1.0 哪个版本目标
 ```
 
 这份检查表的目标不是增加流程负担，而是让每次改动进入正确模块，并让下一位开发者
@@ -1985,7 +1993,17 @@ CLI 或 Skill 中加条件分支。
 
 本节是当前社区调研后的产品优先级，优先于旧 backlog 和本手册前期的功能排序。
 
-### 20.0 `1.0.1A`：日常开发流程稳定性基线
+### 20.0 `1.0.1A`：日常开发流程稳定性基线（已截止）
+
+**截止状态**：2026-08-08 完成开发截止。已验证代码固定为
+`private/integration@d2ce9d1f7489dadfc7458313a9216065fb1438c7`；Changelog 和本手册的
+截止说明作为随后合入的文档收口，不改变该运行候选。公开 `v1.0.1A` Tag、GitHub Release
+和 PyPI `1.0.1a1` 资产继续冻结，不移动、不覆盖，也不以相同版本重新发布。
+
+**稳定修订补充**：开发截止后另行发布的 `v1.0.1A2` 与 `v1.0.1A3` 均使用新版本号和
+独立不可变资产；`A3` 修复发布 Gate 的宿主 Agent/本地路径依赖并统一 Executor 探针字段。
+`1.0.2A` 从 `private/integration@cfddccba246e6d057172f6716ab4318ade9a40ad` 开始，不再从
+原始 `A1` 候选回退开发。
 
 **产品目标**：证明当前 AgentBC 能够正式加入日常开发流程。公开 `v1.0.1A` 标签和
 PyPI `1.0.1a1` 资产保持冻结；私有候选只做两日真实任务 Canary，不以相同版本重发。
@@ -2010,8 +2028,25 @@ update、Homebrew、OpenCode、Docker、GUI、通知扩展、protocol v2 和结�
 未解决 P0/P1；如发生修复，重新通过完整 Gate 和受影响真实任务。
 通过后锁定实际候选提交，作为 `1.0.2A` 开发基线。
 
-详细范围以
-`~/hermes-team/codex/plan/20260805_plan_AgentBC_1.0.1A开发目标冻结.md` 为准。
+**截止结论**：上述稳定性范围已完成并停止扩展。截止候选通过 `541 tests OK`、Ruff、
+compileall、shell syntax、Twine、clean-wheel smoke 和 MacBook x86_64 Gate，并在 ARM64
+开发机完成候选安装。真实任务验证覆盖严格终态、RunLease、报告/日志/通知、Hermes
+prompt 回声、Claude/Hermes 并发 `input_required`、`Later` 和 300 秒自然关闭通知后仍保持
+可接管等待。`input_required` 的后续用户响应属于运行验收，不再改变 1.0.1A 代码截止。
+
+**截止后规则**：从本节状态变为“已截止”起，任何新功能、常规缺陷、重构、协议变化和
+运维改进默认进入 `1.0.2A` 或更后版本。只有发现会破坏数据安全、安装/回退或当前日常
+开发流程的发布阻断问题，并经明确批准重开，才允许修改 1.0.1A 截止结论；不得因为仍在
+观察的 canary、产物质量或 Agent 理解偏差继续向 1.0.1A 倒灌改动。
+
+**转入 1.0.2A 的已知项**：候选 wheel 的 `_build_info.json` 身份 warning、原始
+`extensions.agentbc.execution.lease_state` 快照可能滞后、Claude 预算用户配置、执行时长
+与临时会话保留、Skill 哈希握手，以及 delete/update 等运维入口，均不再作为 1.0.1A
+改动处理。
+
+历史冻结范围以
+`~/hermes-team/codex/plan/20260805_plan_AgentBC_1.0.1A开发目标冻结.md` 为准；当前状态
+与截止基线以本节 2026-08-08 的截止记录为准。
 
 ### 20.1 `1.0.2A`：执行 Agent 临时会话保留策略
 

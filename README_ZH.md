@@ -9,7 +9,7 @@ AgentBC 是一个本地优先的任务控制系统，用于协调本机 Agent �
 > Public Alpha：请在启用版本控制的开发项目中使用 AgentBC，并在接受改动前
 > 审查 Agent 的输出。
 
-当前版本：**1.0.1A**（Python 包版本为 `1.0.1a1`）。
+当前版本：**1.0.1A3**（Python 包版本为 `1.0.1a3`）。
 
 - 仓库与版本发布：[GitHub](https://github.com/roway49/agent-bridge-connect)
 - Python 包：[agentbc](https://pypi.org/project/agentbc/)
@@ -48,15 +48,15 @@ AgentBC 是一个本地优先的任务控制系统，用于协调本机 Agent �
 一行命令即可完成下载、校验、安装和配置：
 ```bash
 curl -fsSL \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A/install-agentbc-alpha.sh \
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A3/install-agentbc-alpha.sh \
   | sh -s -- \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A3
 ```
 
 也可以通过 PyPI 进行包管理安装：
 
 ```bash
-python3 -m pip install agentbc==1.0.1a1
+python3 -m pip install agentbc==1.0.1a3
 agentbc setup
 ```
 
@@ -123,6 +123,12 @@ Agent callback 仅作为可选元数据，正常情况下以执行器进程退�
 - `failed`：执行已启动，但未能确认正常退出流程。
 
 `accepted` 等派发响应不代表任务完成。任务状态、报告、产物和通知才是事实来源。
+
+每份报告与 task brief 都包含 `Dispatcher Traceability`（派发者溯源）小节，标注创建或 handoff
+任务的控制端：`Dispatcher platform`（派发平台）和 `Dispatcher conversation ID`（派发会话 ID）。
+这些标签描述的是当前派发者会话，而不是源任务会话，也不是执行器的临时会话。当没有可信的
+派发者 ID 时会话 ID 显示为 `unavailable`；AgentBC 绝不从进程、路径、历史记录或上一个任务中
+猜测该 ID，handoff 记录的是当前派发者会话。AgentBC 不会删除派发者会话。
 
 ## 路径与数据模型
 
