@@ -228,6 +228,17 @@ def build_parser() -> argparse.ArgumentParser:
     task_close.add_argument("id")
     task_close.add_argument("--confirm", action="store_true")
 
+    task_delete = task_sub.add_parser(
+        "delete",
+        help="Delete one fully terminal task chain by task code.",
+        description="Delete one fully terminal task chain by task code.",
+    )
+    add_task_root(task_delete)
+    task_delete.add_argument("task_code", help="Chain task code, not an iteration id.")
+    task_delete_mode = task_delete.add_mutually_exclusive_group(required=True)
+    task_delete_mode.add_argument("--dry-run", action="store_true", help="Show deleted and preserved objects without writing.")
+    task_delete_mode.add_argument("--confirm", action="store_true", help="Commit deletion of the eligible terminal chain.")
+
     task_correct = task_sub.add_parser("correct", help="Add a correction for a task step.")
     add_task_root(task_correct)
     task_correct.add_argument("id")
@@ -992,6 +1003,23 @@ def command_task_intervention(args: argparse.Namespace) -> int:
             print(f"execution_cancel_warning: {error}")
         return 1
     print(f"{args.task_command}: {args.id}")
+    return 0
+
+
+def command_task_delete(args: argparse.Namespace) -> int:
+    service = _task_service(args.root)
+    try:
+        result = service.delete_task_chain(
+            args.task_code,
+            dry_run=bool(args.dry_run),
+            confirmed=bool(args.confirm),
+        )
+    except ABCError as exc:
+        print(f"{exc.code}: {exc}")
+        return 1
+    if result.get("status") == "deleted":
+        _finish_task_chain_close_cleanup(list(result.get("task_ids") or []), service.board_root)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0
 
 
@@ -1999,6 +2027,8 @@ def main(argv: list[str] | None = None) -> int:
             return command_task_recover(args)
         if args.task_command == "callback":
             return command_task_callback(args)
+        if args.task_command == "delete":
+            return command_task_delete(args)
         if args.task_command in {"pause", "resume", "cancel", "close", "correct", "retry", "reassign", "handoff"}:
             return command_task_intervention(args)
         raise AssertionError(args.task_command)

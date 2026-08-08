@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import shutil
 import uuid
 from dataclasses import dataclass
@@ -44,9 +45,11 @@ PUBLIC_TASK_STATUSES = {
     "completed",
     "failed",
     "cancelled",
+    "rejected",
     "needs_recovery",
 }
 HANDOFF_SOURCE_STATUSES = {"completed"}
+DELETE_ELIGIBLE_STATUSES = {"completed", "failed", "cancelled", "rejected"}
 DEFAULT_INPUT_WAIT_SECONDS = 24 * 60 * 60
 
 
@@ -1176,6 +1179,142 @@ class TaskService:
         self._append_intervention(task_id, "cancel", task.updated_at)
         self._refresh_task_index()
 
+    def plan_task_delete(self, task_code: str) -> dict[str, Any]:
+        """Build a zero-write ownership plan for deleting one terminal chain."""
+        try:
+            normalized_code, requested_iteration = split_task_ref(task_code)
+        except ValueError as exc:
+            raise ABCError(
+                "task_delete_requires_chain_code",
+                f"task delete requires a task code, not an iteration id: {task_code}",
+            ) from exc
+        if requested_iteration is not None:
+            raise ABCError(
+                "task_delete_requires_chain_code",
+                f"task delete requires a task code, not an iteration id: {task_code}",
+                {"task_code": normalized_code, "iteration": requested_iteration},
+            )
+
+        pending = self.store.pending_chain_deletion(normalized_code)
+        if pending is not None:
+            plan = pending.get("plan") if isinstance(pending.get("plan"), dict) else {}
+            return {
+                **plan,
+                "status": "pending_delete",
+                "deletion_id": pending.get("deletion_id"),
+                "transaction_state": pending.get("state"),
+            }
+
+        tasks = sorted(
+            (task for task in self.list_tasks() if _task_code_for(task) == normalized_code),
+            key=lambda task: task_iteration(task.id) or 0,
+        )
+        if not tasks:
+            receipt = self.store.latest_deletion_receipt(normalized_code)
+            if receipt is not None:
+                return {
+                    "status": "already_deleted",
+                    "task_code": normalized_code,
+                    "task_ids": list(receipt.get("task_ids") or []),
+                    "delete_objects": [],
+                    "preserve_objects": [],
+                    "targets": [],
+                    "receipt": receipt,
+                }
+            raise ABCError(
+                "task_not_found",
+                f"Task chain not found: {normalized_code}",
+                {"task_code": normalized_code},
+            )
+
+        ineligible = [
+            {"task_id": task.id, "status": _normalize_status(task.status)}
+            for task in tasks
+            if _normalize_status(task.status) not in DELETE_ELIGIBLE_STATUSES
+        ]
+        if ineligible:
+            raise ABCError(
+                "task_delete_ineligible",
+                f"Task chain {normalized_code} is not deletion-eligible",
+                {
+                    "task_code": normalized_code,
+                    "blocked_iterations": ineligible,
+                    "allowed_statuses": sorted(DELETE_ELIGIBLE_STATUSES),
+                },
+            )
+
+        ownership = _task_chain_delete_ownership(self.board_root, normalized_code, tasks)
+        generation_text = "|".join(f"{task.id}:{task.created_at}" for task in tasks)
+        return {
+            "status": "ready",
+            "task_code": normalized_code,
+            "task_ids": [task.id for task in tasks],
+            "generation": hashlib.sha256(generation_text.encode("utf-8")).hexdigest(),
+            "delete_objects": ownership["delete_objects"],
+            "preserve_objects": ownership["preserve_objects"],
+            "targets": ownership["targets"],
+        }
+
+    def delete_task_chain(
+        self,
+        task_code: str,
+        *,
+        dry_run: bool = False,
+        confirmed: bool = False,
+    ) -> dict[str, Any]:
+        """Delete a terminal chain with a durable reservation and commit boundary."""
+        if dry_run == confirmed:
+            raise ABCError(
+                "task_delete_confirmation_required",
+                "Choose exactly one deletion mode: dry-run or confirmed",
+            )
+        plan = self.plan_task_delete(task_code)
+        if plan["status"] == "already_deleted":
+            if confirmed:
+                deletion_id = str((plan.get("receipt") or {}).get("deletion_id") or "")
+                if deletion_id:
+                    try:
+                        purge_complete = self.store.purge_committed_deletion(deletion_id)
+                    except ABCError as exc:
+                        if exc.code != "task_delete_not_found":
+                            raise
+                        purge_complete = True
+                    return {**plan, "purge_complete": purge_complete}
+            return plan
+        if dry_run:
+            return {**plan, "status": "dry_run"}
+
+        if plan["status"] == "pending_delete":
+            deletion_id = str(plan.get("deletion_id") or "")
+        else:
+            reservation = self.store.reserve_chain_deletion(plan)
+            deletion_id = str(reservation["deletion_id"])
+        self.store.stage_chain_deletion(deletion_id)
+        try:
+            self._refresh_task_index()
+        except Exception as exc:
+            rollback_complete = self.store.rollback_chain_deletion(deletion_id)
+            if rollback_complete:
+                try:
+                    self._refresh_task_index()
+                except Exception:
+                    pass
+            raise ABCError(
+                "task_delete_index_error",
+                f"Could not commit task index deletion: {exc}",
+                {"rollback_complete": rollback_complete},
+            ) from exc
+        receipt = self.store.finalize_chain_deletion(deletion_id)
+        purge_complete = self.store.purge_committed_deletion(deletion_id)
+        return {
+            **plan,
+            "status": "deleted",
+            "deletion_id": deletion_id,
+            "receipt": receipt,
+            "released_task_code": True,
+            "purge_complete": purge_complete,
+        }
+
     def plan_task_close(self, task_ref: str) -> dict[str, Any]:
         """Validate close against the current active chain head without changing state."""
         try:
@@ -2053,6 +2192,155 @@ def _task_code_for(task: TaskModel) -> str:
         return split_task_ref(task.id)[0]
     except ValueError:
         return task.id
+
+
+def _task_chain_delete_ownership(
+    board_root: Path,
+    task_code: str,
+    tasks: list[TaskModel],
+) -> dict[str, list[dict[str, Any]]]:
+    """Prove every delete path from canonical task metadata, never from names alone."""
+    delete_objects: list[dict[str, Any]] = []
+    preserve_objects: list[dict[str, Any]] = []
+    targets_by_path: dict[str, dict[str, str]] = {}
+    customer_paths: set[str] = set()
+
+    record_root = board_root.expanduser().resolve()
+    record_chain = _require_owned_delete_path(
+        record_root / task_code,
+        record_root / task_code,
+        record_root,
+        "record chain",
+    )
+    for task in tasks:
+        workspace = task.workspace or {}
+        validate_path_plan_workspace(workspace)
+        if _task_code_for(task) != task_code:
+            raise ABCError("task_delete_ownership_error", f"Task code mismatch for {task.id}")
+        iteration = f"{int(task_iteration(task.id) or 0):03d}"
+        expected_record = record_chain / iteration
+        _require_owned_delete_path(
+            workspace.get("internal_task_dir"),
+            expected_record,
+            record_root,
+            f"record for {task.id}",
+        )
+        delete_objects.append(
+            {"kind": "record", "task_id": task.id, "path": str(expected_record), "exists": expected_record.exists()}
+        )
+
+        agentbc_root = Path(str(workspace.get("agentbc_root") or "")).expanduser().resolve()
+        task_date = str(workspace.get("task_date") or "")
+        report_base = agentbc_root / "tasks" / "report"
+        expected_report_root = report_base / task_date / task_code
+        report_root = _require_owned_delete_path(
+            workspace.get("report_root"),
+            expected_report_root,
+            report_base,
+            f"report root for {task.id}",
+        )
+        expected_task_file = report_root / f"{task.id}-task.md"
+        expected_report_file = report_root / f"{task.id}-report.md"
+        _require_exact_path(workspace.get("task_file"), expected_task_file, f"task brief for {task.id}")
+        _require_exact_path(workspace.get("report_file"), expected_report_file, f"report for {task.id}")
+        for kind, path in (("task_brief", expected_task_file), ("report", expected_report_file)):
+            delete_objects.append(
+                {"kind": kind, "task_id": task.id, "path": str(path), "exists": path.exists()}
+            )
+        if report_root.exists():
+            targets_by_path.setdefault(
+                str(report_root),
+                {"kind": "reports", "path": str(report_root), "allowed_root": str(report_base.resolve())},
+            )
+
+        delete_objects.append(
+            {"kind": "index_entry", "task_id": task.id, "path": f"task_index:{task.id}", "exists": True}
+        )
+        if bool(workspace.get("customer_dir")):
+            customer_path = str(Path(str(workspace.get("project_root") or "")).expanduser().resolve())
+            if customer_path and customer_path not in customer_paths:
+                customer_paths.add(customer_path)
+                preserve_objects.append(
+                    {"kind": "customer_project", "path": customer_path, "reason": "customer-owned"}
+                )
+            continue
+
+        artifact_base = agentbc_root / "tasks" / "artifacts"
+        expected_artifact_root = artifact_base / task_date / task_code
+        artifact_root = _require_owned_delete_path(
+            workspace.get("artifact_root") or workspace.get("artifacts_dir"),
+            expected_artifact_root,
+            artifact_base,
+            f"managed artifact root for {task.id}",
+        )
+        delete_objects.append(
+            {"kind": "managed_artifact", "task_id": task.id, "path": str(artifact_root), "exists": artifact_root.exists()}
+        )
+        if artifact_root.exists():
+            targets_by_path.setdefault(
+                str(artifact_root),
+                {"kind": "artifacts", "path": str(artifact_root), "allowed_root": str(artifact_base.resolve())},
+            )
+
+    delete_objects.append(
+        {"kind": "task_code_claim", "task_code": task_code, "path": str(record_chain), "exists": record_chain.exists()}
+    )
+    targets_by_path[str(record_chain)] = {
+        "kind": "records",
+        "path": str(record_chain),
+        "allowed_root": str(record_root),
+    }
+    return {
+        "delete_objects": delete_objects,
+        "preserve_objects": preserve_objects,
+        "targets": list(targets_by_path.values()),
+    }
+
+
+def _require_owned_delete_path(
+    value: Any,
+    expected: Path,
+    allowed_root: Path,
+    label: str,
+) -> Path:
+    text = str(value or "").strip()
+    if not text:
+        raise ABCError("task_delete_ownership_error", f"Missing {label} path")
+    raw = Path(text).expanduser()
+    if not raw.is_absolute():
+        raise ABCError("task_delete_ownership_error", f"{label} path is not absolute: {raw}")
+    if raw.is_symlink():
+        raise ABCError("task_delete_ownership_error", f"Refusing symlink {label}: {raw}")
+    resolved = raw.resolve()
+    expected_resolved = expected.expanduser().resolve()
+    allowed_resolved = allowed_root.expanduser().resolve()
+    if resolved != expected_resolved or resolved == allowed_resolved or not _path_is_within(resolved, allowed_resolved):
+        raise ABCError(
+            "task_delete_ownership_error",
+            f"{label} is not the canonical AgentBC-owned path: {raw}",
+            {"expected": str(expected_resolved), "actual": str(resolved)},
+        )
+    return resolved
+
+
+def _require_exact_path(value: Any, expected: Path, label: str) -> None:
+    text = str(value or "").strip()
+    if not text:
+        raise ABCError("task_delete_ownership_error", f"Missing {label} path")
+    raw = Path(text).expanduser()
+    if not raw.is_absolute() or raw.resolve() != expected.resolve():
+        raise ABCError(
+            "task_delete_ownership_error",
+            f"{label} is not the canonical AgentBC-owned path: {raw}",
+        )
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def _agentbc_root_from_workspace(workspace: dict[str, Any]) -> str | None:

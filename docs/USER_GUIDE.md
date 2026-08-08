@@ -11,7 +11,7 @@ version.
 - `agentbc uninstall`: remove AgentBC with separate managed-data choices.
 - `agentbc init`: initialize the managed runtime record directory.
 - `agentbc record clean`: clean eligible runtime diagnostics.
-- `agentbc task`: create, inspect, hand off, intervene, close, and recover.
+- `agentbc task`: create, inspect, hand off, intervene, close, delete, and recover.
 - `agentbc worker`: run task-board worker operations.
 - `agentbc runner`: start, stop, inspect, sample, and show Runner work.
 
@@ -154,6 +154,8 @@ termination may leave a user project partially modified.
 agentbc task pause 4XMC
 agentbc task resume 4XMC
 agentbc task close 4XMC
+agentbc task delete 4XMC --dry-run
+agentbc task delete 4XMC --confirm
 agentbc task recover 4XMC
 ```
 
@@ -161,6 +163,13 @@ Close applies only to a queued or active current head. Root-task close releases 
 and removes AgentBC-owned files. Later chain iterations preserve prior history
 and warn that project changes cannot be rolled back. Customer-project files are
 never deleted.
+
+Delete accepts a task code, never an iteration ID. It requires every iteration in
+the chain to be `completed`, `failed`, `cancelled`, or `rejected`; queued, active,
+input-required, and recovery-required chains are rejected as a whole. `--dry-run`
+makes no writes and lists both deleted and preserved objects. `--confirm` removes
+only AgentBC-owned records, reports, index entries, and managed artifacts, then
+releases the task code. Customer projects are always preserved.
 
 ## Records And Cache
 
