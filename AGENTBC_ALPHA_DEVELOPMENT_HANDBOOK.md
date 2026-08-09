@@ -505,10 +505,15 @@ Report 与产物质量继续由用户或下一 Agent 验收。
 - 缺少、重复或无效完成信号，以及非零退出，默认进入 `failed`；
 - 只有 Adapter 能给出结构化 `retryable=true` 的传输/基础设施失败才进入恢复语义；
 - 权限、审批或预算耗尽但没有合法 `input_required` 声明时仍为 `failed`；
-- Hermes 迭代预算耗尽（`max_iterations_reached(N/M)`、`budget_exhausted`、
-  `Iteration budget exhausted (N/M)`、`Reached maximum iterations (N)`）但没有
-  合法 final marker 时，统一分类为 `iteration_budget_exhausted`（`retryable=false`）；
-  Adapter 同时在结果与 `extensions.executor.hermes` 记录
+- **【CFG-002 落地后】** Adapter 能识别的资源耗尽（Claude `Exceeded USD budget`；
+  Hermes `max_iterations_reached(N/M)`、`budget_exhausted`、
+  `Iteration budget exhausted (N/M)`、`Reached maximum iterations (N)`）不再直接
+  failed，转为 `input_required`（`type=choice`）弹窗决策：approve 翻倍资源并
+  `--resume` 继续，deny 以 `failed` 终态并携带明确原因
+  （`budget_exhausted_user_terminated`/`iteration_exhausted_user_terminated`，
+  `retryable=false`）；未启用决策或用户终止时才进入终态；
+- Hermes 迭代耗尽在进入终态时统一分类为 `iteration_budget_exhausted`
+  （`retryable=false`）；Adapter 同时在结果与 `extensions.executor.hermes` 记录
   `iteration_used/iteration_limit/iteration_exhausted/iteration_source`（不含密钥或正文）；
 - Hermes 校验 final marker 前先剥离已知的 `Query:`/任务 prompt 回声（prompt 内含示例
   marker），只检查实际最终回复；真实回复内仍出现多个 marker 时照旧判
@@ -541,6 +546,19 @@ description；默认 deadline 是 24 小时。
    `agentbc task respond` 仍保存在通知事件、任务状态和报告中作为运维兜底；
 5. Task List 保持黄色、open；read-only list/status/report 不得推进 24 小时到期状态。
 
+**资源耗尽类 choice（CFG-002）**：Adapter 检测到 Claude 预算或 Hermes 迭代耗尽时，
+以 `type=choice` 声明 input_required，桌面弹窗两按钮：「提高预算并继续」与
+「终止任务」。
+
+- approve 按任务级翻倍当前资源（Claude `max_budget_usd` ×2、Hermes `max_turns`
+  ×2），仅本次任务生效，不写全局配置；配合 SESSION-001 以 `--resume` 继续同一
+  Executor 会话，不新建会话重建上下文；
+- deny 将任务终态置为 `failed`，failure 携带明确原因
+  （`budget_exhausted_user_terminated`/`iteration_exhausted_user_terminated`），
+  `retryable=false`；
+- 等待期间任务临时会话必须保留并记录 `session_id`（SESSION-001 的
+  `input_required` 例外），resume 派发直接继续该会话。
+
 用户响应的唯一运行入口是：
 
 ```bash
@@ -559,8 +577,9 @@ Runner 启动后及周期 maintenance 负责扫描 deadline。到期转 `needs_r
 Task List、status、report 等只读渲染不得执行该变更。resume dispatch/context 失败同样进入
 `needs_recovery`。最终成功时才写唯一真实 `agentbc.final_callback`、Report 和终态通知。
 `task resume` 仍只处理 pause，`task retry --step` 仍只处理单 step。input response、retry、
-recover 和 re-dispatch 都保留当前任务的 `agentbc.permission`，不能重新套用配置默认值；
-本流程仍不保留通用 Executor session。
+recover 和 re-dispatch 都保留当前任务的 `agentbc.permission`，不能重新套用配置默认值。
+普通 input 响应默认不保留通用 Executor session；资源耗尽类决策与 SESSION-001
+enable 场景按会话保留策略执行（input_required 期间保留并 `--resume` 继续）。
 
 ### 6.5.1 执行权限契约
 
@@ -574,6 +593,22 @@ approval、sandbox、safe-mode、yolo 或 writable-root 覆盖；`safe` 保持�
 
 权限模式不改变 Path Plan、Runner cwd/allowed-root 授权、RunLease、strict final marker、
 secret redaction、input_required、model/effort/budget/tool/timeout/session/transport 等合同。
+
+**【SAFE-001｜1.0.2A P0】Codex safe 与 linked worktree**：Codex safe 的
+`workspace-write` 可以修改 customer worktree，但 linked worktree 的 `.git` 指向主仓
+`.git/worktrees/<name>`，object/ref 等共享 Git 元数据通常位于 task-scoped writable root 外。
+因此“源码与测试完成、`git add/commit` 被拒绝”是可预检的权限边界，不是 Agent 理解失败。
+
+- 派发前记录 checkout 类型、`git_dir`、`git_common_dir`、branch/HEAD，并使用
+  realpath/containment 判断 Git 元数据能否写入；
+- safe 下需要 Git 写入且 linked 元数据越界时，以
+  `codex_safe_git_metadata_blocked` 进入可接管 `input_required`，保留变更和测试证据；
+- 默认由控制端审查当前 worktree 变更并提交，再用 commit SHA 恢复同一 Task ID/会话；
+  Executor 只复核 HEAD、clean tree 和步骤证据；
+- 普通 message 响应不具有提权能力，不能再次派发同一个必然失败的 commit 尝试；
+- safe 禁止把整个 `git_common_dir` 加入 writable roots，禁止自动切换 `full`，禁止写
+  `main`、其他 agent 分支或其他 worktree refs；若以后提供 Runner Git proxy，也只能对精确
+  当前 worktree/branch 运行 allowlist Git 动作并完整审计。
 
 ### 6.6 Handoff
 
@@ -675,6 +710,9 @@ IPC 使用同一用户下的原子文件邮箱：
   selection source 和时间，不记录 prompt、command 或 secret；
 - `subprocess.Popen(argv)`，不使用 `shell=True`；
 - cwd 必须位于 stable roots 或任务 Path Plan 推导的 task-scoped roots；
+- Codex safe 不得因 linked worktree 提交需求而广泛放行主仓 `git_common_dir`；默认使用
+  SAFE-001 的控制端审查提交路径。自由文本 input 响应不改变持久化权限，任何 safe→full
+  转换都必须走显式任务授权并产生审计记录；
 - managed report write 只允许符合任务报告命名的文件；
 - spool 权限为用户私有，信任模型是同主机同 OS 用户；
 - Runner 启动前检查既有 PID/identity，拒绝第二个真实实例。
@@ -1856,6 +1894,8 @@ python3 -m twine check dist/*
 - 缺失/重复/错误 finish、input_required、非零退出、transport retryable；
 - input suspension、restart persistence、wrong/stale/duplicate response、deny、24h fake-clock expiry、
   waiting-duration exclusion、resume failure、handoff rejection 和 response 后最终完成；
+- Codex safe 普通 clone 提交、linked worktree `commit_required`、控制端提交后同任务恢复、
+  重复批准不循环派发、branch/HEAD 竞态、realpath/symlink 逃逸，以及不写 main/其他 worktree refs；
 - Docker amd64/arm64 与三类宿主 Docker smoke；
 - GUI/CLI/report/notification 同源一致性；
 - Email/Webhook 去重、失败回执和 secret redaction；
@@ -2040,27 +2080,38 @@ prompt 回声、Claude/Hermes 并发 `input_required`、`Later` 和 300 秒自�
 观察的 canary、产物质量或 Agent 理解偏差继续向 1.0.1A 倒灌改动。
 
 **转入 1.0.2A 的已知项**：候选 wheel 的 `_build_info.json` 身份 warning、原始
-`extensions.agentbc.execution.lease_state` 快照可能滞后、Claude 预算用户配置、执行时长
-与临时会话保留、Skill 哈希握手，以及 delete/update 等运维入口，均不再作为 1.0.1A
-改动处理。
+`extensions.agentbc.execution.lease_state` 快照可能滞后、Claude 预算与 Hermes 迭代上限、
+Codex safe linked-worktree Git 写入、执行时长与临时会话保留、Skill 哈希握手，以及
+delete/update 等运维入口，均不再作为 1.0.1A 改动处理。
 
 历史冻结范围以
 `~/hermes-team/codex/plan/20260805_plan_AgentBC_1.0.1A开发目标冻结.md` 为准；当前状态
 与截止基线以本节 2026-08-08 的截止记录为准。
 
-### 20.1 `1.0.2A`：执行 Agent 临时会话保留策略
+### 20.1 `1.0.2A`：运行资源、safe 权限与执行会话治理
 
-**产品目标**：让用户决定 AgentBC 任务结束后是否保留 Executor 创建的临时会话，
-减少 Codex、Claude、Hermes 的任务会话堆积，同时保留安全恢复能力。
+**产品目标**：解决真实开发流程中三类 P0 阻断：Claude 预算和 Hermes 迭代上限不可控、
+资源耗尽直接失败、Codex safe 在 linked worktree 中无法安全完成 Git 提交；同时让用户
+决定 AgentBC 任务结束后是否保留 Executor 创建的临时会话。
 
-**固定入口**：交互式 setup 询问是否保留，默认保留；独立命令为
+**资源配置**：setup 可自定义 Claude `max_budget_usd` 与 Hermes `max_turns`；默认分别为
+`$10` 和 Hermes 配置中的 `agent.max_turns`（读取失败回退 CLI 默认 `90`）。提供
+`agentbc claude budget <usd>` 与 `agentbc hermes max-turns <turns>`。资源耗尽转为可决策
+`input_required`：翻倍本任务资源并恢复同一会话，或终止为带明确原因的 failed。
+
+**Codex safe**：普通 clone 保持现有 safe 提交能力；linked worktree 在 Git 元数据越界时
+派发前/首次提交前给出 `codex_safe_git_metadata_blocked`，默认由控制端审查并提交后恢复
+同一任务。不得放开整个共享 `.git`、不得用自由文本伪提权、不得自动转 full。
+
+**会话入口**：交互式 setup 询问是否保留，默认不保留；独立命令为
 `agentbc session retention status|enable|disable`；配置为
 `sessions.retain_executor_sessions`。
 
-**清理边界**：只处理执行 Agent 临时会话，永不处理派发源对话。关闭保留后，也只有
-terminal task 在 RunLease 关闭、最终报告落盘和通知入队后才能请求清理；
-`input_required`、`needs_recovery`、active、stale 会话继续保留。只能使用 Executor 官方
-CLI/API 或明确的不持久化选项，禁止扫描或递归删除 Agent 会话目录。
+**清理边界**：只处理执行 Agent 临时会话，永不处理派发源对话。默认关闭保留时，也只有
+terminal task 在 RunLease 关闭、最终报告落盘和通知入队后才能请求清理；`input_required`
+无论全局开关都必须保留当前会话，并通过官方 resume/continue 继续同一会话；
+`needs_recovery`、active、stale 会话继续保留。只能使用 Executor 官方 CLI/API 或明确的
+不持久化选项，禁止扫描或递归删除 Agent 会话目录。
 
 **失败语义**：不支持或清理失败只产生 cleanup receipt 和 doctor warning，不改变原任务
 终态。Adapter 必须报告 execution session ID、删除能力和结果。

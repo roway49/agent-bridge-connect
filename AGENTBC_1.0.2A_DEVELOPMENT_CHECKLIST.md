@@ -38,6 +38,7 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
 | `doctor [--json]` | 已有基础实现和 A3 构建身份 | 增量补齐 Skill 漂移、配置/runtime 漂移、稳定 schema/退出码和 blocker |
 | 执行会话保留 | 未实现 | 作为本版主功能实现安全策略与能力回执 |
 | Claude 预算 | Executor/setup 存在隐藏默认值 `1.0` | 改为用户可见、可验证、可独立配置 |
+| Codex safe 与 linked worktree | `workspace-write` 可修改工作树，但共享 Git 元数据位于 customer root 外，`git add/commit` 会失败；普通 input 响应不能改变沙箱授权 | 派发前识别并给出可接管的安全提交路径，禁止静默扩大权限 |
 | 执行时长 | 已区分 input waiting，但仍以 wall-waiting 近似 execution | 改为真实 run interval 累计，排除恢复等待等非运行区间 |
 | Prompt 公共契约 | 三个 Adapter 各自构造，公共规则重复 | 做行为不变的公共 builder 和长度门禁 |
 | Skill 身份 | package template 是 canonical source，但无安装 hash 握手 | 写入版本/协议/template hash，doctor 检查漂移 |
@@ -53,13 +54,15 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
 | `SKILL-001` | P0 | Controller contract 单一来源与 Skill hash 握手 | 中高 | 4～5 人日 | Skill template、Setup、Doctor | doctor 基础实现 |
 | `DOC-002` | P0 | 完成只诊断 doctor 契约 | 中 | 3～4 人日 | Doctor、Registry、Runner query、CLI | SKILL-001、SESSION-001 receipt |
 | `REPORT-001` | P1 | 修正恢复任务累计执行时长 | 中 | 2～3 人日 | RunLease、Service timing、Report、Task List、Notification | A3 input waiting 基线 |
-| `CFG-001` | P1 | Claude 单次任务预算用户配置 | 低至中 | 2～3 人日 | Config、Setup、CLI、Claude Adapter、Preflight | doctor 配置视图 |
+| `CFG-001` | P0 | Claude 预算与 Hermes 迭代上限配置（setup 自定义/默认 + 更改命令） | 低至中 | 2～3 人日 | Config、Setup、CLI、Claude/Hermes Adapter、Preflight | doctor 配置视图 |
+| `CFG-002` | P0 | 预算/迭代耗尽可能决策：弹窗翻倍继续或终止 | 中 | 2～3 人日 | Adapter、Worker/Core、Notifications、Service respond | CFG-001、SESSION-001 |
+| `SAFE-001` | P0 | Codex safe 在 linked worktree 下的 Git 写入预检与可接管提交 | 中高 | 4～6 人日 | Path Plan、Codex Adapter、Runner、Preflight、Input、Notification、Doctor | 权限三档、SESSION-001 resume |
 | `PROMPT-001` | P1 | 三 Executor 公共 Prompt 契约去重 | 中 | 2～3 人日 | 新公共 builder、Codex/Claude/Hermes Adapter | characterization tests |
 | `OBS-001` | P1 | 当前 execution lease 状态单一派生视图 | 低至中 | 1～2 人日 | RunLease query、Status、Report | REPORT-001 |
 | `DOCFIX-001` | P2 | 修正文档/help 漂移 | 低 | 0.5～1 人日 | Record README、CLI help、双语文档 | DEL-001 |
 | `REL-102` | Gate | 1.0.2A 版本、双机、真实 Executor 与发布验收 | 中 | 2～3 人日 | Build/CI/docs/release | 全部需求 |
 
-建议功能开发净工作量约 `25～37` 人日；三个 Agent 并行且严格控制巨型文件冲突时，目标
+建议功能开发净工作量约 `29～43` 人日；三个 Agent 并行且严格控制巨型文件冲突时，目标
 日历周期约 3～4 周。任何真实 Executor 能力缺失应按 `unsupported` 交付，不得用危险
 文件扫描缩短排期。
 
@@ -94,7 +97,7 @@ agentbc task delete <TASKCODE> --confirm
 固定配置和命令：
 
 ```text
-sessions.retain_executor_sessions = true
+sessions.retain_executor_sessions = false
 
 agentbc session retention status
 agentbc session retention enable
@@ -103,18 +106,26 @@ agentbc session retention disable
 
 要求：
 
-- 交互 setup 默认保留；非交互 setup 保留旧值，无旧值时写 `true`；
+- 默认 `false`（默认清理）：任务以终态（completed/failed/cancelled）结束时移除
+  该任务的 Executor 临时会话；只有显式 enable 后终态保留；
+- enable 后任务结束保留会话；disable 恢复默认清理；enable/disable 原子更新配置，
+  仅对后续新 run 生效；
+- `input_required` 是保留例外：无论全局开关，等待用户响应期间该任务临时会话
+  必须保留，并在任务扩展 `agentbc.session` 记录 `session_id`/executor/run；
+  respond resume 派发时通过官方 `--resume/--continue` 继续同一会话，禁止新建
+  会话重建上下文；
+- `needs_recovery/active/stale` 不清理；
+- 交互 setup 默认值 `false`（默认清理），已有用户值必须保留并显示；
 - 所有用户文案明确区分 dispatcher conversation 与 executor temporary session；
 - AgentBC 永不删除派发源对话；
 - Adapter 明确报告 session ID、是否持久化、是否支持官方安全清理及清理结果；
 - 只在 terminal、RunLease closed、最终 task/report 落盘、通知入队后请求清理；
-- `input_required/needs_recovery/active/stale` 不清理；
 - 只使用官方 CLI/API 的不持久化或删除能力；禁止猜路径、扫描最新会话或递归删除目录；
-- unsupported/failed 只生成 receipt 和 doctor warning，不改变原任务终态；
-- enable/disable 原子更新配置，仅对后续新 run 生效。
+- unsupported/failed 只生成 receipt 和 doctor warning，不改变原任务终态。
 
-验收：setup Yes/No/EOF/non-interactive、三命令幂等、retain on/off、三 Executor capability、
-恢复路径、handoff、失败回执、secret redaction 与 dispatcher conversation 不受影响。
+验收：默认清理、enable/disable 保留、input_required 期间会话保留与
+resume 同会话继续、三命令幂等、三 Executor capability、恢复路径、handoff、
+失败回执、secret redaction 与 dispatcher conversation 不受影响。
 
 ### 4.3 `SKILL-001` + `DOC-002`：Skill 握手与 doctor 完整契约
 
@@ -141,22 +152,97 @@ agentbc session retention disable
 验收：text/JSON 同源、三退出码、旧/缺失/被修改 Skill、stale Runner、配置指向旧二进制、
 路径不可写、部分 Executor 缺失、无 secret 和 clean install Gate 全部通过。
 
-### 4.4 `CFG-001`：Claude 单次任务预算
+### 4.4 `CFG-001`：Claude 预算与 Hermes 迭代上限配置
+
+setup 提供两项执行资源配置：Claude 单任务预算 `max_budget_usd` 与 Hermes
+单任务迭代上限 `max_turns`。交互逐项询问「自定义 / 使用默认」：
+
+- 自定义：用户输入。Claude 输入 USD 金额；Hermes 输入迭代轮数（正整数）；
+- 使用默认：Claude 为 `$10`；Hermes 从 `~/.hermes/config.yaml` 读取
+  `agent.max_turns` 作为默认（读取失败回退 Hermes CLI 默认 `90`）；
+- 已有用户值必须保留并显示，不覆盖。
+
+固定更改命令（随时可改，原子写 TOML 且保留其他配置，下一次 run 生效）：
+
+```text
+agentbc claude budget <usd>
+agentbc hermes max-turns <turns>
+```
 
 要求：
 
-- setup 检测 Claude 后显示当前值与建议值 `$2.5`；已有用户值必须保留并显示；
-- 交互输入只接受大于 0 的有限金额，空输入使用建议值；不提供无限预算；
-- non-interactive 支持 `--claude-max-budget-usd <value>`，未提供时保留旧值；
-- 提供精确配置查询和修改入口，原子写 TOML 且保留其他配置；
-- 修改预算不自动重启 Runner、不重试历史任务；下一次 Claude run 生效；
-- create/dispatch accepted、preflight 和 status JSON 显示本次 effective budget；
-- task 记录只保存金额，不保存凭据或 Claude 私有配置。
+- non-interactive 支持 `--claude-max-budget-usd <value>` 与
+  `--hermes-max-turns <value>`，未提供时保留旧值；
+- 交互输入只接受大于 0 的有限金额/轮数；Claude 不提供无限预算；
+- 修改预算/迭代上限不自动重启 Runner、不重试历史任务；
+- create/dispatch accepted、preflight 和 status JSON 显示本次 effective
+  budget/turns；
+- task 记录只保存金额/轮数，不保存凭据或 Executor 私有配置；
+- setup 的 executor refresh 不得覆盖用户已配置值（修复当前 Claude budget
+  被重置为 1.0 的缺陷）。
 
-验收：首次 setup、升级 setup、空值、非法数、NaN/Inf、命令幂等、配置保真和真实 Claude
-任务预算可见性通过。
+验收：首次 setup、升级 setup、自定义/默认两分支、空值、非法数、NaN/Inf、
+两命令幂等、配置保真、setup 后用户值保留和真实任务预算/迭代可见性通过。
 
-### 4.5 `REPORT-001` + `OBS-001`：真实执行时长与 lease 当前视图
+### 4.5 `CFG-002`：预算/迭代耗尽可能决策（弹窗翻倍继续或终止）
+
+Claude 预算耗尽（`Exceeded USD budget`）或 Hermes 迭代耗尽
+（`max_iterations_reached(N/M)` 等）不再直接进入 failed，而是转为
+`input_required`（`type=choice`）等待用户决策：
+
+- Adapter 在解析结果中识别资源耗尽信号（Claude stdout 含
+  `Exceeded USD budget`；Hermes 复用 `_iteration_budget_diagnostics`），
+  构造 input_required 声明：blocked step 为当前步骤，reason 写明
+  `已使用 X / 上限 Y`（不含密钥或正文）；
+- 弹窗两按钮：「提高预算并继续」/「终止任务」，附逐项说明；
+- `approve`（提高并继续）：执行资源按任务级翻倍（Claude `max_budget_usd`
+  ×2、Hermes `max_turns` ×2），仅本次任务生效，不写入全局配置；配合
+  SESSION-001 通过 `--resume` 继续同一会话，翻倍值记录在任务扩展供
+  preflight/status 展示；
+- `deny`（终止任务）：终态为 `failed`，failure 携带明确原因
+  （`budget_exhausted_user_terminated` / `iteration_exhausted_user_terminated`），
+  `retryable=false`；
+- 用户 24 小时未响应沿用 input_required 到期语义（转 `needs_recovery`）。
+
+验收：claude 预算耗尽、hermes 迭代耗尽、翻倍继续成功、终止 failed 带原因、
+到期转恢复、弹窗文案、无密钥泄漏与 status/report 一致展示通过。
+
+### 4.6 `SAFE-001`：Codex safe linked-worktree Git 写入与可接管提交
+
+问题边界：Codex `safe` 固定使用 `--sandbox workspace-write`。普通 clone 的 Git 元数据位于
+project root 内时可以正常提交；linked worktree 的 `.git` 是指向主仓
+`.git/worktrees/<name>` 的指针，共享 object/ref 元数据位于 customer root 外，因此源码编辑和
+测试可以成功，但 `git add/commit` 会在 `index.lock`、objects 或 refs 写入阶段被沙箱拒绝。
+用户在普通 message 输入里回复“允许执行”只会恢复任务，不会改变已持久化的 `safe`
+权限，当前实现会重复进入同一不可执行步骤。
+
+要求：
+
+- create/dispatch/preflight 解析并记录 checkout 类型、`git_dir`、`git_common_dir`、当前
+  branch/HEAD，以及 Git 元数据是否位于本次可写根内；解析必须使用 Git 官方查询结果并做
+  realpath/containment 校验，不接受任务文本声称的路径；
+- 当任务要求 Git 写入，而 Codex safe 检测到 linked worktree 的元数据位于可写根外时，
+  必须在首次提交前进入可行动的 `input_required`，稳定原因码为
+  `codex_safe_git_metadata_blocked`；status/report/notification 明确显示已完成的源码/测试、
+  被阻塞的 Git 动作和下一步，不得把普通 message 响应描述成“提权”；
+- 默认恢复路径是“由控制端审查并提交”：Executor 保留工作树变更和测试证据，输出结构化
+  `commit_required` 清单；控制端在同一固定 agent 分支审查并提交后，以 commit SHA 响应；
+  Runner 恢复同一 Task ID/会话，Executor 只验证 HEAD、clean tree 和原步骤证据后完成；
+- `safe` 不得把整个主仓 `git_common_dir` 加入 writable roots，不得写 `main`、其他 agent
+  分支或其他 worktree 的 refs，不得自动切换为 `full`；若未来实现 Runner Git proxy，只允许
+  对精确当前 worktree/branch 执行 allowlist 中的 `status/diff/add/commit`，并审计文件清单、
+  commit message、基准 HEAD 和最终 SHA；
+- 用户若明确选择终止或改用 `full`，本次 safe run 必须先以可解释状态结束；`full` 只能通过
+  已有显式、持久化、可审计的任务授权重新派发，不能由自由文本响应隐式升级；
+- response 前后复核 task/input ID、current chain head、branch/HEAD 和 dirty file set；发生
+  stale response、HEAD 变化、越界路径、symlink escape 或 controller commit 不匹配时 fail
+  closed，不重复派发同一必失败的提交尝试。
+
+验收：普通 clone safe 编辑并提交、linked worktree safe 编辑后进入 `commit_required`、控制端
+提交并恢复完成、用户终止、重复/错误/stale input、HEAD/branch 竞态、symlink/realpath/共同
+Git 目录篡改、禁止写 main/其他 refs、通知原因与下一步、status/report/doctor 一致展示全部通过。
+
+### 4.7 `REPORT-001` + `OBS-001`：真实执行时长与 lease 当前视图
 
 要求：
 
@@ -171,7 +257,7 @@ agentbc session retention disable
 验收：首次失败、长时间等待、recover、再次执行、input waiting、pause、完成的 fake-clock
 测试分别断言 wall/execution/waiting/last-run；历史 task 缺字段时不崩溃、不伪精确。
 
-### 4.6 `PROMPT-001`：公共 Prompt 契约去重
+### 4.8 `PROMPT-001`：公共 Prompt 契约去重
 
 要求：
 
@@ -186,7 +272,7 @@ agentbc session retention disable
 验收：三个 Executor prompt snapshot、10 步长度、resumed turn、图片/权限差异和真实
 Codex/Claude/Hermes canary 通过。
 
-### 4.7 `DOCFIX-001`：文档与 help 一致性
+### 4.9 `DOCFIX-001`：文档与 help 一致性
 
 - `record clean --help` 明确只清理可清理的运行诊断，不删除 Report；
 - Record README 明确 queued pending 可以 close；
@@ -209,11 +295,13 @@ Wave 1 每个分支必须交付完整、可单独测试、可合并的清洁提�
 
 ### Wave 2：在 Wave 1 合入后推进
 
-1. `SESSION-001`：先冻结 cleanup capability/receipt contract，再接 Setup、CLI 和终态 hook；
-2. `CFG-001`：与 SESSION 的 setup/config 改动串行，避免 TOML 和交互流程冲突；
-3. `SKILL-001`：抽取 controller contract 并生成 Skill 身份；
-4. `DOC-002`：消费 Skill、session、budget、timing 的最终诊断字段；
-5. `DOCFIX-001`：随相邻功能合入，但保持独立提交。
+1. `SAFE-001`：先冻结 linked-worktree 预检、`commit_required` 和禁止隐式提权边界，优先解除日常开发阻断；
+2. `SESSION-001`：冻结 cleanup capability/receipt contract，再接 Setup、CLI、终态 hook 与同会话 resume；
+3. `CFG-001`：与 SESSION 的 setup/config 改动串行，避免 TOML 和交互流程冲突；
+4. `CFG-002`：依赖 SESSION-001 的 resume 会话与 CFG-001 的配置入口，实现资源耗尽弹窗决策；
+5. `SKILL-001`：抽取 controller contract 并生成 Skill 身份；
+6. `DOC-002`：消费 Skill、session、budget、timing 和 safe Git 预检的最终诊断字段；
+7. `DOCFIX-001`：随相邻功能合入，但保持独立提交。
 
 ### Wave 3：版本收口
 
@@ -240,9 +328,12 @@ Wave 1 每个分支必须交付完整、可单独测试、可合并的清洁提�
 `1.0.2A` 只有同时满足以下条件才允许进入候选：
 
 - `DEL-001` 不触碰 customer project，异常中断不产生半删除或提前释放 ID；
-- SESSION retain 默认开启，关闭后也只处理当前 terminal run 的官方可确认执行会话；
+- SESSION retain 默认关闭；终态只清理当前 run 的官方可确认执行会话，`input_required` 期间保留并恢复同一会话；
 - doctor 能识别 package/Runner/Skill/Executor/config/session cleanup 漂移且 JSON schema 稳定；
-- Claude 预算在 setup、配置、preflight/status 和真实执行中一致可见；
+- Claude 预算与 Hermes 迭代上限在 setup、配置、preflight/status 和真实执行中一致可见；
+- 预算/迭代耗尽可能决策：弹窗翻倍继续或终止 failed 带明确原因，不再直接 failed；
+- Codex safe 在普通 clone 可正常提交；linked worktree 在提交前给出明确阻塞原因和控制端审查提交路径，不扩大共享 Git 权限、不循环伪提权；
+- Executor 临时会话默认终态清理，input_required 期间保留并 resume 同会话继续；
 - 恢复等待不再计入 execution duration，全部用户界面使用同一 timing view；
 - 三 Executor prompt 不重复公共规则，v1 完成协议和权限行为不变；
 - 所有新增删除/配置/清理动作幂等、原子、可审计且不泄露 secret；
