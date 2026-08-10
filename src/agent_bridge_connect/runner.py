@@ -18,6 +18,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .execution_policy import (
+    RESOURCE_EXTENSION_KEY,
+    SESSION_EXTENSION_KEY,
+    attach_execution_policy,
+    build_resource_snapshot,
+    build_session_snapshot,
+    validate_resource_snapshot,
+    validate_session_snapshot,
+)
 from .path_provider import find_binary
 from .permission_modes import (
     assert_executor_permission_supported,
@@ -33,6 +42,27 @@ MAX_MANAGED_FILE_BYTES = 10 * 1024
 TERMINAL_STATES = {"completed", "failed", "cancelled"}
 MANAGED_RECORD_NAME_RE = re.compile(r"[23456789ABCDEFGHJKMNPQRSTVWXYZ]{4,}-\d{3}-report\.md\Z")
 LEGACY_RUNNER_LAUNCH_AGENT_LABEL = "com.agentbc.runner"
+
+# --- Phase 2 (1.0.2A) legacy migration and Runner policy validation ---
+# Integration merge point: Task 1 (1.0.2A resource configuration foundations,
+# commit 4e60e4f) owns agent_bridge_connect.execution_policy; this section only
+# consumes its public snapshot builders/validators and extension keys. The
+# Runner never reads the user's current configuration for legacy backfill,
+# never injects or validates executor resource flags (--max-budget-usd,
+# --max-turns, --session-id, --resume are explicitly out of scope for Phase 2),
+# and never touches path_model, Executor adapters, CLI/report/docs.
+PHASE2_EXECUTOR_PROJECT_ROOT_KEY = "executor_project_root"
+PHASE2_EXECUTION_EXTENSION_KEY = "agentbc.execution"
+PHASE2_LEGACY_UNRECORDED_KEY = "legacy_unrecorded"
+PHASE2_LEGACY_BACKFILLED_KEY = "legacy_snapshot_backfilled"
+PHASE2_LEGACY_BACKFILLED_AT_KEY = "legacy_backfilled_at"
+PHASE2_LEGACY_DEFAULT_LIMITS: dict[str, tuple[int | float, str]] = {
+    "claude": (10.0, "legacy_default_10"),
+    "hermes": (90, "legacy_default_90"),
+}
+PHASE2_LEGACY_RETENTION = False
+PHASE2_AUDIT_EVENT_TYPE = "execution_policy_audit"
+PHASE2_POLICY_EXTENSION_KEYS = (RESOURCE_EXTENSION_KEY, SESSION_EXTENSION_KEY)
 
 _EXECUTOR_COMMAND_RULES: dict[str, dict[str, Any]] = {
     "hermes": {
@@ -56,6 +86,100 @@ _EXECUTOR_COMMAND_RULES: dict[str, dict[str, Any]] = {
 
 class RunnerError(RuntimeError):
     pass
+
+
+def _phase2_legacy_ephemeral_project_path(workspace: dict[str, Any], task_id: str) -> str:
+    """Canonical iteration-scoped ephemeral Claude Project path with a pre-allocated UUID.
+
+    Layout follows the SESSION-001/CFG-001 contract: the temporary Claude Project
+    reuses the AgentBC internal ``tasks/artifacts/YYYY-MM-DD/<TASKCODE>/`` directory
+    and isolates a single iteration by the full ``<TASK-ID>``; the trailing UUID is
+    pre-allocated at backfill time so the path is stable for the task lifetime.
+    """
+    agentbc_root = str((workspace or {}).get("agentbc_root") or "").strip()
+    task_code = (
+        str((workspace or {}).get("task_code") or "").strip()
+        or str(task_id).split("-")[0]
+        or "legacy"
+    )
+    task_date = (
+        str((workspace or {}).get("task_date") or "").strip()
+        or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    )
+    project_id = str(uuid.uuid4())
+    return f"{agentbc_root}/tasks/artifacts/{task_date}/{task_code}/{task_id}-{project_id}"
+
+
+def _phase2_legacy_default_snapshots(
+    executor: str,
+    task_id: str,
+    workspace: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build the canonical fixed legacy snapshots without reading user configuration."""
+    normalized = str(executor or "").strip().lower()
+    default = PHASE2_LEGACY_DEFAULT_LIMITS.get(normalized)
+    if default is None:
+        raise RunnerError(
+            f"invalid_execution_policy: no legacy defaults for executor {executor}"
+        )
+    limit, source = default
+    resources = build_resource_snapshot(executor, limit, source=source)
+    if normalized == "claude":
+        session = build_session_snapshot(
+            executor,
+            retain=PHASE2_LEGACY_RETENTION,
+            session_state="pending",
+            project_path=_phase2_legacy_ephemeral_project_path(workspace, task_id),
+        )
+    else:
+        session = build_session_snapshot(
+            executor,
+            retain=PHASE2_LEGACY_RETENTION,
+            session_state="pending",
+        )
+    return resources, session
+
+
+def _phase2_packet_policy_mismatch(
+    packet: dict[str, Any],
+    persisted: dict[str, Any],
+) -> str | None:
+    """Compare a worker task packet against the authoritative disk snapshot.
+
+    Returns a compact fail-closed reason when the packet is not fully consistent
+    with the disk record, or None when it is:
+    - ``missing:<key>``   packet omits a policy snapshot recorded on disk;
+    - ``injected:<key>``  packet carries a policy snapshot absent from disk;
+    - ``modified:<key>``  packet and disk disagree on a policy snapshot;
+    - ``expired:<key>``   packet reflects an older task state than the disk.
+    """
+    packet_ext = packet.get("extensions")
+    disk_ext = persisted.get("extensions")
+    if not isinstance(packet_ext, dict):
+        packet_ext = {}
+    if not isinstance(disk_ext, dict):
+        disk_ext = {}
+    for key in PHASE2_POLICY_EXTENSION_KEYS:
+        in_packet = key in packet_ext
+        in_disk = key in disk_ext
+        if in_packet and not in_disk:
+            return f"injected:{key}"
+        if not in_packet and in_disk:
+            return f"missing:{key}"
+        if in_packet and in_disk and packet_ext[key] != disk_ext[key]:
+            return f"modified:{key}"
+    packet_execution = packet_ext.get(PHASE2_EXECUTION_EXTENSION_KEY)
+    disk_execution = disk_ext.get(PHASE2_EXECUTION_EXTENSION_KEY)
+    if (
+        isinstance(packet_execution, dict)
+        and isinstance(disk_execution, dict)
+        and packet_execution != disk_execution
+    ):
+        return f"expired:{PHASE2_EXECUTION_EXTENSION_KEY}"
+    for key in ("status", "updated_at"):
+        if key in packet and key in persisted and packet[key] != persisted[key]:
+            return f"expired:{key}"
+    return None
 
 
 def default_runner_root() -> Path:
@@ -805,7 +929,194 @@ class RunnerState:
     ) -> dict[str, Any]:
         work_dir = Path(cwd).expanduser().resolve()
         self._validate_request(executor, command, work_dir, task)
+        self._enforce_phase2_authorization(executor, task)
         return {"ok": True, "executor": executor, "authorized": True}
+
+    def _phase2_structure_errors(
+        self,
+        extensions: dict[str, Any] | None,
+        executor: str,
+    ) -> list[str]:
+        """Structural policy errors for the persisted snapshots (Task 1 validators)."""
+        extensions = extensions if isinstance(extensions, dict) else {}
+        errors: list[str] = []
+        if RESOURCE_EXTENSION_KEY in extensions:
+            errors.extend(
+                validate_resource_snapshot(extensions[RESOURCE_EXTENSION_KEY], executor=executor)
+            )
+        if SESSION_EXTENSION_KEY in extensions:
+            errors.extend(
+                validate_session_snapshot(extensions[SESSION_EXTENSION_KEY], executor=executor)
+            )
+        return errors
+
+    def _phase2_append_audit(
+        self,
+        board: Path,
+        task_id: str,
+        executor: str,
+        outcome: str,
+        reason: str,
+    ) -> None:
+        """Record a sanitized execution_policy_audit event (no paths, content, or secrets)."""
+        from .task_store import TaskStore
+
+        try:
+            TaskStore(board).append_event(
+                task_id,
+                {
+                    "event_type": PHASE2_AUDIT_EVENT_TYPE,
+                    "task_id": task_id,
+                    "executor": str(executor or "").strip().lower(),
+                    "outcome": outcome,
+                    "reason": reason,
+                    "created_at": _utc_now(),
+                },
+            )
+        except (ABCError, OSError, ValueError):
+            # Auditing must never take down dispatch or authorization.
+            pass
+
+    def _enforce_phase2_dispatch_policy(
+        self,
+        service,
+        task: dict[str, Any],
+        executor: str,
+        board: Path,
+    ) -> dict[str, Any]:
+        """Enforce the Phase 2 execution-policy contract at dispatch time.
+
+        Native tasks (``workspace.executor_project_root`` present) fail closed
+        with ``invalid_execution_policy`` when required snapshots are missing or
+        corrupt; they are never treated as legacy. Legacy tasks missing snapshots
+        are backfilled exactly once inside the Runner lock with the canonical
+        fixed defaults (never the user's current configuration). Terminal legacy
+        tasks are not rewritten; their public state is marked
+        ``legacy_unrecorded`` through the normal metadata path.
+        """
+        from .task_store import TaskStore
+
+        task_id = str(task.get("id") or task.get("task_id") or "").strip()
+        workspace = task.get("workspace")
+        extensions = task.get("extensions")
+        if not isinstance(workspace, dict):
+            workspace = {}
+        if not isinstance(extensions, dict):
+            extensions = {}
+        native = bool(workspace.get(PHASE2_EXECUTOR_PROJECT_ROOT_KEY))
+        terminal = str(task.get("status") or "").strip().lower() in TERMINAL_STATES
+        missing = [key for key in PHASE2_POLICY_EXTENSION_KEYS if key not in extensions]
+        if native:
+            errors = [f"missing {key}" for key in missing]
+            errors.extend(self._phase2_structure_errors(extensions, executor))
+            if errors:
+                reason = f"invalid_execution_policy: {'; '.join(errors)}"
+                self._phase2_append_audit(board, task_id, executor, "fail", reason)
+                raise RunnerError(reason)
+            return task
+        if terminal:
+            execution = extensions.get(PHASE2_EXECUTION_EXTENSION_KEY)
+            if not (
+                isinstance(execution, dict) and execution.get(PHASE2_LEGACY_UNRECORDED_KEY) is True
+            ):
+                service.update_execution_metadata(task_id, {PHASE2_LEGACY_UNRECORDED_KEY: True})
+            return task
+        refreshed = task
+        if missing:
+            with self.lock:
+                store = TaskStore(board)
+                persisted = store.read_task(task_id)
+                persisted_extensions = persisted.get("extensions")
+                persisted_workspace = persisted.get("workspace")
+                if not isinstance(persisted_extensions, dict):
+                    persisted_extensions = {}
+                if not isinstance(persisted_workspace, dict):
+                    persisted_workspace = {}
+                if not any(
+                    key not in persisted_extensions for key in PHASE2_POLICY_EXTENSION_KEYS
+                ):
+                    return persisted
+                resources, session = _phase2_legacy_default_snapshots(
+                    executor,
+                    task_id,
+                    persisted_workspace,
+                )
+                updated_extensions = attach_execution_policy(
+                    persisted_extensions,
+                    resources=resources,
+                    session=session,
+                )
+                execution = dict(persisted_extensions.get(PHASE2_EXECUTION_EXTENSION_KEY) or {})
+                execution[PHASE2_LEGACY_BACKFILLED_KEY] = True
+                execution[PHASE2_LEGACY_BACKFILLED_AT_KEY] = _utc_now()
+                updated_extensions[PHASE2_EXECUTION_EXTENSION_KEY] = execution
+                now = _utc_now()
+                store.write_task(
+                    task_id,
+                    {**persisted, "extensions": updated_extensions, "updated_at": now},
+                )
+                self._phase2_append_audit(
+                    board,
+                    task_id,
+                    executor,
+                    "backfilled",
+                    "legacy_snapshot_backfilled",
+                )
+                refreshed = store.read_task(task_id)
+        refreshed_extensions = refreshed.get("extensions")
+        if not isinstance(refreshed_extensions, dict):
+            refreshed_extensions = {}
+        errors = self._phase2_structure_errors(refreshed_extensions, executor)
+        if errors:
+            reason = f"invalid_execution_policy: {'; '.join(errors)}"
+            self._phase2_append_audit(board, task_id, executor, "fail", reason)
+            raise RunnerError(reason)
+        return refreshed
+
+    def _enforce_phase2_authorization(
+        self,
+        executor: str,
+        task: dict[str, Any] | None,
+    ) -> None:
+        """Validate the worker task packet against the authoritative disk snapshot.
+
+        Fails closed on missing/injected/modified/expired policy content and on
+        invalid or missing disk snapshots (Phase 2 native tasks never fall back
+        to legacy auto-fix here). Every failure is recorded as a sanitized
+        ``execution_policy_audit`` event.
+        """
+        from .task_store import TaskStore
+
+        if not isinstance(task, dict):
+            return
+        task_id = str(task.get("task_id") or task.get("id") or "").strip()
+        task_board = task.get("task_board") if isinstance(task.get("task_board"), dict) else {}
+        board_value = str(task_board.get("root") or "").strip()
+        if not task_id or not board_value:
+            # Identity is already enforced by _persisted_permission_authorization.
+            return
+        board = Path(board_value).expanduser().resolve()
+        from .config import DEFAULT_BOARD_ROOT
+
+        default_board = DEFAULT_BOARD_ROOT.expanduser().resolve()
+        if board != default_board and not any(_is_within(board, root) for root in self.allowed_roots):
+            raise RunnerError("task board is outside allowed roots")
+        persisted = TaskStore(board).read_task(task_id)
+        mismatch = _phase2_packet_policy_mismatch(task, persisted)
+        if mismatch is not None:
+            self._phase2_append_audit(board, task_id, executor, "fail", mismatch)
+            raise RunnerError(f"execution_policy_mismatch: {mismatch}")
+        persisted_extensions = persisted.get("extensions")
+        if not isinstance(persisted_extensions, dict):
+            persisted_extensions = {}
+        errors = [
+            f"missing {key}" for key in PHASE2_POLICY_EXTENSION_KEYS if key not in persisted_extensions
+        ]
+        errors.extend(self._phase2_structure_errors(persisted_extensions, executor))
+        if errors:
+            reason = f"invalid_execution_policy: {'; '.join(errors)}"
+            self._phase2_append_audit(board, task_id, executor, "fail", reason)
+            raise RunnerError(reason)
 
     def dispatch_worker(
         self,
@@ -837,6 +1148,8 @@ class RunnerState:
             raise RunnerError(f"runner task unavailable: {task_id}") from exc
         task = task_model.to_dict()
         task_id = task_model.id
+        task = self._enforce_phase2_dispatch_policy(service, task, executor, board)
+        task_model = service.get_task(task_id)
         self._validate_task_path_plan(task)
         if task.get("assignee") != executor:
             raise RunnerError(f"task {task_id} is not assigned to {executor}")
