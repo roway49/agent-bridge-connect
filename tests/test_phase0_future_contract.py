@@ -69,19 +69,38 @@ class Phase0ExpectedGapTests(unittest.TestCase):
         self.assertIn("--max-turns", command)
         self.assertIn("60", command)
 
-    @unittest.expectedFailure
     def test_hermes_exhaustion_routes_to_system_input_required(self) -> None:
+        packet = dict(self.packet)
+        packet["extensions"] = {
+            "agentbc.resources": {
+                "version": 1,
+                "executor": "hermes",
+                "resource": "max_turns",
+                "configured_limit": 60,
+                "current_limit": 60,
+                "multiplier": 2,
+                "exhaustion_count": 0,
+                "last_decision": "",
+                "source": "configured",
+                "created_at": "2026-08-10T00:00:00Z",
+            }
+        }
         output = "Iteration budget exhausted (60/60)"
-        validation = extract_callback_validation_from_output(output, self.packet, "run-1")
+        validation = extract_callback_validation_from_output(output, packet, "run-1")
         terminal = _route_hermes_terminal(
             validation,
             0,
             stderr="",
             failure=None,
             iteration=_iteration_budget_diagnostics(output, ""),
+            task_packet=packet,
         )
         self.assertEqual(terminal.status, "input_required")
         self.assertEqual(terminal.failure["kind"], "resource_limit_exhausted")
+        self.assertIsNone(terminal.callback)
+        self.assertTrue(terminal.resource_exhaustion["detected"])
+        self.assertEqual(terminal.resource_exhaustion["limit"], 60)
+        self.assertIs(terminal.resource_exhaustion["limit_matches_snapshot"], True)
 
     def test_terminal_compaction_preserves_resource_and_session_receipts(self) -> None:
         from agent_bridge_connect.record_management import _compact_terminal_extensions

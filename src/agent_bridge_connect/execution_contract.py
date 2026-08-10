@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -31,6 +32,7 @@ class ExecutorTerminalResult:
     status: str
     callback: dict[str, Any] | None
     failure: dict[str, Any] | None
+    resource_exhaustion: dict[str, Any] | None = None
 
 
 def build_agent_callback(
@@ -286,8 +288,15 @@ def route_executor_terminal(
     executor_name: str,
     stderr: str = "",
     runtime_failure: dict[str, Any] | None = None,
+    resource_exhaustion: dict[str, Any] | None = None,
 ) -> ExecutorTerminalResult:
-    """Route only declared flow state plus explicit process/transport evidence."""
+    """Route only declared flow state plus explicit process/transport evidence.
+
+    Terminal-state priority is fixed: a valid agent callback wins, then a
+    retryable transport/infrastructure failure keeps ``needs_recovery``, then
+    a confirmed resource exhaustion becomes a system ``input_required`` wait,
+    and only then does a strict marker failure apply.
+    """
     if returncode == 0 and validation.valid and validation.callback is not None:
         return ExecutorTerminalResult(
             status=str(validation.callback["final_state"]),
@@ -296,6 +305,8 @@ def route_executor_terminal(
         )
     if isinstance(runtime_failure, dict) and runtime_failure.get("retryable") is True:
         return ExecutorTerminalResult("needs_recovery", None, dict(runtime_failure))
+    if isinstance(resource_exhaustion, dict) and resource_exhaustion.get("detected") is True:
+        return _route_resource_exhaustion(resource_exhaustion)
     if returncode == 0:
         return ExecutorTerminalResult(
             "failed",
@@ -316,6 +327,103 @@ def route_executor_terminal(
     )
     failure["retryable"] = False
     return ExecutorTerminalResult("failed", None, failure)
+
+
+def build_resource_exhaustion(
+    executor: str,
+    resource: str,
+    *,
+    used: int | float | None,
+    limit: int | float | None,
+    source: str,
+    snapshot_limit: int | float | None = None,
+) -> dict[str, Any]:
+    """Build the structured resource-exhaustion receipt for adapter output.
+
+    ``limit_matches_snapshot`` is ``None`` when the snapshot is unavailable or
+    the exhausted run did not report a concrete limit (so no mismatch evidence
+    exists); only an explicit ``False`` forces ``needs_recovery``.
+    """
+    matches: bool | None = None
+    if limit is not None and snapshot_limit is not None:
+        matches = _resource_limits_equal(limit, snapshot_limit)
+    return {
+        "detected": True,
+        "executor": str(executor or "").strip().lower(),
+        "resource": str(resource or "").strip(),
+        "used": used,
+        "limit": limit,
+        "source": str(source or "").strip(),
+        "limit_matches_snapshot": matches,
+    }
+
+
+def resource_snapshot_limit(task_packet: Any, executor: str) -> int | float | None:
+    """Return the frozen task resource limit for one executor, if present."""
+    if not isinstance(task_packet, dict):
+        return None
+    extensions = task_packet.get("extensions")
+    if not isinstance(extensions, dict):
+        return None
+    resources = extensions.get("agentbc.resources")
+    if not isinstance(resources, dict):
+        return None
+    if str(resources.get("executor") or "").strip().lower() != str(executor).strip().lower():
+        return None
+    value = resources.get("current_limit")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value
+
+
+def _route_resource_exhaustion(
+    resource_exhaustion: dict[str, Any],
+) -> ExecutorTerminalResult:
+    payload = dict(resource_exhaustion)
+    if payload.get("limit_matches_snapshot") is False:
+        return ExecutorTerminalResult(
+            "needs_recovery",
+            None,
+            {
+                "kind": "resource_exhaustion_receipt_mismatch",
+                "layer": "flow_contract",
+                "message": (
+                    "Executor resource exhaustion limit does not match the task "
+                    "snapshot; refusing to auto-scale the resource"
+                ),
+                "retryable": False,
+                "resource_exhaustion": payload,
+            },
+            resource_exhaustion=payload,
+        )
+    return ExecutorTerminalResult(
+        "input_required",
+        None,
+        {
+            "kind": "resource_limit_exhausted",
+            "layer": "executor",
+            "message": (
+                f"{payload.get('executor') or 'executor'} resource "
+                f"({payload.get('resource') or 'resource'}) limit exhausted"
+            ),
+            "retryable": False,
+            "resource_exhaustion": payload,
+        },
+        resource_exhaustion=payload,
+    )
+
+
+def _resource_limits_equal(observed: int | float, expected: int | float) -> bool:
+    if isinstance(observed, bool) or isinstance(expected, bool):
+        return False
+    try:
+        left = float(observed)
+        right = float(expected)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(left) or not math.isfinite(right):
+        return False
+    return math.isclose(left, right, rel_tol=1e-9, abs_tol=1e-9)
 
 
 def detect_retryable_transport_failure(stdout: str, stderr: str = "") -> dict[str, Any] | None:

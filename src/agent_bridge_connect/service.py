@@ -12,6 +12,7 @@ from .config import DEFAULT_BOARD_ROOT, get_executor_config, init_board
 from .execution_contract import validate_callback_payload
 from .execution_policy import (
     RESOURCE_EXTENSION_KEY,
+    RESOURCE_KIND_BY_EXECUTOR,
     SESSION_EXTENSION_KEY,
     attach_execution_policy,
     build_task_execution_policy,
@@ -19,6 +20,7 @@ from .execution_policy import (
     public_task_view,
     validate_execution_session_receipt,
     validate_execution_policy_extensions,
+    validate_resource_snapshot,
     validate_session_snapshot,
 )
 from .executor_registry import get_executor
@@ -973,6 +975,222 @@ class TaskService:
         )
         self._refresh_task_index()
         return True
+
+    def block_task_for_resource(
+        self,
+        task_id: str,
+        run_id: str,
+        resource_exhaustion: dict[str, Any],
+        *,
+        execution_session: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Block the first incomplete step for a confirmed resource exhaustion.
+
+        Core entry for the ``CFG-002`` approve/deny flow. The task/run, the
+        ``agentbc.resources`` snapshot, the execution session and the chain head
+        are validated, done steps are preserved, and the first incomplete step
+        becomes ``blocked``. ``exhaustion_count`` is atomically incremented and
+        an ``agentbc.input`` request carrying ``kind=resource_limit``,
+        ``response_protocol=approve_deny`` and the current/next limits is
+        persisted. The executor session moves to ``input_required``, the store
+        lease is released and the RunLease is suspended.
+
+        Fail-closed: a missing blockable step, a damaged exhaustion receipt, an
+        inconsistent snapshot/session or a stale chain head transition the task
+        to ``needs_recovery`` instead of creating a bogus wait.
+        """
+        from .reports import redact_secrets
+        from .run_lease import suspend_lease
+        from .task_health import clear_task_progress
+
+        task = self.get_task(task_id)
+        task_id = task.id
+        normalized_run_id = str(run_id or "").strip()
+        failure_reason = _validate_resource_block_receipt(
+            task,
+            normalized_run_id,
+            resource_exhaustion,
+            execution_session,
+        )
+        if failure_reason is not None:
+            return self._fail_closed_resource_block(
+                task,
+                failure_reason,
+                normalized_run_id,
+                execution_session,
+            )
+
+        chain = self.resolve_chain(task_id)
+        if not chain.requested_is_head or len(chain.head_task_ids) != 1:
+            return self._fail_closed_resource_block(
+                task,
+                "resource_block_stale_chain",
+                normalized_run_id,
+                execution_session,
+                details={"reason": "task is not the current chain head"},
+            )
+
+        blocked_step_id = _first_incomplete_step_id(task.steps)
+        if blocked_step_id is None:
+            return self._fail_closed_resource_block(
+                task,
+                "resource_block_no_step",
+                normalized_run_id,
+                execution_session,
+                details={"reason": "no incomplete step exists to block"},
+            )
+
+        if execution_session is not None:
+            self._apply_executor_session_result(
+                task,
+                normalized_run_id,
+                execution_session,
+                "input_required",
+            )
+        else:
+            self._set_known_executor_session_state(task, "input_required")
+
+        extensions = dict(task.extensions or {})
+        resources = dict(extensions[RESOURCE_EXTENSION_KEY])
+        current_limit = resources["current_limit"]
+        next_limit = _next_resource_limit(
+            current_limit,
+            int(resources.get("multiplier") or 1),
+        )
+        now = _utc_now()
+        deadline_at = (
+            _parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)
+        ).isoformat().replace("+00:00", "Z")
+        used = resource_exhaustion.get("used")
+        limit = resource_exhaustion.get("limit")
+        reason = _resource_block_reason(
+            resource_exhaustion.get("executor") or task.assignee,
+            used,
+            limit,
+        )
+        request: dict[str, Any] = {
+            "input_id": f"input-{uuid.uuid4().hex}",
+            "executor_run_id": normalized_run_id,
+            "blocked_step_id": blocked_step_id,
+            "type": "choice",
+            "kind": "resource_limit",
+            "response_protocol": "approve_deny",
+            "resource": resources["resource"],
+            "current_limit": current_limit,
+            "next_limit": next_limit,
+            "summary": "任务执行达到资源上限，等待用户决定是否提高资源上限并继续",
+            "reason": str(redact_secrets(reason)),
+            "options": ["提高预算并继续", "终止任务"],
+            "option_descriptions": [
+                f"将资源上限从 {current_limit} 提高至 {next_limit} 并继续同一会话",
+                "终止任务，失败原因记录为资源耗尽且用户终止",
+            ],
+            "created_at": now,
+            "deadline_at": deadline_at,
+            "status": "waiting",
+        }
+
+        previous = extensions.get("agentbc.input")
+        history = list(extensions.get("agentbc.input_history") or [])
+        if isinstance(previous, dict):
+            history.append(previous)
+
+        task.status = "input_required"
+        task.updated_at = now
+        task.steps = [
+            _resource_block_step(step, blocked_step_id)
+            for step in task.steps
+        ]
+        resources["exhaustion_count"] = int(resources.get("exhaustion_count") or 0) + 1
+        extensions[RESOURCE_EXTENSION_KEY] = resources
+        extensions = self._record_run_interval(task_id, extensions)
+        extensions.pop("agentbc.completion_intent", None)
+        extensions.pop("agentbc.final_callback", None)
+        extensions["agentbc.input"] = request
+        if history:
+            extensions["agentbc.input_history"] = history
+        task.extensions = _merge_execution(
+            extensions,
+            {
+                "internal_status": "waiting",
+                "lease_state": "suspended",
+                "waiting_since": now,
+            },
+        )
+        self._release_lease(task_id)
+        self.store.write_task(task_id, _without_none(task.to_dict()))
+        suspend_lease(
+            task_id,
+            self.board_root,
+            executor_run_id=normalized_run_id,
+            executor_id=task.assignee,
+            work_dir=str(
+                (task.workspace or {}).get("project_root")
+                or (task.workspace or {}).get("root")
+                or self.board_root
+            ),
+        )
+        clear_task_progress(task)
+        self.store.append_event(
+            task_id,
+            {
+                "event_type": "task.resource_limit_blocked",
+                "task_id": task_id,
+                "created_at": now,
+                "run_id": normalized_run_id,
+                "input_id": request["input_id"],
+                "blocked_step_id": blocked_step_id,
+                "resource": resources["resource"],
+                "current_limit": current_limit,
+                "next_limit": next_limit,
+                "exhaustion_count": resources["exhaustion_count"],
+            },
+        )
+        self._refresh_task_index()
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "status": "input_required",
+            "input_id": request["input_id"],
+            "blocked_step_id": blocked_step_id,
+            "current_limit": current_limit,
+            "next_limit": next_limit,
+            "exhaustion_count": resources["exhaustion_count"],
+        }
+
+    def _fail_closed_resource_block(
+        self,
+        task: TaskModel,
+        code: str,
+        run_id: str,
+        execution_session: dict[str, Any] | None,
+        *,
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Convert an unblockable resource wait into a recoverable terminal."""
+        safe_session = None
+        if execution_session is not None:
+            try:
+                self._validated_executor_session(task, run_id, execution_session)
+                safe_session = execution_session
+            except ABCError:
+                safe_session = None
+        changed = self.mark_task_needs_recovery(
+            task.id,
+            code,
+            "Resource exhaustion wait cannot be created safely; task requires recovery",
+            details,
+            executor_run_id=run_id,
+            execution_session=safe_session,
+        )
+        return {
+            "ok": False,
+            "task_id": task.id,
+            "status": "needs_recovery",
+            "code": code,
+            "message": "Resource exhaustion wait cannot be created safely; task requires recovery",
+            "changed": changed,
+        }
 
     def respond_to_input(
         self,
@@ -2252,6 +2470,93 @@ def _normalize_step(step: dict[str, Any], index: int) -> dict[str, Any]:
     normalized["description"] = description
     normalized.setdefault("record", f"steps/{index:02d}.json")
     return normalized
+
+
+def _validate_resource_block_receipt(
+    task: TaskModel,
+    run_id: str,
+    resource_exhaustion: Any,
+    execution_session: Any,
+) -> str | None:
+    """Return a fail-closed code when a resource wait cannot be created safely."""
+    if not isinstance(resource_exhaustion, dict) or resource_exhaustion.get("detected") is not True:
+        return "resource_block_invalid_receipt"
+    executor = str(resource_exhaustion.get("executor") or "").strip().lower()
+    if executor != str(task.assignee or "").strip().lower():
+        return "resource_block_executor_mismatch"
+    resource = str(resource_exhaustion.get("resource") or "").strip()
+    if resource != RESOURCE_KIND_BY_EXECUTOR.get(executor):
+        return "resource_block_resource_mismatch"
+    limit = resource_exhaustion.get("limit")
+    if isinstance(limit, bool) or not isinstance(limit, (int, float)):
+        return "resource_block_invalid_receipt"
+    if not str(run_id or "").strip():
+        return "resource_block_run_mismatch"
+    extensions = task.extensions or {}
+    resources = extensions.get(RESOURCE_EXTENSION_KEY)
+    snapshot_errors = validate_resource_snapshot(resources, executor=executor)
+    if snapshot_errors:
+        return "resource_block_snapshot_invalid"
+    if resources.get("resource") != resource:
+        return "resource_block_snapshot_invalid"
+    session = extensions.get(SESSION_EXTENSION_KEY)
+    session_errors = validate_session_snapshot(session, executor=executor)
+    if session_errors:
+        return "resource_block_session_invalid"
+    run_ids = list(session.get("run_ids") or [])
+    if run_id not in run_ids:
+        return "resource_block_run_mismatch"
+    if execution_session is not None:
+        receipt_errors = validate_execution_session_receipt(execution_session, executor=executor)
+        if receipt_errors:
+            return "resource_block_receipt_invalid"
+        received_id = str(execution_session.get("session_id") or "").strip()
+        existing_id = str(session.get("session_id") or "").strip()
+        if existing_id and received_id and received_id != existing_id:
+            return "resource_block_receipt_invalid"
+    return None
+
+
+def _first_incomplete_step_id(steps: list[dict[str, Any]]) -> int | None:
+    for step in steps:
+        if str(step.get("status") or "pending") != "done":
+            step_id = step.get("id")
+            if isinstance(step_id, int):
+                return step_id
+    return None
+
+
+def _resource_block_step(
+    step: dict[str, Any],
+    blocked_step_id: int | None,
+) -> dict[str, Any]:
+    """Mark the first incomplete step blocked; keep done steps and pending status."""
+    updated = dict(step)
+    if str(updated.get("status") or "pending") == "done":
+        return updated
+    if updated.get("id") == blocked_step_id:
+        updated["status"] = "blocked"
+    else:
+        updated["status"] = str(updated.get("status") or "pending")
+    return updated
+
+
+def _next_resource_limit(limit: Any, multiplier: int) -> Any:
+    if isinstance(limit, bool) or not isinstance(limit, (int, float)):
+        raise ABCError("invalid_execution_resource_limit", "Invalid current resource limit")
+    factor = max(int(multiplier or 1), 1)
+    if isinstance(limit, int):
+        return limit * factor
+    return round(float(limit) * factor, 6)
+
+
+def _resource_block_reason(executor: str, used: Any, limit: Any) -> str:
+    label = "Hermes 迭代" if str(executor).strip().lower() == "hermes" else "Claude 预算"
+    if isinstance(used, (int, float)) and isinstance(limit, (int, float)):
+        return f"{label}已使用 {used} / 上限 {limit}"
+    if isinstance(limit, (int, float)):
+        return f"{label}上限 {limit} 已耗尽"
+    return f"{label}已耗尽"
 
 
 def _update_step(step: dict[str, Any], step_id: int, result: dict[str, Any]) -> dict[str, Any]:

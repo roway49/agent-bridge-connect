@@ -18,7 +18,9 @@ from agent_bridge_connect.adapters import (
 from agent_bridge_connect.execution_contract import (
     CallbackValidation,
     ExecutorTerminalResult,
+    build_resource_exhaustion,
     extract_callback_validation_from_output,
+    resource_snapshot_limit,
     route_executor_terminal,
     strip_callback_line,
 )
@@ -286,6 +288,7 @@ class HermesExecutor(CLIExecutorBase):
             stderr=stderr,
             failure=failure,
             iteration=iteration,
+            task_packet=task_packet,
         )
         status = terminal.status
         self._store_run(
@@ -305,6 +308,7 @@ class HermesExecutor(CLIExecutorBase):
             "marker_valid": validation.valid,
             "marker_seen": validation.marker_seen,
             "iteration": iteration,
+            "resource_exhaustion": terminal.resource_exhaustion,
             "extensions": self.get_extensions(),
         }
         receipt = _execution_session_receipt(stderr, task_packet)
@@ -379,6 +383,7 @@ class HermesExecutor(CLIExecutorBase):
             stderr=stderr,
             failure=failure,
             iteration=iteration,
+            task_packet=task_packet,
         )
         status = "cancelled" if remote_status == "cancelled" else terminal.status
         self._store_run(
@@ -399,6 +404,7 @@ class HermesExecutor(CLIExecutorBase):
             "marker_valid": validation.valid,
             "marker_seen": validation.marker_seen,
             "iteration": iteration,
+            "resource_exhaustion": None if remote_status == "cancelled" else terminal.resource_exhaustion,
             "transport": "runner",
             "extensions": self.get_extensions(),
         }
@@ -807,44 +813,48 @@ def _route_hermes_terminal(
     stderr: str,
     failure: dict[str, Any] | None,
     iteration: dict[str, Any],
+    task_packet: dict[str, Any] | None = None,
 ) -> ExecutorTerminalResult:
     """Route the Hermes terminal with iteration-budget classification.
 
     A valid completed/input_required marker routes to its declared state
     normally and a retryable transport/runtime failure keeps ``needs_recovery``.
-    Budget exhaustion without a valid callback is classified as
-    ``iteration_budget_exhausted`` instead of the generic missing/invalid
-    marker failure, preserving zero-exit strictness.
+    Confirmed budget exhaustion without a valid callback is classified through
+    the shared resource-exhaustion contract: it becomes a system
+    ``input_required`` wait with ``failure.kind=resource_limit_exhausted``, and
+    a receipt limit that conflicts with the task snapshot fails closed to
+    ``needs_recovery``.
     """
-    terminal = route_executor_terminal(
+    return route_executor_terminal(
         validation,
         returncode,
         executor_name="hermes",
         stderr=stderr,
         runtime_failure=failure,
+        resource_exhaustion=_hermes_resource_exhaustion(iteration, task_packet),
     )
-    if (
-        iteration.get("iteration_exhausted")
-        and terminal.callback is None
-        and not (terminal.failure or {}).get("retryable")
-    ):
-        used = iteration.get("iteration_used")
-        limit = iteration.get("iteration_limit")
-        ratio = f"{used}/{limit}" if used is not None and limit is not None else "unknown"
-        return ExecutorTerminalResult(
-            status="failed",
-            callback=None,
-            failure={
-                "kind": "iteration_budget_exhausted",
-                "layer": "flow_contract",
-                "message": (
-                    f"Hermes iteration budget exhausted ({ratio}) before a "
-                    "valid final marker was emitted"
-                ),
-                "retryable": False,
-            },
-        )
-    return terminal
+
+
+def _hermes_resource_exhaustion(
+    iteration: dict[str, Any] | None,
+    task_packet: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Build the structured receipt from one of the four anchored Hermes forms."""
+    if not (isinstance(iteration, dict) and iteration.get("iteration_exhausted")):
+        return None
+    snapshot_limit = (
+        resource_snapshot_limit(task_packet, "hermes")
+        if isinstance(task_packet, dict)
+        else None
+    )
+    return build_resource_exhaustion(
+        "hermes",
+        "max_turns",
+        used=iteration.get("iteration_used"),
+        limit=iteration.get("iteration_limit"),
+        source=iteration.get("iteration_source"),
+        snapshot_limit=snapshot_limit,
+    )
 
 
 def _parse_output(output: str) -> Any:

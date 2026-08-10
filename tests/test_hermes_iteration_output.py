@@ -242,7 +242,7 @@ class HermesOutputExtractionTests(unittest.TestCase):
             ("prompt_echo", f"{prompt}\n{self._marker()}", "completed"),
             ("duplicate", f"{self._marker()}\n{self._marker()}", "failed"),
             ("missing", "no marker", "failed"),
-            ("budget_no_marker", "Iteration budget exhausted (60/60)\nno marker", "failed"),
+            ("budget_no_marker", "Iteration budget exhausted (60/60)\nno marker", "input_required"),
         ]
         for case, output, expected_status in cases:
             with self.subTest(case=case):
@@ -314,16 +314,23 @@ class HermesOutputExtractionTests(unittest.TestCase):
         self.assertEqual(diag["iteration_source"], "none")
         self.assertIsNone(diag["iteration_used"])
 
-    def test_budget_exhaustion_without_marker_is_iteration_budget_exhausted(self) -> None:
+    def test_budget_exhaustion_without_marker_is_system_input_required(self) -> None:
         output = (
             "⚠️  Reached maximum iterations (60). Requesting summary...\n"
             "⚠️  Iteration budget exhausted (60/60) — asking model to summarise\n"
             "I ran out of iterations before finishing."
         )
         poll = self._run_direct(output)
-        self.assertEqual(poll.status, "failed")
-        self.assertEqual(poll.result["failure"]["kind"], "iteration_budget_exhausted")
+        self.assertEqual(poll.status, "input_required")
+        self.assertEqual(poll.result["failure"]["kind"], "resource_limit_exhausted")
         self.assertFalse(poll.result["failure"]["retryable"])
+        self.assertIsNone(poll.result["agent_callback"])
+        exhaustion = poll.result["resource_exhaustion"]
+        self.assertTrue(exhaustion["detected"])
+        self.assertEqual(exhaustion["executor"], "hermes")
+        self.assertEqual(exhaustion["resource"], "max_turns")
+        self.assertEqual(exhaustion["used"], 60)
+        self.assertEqual(exhaustion["limit"], 60)
         iteration = poll.result["iteration"]
         self.assertTrue(iteration["iteration_exhausted"])
         self.assertEqual(iteration["iteration_used"], 60)
@@ -332,11 +339,13 @@ class HermesOutputExtractionTests(unittest.TestCase):
         self.assertTrue(extensions_iteration["iteration_exhausted"])
         self.assertEqual(extensions_iteration["iteration_used"], 60)
 
-    def test_budget_exhaustion_with_nonzero_exit_is_iteration_budget_exhausted(self) -> None:
+    def test_budget_exhaustion_with_nonzero_exit_is_system_input_required(self) -> None:
         output = "⚠️  Iteration budget exhausted (60/60) — asking model to summarise\nno marker"
         poll = self._run_direct(output, returncode=1)
-        self.assertEqual(poll.status, "failed")
-        self.assertEqual(poll.result["failure"]["kind"], "iteration_budget_exhausted")
+        self.assertEqual(poll.status, "input_required")
+        self.assertEqual(poll.result["failure"]["kind"], "resource_limit_exhausted")
+        self.assertIsNone(poll.result["agent_callback"])
+        self.assertEqual(poll.result["resource_exhaustion"]["limit"], 60)
 
     def test_valid_completed_routes_normally_despite_budget_exhaustion(self) -> None:
         output = (

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import subprocess
 import uuid
 from pathlib import Path
@@ -15,8 +16,11 @@ from agent_bridge_connect.adapters import (
     StartResult,
 )
 from agent_bridge_connect.execution_contract import (
+    CallbackValidation,
+    build_resource_exhaustion,
     detect_retryable_transport_failure,
     extract_callback_validation_from_output,
+    resource_snapshot_limit,
     route_executor_terminal,
     strip_callback_line,
 )
@@ -34,6 +38,11 @@ from .base import CLIExecutorBase
 from ..path_provider import find_binary
 
 SAFETY_TIMEOUT_S = 24 * 60 * 60
+
+_CLAUDE_BUDGET_ERROR_RE = re.compile(r"Exceeded\s+USD\s+budget")
+_CLAUDE_BUDGET_AMOUNT_RE = re.compile(
+    r"Exceeded\s+USD\s+budget\s*\(\s*\$?\s*(?P<amount>\d+(?:\.\d+)?)"
+)
 
 
 class ClaudeExecutor(CLIExecutorBase):
@@ -251,6 +260,14 @@ class ClaudeExecutor(CLIExecutorBase):
             executor_name="claude",
             stderr=stderr,
             runtime_failure=detect_retryable_transport_failure(output_text, stderr),
+            resource_exhaustion=_claude_resource_exhaustion(
+                stdout,
+                stderr,
+                parsed_output,
+                task_packet,
+                validation,
+                completed.returncode,
+            ),
         )
         status = terminal.status
         self._store_run(run_id, execution_root, completed.returncode)
@@ -264,6 +281,7 @@ class ClaudeExecutor(CLIExecutorBase):
             "marker_valid": validation.valid,
             "marker_seen": validation.marker_seen,
             "failure": terminal.failure,
+            "resource_exhaustion": terminal.resource_exhaustion,
             "extensions": self.get_extensions(),
             **(
                 {"execution_session": execution_session}
@@ -610,6 +628,87 @@ def _extract_output_text(stdout: str, output_format: str) -> tuple[str, Any]:
                             texts.append(item["text"])
         return "\n".join(texts) if texts else stdout, parsed_lines
     return stdout, None
+
+
+def _claude_resource_exhaustion(
+    stdout: str,
+    stderr: str,
+    parsed_output: Any,
+    task_packet: dict[str, Any],
+    validation: CallbackValidation,
+    returncode: int,
+) -> dict[str, Any] | None:
+    """Detect confirmed Claude budget exhaustion with structured precedence.
+
+    Structured detection: the ``error_max_budget_usd`` subtype in Claude's JSON
+    output is authoritative whenever present. Text fallback is intentionally
+    narrow: it only accepts the exact ``Exceeded USD budget`` phrase when there
+    is no valid callback, the CLI exited non-zero, and the phrase appears in the
+    CLI error output. A valid callback or a retryable transport failure always
+    wins the terminal-state priority regardless of these diagnostics.
+    """
+    structured_limit = _claude_structured_budget_limit(parsed_output)
+    if structured_limit is not None:
+        return build_resource_exhaustion(
+            "claude",
+            "max_budget_usd",
+            used=None,
+            limit=structured_limit,
+            source="structured_error_max_budget_usd",
+            snapshot_limit=resource_snapshot_limit(task_packet, "claude"),
+        )
+    if validation.valid or returncode == 0:
+        return None
+    error_output = f"{stderr}\n{stdout}"
+    if _CLAUDE_BUDGET_ERROR_RE.search(error_output) is None:
+        return None
+    amount = _claude_budget_amount_from_text(error_output)
+    return build_resource_exhaustion(
+        "claude",
+        "max_budget_usd",
+        used=None,
+        limit=amount,
+        source="text_exceeded_usd_budget",
+        snapshot_limit=resource_snapshot_limit(task_packet, "claude"),
+    )
+
+
+def _claude_structured_budget_limit(parsed_output: Any) -> int | float | None:
+    """Recursively find the ``error_max_budget_usd`` subtype and its limit."""
+    if isinstance(parsed_output, dict):
+        if (
+            str(parsed_output.get("subtype") or "").strip() == "error_max_budget_usd"
+            or str(parsed_output.get("type") or "").strip() == "error_max_budget_usd"
+        ):
+            amount = _claude_budget_amount_from_text(
+                str(parsed_output.get("message") or "")
+            )
+            if amount is not None:
+                return amount
+            for field in ("budget", "max_budget_usd", "limit", "amount"):
+                value = parsed_output.get(field)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    return float(value)
+        for value in parsed_output.values():
+            found = _claude_structured_budget_limit(value)
+            if found is not None:
+                return found
+    elif isinstance(parsed_output, list):
+        for item in parsed_output:
+            found = _claude_structured_budget_limit(item)
+            if found is not None:
+                return found
+    return None
+
+
+def _claude_budget_amount_from_text(text: str) -> int | float | None:
+    match = _CLAUDE_BUDGET_AMOUNT_RE.search(str(text or ""))
+    if match is None:
+        return None
+    try:
+        return float(match.group("amount"))
+    except (AttributeError, ValueError):
+        return None
 
 
 def _extract_summary(text: str) -> str:

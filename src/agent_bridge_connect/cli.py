@@ -1453,7 +1453,11 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     else "executor_terminal_failure"
                 )
                 details = {"executor": args.executor, "result": poll.result, "progress": poll.progress}
-                if _is_explicit_retryable_failure(failure):
+                resource_receipt_mismatch = (
+                    isinstance(failure, dict)
+                    and failure.get("kind") == "resource_exhaustion_receipt_mismatch"
+                )
+                if _is_explicit_retryable_failure(failure) or resource_receipt_mismatch:
                     terminal_marked = service.mark_task_needs_recovery(
                         task.id,
                         failure_code,
@@ -1479,6 +1483,45 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 _request_task_list_refresh(service.board_root)
                 print(f"worker_error: executor failed for {task.id}: {failure_message}")
                 return 1
+
+            resource_exhaustion = poll.result.get("resource_exhaustion")
+            if (
+                poll.status == "input_required"
+                and isinstance(resource_exhaustion, dict)
+                and resource_exhaustion.get("detected") is True
+            ):
+                blocked = service.block_task_for_resource(
+                    task.id,
+                    start.run_id,
+                    resource_exhaustion,
+                    execution_session=execution_session,
+                )
+                if not blocked.get("ok"):
+                    _write_terminal_report(task.id, service.board_root)
+                    _notify_terminal(
+                        service,
+                        task.id,
+                        "task.recovery_required",
+                        "warning",
+                        str(
+                            blocked.get("message")
+                            or "resource exhaustion wait failed; task requires recovery"
+                        ),
+                    )
+                    _request_task_list_refresh(service.board_root)
+                    print(f"needs_recovery: {task.id}")
+                    return 1
+                _notify_input_required(
+                    service,
+                    task.id,
+                    config_path=getattr(args, "config", None),
+                    interval_s=getattr(args, "interval", 2),
+                )
+                _request_task_list_refresh(service.board_root)
+                print(f"input_required: {task.id}")
+                if args.once:
+                    return 0
+                continue
 
             callback = poll.result.get("agent_callback")
             exit_code = poll.result.get("returncode")
