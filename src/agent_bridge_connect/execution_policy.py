@@ -12,6 +12,7 @@ from .protocol import ABCError
 
 
 EXECUTION_POLICY_VERSION = 1
+EXECUTION_SESSION_RECEIPT_VERSION = 1
 RESOURCE_EXTENSION_KEY = "agentbc.resources"
 SESSION_EXTENSION_KEY = "agentbc.session"
 RESOURCE_MULTIPLIER = 2
@@ -35,6 +36,12 @@ TERMINAL_SESSION_CLEANUP_STATUSES = frozenset(
 _HERMES_SESSION_RECEIPT_RE = re.compile(
     r"(?m)^[ \t]*session_id:[ \t]*([^\s]+)[ \t]*$"
 )
+
+SESSION_RECEIPT_SOURCES = {
+    "claude": "preallocated",
+    "hermes": "stderr_receipt",
+    "codex": "jsonl_thread_started",
+}
 
 
 def build_resource_snapshot(
@@ -219,6 +226,39 @@ def validate_session_snapshot(
             )
     if not isinstance(value.get("created_at"), str) or not str(value.get("created_at")).strip():
         errors.append(f"{SESSION_EXTENSION_KEY}.created_at must be non-empty")
+    return errors
+
+
+def validate_execution_session_receipt(
+    value: Any,
+    *,
+    executor: str | None = None,
+) -> list[str]:
+    """Validate the adapter-to-worker receipt for one persisted executor session."""
+    if not isinstance(value, dict):
+        return ["execution_session must be an object"]
+    errors: list[str] = []
+    if value.get("version") != EXECUTION_SESSION_RECEIPT_VERSION:
+        errors.append(
+            f"execution_session.version must be {EXECUTION_SESSION_RECEIPT_VERSION}"
+        )
+    actual_executor = str(value.get("executor") or "").strip().lower()
+    if actual_executor not in SESSION_RECEIPT_SOURCES:
+        errors.append(f"execution_session.executor is unsupported: {actual_executor}")
+    if executor is not None and actual_executor != str(executor).strip().lower():
+        errors.append(f"execution_session.executor does not match {executor}")
+    session_id = value.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        errors.append("execution_session.session_id must be a non-empty string")
+    if not isinstance(value.get("resumed"), bool):
+        errors.append("execution_session.resumed must be a boolean")
+    if value.get("persistence") != "persistent":
+        errors.append("execution_session.persistence must be persistent")
+    expected_source = SESSION_RECEIPT_SOURCES.get(actual_executor)
+    if value.get("source") != expected_source:
+        errors.append(
+            f"execution_session.source must be {expected_source or 'executor-specific'}"
+        )
     return errors
 
 

@@ -80,7 +80,7 @@ max_turns = 150
 retain_executor_sessions = true
 ```
 
-Phase 2 任务契约状态：每个新的 Claude/Hermes 任务会把有效资源上限冻结到
+当前任务契约：每个新的 Claude/Hermes 任务会把有效资源上限冻结到
 `agentbc.resources`；每个新的 Claude/Hermes/Codex 任务会把 retention 与执行器会话元数据
 冻结到 `agentbc.session`。配置缺失时使用 `$10`、`90` 和 retention `false`；字段存在但
 非法时 fail closed。handoff 按目标执行器创建新快照，reassign 重建快照；同一 Task ID 的
@@ -90,9 +90,17 @@ create/dispatch accepted、preflight、status、report 与 Task Brief 统一使�
 `execution_policy` 视图：展示有效上限、来源、冻结状态（Codex resources 为 `null`），以及
 retain、执行器 session ID/state 和 project mode。执行器内部 project path 只保留在 task
 packet，不作为 artifact 展示。Claude 临时 Project 使用 canonical `<TASK-ID>/claude`
-受管路径；Runner 会校验 legacy 补齐结果及 Worker packet 与持久化快照的一致性。Hermes
-`--max-turns`、同会话 resume、终态 cleanup/purge 和
-资源耗尽处理仍属于后续运行时阶段；存在冻结快照不代表这些行为已经执行。
+受管路径。实际运行时 Claude 使用冻结的 `--max-budget-usd`，Hermes 使用冻结的
+`--max-turns`；Claude、Hermes、Codex 都会记录执行器官方 session ID。同一 Task 在
+`input_required`、retry 或 recovery 后再次运行时，会通过明确 session ID 恢复原会话，不会
+选择“最近一次会话”或新建会话重构上下文。
+
+Runner 会同时校验 Worker packet、持久化快照、资源参数、session 参数及 Claude 执行目录；
+缺失、重复、篡改或模糊恢复参数都会 fail closed。修改全局预算、迭代次数或 retention
+只影响后续新任务，不改变现有 Task 的冻结值。
+
+终态 cleanup/purge 和预算/迭代耗尽后的“翻倍继续 / 终止任务”仍属于下一阶段；当前版本在
+`input_required` 和 `needs_recovery` 期间不会清理执行器会话。
 
 该策略只管理 Executor 创建的临时会话。AgentBC 永远不会删除创建或 handoff 任务的
 dispatcher conversation。修改全局设置不会改变 active、`input_required` 或 recovery

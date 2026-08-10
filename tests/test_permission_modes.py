@@ -628,7 +628,15 @@ class RunnerPermissionAuthorizationTests(unittest.TestCase):
 
     def test_explicit_full_is_authorized_without_executing_command(self) -> None:
         _service, _task, full = self._packet("full")
-        command = [str(self.fake_hermes), "chat", "--yolo", "-q", "prompt"]
+        command = [
+            str(self.fake_hermes),
+            "chat",
+            "--yolo",
+            "-q",
+            "--max-turns",
+            "90",
+            "prompt",
+        ]
         spawned = {"ok": True, "run_id": "mock-full", "pid": 1, "status": "running"}
         with mock.patch.object(self.state, "_spawn_process", return_value=spawned) as run:
             result = self.state.submit("hermes", command, str(self.project), full)

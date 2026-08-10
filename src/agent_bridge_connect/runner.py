@@ -47,10 +47,9 @@ LEGACY_RUNNER_LAUNCH_AGENT_LABEL = "com.agentbc.runner"
 # Integration merge point: Task 1 (1.0.2A resource configuration foundations,
 # commit 4e60e4f) owns agent_bridge_connect.execution_policy; this section only
 # consumes its public snapshot builders/validators and extension keys. The
-# Runner never reads the user's current configuration for legacy backfill,
-# never injects or validates executor resource flags (--max-budget-usd,
-# --max-turns, --session-id, --resume are explicitly out of scope for Phase 2),
-# and never touches Executor adapters, CLI/report/docs.
+# Runner never reads the user's current configuration for legacy backfill and
+# never injects executor resource/session flags. Phase 3 validates the argv
+# emitted by adapters against these frozen Phase 2 snapshots.
 PHASE2_EXECUTOR_PROJECT_ROOT_KEY = "executor_project_root"
 PHASE2_EXECUTION_EXTENSION_KEY = "agentbc.execution"
 PHASE2_LEGACY_UNRECORDED_KEY = "legacy_unrecorded"
@@ -82,6 +81,18 @@ _EXECUTOR_COMMAND_RULES: dict[str, dict[str, Any]] = {
         "description": "Claude -p (headless print mode)",
     },
 }
+
+
+def _canonical_flag_values(command: list[str], flag: str) -> tuple[list[str], bool]:
+    """Return separated flag values and whether a non-canonical equals form exists."""
+    values: list[str] = []
+    noncanonical = False
+    for index, token in enumerate(command):
+        if token == flag:
+            values.append(command[index + 1] if index + 1 < len(command) else "")
+        elif token.startswith(f"{flag}="):
+            noncanonical = True
+    return values, noncanonical
 
 
 class RunnerError(RuntimeError):
@@ -928,6 +939,8 @@ class RunnerState:
     ) -> dict[str, Any]:
         work_dir = Path(cwd).expanduser().resolve()
         self._validate_request(executor, command, work_dir, task)
+        self._enforce_phase2_authorization(executor, task)
+        self._enforce_phase3_authorization(executor, command, work_dir, task)
         return self._spawn_process(executor, command, work_dir, f"runner-{executor}")
 
     def authorize_command(
@@ -940,6 +953,7 @@ class RunnerState:
         work_dir = Path(cwd).expanduser().resolve()
         self._validate_request(executor, command, work_dir, task)
         self._enforce_phase2_authorization(executor, task)
+        self._enforce_phase3_authorization(executor, command, work_dir, task)
         return {"ok": True, "executor": executor, "authorized": True}
 
     def _phase2_structure_errors(
@@ -1947,6 +1961,135 @@ class RunnerState:
             validate_permission_command(executor, command, permission)
         except ABCError as exc:
             raise RunnerError(f"{exc.code}: {exc}") from exc
+
+    def _enforce_phase3_authorization(
+        self,
+        executor: str,
+        command: list[str],
+        cwd: Path,
+        task: dict[str, Any] | None,
+    ) -> None:
+        persisted_task, _permission = self._persisted_permission_authorization(executor, task)
+        try:
+            self._validate_phase3_execution_command(executor, command, cwd, persisted_task)
+        except RunnerError as exc:
+            task_id = str(persisted_task.get("id") or persisted_task.get("task_id") or "")
+            task_board = task.get("task_board") if isinstance(task, dict) else None
+            board_value = str(task_board.get("root") or "") if isinstance(task_board, dict) else ""
+            if task_id and board_value:
+                self._phase2_append_audit(
+                    Path(board_value).expanduser().resolve(),
+                    task_id,
+                    executor,
+                    "fail",
+                    str(exc).split(":", 1)[0],
+                )
+            raise
+
+    def _validate_phase3_execution_command(
+        self,
+        executor: str,
+        command: list[str],
+        cwd: Path,
+        persisted_task: dict[str, Any],
+    ) -> None:
+        """Match resource/session argv to the authoritative Phase 2 snapshots."""
+        extensions = persisted_task.get("extensions")
+        extensions = extensions if isinstance(extensions, dict) else {}
+        session = extensions.get(SESSION_EXTENSION_KEY)
+        session_errors = validate_session_snapshot(session, executor=executor)
+        if session_errors:
+            raise RunnerError(
+                f"runner_session_argument_mismatch: {'; '.join(session_errors)}"
+            )
+        session_id = str(session.get("session_id") or "").strip()
+        resumed = bool(session.get("run_ids") or [])
+
+        if executor in {"claude", "hermes"}:
+            resources = extensions.get(RESOURCE_EXTENSION_KEY)
+            resource_errors = validate_resource_snapshot(resources, executor=executor)
+            if resource_errors:
+                raise RunnerError(
+                    f"runner_resource_argument_mismatch: {'; '.join(resource_errors)}"
+                )
+            flag = "--max-budget-usd" if executor == "claude" else "--max-turns"
+            values, noncanonical = _canonical_flag_values(command, flag)
+            current_limit = resources.get("current_limit")
+            expected_value = (
+                str(float(current_limit)) if executor == "claude" else str(int(current_limit))
+            )
+            if noncanonical or values != [expected_value]:
+                raise RunnerError(
+                    f"runner_resource_argument_mismatch: {flag} must appear once with the frozen task value"
+                )
+
+        resume_values, resume_noncanonical = _canonical_flag_values(command, "--resume")
+        session_values, session_noncanonical = _canonical_flag_values(command, "--session-id")
+        if resume_noncanonical or session_noncanonical:
+            raise RunnerError(
+                "runner_session_argument_mismatch: session flags require separated canonical values"
+            )
+
+        if executor == "claude":
+            if "--no-session-persistence" in command:
+                raise RunnerError(
+                    "runner_session_argument_mismatch: Claude session persistence cannot be disabled"
+                )
+            expected_project = Path(str(session.get("project_path") or "")).expanduser().resolve()
+            if cwd != expected_project:
+                raise RunnerError(
+                    "runner_executor_cwd_mismatch: Claude cwd does not match the frozen session project"
+                )
+            if resumed:
+                valid = resume_values == [session_id] and not session_values and bool(session_id)
+            else:
+                valid = session_values == [session_id] and not resume_values and bool(session_id)
+            if not valid:
+                raise RunnerError(
+                    "runner_session_argument_mismatch: Claude fresh/resume flags do not match task history"
+                )
+            return
+
+        if executor == "hermes":
+            if "--continue" in command or "-c" in command:
+                raise RunnerError(
+                    "runner_session_argument_mismatch: Hermes ambiguous continuation is forbidden"
+                )
+            if session_values:
+                raise RunnerError(
+                    "runner_session_argument_mismatch: Hermes does not accept a preassigned session ID"
+                )
+            if resumed:
+                valid = resume_values == [session_id] and bool(session_id)
+            else:
+                valid = not resume_values
+            if not valid:
+                raise RunnerError(
+                    "runner_session_argument_mismatch: Hermes resume flag does not match task history"
+                )
+            return
+
+        if executor == "codex":
+            if "--ephemeral" in command or "--last" in command:
+                raise RunnerError(
+                    "runner_session_argument_mismatch: Codex requires persistent explicit-ID sessions"
+                )
+            resume_positions = [
+                index for index, token in enumerate(command[2:], 2) if token == "resume"
+            ]
+            if resumed:
+                valid = (
+                    len(resume_positions) == 1
+                    and bool(session_id)
+                    and resume_positions[0] + 1 < len(command)
+                    and command[resume_positions[0] + 1] == session_id
+                )
+            else:
+                valid = not resume_positions
+            if not valid:
+                raise RunnerError(
+                    "runner_session_argument_mismatch: Codex resume command does not match task history"
+                )
 
     def _persisted_permission_authorization(
         self,

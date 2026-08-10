@@ -22,6 +22,7 @@ from agent_bridge_connect.execution_contract import (
     route_executor_terminal,
     strip_callback_line,
 )
+from agent_bridge_connect.execution_policy import extract_hermes_session_id
 from agent_bridge_connect.media import task_image_paths
 from agent_bridge_connect.permission_modes import (
     assert_executor_permission_supported,
@@ -55,6 +56,7 @@ class HermesExecutor(CLIExecutorBase):
         profile: str | None = None,
         provider: str | None = None,
         model: str | None = None,
+        max_turns: int | None = None,
         quiet: bool = True,
         command: str | None = None,
         transport: str = "auto",
@@ -66,6 +68,7 @@ class HermesExecutor(CLIExecutorBase):
         self.profile = _optional_text(profile)
         self.provider = _optional_text(provider)
         self.model = _optional_text(model)
+        self.max_turns = _validate_max_turns(max_turns)
         self.quiet = quiet
         if transport not in {"auto", "direct", "runner"}:
             raise ValueError(f"Unsupported Hermes transport: {transport}")
@@ -211,7 +214,16 @@ class HermesExecutor(CLIExecutorBase):
         self._task_packets[run_id] = dict(task_packet)
         self._start_run_lease(task_packet, run_id, "hermes")
         prompt = _build_prompt(task_packet)
-        command = self._build_command(prompt, images=images, permission=permission)
+        try:
+            command = self._build_command(
+                prompt,
+                images=images,
+                permission=permission,
+                task_packet=task_packet,
+            )
+        except ValueError as exc:
+            self._close_run_lease(run_id)
+            return StartResult(ok=False, run_id="", message=f"invalid Hermes task policy: {exc}")
 
         try:
             if task_packet.get("runner_authorization_required") is True:
@@ -230,22 +242,26 @@ class HermesExecutor(CLIExecutorBase):
             stderr = exc.stderr or ""
             self._store_run(run_id, root, None)
             self._mark_run_stale(run_id)
+            result: dict[str, Any] = {
+                "stdout": _coerce_output(stdout),
+                "stderr": _coerce_output(stderr),
+                "reason": f"hermes safety runtime exceeded after {self.timeout_s}s",
+                "timeout_is_failure": False,
+                "failure": {
+                    "kind": "executor_timeout",
+                    "layer": "executor",
+                    "message": f"hermes safety runtime exceeded after {self.timeout_s}s",
+                    "retryable": True,
+                },
+                "extensions": self.get_extensions(),
+            }
+            receipt = _execution_session_receipt(_coerce_output(stderr), task_packet)
+            if receipt is not None:
+                result["execution_session"] = receipt
             self._runs[run_id] = PollResult(
                 status="needs_recovery",
                 progress={"steps_total": len(steps)},
-                result={
-                    "stdout": _coerce_output(stdout),
-                    "stderr": _coerce_output(stderr),
-                    "reason": f"hermes safety runtime exceeded after {self.timeout_s}s",
-                    "timeout_is_failure": False,
-                    "failure": {
-                        "kind": "executor_timeout",
-                        "layer": "executor",
-                        "message": f"hermes safety runtime exceeded after {self.timeout_s}s",
-                        "retryable": True,
-                    },
-                    "extensions": self.get_extensions(),
-                },
+                result=result,
             )
             return StartResult(ok=True, run_id=run_id, message="hermes execution needs recovery")
         except (OSError, RunnerError) as exc:
@@ -278,22 +294,26 @@ class HermesExecutor(CLIExecutorBase):
             completed.returncode,
             iteration=iteration,
         )
+        result: dict[str, Any] = {
+            "stdout": stdout,
+            "stderr": stderr,
+            "returncode": completed.returncode,
+            "summary": summary,
+            "parsed": _parse_output(final_response),
+            "failure": terminal.failure,
+            "agent_callback": terminal.callback,
+            "marker_valid": validation.valid,
+            "marker_seen": validation.marker_seen,
+            "iteration": iteration,
+            "extensions": self.get_extensions(),
+        }
+        receipt = _execution_session_receipt(stderr, task_packet)
+        if receipt is not None:
+            result["execution_session"] = receipt
         self._runs[run_id] = PollResult(
             status=status,
             progress={"steps_total": len(steps), "returncode": completed.returncode},
-            result={
-                "stdout": stdout,
-                "stderr": stderr,
-                "returncode": completed.returncode,
-                "summary": summary,
-                "parsed": _parse_output(final_response),
-                "failure": terminal.failure,
-                "agent_callback": terminal.callback,
-                "marker_valid": validation.valid,
-                "marker_seen": validation.marker_seen,
-                "iteration": iteration,
-                "extensions": self.get_extensions(),
-            },
+            result=result,
         )
         self._close_run_lease(run_id)
         return StartResult(ok=True, run_id=run_id, message=f"hermes execution {status}")
@@ -368,6 +388,23 @@ class HermesExecutor(CLIExecutorBase):
             "runner",
             iteration=iteration,
         )
+        result_payload: dict[str, Any] = {
+            "stdout": stdout,
+            "stderr": stderr,
+            "returncode": returncode,
+            "summary": summary,
+            "parsed": _parse_output(final_response),
+            "failure": failure if remote_status == "cancelled" else terminal.failure,
+            "agent_callback": None if remote_status == "cancelled" else terminal.callback,
+            "marker_valid": validation.valid,
+            "marker_seen": validation.marker_seen,
+            "iteration": iteration,
+            "transport": "runner",
+            "extensions": self.get_extensions(),
+        }
+        receipt = _execution_session_receipt(stderr, task_packet)
+        if receipt is not None:
+            result_payload["execution_session"] = receipt
         result = PollResult(
             status=status,
             progress={
@@ -375,20 +412,7 @@ class HermesExecutor(CLIExecutorBase):
                 "runner_status": remote_status,
                 "output_truncated": bool(remote.get("output_truncated")),
             },
-            result={
-                "stdout": stdout,
-                "stderr": stderr,
-                "returncode": returncode,
-                "summary": summary,
-                "parsed": _parse_output(final_response),
-                "failure": failure if remote_status == "cancelled" else terminal.failure,
-                "agent_callback": None if remote_status == "cancelled" else terminal.callback,
-                "marker_valid": validation.valid,
-                "marker_seen": validation.marker_seen,
-                "iteration": iteration,
-                "transport": "runner",
-                "extensions": self.get_extensions(),
-            },
+            result=result_payload,
         )
         self._runs[run_id] = result
         if run_id not in self._runner_closed:
@@ -413,11 +437,15 @@ class HermesExecutor(CLIExecutorBase):
     ) -> StartResult:
         prompt = _build_prompt(task_packet)
         permission = permission_record_from_extensions(task_packet.get("extensions"))
-        command = self._build_command(
-            prompt,
-            images=task_image_paths(task_packet),
-            permission=permission,
-        )
+        try:
+            command = self._build_command(
+                prompt,
+                images=task_image_paths(task_packet),
+                permission=permission,
+                task_packet=task_packet,
+            )
+        except ValueError as exc:
+            return StartResult(ok=False, run_id="", message=f"invalid Hermes task policy: {exc}")
         try:
             remote = self._runner_client.submit("hermes", command, root or Path.cwd(), task=task_packet)
         except RunnerError as exc:
@@ -456,6 +484,7 @@ class HermesExecutor(CLIExecutorBase):
         prompt: str,
         images: list[Path] | None = None,
         permission: dict[str, str] | None = None,
+        task_packet: dict[str, Any] | None = None,
     ) -> list[str]:
         if self.agent_bin is None:
             raise RuntimeError("hermes unavailable")
@@ -465,9 +494,17 @@ class HermesExecutor(CLIExecutorBase):
         command.append("chat")
         selected = permission or permission_record_from_extensions(None)
         command.extend(permission_flags("hermes", selected["effective_mode"]))
+        max_turns = _task_max_turns(task_packet, self.max_turns)
+        if max_turns is not None:
+            command.extend(["--max-turns", str(max_turns)])
+        resumed, session_id = _task_resume_session(task_packet)
+        if resumed:
+            command.extend(["--resume", session_id])
         if images:
             command.extend(["--image", str(images[0])])
-        if self.quiet:
+        # AgentBC task runs require Hermes' machine-readable single-query path:
+        # it emits the authoritative ``session_id:`` receipt on stderr.
+        if self.quiet or _task_has_session_policy(task_packet):
             command.append("-Q")
         if self.provider:
             command.extend(["--provider", self.provider])
@@ -492,6 +529,7 @@ class HermesExecutor(CLIExecutorBase):
             "profile": self.profile,
             "provider": self.provider,
             "model": self.model,
+            "max_turns": self.max_turns,
             "auth_owner": "hermes_cli",
             "transport": self.transport,
             "permission": (
@@ -561,6 +599,86 @@ def _optional_text(value: str | None) -> str | None:
         return None
     stripped = str(value).strip()
     return stripped or None
+
+
+def _validate_max_turns(value: int | None) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError("max_turns must be a positive integer")
+    return value
+
+
+def _task_max_turns(
+    task_packet: dict[str, Any] | None,
+    configured_max_turns: int | None,
+) -> int | None:
+    """Prefer the frozen task limit while retaining standalone CLI compatibility."""
+    if not isinstance(task_packet, dict):
+        return configured_max_turns
+    extensions = task_packet.get("extensions")
+    if not isinstance(extensions, dict) or "agentbc.resources" not in extensions:
+        return configured_max_turns
+    resources = extensions.get("agentbc.resources")
+    if not isinstance(resources, dict):
+        raise ValueError("agentbc.resources must be an object")
+    if str(resources.get("executor") or "").strip().lower() != "hermes":
+        raise ValueError("agentbc.resources.executor must be hermes")
+    if resources.get("resource") != "max_turns":
+        raise ValueError("agentbc.resources.resource must be max_turns")
+    return _validate_max_turns(resources.get("current_limit"))
+
+
+def _task_resume_session(
+    task_packet: dict[str, Any] | None,
+) -> tuple[bool, str]:
+    if not isinstance(task_packet, dict):
+        return False, ""
+    extensions = task_packet.get("extensions")
+    if not isinstance(extensions, dict) or "agentbc.session" not in extensions:
+        return False, ""
+    session = extensions.get("agentbc.session")
+    if not isinstance(session, dict):
+        raise ValueError("agentbc.session must be an object")
+    if str(session.get("executor") or "").strip().lower() != "hermes":
+        raise ValueError("agentbc.session.executor must be hermes")
+    run_ids = session.get("run_ids")
+    if not isinstance(run_ids, list):
+        raise ValueError("agentbc.session.run_ids must be a list")
+    resumed = bool(run_ids)
+    if not resumed:
+        return False, ""
+    session_id = str(session.get("session_id") or "").strip()
+    if not session_id:
+        raise ValueError("agentbc.session.session_id is required for resume")
+    return True, session_id
+
+
+def _task_has_session_policy(task_packet: dict[str, Any] | None) -> bool:
+    if not isinstance(task_packet, dict):
+        return False
+    extensions = task_packet.get("extensions")
+    return isinstance(extensions, dict) and isinstance(
+        extensions.get("agentbc.session"), dict
+    )
+
+
+def _execution_session_receipt(
+    stderr: str,
+    task_packet: dict[str, Any],
+) -> dict[str, Any] | None:
+    session_id = extract_hermes_session_id(stderr)
+    if session_id is None:
+        return None
+    resumed, _ = _task_resume_session(task_packet)
+    return {
+        "version": 1,
+        "executor": "hermes",
+        "session_id": session_id,
+        "resumed": resumed,
+        "persistence": "persistent",
+        "source": "stderr_receipt",
+    }
 
 
 def _workspace_root(task_packet: dict[str, Any]) -> Path | None:

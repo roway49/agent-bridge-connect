@@ -23,6 +23,7 @@ BUILTIN_EXECUTOR_RUNTIME_KEYS = {
             "profile",
             "provider",
             "model",
+            "max_turns",
             "quiet",
             "command",
             "transport",
@@ -48,13 +49,11 @@ BUILTIN_EXECUTOR_RUNTIME_KEYS = {
     ),
 }
 
-# Phase 1 persists this setting before Phase 3 begins injecting --max-turns.
-# Keep it executor-specific so unrelated executors still fail closed on the key.
 BUILTIN_EXECUTOR_CONFIG_ONLY_KEYS = {
     "mock": frozenset(),
     "shell": frozenset(),
     "codex": frozenset(),
-    "hermes": frozenset({"max_turns"}),
+    "hermes": frozenset(),
     "claude": frozenset(),
 }
 

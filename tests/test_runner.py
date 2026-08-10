@@ -48,7 +48,10 @@ class RunnerStateTests(unittest.TestCase):
 
         board = self.root / "permission-board"
         project = Path(workspace or self.root)
-        service = TaskService(board, config={"workspace_root": str(self.root)})
+        config = {"workspace_root": str(self.root)}
+        if executor == "claude":
+            config["sessions"] = {"retain_executor_sessions": True}
+        service = TaskService(board, config=config)
         task = service.create_task(
             "Runner permission authorization",
             executor,
@@ -63,11 +66,12 @@ class RunnerStateTests(unittest.TestCase):
         return packet
 
     def test_submit_and_poll_to_completion(self):
+        task = self._authorized_task()
         result = self.state.submit(
             "hermes",
-            [str(self.fake_hermes), "chat", "-q", "hello"],
+            [str(self.fake_hermes), "chat", "-q", "--max-turns", "90", "hello"],
             str(self.root),
-            task=self._authorized_task(),
+            task=task,
         )
         terminal = self._wait_terminal(result["run_id"])
         self.assertEqual(terminal["status"], "completed")
@@ -95,6 +99,8 @@ class RunnerStateTests(unittest.TestCase):
     def test_claude_command_requires_safe_print_mode(self):
         from agent_bridge_connect.runner import RunnerError
 
+        task = self._authorized_task("claude")
+        session_id = task["extensions"]["agentbc.session"]["session_id"]
         result = self.state.submit(
             "claude",
             [
@@ -105,10 +111,14 @@ class RunnerStateTests(unittest.TestCase):
                 "acceptEdits",
                 "--output-format",
                 "text",
+                "--max-budget-usd",
+                "10.0",
+                "--session-id",
+                session_id,
                 "hello",
             ],
             str(self.root),
-            task=self._authorized_task("claude"),
+            task=task,
         )
         terminal = self._wait_terminal(result["run_id"])
         self.assertEqual(terminal["stdout"], "CLAUDE_OK")
@@ -164,7 +174,15 @@ class RunnerStateTests(unittest.TestCase):
             )
 
     def test_cancel_terminates_process_group(self):
-        command = [str(self.fake_hermes), "sleep", "chat", "-q", "hello"]
+        command = [
+            str(self.fake_hermes),
+            "sleep",
+            "chat",
+            "-q",
+            "--max-turns",
+            "90",
+            "hello",
+        ]
         result = self.state.submit(
             "hermes", command, str(self.root), task=self._authorized_task()
         )
@@ -297,7 +315,14 @@ class RunnerStateTests(unittest.TestCase):
                 customer_dir=True,
                 customer_path=workspace,
             )
-            command = [str(self.fake_hermes), "chat", "-q", "hello"]
+            command = [
+                str(self.fake_hermes),
+                "chat",
+                "-q",
+                "--max-turns",
+                "90",
+                "hello",
+            ]
             with self.assertRaisesRegex(RunnerError, "missing persisted"):
                 self.state.submit("hermes", command, str(workspace))
 
@@ -787,7 +812,14 @@ class RunnerStateTests(unittest.TestCase):
             self.assertEqual(health["path_policy"]["agent_input"], "customer_path")
             submitted = client.submit(
                 "hermes",
-                [str(self.fake_hermes), "chat", "-q", "hello"],
+                [
+                    str(self.fake_hermes),
+                    "chat",
+                    "-q",
+                    "--max-turns",
+                    "90",
+                    "hello",
+                ],
                 self.root,
                 task=self._authorized_task(),
             )

@@ -275,12 +275,12 @@ class SetupResourceTests(unittest.TestCase):
             )
         resolve.assert_not_called()
 
-    def test_hermes_config_only_key_is_accepted_but_not_injected_yet(self) -> None:
+    def test_hermes_max_turns_is_injected_into_runtime_executor(self) -> None:
         executor = get_executor(
             "hermes",
             {"type": "hermes", "command": "/usr/bin/false", "max_turns": 60},
         )
-        self.assertFalse(hasattr(executor, "max_turns"))
+        self.assertEqual(executor.max_turns, 60)
 
     def test_noninteractive_setup_writes_missing_defaults(self) -> None:
         with mock.patch(

@@ -135,6 +135,7 @@ class Phase2RunnerPolicyTests(unittest.TestCase):
             session = build_session_snapshot(
                 "claude",
                 retain=False,
+                session_id=str(uuid.uuid4()),
                 session_state="pending",
                 project_path=str(executor_project_root),
             )
@@ -417,8 +418,20 @@ class Phase2RunnerPolicyTests(unittest.TestCase):
         task_id = self._create_task("claude")
         self._make_native(task_id, "claude")
         packet = self._packet(task_id)
-        command = self._claude_command("--max-budget-usd", "10", "--session-id", "abc", "--resume", "abc")
-        result = self._authorize("claude", command, packet)
+        session_id = packet["extensions"][SESSION_EXTENSION_KEY]["session_id"]
+        Path(packet["extensions"][SESSION_EXTENSION_KEY]["project_path"]).mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+        command = self._claude_command(
+            "--max-budget-usd", "10.0", "--session-id", session_id
+        )
+        result = self.state.authorize_command(
+            "claude",
+            command,
+            packet["extensions"][SESSION_EXTENSION_KEY]["project_path"],
+            packet,
+        )
         self.assertTrue(result["authorized"])
 
         hermes_id = self._create_task("hermes")
@@ -426,21 +439,24 @@ class Phase2RunnerPolicyTests(unittest.TestCase):
         result = self._authorize("hermes", self._hermes_command("--max-turns", "90"), self._packet(hermes_id))
         self.assertTrue(result["authorized"])
 
-    def test_authorize_does_not_validate_or_inject_resource_flags(self) -> None:
+    def test_authorize_requires_frozen_resource_flags_without_injecting_them(self) -> None:
         task_id = self._create_task("hermes")
         self._make_native(task_id, "hermes")
         packet = self._packet(task_id)
-        result = self._authorize("hermes", self._hermes_command(), packet)
-        self.assertTrue(result["authorized"])
-        # Phase 2 never injects executor resource flags into the command.
+        with self.assertRaisesRegex(RunnerError, "runner_resource_argument_mismatch"):
+            self._authorize("hermes", self._hermes_command(), packet)
         result = self._authorize("hermes", self._hermes_command("--max-turns", "90"), packet)
         self.assertTrue(result["authorized"])
-        self.assertEqual(self._policy_audits(task_id), [])
+        self.assertEqual(self._policy_audits(task_id)[0]["reason"], "runner_resource_argument_mismatch")
 
     def test_authorize_backfilled_legacy_packet_passes(self) -> None:
         task_id = self._create_task("hermes")
         self._dispatch(task_id, "hermes")
-        result = self._authorize("hermes", self._hermes_command(), self._packet(task_id))
+        result = self._authorize(
+            "hermes",
+            self._hermes_command("--max-turns", "90"),
+            self._packet(task_id),
+        )
         self.assertTrue(result["authorized"])
 
     def test_authorize_missing_packet_snapshot_fails_closed(self) -> None:

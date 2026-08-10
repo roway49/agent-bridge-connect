@@ -33,6 +33,7 @@ from .base import CLIExecutorBase
 from ..path_provider import find_binary
 
 SAFETY_TIMEOUT_S = 24 * 60 * 60
+SESSION_EXTENSION_KEY = "agentbc.session"
 
 
 class CodexExecutor(CLIExecutorBase):
@@ -127,15 +128,16 @@ class CodexExecutor(CLIExecutorBase):
             assert_executor_permission_supported(
                 "codex", permission["effective_mode"], self.agent_bin
             )
+            resumed, _ = _codex_resume_context(task_packet)
+            command, prompt_input = self._build_command(
+                task_packet,
+                prompt,
+                root,
+                permission,
+            )
         except ABCError as exc:
             self._close_run_lease(run_id)
             return StartResult(ok=False, run_id="", message=str(exc))
-        command, prompt_input = self._build_command(
-            task_packet,
-            prompt,
-            root,
-            permission,
-        )
 
         try:
             if task_packet.get("runner_authorization_required") is True:
@@ -154,21 +156,25 @@ class CodexExecutor(CLIExecutorBase):
             events = _parse_jsonl(exc.stdout or "")
             self._store_metadata(run_id, root, events, returncode=None)
             self._mark_run_stale(run_id)
+            timeout_result: dict[str, Any] = {
+                "events": events,
+                "reason": f"codex safety runtime exceeded after {self.timeout_s}s",
+                "timeout_is_failure": False,
+                "failure": {
+                    "kind": "executor_timeout",
+                    "layer": "executor",
+                    "message": f"codex safety runtime exceeded after {self.timeout_s}s",
+                    "retryable": True,
+                },
+                "extensions": self.get_extensions(),
+            }
+            execution_session = _execution_session_receipt(events, resumed=resumed)
+            if execution_session is not None:
+                timeout_result["execution_session"] = execution_session
             self._runs[run_id] = PollResult(
                 status="needs_recovery",
                 progress={"events_seen": len(events)},
-                result={
-                    "events": events,
-                    "reason": f"codex safety runtime exceeded after {self.timeout_s}s",
-                    "timeout_is_failure": False,
-                    "failure": {
-                        "kind": "executor_timeout",
-                        "layer": "executor",
-                        "message": f"codex safety runtime exceeded after {self.timeout_s}s",
-                        "retryable": True,
-                    },
-                    "extensions": self.get_extensions(),
-                },
+                result=timeout_result,
             )
             return StartResult(ok=True, run_id=run_id, message="codex execution needs recovery")
         except (OSError, RunnerError) as exc:
@@ -201,6 +207,9 @@ class CodexExecutor(CLIExecutorBase):
             "marker_seen": validation.marker_seen,
             "failure": terminal.failure,
         }
+        execution_session = _execution_session_receipt(events, resumed=resumed)
+        if execution_session is not None:
+            result["execution_session"] = execution_session
         self._store_metadata(run_id, root, events, returncode=completed.returncode)
         result["extensions"] = self.get_extensions()
         self._runs[run_id] = PollResult(
@@ -221,18 +230,21 @@ class CodexExecutor(CLIExecutorBase):
         if self.agent_bin is None:
             raise RuntimeError("codex unavailable")
         selected = permission or permission_record_from_extensions(task_packet.get("extensions"))
+        resumed, session_id = _codex_resume_context(task_packet)
         command = [str(self.agent_bin), "exec", "--json"]
         command.extend(permission_flags("codex", selected["effective_mode"]))
         command.append("--skip-git-repo-check")
         if selected["effective_mode"] == "safe":
             for writable_root in _codex_writable_roots(task_packet, root):
                 command.extend(["--add-dir", str(writable_root)])
+        if resumed:
+            command.extend(["resume", session_id])
         images = task_image_paths(task_packet)
         prompt_input: str | None = None
         if images:
-            command.append("-")
             command.append("--image")
             command.extend(str(image) for image in images)
+            command.append("-")
             prompt_input = prompt
         else:
             command.append(prompt)
@@ -344,6 +356,78 @@ def _parse_jsonl(output: str | bytes) -> list[dict[str, Any]]:
             }
         )
     return events
+
+
+def _codex_resume_context(task_packet: dict[str, Any]) -> tuple[bool, str]:
+    """Return the explicit resume decision frozen into the task session snapshot."""
+    extensions = task_packet.get("extensions")
+    if not isinstance(extensions, dict) or SESSION_EXTENSION_KEY not in extensions:
+        return False, ""
+    session = extensions.get(SESSION_EXTENSION_KEY)
+    if not isinstance(session, dict):
+        raise ABCError("invalid_executor_session", "agentbc.session must be an object")
+    if str(session.get("executor") or "").strip().lower() != "codex":
+        raise ABCError(
+            "invalid_executor_session",
+            "agentbc.session.executor must be codex",
+        )
+    run_ids = session.get("run_ids")
+    if (
+        not isinstance(run_ids, list)
+        or any(not isinstance(item, str) or not item.strip() for item in run_ids)
+        or len(run_ids) != len(set(run_ids))
+    ):
+        raise ABCError(
+            "invalid_executor_session",
+            "agentbc.session.run_ids must contain unique non-empty strings",
+        )
+    if not run_ids:
+        return False, ""
+    session_id = session.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise ABCError(
+            "missing_executor_session_id",
+            "Codex resume requires an explicit task session ID",
+        )
+    return True, session_id.strip()
+
+
+def _extract_codex_session_id(events: list[dict[str, Any]]) -> str:
+    """Extract a session ID only from one well-formed ``thread.started`` event."""
+    receipts: list[str] = []
+    for event in events:
+        payload = event.get("payload")
+        if not isinstance(payload, dict) or payload.get("type") != "thread.started":
+            continue
+        thread_id = payload.get("thread_id")
+        if (
+            isinstance(thread_id, str)
+            and thread_id
+            and thread_id == thread_id.strip()
+            and not any(character.isspace() for character in thread_id)
+        ):
+            receipts.append(thread_id)
+        else:
+            return ""
+    return receipts[0] if len(receipts) == 1 else ""
+
+
+def _execution_session_receipt(
+    events: list[dict[str, Any]],
+    *,
+    resumed: bool,
+) -> dict[str, Any] | None:
+    session_id = _extract_codex_session_id(events)
+    if not session_id:
+        return None
+    return {
+        "version": 1,
+        "executor": "codex",
+        "session_id": session_id,
+        "resumed": resumed,
+        "persistence": "persistent",
+        "source": "jsonl_thread_started",
+    }
 
 
 def _extract_summary(events: list[dict[str, Any]]) -> str:

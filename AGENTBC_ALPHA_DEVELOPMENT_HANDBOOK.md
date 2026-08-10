@@ -2140,11 +2140,26 @@ session snapshot，不进入目录名。原生任务缺失/损坏必要快照以
 缺失、修改、注入、过期都会 fail closed 并写入不含路径和凭据的审计事件。Codex 只要求
 session snapshot，不要求不存在的资源快照。
 
-以上只完成 task-contract/path-plan/Runner snapshot/public-view 子项。Executor CLI 参数、
-Runner argument/snapshot 核对、同会话 resume、purge/cleanup 与资源耗尽处理仍保持打开，
-因此不得关闭完整 `SESSION-001/CFG-001/CFG-002`。Phase 2 最终验证为专属回归 `55` 项、
-全量 discovery `700` 项通过并保留 `3` 个后续阶段预期失败；Ruff、compileall 与
-`git diff --check` 通过。
+Phase 2 只完成 task-contract/path-plan/Runner snapshot/public-view 子项。其最终验证为
+专属回归 `55` 项、全量 discovery `700` 项通过并保留 `3` 个后续阶段预期失败。
+
+**2026-08-10 Phase 3 runtime 状态**：Claude 每次 run 从任务快照注入唯一
+`--max-budget-usd`，首次使用预分配 `--session-id`，后续使用同一 UUID 的 `--resume`；
+Hermes 每次 run 注入唯一 `--max-turns`，从官方 stderr receipt 记录 session ID，后续只允许
+明确 `--resume <id>`；Codex 从唯一 `thread.started.thread_id` 记录 ID，并通过
+`codex exec ... resume <id>` 恢复。禁止 Claude `--no-session-persistence`、Hermes
+`--continue` 与 Codex `--last`/`--ephemeral`。
+
+Worker/Service 持久化每次 executor run、session state 与 `resume_count`；`input_required`
+期间无条件保留 session。同一 Task 的恢复继续使用冻结资源与 session 快照，不读取当前全局
+配置。Runner 在 authorize 和 submit 两条路径校验资源参数、fresh/resume 参数、明确 session
+ID 与 Claude cwd，缺失、重复、篡改、非规范形式和 packet/disk 漂移全部 fail closed，审计
+不记录 prompt、完整 command、内部路径或凭据。
+
+Phase 3 完成后 `CFG-001` 端到端关闭；`SESSION-001` 已完成 receipt/resume，但终态
+purge/cleanup 与 cleanup capability/receipt 仍保持打开；`CFG-002` 的资源耗尽弹窗、翻倍继续
+和用户终止仍未实现。全量 discovery `726` 项通过，只保留 `1` 个 Phase 4
+`expectedFailure`；Ruff、compileall 与 `git diff --check` 通过。
 
 **Claude Project 分流**：设置只对后续新 run 生效，每个 run 创建时必须固化
 project mode/path/session ID，不得在 resume 时因全局设置变更而切换。保留模式

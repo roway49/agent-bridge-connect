@@ -1398,6 +1398,9 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 _request_task_list_refresh(service.board_root)
                 print(f"worker_error: executor start failed for {task.id}: {start.message}")
                 return 1
+            manages_executor_session = args.executor in {"claude", "hermes", "codex"}
+            if manages_executor_session:
+                service.record_executor_run_started(task.id, start.run_id)
             executor_started = True
             service.update_execution_metadata(task.id, {"executor_run_id": start.run_id})
 
@@ -1406,6 +1409,36 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 if poll.status in ("completed", "cancelled", "input_required", "needs_recovery", "failed", "needs_review"):
                     break
                 time.sleep(max(args.interval, 0.1))
+
+            execution_session = poll.result.get("execution_session")
+            if manages_executor_session:
+                try:
+                    execution_session = service.validate_executor_session_result(
+                        task.id,
+                        start.run_id,
+                        execution_session,
+                    )
+                except ABCError as exc:
+                    recovery_marked = service.mark_task_needs_recovery(
+                        task.id,
+                        exc.code,
+                        str(exc),
+                        {"executor": args.executor, "phase": "session_receipt"},
+                    )
+                    if recovery_marked:
+                        _write_terminal_report(task.id, service.board_root)
+                        _notify_terminal(
+                            service,
+                            task.id,
+                            "task.recovery_required",
+                            "warning",
+                            str(exc),
+                        )
+                    _request_task_list_refresh(service.board_root)
+                    print(f"worker_error: executor session receipt failed for {task.id}: {exc}")
+                    return 1
+            else:
+                execution_session = None
 
             if poll.status not in {"completed", "input_required", "cancelled"}:
                 failure = poll.result.get("failure")
@@ -1422,12 +1455,22 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 details = {"executor": args.executor, "result": poll.result, "progress": poll.progress}
                 if _is_explicit_retryable_failure(failure):
                     terminal_marked = service.mark_task_needs_recovery(
-                        task.id, failure_code, failure_message, details
+                        task.id,
+                        failure_code,
+                        failure_message,
+                        details,
+                        executor_run_id=start.run_id,
+                        execution_session=execution_session,
                     )
                     event_type, level = "task.recovery_required", "warning"
                 else:
                     terminal_marked = service.mark_task_failed(
-                        task.id, failure_code, failure_message, details
+                        task.id,
+                        failure_code,
+                        failure_message,
+                        details,
+                        executor_run_id=start.run_id,
+                        execution_session=execution_session,
                     )
                     event_type, level = "task.failed", "error"
                 if terminal_marked:
@@ -1448,6 +1491,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 summary=summary,
                 exit_code=exit_code,
                 callback=callback if isinstance(callback, dict) else None,
+                execution_session=execution_session,
             )
             finalized = service.get_task(task.id)
             final_status = finalized.status

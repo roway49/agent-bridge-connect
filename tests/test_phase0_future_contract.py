@@ -32,10 +32,17 @@ class Phase0ExpectedGapTests(unittest.TestCase):
             "extensions": {},
         }
 
-    @unittest.expectedFailure
     def test_claude_command_persists_a_preassigned_session(self) -> None:
         executor = ClaudeExecutor(command=sys.executable, transport="direct")
-        command = executor._build_command("prompt", self.root, self.packet)
+        packet = dict(self.packet)
+        packet["extensions"] = {
+            "agentbc.session": {
+                "executor": "claude",
+                "session_id": "123e4567-e89b-12d3-a456-426614174000",
+                "run_ids": [],
+            }
+        }
+        command = executor._build_command("prompt", self.root, packet)
         self.assertNotIn("--no-session-persistence", command)
         self.assertIn("--session-id", command)
 
@@ -52,7 +59,6 @@ class Phase0ExpectedGapTests(unittest.TestCase):
         )
         self.assertEqual(config["max_budget_usd"], 10.0)
 
-    @unittest.expectedFailure
     def test_hermes_constructor_and_command_accept_max_turns(self) -> None:
         executor = HermesExecutor(
             command=sys.executable,

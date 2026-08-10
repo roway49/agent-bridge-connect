@@ -1,7 +1,7 @@
 # AgentBC 1.0.2A 需求开发清单
 
 > 制定日期：2026-08-08  
-> 状态：开发进行中（Phase 0、Phase 1 已完成）
+> 状态：开发进行中（Phase 0～Phase 3 已完成）
 > 当前开发分支：`private/integration`  
 > 固定 Agent 分支：`agent/codex`、`agent/claude`、`agent/hermes`  
 > 开发基线：`private/integration@cfddccba246e6d057172f6716ab4318ade9a40ad`  
@@ -57,11 +57,12 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
   `<TASK-ID>/claude` PathPlan、legacy 固定默认补齐、Runner packet 与磁盘快照一致性校验、
   统一公开视图及终态 compaction 保留。内部路径不进入公共
   workspace/session/artifact，Codex 只要求 session 快照而不虚构资源上限。
-- Phase 2 只关闭 task-contract/path-plan/Runner snapshot/public-view 子项。Executor CLI
-  参数注入及参数与快照核对、同会话 resume、终态 cleanup/purge 与预算耗尽决策仍未完成，
-  不得将 `CFG-001/SESSION-001/CFG-002` 整项关闭。
-- Phase 2 最终证据：专属回归 `55` 项通过；全量 discovery `700` 项通过，保留 `3` 个
-  面向 Phase 3/4 的预期失败。Ruff、compileall 与 `git diff --check` 通过。
+- `2026-08-10 / Phase 3`：已完成 Claude `--max-budget-usd`、Hermes `--max-turns` 的
+  任务快照注入，Claude/Hermes/Codex 官方 session receipt、同 Task 显式 ID resume，及
+  Runner command/snapshot/cwd fail-closed 校验。`CFG-001` 端到端完成；`SESSION-001`
+  只剩终态 cleanup/purge 与能力回执，`CFG-002` 仍保持打开。
+- Phase 3 最终证据：全量 discovery `726` 项通过，只保留 `1` 个 Phase 4 资源耗尽
+  `expectedFailure`；Ruff、compileall 与 `git diff --check` 通过。
 
 ## 3. 需求总表
 
@@ -126,7 +127,7 @@ Phase 1 已实现上述配置键和三命令的原子、幂等持久化，并明
 Executor run、永不删除 dispatcher conversation。终态清理、`input_required` 强制保留、
 session ID receipt 和同会话 resume 仍属于后续阶段。
 
-Phase 2 子项状态（不代表 `SESSION-001` 整项完成）：
+Phase 2～3 子项状态（不代表 `SESSION-001` 整项完成）：
 
 - [x] 新 Claude/Hermes/Codex 任务冻结 `agentbc.session`；Claude 预分配 UUID，
   Hermes/Codex pending receipt 为空；
@@ -135,7 +136,11 @@ Phase 2 子项状态（不代表 `SESSION-001` 整项完成）：
   Project 不计入 artifact；终态 compaction 完整保留 session receipt；
 - [x] PathPlan 原生 `executor_project_root`、canonical containment 与已有父级 symlink
   escape 校验完成；legacy Claude 使用相同 `<TASK-ID>/claude` 路径且 UUID 单独保存；
-- [ ] Executor resume、终态 cleanup/purge 和 cleanup capability/receipt 尚未接线。
+- [x] Claude/Hermes/Codex 记录官方 session receipt；同 Task 后续 run 使用明确 ID
+  恢复同一会话，`input_required` 状态保存 ID/run history/resume count；
+- [x] Runner 拒绝缺失、重复、篡改或模糊 session 参数，禁止 Claude 不持久化、Hermes
+  `--continue` 和 Codex `--last`；
+- [ ] 终态 cleanup/purge 和 cleanup capability/receipt 尚未接线。
 
 要求：
 
@@ -233,13 +238,14 @@ agentbc hermes max-turns <turns>
 - setup 的 executor refresh 不得覆盖用户已配置值（修复当前 Claude budget
   被重置为 1.0 的缺陷）。
 
-Phase 2 子项状态（不代表 `CFG-001` 整项完成）：
+Phase 2～3 子项状态：
 
 - [x] create/handoff/reassign 持久化任务级 `agentbc.resources`，默认/自定义/非法配置、
   冻结与公共 effective/source/frozen 视图已覆盖；
 - [x] 同 Task ID resume/retry/recover/re-dispatch 保持原资源快照；
 - [x] Runner 在派发和授权时校验原生/legacy 快照结构及 Worker packet 与磁盘权威记录一致；
-- [ ] Claude/Hermes Adapter 参数注入与 Runner argument/snapshot 核对仍待 Phase 3。
+- [x] Phase 3 已完成 Claude/Hermes Adapter 参数注入与 Runner argument/snapshot 核对；
+  `CFG-001` 端到端完成，后续资源翻倍只属于 `CFG-002`。
 
 验收：首次 setup、升级 setup、自定义/默认两分支、空值、非法数、NaN/Inf、
 两命令幂等、配置保真、setup 后用户值保留和真实任务预算/迭代可见性通过。

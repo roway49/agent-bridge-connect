@@ -17,7 +17,9 @@ from .execution_policy import (
     build_task_execution_policy,
     execution_policy_view,
     public_task_view,
+    validate_execution_session_receipt,
     validate_execution_policy_extensions,
+    validate_session_snapshot,
 )
 from .executor_registry import get_executor
 from .media import media_extension, normalize_image_inputs, task_image_paths
@@ -500,6 +502,71 @@ class TaskService:
         self._refresh_task_index()
         return lease
 
+    def record_executor_run_started(self, task_id: str, run_id: str) -> dict[str, Any]:
+        """Append one executor run and freeze whether it is a session resume."""
+        task = self.get_task(task_id)
+        extensions = dict(task.extensions or {})
+        session = extensions.get(SESSION_EXTENSION_KEY)
+        errors = validate_session_snapshot(session, executor=task.assignee)
+        if errors:
+            raise ABCError("executor_session_invalid", "; ".join(errors), {"errors": errors})
+        session = dict(session)
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            raise ABCError("executor_run_id_invalid", "Executor run ID is required")
+        run_ids = list(session.get("run_ids") or [])
+        if normalized_run_id in run_ids:
+            return {
+                "run_id": normalized_run_id,
+                "resumed": len(run_ids) > 1,
+                "session_state": session.get("session_state"),
+            }
+        resumed = bool(run_ids)
+        if resumed and not str(session.get("session_id") or "").strip():
+            raise ABCError(
+                "executor_session_resume_unavailable",
+                "A prior executor run exists but no authoritative session ID is available",
+            )
+        run_ids.append(normalized_run_id)
+        session["run_ids"] = run_ids
+        if resumed:
+            session["resume_count"] = int(session.get("resume_count") or 0) + 1
+        if str(session.get("session_id") or "").strip():
+            session["session_state"] = "active"
+        errors = validate_session_snapshot(session, executor=task.assignee)
+        if errors:
+            raise ABCError("executor_session_invalid", "; ".join(errors), {"errors": errors})
+        extensions[SESSION_EXTENSION_KEY] = session
+        task.extensions = extensions
+        task.updated_at = _utc_now()
+        self.store.write_task(task.id, _without_none(task.to_dict()))
+        self.store.append_event(
+            task.id,
+            {
+                "event_type": "executor.session_run_started",
+                "task_id": task.id,
+                "executor": task.assignee,
+                "run_id": normalized_run_id,
+                "resumed": resumed,
+                "created_at": task.updated_at,
+            },
+        )
+        return {
+            "run_id": normalized_run_id,
+            "resumed": resumed,
+            "session_state": session.get("session_state"),
+        }
+
+    def validate_executor_session_result(
+        self,
+        task_id: str,
+        run_id: str,
+        receipt: Any,
+    ) -> dict[str, Any]:
+        """Validate an adapter receipt against the durable task session without writing."""
+        task = self.get_task(task_id)
+        return self._validated_executor_session(task, run_id, receipt)
+
     def execute_step(self, task_id: str, step_id: int, result: dict[str, Any]) -> None:
         task = self.get_task(task_id)
         public_status = _normalize_status(task.status)
@@ -584,6 +651,7 @@ class TaskService:
         summary: str = "",
         exit_code: int = 0,
         callback: dict[str, Any] | None = None,
+        execution_session: dict[str, Any] | None = None,
     ) -> bool:
         """Finalize an executor only from its valid structured flow declaration."""
         task = self.get_task(task_id)
@@ -604,9 +672,19 @@ class TaskService:
             declared["report_file"] = str(workspace["report_file"])
         if workspace.get("artifacts_dir"):
             declared["artifacts_dir"] = str(workspace["artifacts_dir"])
-        return self.finalize_task_from_agent(task.id, declared)
+        return self.finalize_task_from_agent(
+            task.id,
+            declared,
+            execution_session=execution_session,
+        )
 
-    def finalize_task_from_agent(self, task_id: str, callback: dict[str, Any]) -> bool:
+    def finalize_task_from_agent(
+        self,
+        task_id: str,
+        callback: dict[str, Any],
+        *,
+        execution_session: dict[str, Any] | None = None,
+    ) -> bool:
         from .reports import write_report_files
         from .task_health import clear_task_progress
 
@@ -631,6 +709,13 @@ class TaskService:
         if not summary:
             raise ABCError("invalid_agent_callback", "Agent callback summary is required")
         if final_state == "input_required":
+            if execution_session is not None:
+                self._apply_executor_session_result(
+                    task,
+                    str(callback.get("executor_run_id") or ""),
+                    execution_session,
+                    "input_required",
+                )
             return self._suspend_task_for_input(task, callback, summary)
         if not report_file:
             raise ABCError("invalid_agent_callback", "Agent callback report_file is required")
@@ -697,6 +782,15 @@ class TaskService:
         task.workspace.setdefault("report_file", report_file)
         if artifacts_dir:
             task.workspace.setdefault("artifacts_dir", artifacts_dir)
+
+        if execution_session is not None:
+            session_state = "needs_recovery" if final_state == "needs_recovery" else "terminal"
+            self._apply_executor_session_result(
+                task,
+                str(callback.get("executor_run_id") or ""),
+                execution_session,
+                session_state,
+            )
 
         task.status = final_state
         task.updated_at = str(callback.get("finished_at") or _utc_now())
@@ -1012,6 +1106,9 @@ class TaskService:
         code: str,
         message: str,
         details: dict[str, Any] | None = None,
+        *,
+        executor_run_id: str = "",
+        execution_session: dict[str, Any] | None = None,
     ) -> bool:
         """Mark a started task whose executor termination could not be confirmed."""
         from .task_health import clear_task_progress
@@ -1038,6 +1135,15 @@ class TaskService:
                 "created_at": now,
             }
         )
+        if execution_session is not None:
+            self._apply_executor_session_result(
+                task,
+                executor_run_id,
+                execution_session,
+                "terminal",
+            )
+        else:
+            self._set_known_executor_session_state(task, "terminal")
         _supersede_final_callback(task, "failed", compact_message)
         task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
         task.extensions = _merge_execution(task.extensions, {"internal_status": "failed"})
@@ -1063,6 +1169,9 @@ class TaskService:
         code: str,
         message: str,
         details: dict[str, Any] | None = None,
+        *,
+        executor_run_id: str = "",
+        execution_session: dict[str, Any] | None = None,
     ) -> bool:
         from .task_health import clear_task_progress
 
@@ -1099,6 +1208,15 @@ class TaskService:
                 "created_at": now,
             }
         )
+        if execution_session is not None:
+            self._apply_executor_session_result(
+                task,
+                executor_run_id,
+                execution_session,
+                "needs_recovery",
+            )
+        else:
+            self._set_known_executor_session_state(task, "needs_recovery")
         _supersede_final_callback(task, "needs_recovery", compact_message)
         execution_updates = {"internal_status": "needs_recovery"}
         from .run_lease import RunLeaseState, close_lease, load_lease
@@ -1743,6 +1861,86 @@ class TaskService:
                     pass
             refreshed.append(task)
         return refreshed
+
+    def _validated_executor_session(
+        self,
+        task: TaskModel,
+        run_id: str,
+        receipt: Any,
+    ) -> dict[str, Any]:
+        errors = validate_execution_session_receipt(receipt, executor=task.assignee)
+        if errors:
+            raise ABCError(
+                "executor_session_receipt_invalid",
+                "; ".join(errors),
+                {"errors": errors},
+            )
+        session = (task.extensions or {}).get(SESSION_EXTENSION_KEY)
+        snapshot_errors = validate_session_snapshot(session, executor=task.assignee)
+        if snapshot_errors:
+            raise ABCError(
+                "executor_session_invalid",
+                "; ".join(snapshot_errors),
+                {"errors": snapshot_errors},
+            )
+        normalized_run_id = str(run_id or "").strip()
+        run_ids = list(session.get("run_ids") or [])
+        if not normalized_run_id or normalized_run_id not in run_ids:
+            raise ABCError(
+                "executor_session_run_mismatch",
+                "Executor session receipt does not belong to the recorded run",
+            )
+        expected_resumed = run_ids.index(normalized_run_id) > 0
+        if receipt.get("resumed") is not expected_resumed:
+            raise ABCError(
+                "executor_session_resume_mismatch",
+                "Executor session receipt resume mode does not match task history",
+            )
+        existing_id = str(session.get("session_id") or "").strip()
+        received_id = str(receipt.get("session_id") or "").strip()
+        if existing_id and received_id != existing_id:
+            raise ABCError(
+                "executor_session_id_mismatch",
+                "Executor session receipt does not match the authoritative task session",
+            )
+        return dict(receipt)
+
+    def _apply_executor_session_result(
+        self,
+        task: TaskModel,
+        run_id: str,
+        receipt: Any,
+        session_state: str,
+    ) -> None:
+        validated = self._validated_executor_session(task, run_id, receipt)
+        extensions = dict(task.extensions or {})
+        session = dict(extensions[SESSION_EXTENSION_KEY])
+        if not str(session.get("session_id") or "").strip():
+            session["session_id"] = validated["session_id"]
+        session["session_state"] = session_state
+        errors = validate_session_snapshot(session, executor=task.assignee)
+        if errors:
+            raise ABCError("executor_session_invalid", "; ".join(errors), {"errors": errors})
+        extensions[SESSION_EXTENSION_KEY] = session
+        task.extensions = extensions
+
+    def _set_known_executor_session_state(
+        self,
+        task: TaskModel,
+        session_state: str,
+    ) -> None:
+        """Advance a known session after a non-receipt failure without inventing an ID."""
+        extensions = dict(task.extensions or {})
+        session = extensions.get(SESSION_EXTENSION_KEY)
+        if not isinstance(session, dict) or not str(session.get("session_id") or "").strip():
+            return
+        updated = dict(session)
+        updated["session_state"] = session_state
+        errors = validate_session_snapshot(updated, executor=task.assignee)
+        if errors:
+            raise ABCError("executor_session_invalid", "; ".join(errors), {"errors": errors})
+        extensions[SESSION_EXTENSION_KEY] = updated
+        task.extensions = extensions
 
     def _release_lease(self, task_id: str) -> None:
         lease_path = self.store._task_dir(task_id) / "lease.json"

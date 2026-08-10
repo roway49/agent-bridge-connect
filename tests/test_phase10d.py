@@ -3143,7 +3143,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(command[:2], [sys.executable, "-p"])
         self.assertIn("--safe-mode", command)
-        self.assertIn("--no-session-persistence", command)
+        self.assertNotIn("--no-session-persistence", command)
         self.assertEqual(command[command.index("--permission-mode") + 1], "acceptEdits")
         self.assertEqual(command[command.index("--output-format") + 1], "text")
         self.assertIn("--add-dir", command)
@@ -3415,7 +3415,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
                 "Session: isolated_test\n"
                 f"AGENTBC_FINAL_CALLBACK: {json.dumps(completed_callback(task, summary='layered contract complete'), separators=(',', ':'))}\n"
             ),
-            stderr="",
+            stderr="session_id: 20260810_010203_phase3\n",
         )
         executor = HermesExecutor(command=sys.executable, transport="direct")
         executor._version = "Hermes test"

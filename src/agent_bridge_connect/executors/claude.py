@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import uuid
 from pathlib import Path
@@ -24,6 +25,7 @@ from agent_bridge_connect.permission_modes import (
     permission_flags,
     permission_record_from_extensions,
 )
+from agent_bridge_connect.path_model import validate_path_plan_workspace
 from agent_bridge_connect.protocol import ABCError
 from agent_bridge_connect.prompt_contract import PromptPlatformExtras, build_prompt_contract
 from agent_bridge_connect.runner import RunnerClient, RunnerError
@@ -52,7 +54,7 @@ class ClaudeExecutor(CLIExecutorBase):
         permission_mode: str = "acceptEdits",
         safe_mode: bool = True,
         output_format: str = "text",
-        max_budget_usd: float | None = 1.0,
+        max_budget_usd: float | None = 10.0,
         allowed_tools: list[str] | tuple[str, ...] | str | None = None,
         command: str | None = None,
         transport: str = "runner",
@@ -143,7 +145,7 @@ class ClaudeExecutor(CLIExecutorBase):
         return ExecutorCapabilities(
             structured_output=True,
             streaming_events=self.output_format == "stream-json",
-            resume=False,
+            resume=True,
             cancel=False,
             input_required=False,
             model_selection=True,
@@ -162,6 +164,11 @@ class ClaudeExecutor(CLIExecutorBase):
         root = _workspace_root(task_packet)
         if root is None or not root.is_dir():
             return StartResult(ok=False, run_id="", message=f"workspace not found: {root}")
+        try:
+            execution_root = _claude_execution_root(task_packet, root)
+            execution_session = _claude_execution_session(task_packet)
+        except (OSError, ValueError) as exc:
+            return StartResult(ok=False, run_id="", message=f"invalid claude session: {exc}")
 
         run_id = f"claude-{task_packet.get('task_id', 'unknown')}-{uuid.uuid4().hex[:8]}"
         self._task_packets[run_id] = dict(task_packet)
@@ -175,16 +182,22 @@ class ClaudeExecutor(CLIExecutorBase):
         except ABCError as exc:
             self._close_run_lease(run_id)
             return StartResult(ok=False, run_id="", message=str(exc))
-        command = self._build_command(prompt, root, task_packet, permission)
+        try:
+            command = self._build_command(prompt, root, task_packet, permission)
+        except ValueError as exc:
+            self._close_run_lease(run_id)
+            return StartResult(ok=False, run_id="", message=f"invalid claude policy: {exc}")
 
         try:
             if task_packet.get("runner_authorization_required") is True:
-                RunnerClient().authorize_command("claude", command, root, task_packet)
+                RunnerClient().authorize_command(
+                    "claude", command, execution_root, task_packet
+                )
             self._heartbeat_run(run_id)
             completed = subprocess.run(
                 command,
                 input=prompt,
-                cwd=root,
+                cwd=execution_root,
                 text=True,
                 capture_output=True,
                 check=False,
@@ -193,7 +206,7 @@ class ClaudeExecutor(CLIExecutorBase):
         except subprocess.TimeoutExpired as exc:
             stdout = _coerce_output(exc.stdout or "")
             stderr = _coerce_output(exc.stderr or "")
-            self._store_run(run_id, root, None)
+            self._store_run(run_id, execution_root, None)
             self._mark_run_stale(run_id)
             self._runs[run_id] = PollResult(
                 status="needs_recovery",
@@ -210,6 +223,11 @@ class ClaudeExecutor(CLIExecutorBase):
                         "retryable": True,
                     },
                     "extensions": self.get_extensions(),
+                    **(
+                        {"execution_session": execution_session}
+                        if execution_session is not None
+                        else {}
+                    ),
                 },
             )
             return StartResult(ok=True, run_id=run_id, message="claude execution needs recovery")
@@ -235,7 +253,7 @@ class ClaudeExecutor(CLIExecutorBase):
             runtime_failure=detect_retryable_transport_failure(output_text, stderr),
         )
         status = terminal.status
-        self._store_run(run_id, root, completed.returncode)
+        self._store_run(run_id, execution_root, completed.returncode)
         result = {
             "stdout": stdout,
             "stderr": stderr,
@@ -247,6 +265,11 @@ class ClaudeExecutor(CLIExecutorBase):
             "marker_seen": validation.marker_seen,
             "failure": terminal.failure,
             "extensions": self.get_extensions(),
+            **(
+                {"execution_session": execution_session}
+                if execution_session is not None
+                else {}
+            ),
         }
         self._runs[run_id] = PollResult(
             status=status,
@@ -287,7 +310,7 @@ class ClaudeExecutor(CLIExecutorBase):
                 else None
             ),
             "dangerous_permissions_policy": "explicit_persisted_full_task_only",
-            "resume": False,
+            "resume": True,
         }
         if self._last_run_id is not None:
             metadata["last_run"] = self._run_metadata[self._last_run_id]
@@ -305,7 +328,10 @@ class ClaudeExecutor(CLIExecutorBase):
         selected = permission or permission_record_from_extensions(task_packet.get("extensions"))
         command = [str(self.agent_bin), "-p"]
         command.extend(permission_flags("claude", selected["effective_mode"]))
-        command.append("--no-session-persistence")
+        execution_session = _claude_execution_session(task_packet)
+        if execution_session is not None:
+            session_flag = "--resume" if execution_session["resumed"] else "--session-id"
+            command.extend([session_flag, execution_session["session_id"]])
         command.extend(["--output-format", self.output_format])
         if self.output_format == "stream-json":
             command.append("--verbose")
@@ -316,8 +342,9 @@ class ClaudeExecutor(CLIExecutorBase):
             command.extend(["--model", self.model])
         if self.effort:
             command.extend(["--effort", self.effort])
-        if self.max_budget_usd is not None:
-            command.extend(["--max-budget-usd", str(self.max_budget_usd)])
+        max_budget_usd = _claude_max_budget_usd(task_packet, self.max_budget_usd)
+        if max_budget_usd is not None:
+            command.extend(["--max-budget-usd", str(max_budget_usd)])
         if self.allowed_tools:
             tools_arg = _claude_tools_argument(self.allowed_tools)
             if tools_arg:
@@ -339,6 +366,124 @@ class ClaudeExecutor(CLIExecutorBase):
             "output_format": self.output_format,
             "transport": self.transport,
         }
+
+
+def _claude_max_budget_usd(
+    task_packet: dict[str, Any],
+    configured_budget: float | None,
+) -> int | float | None:
+    extensions = (
+        task_packet.get("extensions")
+        if isinstance(task_packet.get("extensions"), dict)
+        else {}
+    )
+    if "agentbc.resources" not in extensions:
+        value: Any = configured_budget
+    else:
+        resource = extensions["agentbc.resources"]
+        if not isinstance(resource, dict):
+            raise ValueError("agentbc.resources must be an object")
+        if str(resource.get("executor") or "").strip().lower() != "claude":
+            raise ValueError("agentbc.resources.executor must be claude")
+        if resource.get("resource") != "max_budget_usd":
+            raise ValueError("agentbc.resources.resource must be max_budget_usd")
+        value = resource.get("current_limit")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Claude max budget must be a number")
+    if not math.isfinite(float(value)) or value <= 0:
+        raise ValueError("Claude max budget must be finite and greater than zero")
+    return float(value)
+
+
+def _claude_execution_session(task_packet: dict[str, Any]) -> dict[str, Any] | None:
+    extensions = (
+        task_packet.get("extensions")
+        if isinstance(task_packet.get("extensions"), dict)
+        else {}
+    )
+    if "agentbc.session" not in extensions:
+        return None
+    session = extensions["agentbc.session"]
+    if not isinstance(session, dict):
+        raise ValueError("agentbc.session must be an object")
+    if str(session.get("executor") or "").strip().lower() != "claude":
+        raise ValueError("agentbc.session.executor must be claude")
+    session_id = str(session.get("session_id") or "").strip()
+    try:
+        parsed_session_id = uuid.UUID(session_id)
+    except (AttributeError, ValueError) as exc:
+        raise ValueError("agentbc.session.session_id must be a UUID") from exc
+    if str(parsed_session_id) != session_id.lower():
+        raise ValueError("agentbc.session.session_id must use canonical UUID syntax")
+    run_ids = session.get("run_ids")
+    if (
+        not isinstance(run_ids, list)
+        or any(not isinstance(item, str) or not item.strip() for item in run_ids)
+        or len(run_ids) != len(set(run_ids))
+    ):
+        raise ValueError("agentbc.session.run_ids must contain unique non-empty strings")
+    return {
+        "version": 1,
+        "executor": "claude",
+        "session_id": session_id,
+        "resumed": bool(run_ids),
+        "persistence": "persistent",
+        "source": "preallocated",
+    }
+
+
+def _claude_execution_root(task_packet: dict[str, Any], workspace_root: Path) -> Path:
+    execution_session = _claude_execution_session(task_packet)
+    if execution_session is None:
+        return workspace_root
+    extensions = task_packet["extensions"]
+    session = extensions["agentbc.session"]
+    retain = session.get("retain")
+    if not isinstance(retain, bool):
+        raise ValueError("agentbc.session.retain must be a boolean")
+    project_path = str(session.get("project_path") or "").strip()
+    if not project_path:
+        raise ValueError("agentbc.session.project_path is required for Claude")
+    project_root = Path(project_path).expanduser()
+    if not project_root.is_absolute():
+        raise ValueError("agentbc.session.project_path must be absolute")
+    project_root = project_root.resolve()
+
+    workspace = (
+        task_packet.get("workspace")
+        if isinstance(task_packet.get("workspace"), dict)
+        else {}
+    )
+    if retain:
+        if session.get("project_mode") != "native":
+            raise ValueError("retained Claude sessions must use native project mode")
+        frozen_user_root = Path(
+            str(workspace.get("project_root") or workspace.get("root") or "")
+        ).expanduser()
+        if not frozen_user_root.is_absolute() or project_root != frozen_user_root.resolve():
+            raise ValueError("retained Claude project path does not match the frozen workspace")
+        if not project_root.is_dir():
+            raise ValueError(f"retained Claude project path does not exist: {project_root}")
+        return project_root
+
+    if session.get("project_mode") != "ephemeral":
+        raise ValueError("non-retained Claude sessions must use ephemeral project mode")
+    try:
+        validate_path_plan_workspace(workspace)
+    except ABCError as exc:
+        raise ValueError(f"invalid Claude PathPlan: {exc}") from exc
+    planned_path = str(workspace.get("executor_project_root") or "").strip()
+    if not planned_path:
+        raise ValueError("workspace.executor_project_root is required for ephemeral Claude")
+    planned_root = Path(planned_path).expanduser()
+    if not planned_root.is_absolute() or project_root != planned_root.resolve():
+        raise ValueError("Claude project path does not match workspace.executor_project_root")
+    project_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not project_root.is_dir() or project_root.resolve() != planned_root.resolve():
+        raise ValueError("Claude project path is not a safe directory")
+    return project_root
 
 
 def _build_prompt(task_packet: dict[str, Any]) -> str:
