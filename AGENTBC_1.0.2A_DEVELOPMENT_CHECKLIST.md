@@ -52,18 +52,16 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
 - `2026-08-10 / Phase 1`：已完成配置事务层、setup 保留式合并、Claude `$10`
   新默认、Hermes `agent.max_turns -> legacy max_turns -> 90` 提取，以及
   `claude budget`、`hermes max-turns`、`session retention` 三组配置命令。
-- `2026-08-10 / Phase 2 task-contract`：已完成新任务 `agentbc.resources` / `agentbc.session`
-  快照、handoff/reassign 重建、同 Task ID 冻结、Claude UUID、统一公开视图与终态
-  compaction 保留；Task 1/4 侧兼容 canonical Claude Project 公式及 Task 2 将提供的
-  `workspace.executor_project_root`。内部路径不进入公共 workspace/session/artifact。
-- Phase 2 仅关闭上述 task-contract/public-view 子项；PathPlan 字段生成与校验由独立
-  Task 2/integration 收口。Runner 参数校验、Executor CLI 注入、同会话 resume、终态
-  cleanup/purge 与预算耗尽决策仍未完成，不得将 `CFG-001/SESSION-001/CFG-002` 整项关闭。
-- Phase 2 Task 1/4 当前证据：相关定向回归 `173` 项通过；全量 discovery 运行 `660`
-  项，仅因 integration 拥有的 `test_phase0_future_contract.py` 中 compaction
-  `expectedFailure` 已转 unexpected success 而非绿色（保留 `4` 个真实预期失败）。该文件
-  按任务边界未修改；最终标记由 integration 收口。Ruff、compileall 与
-  `git diff --check` 通过。
+- `2026-08-10 / Phase 2`：已完成新任务 `agentbc.resources` / `agentbc.session` 快照、
+  handoff/reassign 重建、同 Task ID 冻结、Claude UUID、canonical
+  `<TASK-ID>/claude` PathPlan、legacy 固定默认补齐、Runner packet 与磁盘快照一致性校验、
+  统一公开视图及终态 compaction 保留。内部路径不进入公共
+  workspace/session/artifact，Codex 只要求 session 快照而不虚构资源上限。
+- Phase 2 只关闭 task-contract/path-plan/Runner snapshot/public-view 子项。Executor CLI
+  参数注入及参数与快照核对、同会话 resume、终态 cleanup/purge 与预算耗尽决策仍未完成，
+  不得将 `CFG-001/SESSION-001/CFG-002` 整项关闭。
+- Phase 2 最终证据：专属回归 `55` 项通过；全量 discovery `700` 项通过，保留 `3` 个
+  面向 Phase 3/4 的预期失败。Ruff、compileall 与 `git diff --check` 通过。
 
 ## 3. 需求总表
 
@@ -135,7 +133,8 @@ Phase 2 子项状态（不代表 `SESSION-001` 整项完成）：
 - [x] handoff/reassign 新建目标策略，同 Task ID resume/retry/recover/re-dispatch 不漂移；
 - [x] 公共 `execution_policy` 隐藏 `project_path`/`executor_project_root`，临时 Claude
   Project 不计入 artifact；终态 compaction 完整保留 session receipt；
-- [ ] PathPlan 原生字段/containment/symlink 校验由 Phase 2 Task 2 与 integration 收口；
+- [x] PathPlan 原生 `executor_project_root`、canonical containment 与已有父级 symlink
+  escape 校验完成；legacy Claude 使用相同 `<TASK-ID>/claude` 路径且 UUID 单独保存；
 - [ ] Executor resume、终态 cleanup/purge 和 cleanup capability/receipt 尚未接线。
 
 要求：
@@ -239,7 +238,8 @@ Phase 2 子项状态（不代表 `CFG-001` 整项完成）：
 - [x] create/handoff/reassign 持久化任务级 `agentbc.resources`，默认/自定义/非法配置、
   冻结与公共 effective/source/frozen 视图已覆盖；
 - [x] 同 Task ID resume/retry/recover/re-dispatch 保持原资源快照；
-- [ ] Claude/Hermes Adapter 参数注入与 Runner snapshot/argument 校验仍待后续 Task 3/5。
+- [x] Runner 在派发和授权时校验原生/legacy 快照结构及 Worker packet 与磁盘权威记录一致；
+- [ ] Claude/Hermes Adapter 参数注入与 Runner argument/snapshot 核对仍待 Phase 3。
 
 验收：首次 setup、升级 setup、自定义/默认两分支、空值、非法数、NaN/Inf、
 两命令幂等、配置保真、setup 后用户值保留和真实任务预算/迭代可见性通过。

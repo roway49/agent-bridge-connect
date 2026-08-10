@@ -98,7 +98,9 @@ Accepted create/dispatch output, preflight, status, report, and task briefs use
 one path-free `execution_policy` view. It shows the effective limit, source, and
 frozen state (or `null` resources for Codex), plus retention, executor session
 ID/state, and project mode. Executor-only project paths remain inside the task
-packet and are not listed as artifacts. Hermes `--max-turns`, same-session
+packet and are not listed as artifacts. Ephemeral Claude projects use the
+canonical managed path `<TASK-ID>/claude`; Runner validates legacy backfill and
+the worker packet against the durable snapshot. Hermes `--max-turns`, same-session
 resume, terminal cleanup/purge, and resource-exhaustion handling are still
 later runtime work; a frozen policy is not proof that those behaviors ran.
 

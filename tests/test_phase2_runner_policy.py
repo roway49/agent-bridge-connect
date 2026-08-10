@@ -4,6 +4,7 @@ import json
 import stat
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -39,13 +40,19 @@ class Phase2RunnerPolicyTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.fake_hermes = self.root / "hermes"
         self.fake_claude = self.root / "claude"
+        self.fake_codex = self.root / "codex"
         _write_script(self.fake_hermes)
         _write_script(self.fake_claude)
+        _write_script(self.fake_codex)
         self.board = self.root / "board"
         self.state = RunnerState(
             self.root / "state",
             [self.root],
-            {"hermes": self.fake_hermes, "claude": self.fake_claude},
+            {
+                "hermes": self.fake_hermes,
+                "claude": self.fake_claude,
+                "codex": self.fake_codex,
+            },
         )
 
     def tearDown(self) -> None:
@@ -66,6 +73,13 @@ class Phase2RunnerPolicyTests(unittest.TestCase):
             customer_path=self.root,
             permission_mode="safe",
         )
+        # Simulate a pre-Phase-2 task. Integrated TaskService now creates both
+        # the path-plan marker and the policy snapshots for every new task.
+        raw = service.store.read_task(task.id)
+        raw["workspace"].pop(PHASE2_EXECUTOR_PROJECT_ROOT_KEY, None)
+        raw["extensions"].pop(RESOURCE_EXTENSION_KEY, None)
+        raw["extensions"].pop(SESSION_EXTENSION_KEY, None)
+        service.store.write_task(task.id, raw)
         return task.id
 
     def _read_task(self, task_id: str) -> dict:
@@ -83,28 +97,53 @@ class Phase2RunnerPolicyTests(unittest.TestCase):
         task["workspace"] = workspace
         TaskStore(self.board).write_task(task_id, task)
 
-    def _attach_snapshots(self, task_id: str, resources: dict, session: dict) -> None:
+    def _attach_snapshots(
+        self,
+        task_id: str,
+        resources: dict | None,
+        session: dict,
+    ) -> None:
         # Written directly so corrupt snapshots can be injected for fail-closed tests.
         task = self._read_task(task_id)
         extensions = dict(task.get("extensions") or {})
-        extensions[RESOURCE_EXTENSION_KEY] = dict(resources)
+        if resources is None:
+            extensions.pop(RESOURCE_EXTENSION_KEY, None)
+        else:
+            extensions[RESOURCE_EXTENSION_KEY] = dict(resources)
         extensions[SESSION_EXTENSION_KEY] = dict(session)
         task["extensions"] = extensions
         TaskStore(self.board).write_task(task_id, task)
 
     def _make_native(self, task_id: str, executor: str) -> None:
-        self._inject_workspace_key(task_id, PHASE2_EXECUTOR_PROJECT_ROOT_KEY, str(self.root / "exec-project"))
+        workspace = self._read_task(task_id)["workspace"]
+        executor_project_root = (
+            Path(workspace["agentbc_root"])
+            / "tasks"
+            / "artifacts"
+            / workspace["task_date"]
+            / workspace["task_code"]
+            / task_id
+            / "claude"
+        )
+        self._inject_workspace_key(
+            task_id,
+            PHASE2_EXECUTOR_PROJECT_ROOT_KEY,
+            str(executor_project_root),
+        )
         if executor == "claude":
             resources = build_resource_snapshot("claude", 10.0, source="config")
             session = build_session_snapshot(
                 "claude",
                 retain=False,
                 session_state="pending",
-                project_path=str(self.root / "claude-project"),
+                project_path=str(executor_project_root),
             )
-        else:
+        elif executor == "hermes":
             resources = build_resource_snapshot("hermes", 90, source="config")
             session = build_session_snapshot("hermes", retain=False, session_state="pending")
+        else:
+            resources = None
+            session = build_session_snapshot("codex", retain=False, session_state="pending")
         self._attach_snapshots(task_id, resources, session)
 
     def _packet(self, task_id: str) -> dict:
@@ -174,16 +213,17 @@ class Phase2RunnerPolicyTests(unittest.TestCase):
         self.assertEqual(session["session_state"], "pending")
         self.assertEqual(session["project_mode"], "ephemeral")
         workspace = refreshed["workspace"]
-        expected_prefix = (
-            f"{workspace['agentbc_root']}/tasks/artifacts/{workspace['task_date']}"
-            f"/{workspace['task_code']}/{task_id}-"
+        expected_path = (
+            Path(workspace["agentbc_root"])
+            / "tasks"
+            / "artifacts"
+            / workspace["task_date"]
+            / workspace["task_code"]
+            / task_id
+            / "claude"
         )
-        self.assertTrue(session["project_path"].startswith(expected_prefix), session["project_path"])
-        uuid_tail = session["project_path"][len(expected_prefix):]
-        self.assertRegex(
-            uuid_tail,
-            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-        )
+        self.assertEqual(Path(session["project_path"]), expected_path)
+        self.assertEqual(str(uuid.UUID(session["session_id"])), session["session_id"])
         execution = extensions[PHASE2_EXECUTION_EXTENSION_KEY]
         self.assertTrue(execution[PHASE2_LEGACY_BACKFILLED_KEY])
         first_backfilled_at = execution[PHASE2_LEGACY_BACKFILLED_AT_KEY]
@@ -224,6 +264,30 @@ class Phase2RunnerPolicyTests(unittest.TestCase):
         self.assertFalse(session["retain"])
         self.assertEqual(session["project_mode"], "none")
         self.assertEqual(session["project_path"], "")
+
+    def test_legacy_codex_dispatch_backfills_only_session(self) -> None:
+        task_id = self._create_task("codex")
+        self._dispatch(task_id, "codex")
+        extensions = self._read_task(task_id)["extensions"]
+        self.assertNotIn(RESOURCE_EXTENSION_KEY, extensions)
+        session = extensions[SESSION_EXTENSION_KEY]
+        self.assertEqual(session["executor"], "codex")
+        self.assertFalse(session["retain"])
+        self.assertEqual(session["project_mode"], "none")
+
+    def test_partial_legacy_backfill_preserves_existing_snapshot(self) -> None:
+        task_id = self._create_task("hermes")
+        task = self._read_task(task_id)
+        preserved = build_resource_snapshot(
+            "hermes", 77, source="preserved_legacy_snapshot"
+        )
+        task["extensions"][RESOURCE_EXTENSION_KEY] = preserved
+        self._write_task(task_id, {"extensions": task["extensions"]})
+
+        self._dispatch(task_id, "hermes")
+        extensions = self._read_task(task_id)["extensions"]
+        self.assertEqual(extensions[RESOURCE_EXTENSION_KEY], preserved)
+        self.assertIn(SESSION_EXTENSION_KEY, extensions)
 
     def test_legacy_backfill_never_reads_user_configuration(self) -> None:
         task_id = self._create_task("claude")
@@ -280,7 +344,20 @@ class Phase2RunnerPolicyTests(unittest.TestCase):
 
     def test_native_task_missing_snapshots_fails_closed_without_legacy_fix(self) -> None:
         task_id = self._create_task("claude")
-        self._inject_workspace_key(task_id, PHASE2_EXECUTOR_PROJECT_ROOT_KEY, str(self.root / "exec-project"))
+        workspace = self._read_task(task_id)["workspace"]
+        self._inject_workspace_key(
+            task_id,
+            PHASE2_EXECUTOR_PROJECT_ROOT_KEY,
+            str(
+                Path(workspace["agentbc_root"])
+                / "tasks"
+                / "artifacts"
+                / workspace["task_date"]
+                / workspace["task_code"]
+                / task_id
+                / "claude"
+            ),
+        )
         with self.assertRaisesRegex(RunnerError, "invalid_execution_policy"):
             self._dispatch(task_id, "claude")
         extensions = self._read_task(task_id).get("extensions") or {}
@@ -297,6 +374,16 @@ class Phase2RunnerPolicyTests(unittest.TestCase):
         self._make_native(task_id, "claude")
         result, _spawn = self._dispatch(task_id, "claude")
         self.assertEqual(result["dispatch_status"], "accepted")
+
+    def test_native_codex_requires_session_but_not_resources(self) -> None:
+        task_id = self._create_task("codex")
+        self._make_native(task_id, "codex")
+        result, _spawn = self._dispatch(task_id, "codex")
+        self.assertEqual(result["dispatch_status"], "accepted")
+        self.assertNotIn(
+            RESOURCE_EXTENSION_KEY,
+            self._read_task(task_id)["extensions"],
+        )
 
     def test_native_task_executor_mismatch_fails_closed(self) -> None:
         task_id = self._create_task("claude")
@@ -410,7 +497,20 @@ class Phase2RunnerPolicyTests(unittest.TestCase):
 
     def test_authorize_native_missing_disk_snapshots_fails_closed(self) -> None:
         task_id = self._create_task("claude")
-        self._inject_workspace_key(task_id, PHASE2_EXECUTOR_PROJECT_ROOT_KEY, str(self.root / "exec-project"))
+        workspace = self._read_task(task_id)["workspace"]
+        self._inject_workspace_key(
+            task_id,
+            PHASE2_EXECUTOR_PROJECT_ROOT_KEY,
+            str(
+                Path(workspace["agentbc_root"])
+                / "tasks"
+                / "artifacts"
+                / workspace["task_date"]
+                / workspace["task_code"]
+                / task_id
+                / "claude"
+            ),
+        )
         packet = self._packet(task_id)
         with self.assertRaisesRegex(RunnerError, "invalid_execution_policy"):
             self._authorize("claude", self._claude_command(), packet)

@@ -50,7 +50,7 @@ LEGACY_RUNNER_LAUNCH_AGENT_LABEL = "com.agentbc.runner"
 # Runner never reads the user's current configuration for legacy backfill,
 # never injects or validates executor resource flags (--max-budget-usd,
 # --max-turns, --session-id, --resume are explicitly out of scope for Phase 2),
-# and never touches path_model, Executor adapters, CLI/report/docs.
+# and never touches Executor adapters, CLI/report/docs.
 PHASE2_EXECUTOR_PROJECT_ROOT_KEY = "executor_project_root"
 PHASE2_EXECUTION_EXTENSION_KEY = "agentbc.execution"
 PHASE2_LEGACY_UNRECORDED_KEY = "legacy_unrecorded"
@@ -89,45 +89,55 @@ class RunnerError(RuntimeError):
 
 
 def _phase2_legacy_ephemeral_project_path(workspace: dict[str, Any], task_id: str) -> str:
-    """Canonical iteration-scoped ephemeral Claude Project path with a pre-allocated UUID.
+    """Return the canonical iteration-scoped ephemeral Claude Project path.
 
-    Layout follows the SESSION-001/CFG-001 contract: the temporary Claude Project
-    reuses the AgentBC internal ``tasks/artifacts/YYYY-MM-DD/<TASKCODE>/`` directory
-    and isolates a single iteration by the full ``<TASK-ID>``; the trailing UUID is
-    pre-allocated at backfill time so the path is stable for the task lifetime.
+    The session UUID is stored separately in ``agentbc.session.session_id``.  It
+    must never become another project-directory segment.
     """
+    from .path_model import canonical_executor_project_root
+
     agentbc_root = str((workspace or {}).get("agentbc_root") or "").strip()
-    task_code = (
-        str((workspace or {}).get("task_code") or "").strip()
-        or str(task_id).split("-")[0]
-        or "legacy"
+    task_code = str((workspace or {}).get("task_code") or "").strip()
+    task_date = str((workspace or {}).get("task_date") or "").strip()
+    if not agentbc_root or not task_code or not task_date or not str(task_id).strip():
+        raise RunnerError(
+            "invalid_execution_policy: legacy Claude task is missing canonical path fields"
+        )
+    return str(
+        canonical_executor_project_root(agentbc_root, task_date, task_code, task_id)
     )
-    task_date = (
-        str((workspace or {}).get("task_date") or "").strip()
-        or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    )
-    project_id = str(uuid.uuid4())
-    return f"{agentbc_root}/tasks/artifacts/{task_date}/{task_code}/{task_id}-{project_id}"
+
+
+def _phase2_required_policy_keys(executor: str) -> tuple[str, ...]:
+    normalized = str(executor or "").strip().lower()
+    if normalized in PHASE2_LEGACY_DEFAULT_LIMITS:
+        return PHASE2_POLICY_EXTENSION_KEYS
+    if normalized == "codex":
+        return (SESSION_EXTENSION_KEY,)
+    return ()
 
 
 def _phase2_legacy_default_snapshots(
     executor: str,
     task_id: str,
     workspace: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """Build the canonical fixed legacy snapshots without reading user configuration."""
     normalized = str(executor or "").strip().lower()
-    default = PHASE2_LEGACY_DEFAULT_LIMITS.get(normalized)
-    if default is None:
+    if normalized not in {"claude", "hermes", "codex"}:
         raise RunnerError(
             f"invalid_execution_policy: no legacy defaults for executor {executor}"
         )
-    limit, source = default
-    resources = build_resource_snapshot(executor, limit, source=source)
+    resources = None
+    default = PHASE2_LEGACY_DEFAULT_LIMITS.get(normalized)
+    if default is not None:
+        limit, source = default
+        resources = build_resource_snapshot(executor, limit, source=source)
     if normalized == "claude":
         session = build_session_snapshot(
             executor,
             retain=PHASE2_LEGACY_RETENTION,
+            session_id=str(uuid.uuid4()),
             session_state="pending",
             project_path=_phase2_legacy_ephemeral_project_path(workspace, task_id),
         )
@@ -1005,7 +1015,8 @@ class RunnerState:
             extensions = {}
         native = bool(workspace.get(PHASE2_EXECUTOR_PROJECT_ROOT_KEY))
         terminal = str(task.get("status") or "").strip().lower() in TERMINAL_STATES
-        missing = [key for key in PHASE2_POLICY_EXTENSION_KEYS if key not in extensions]
+        required_keys = _phase2_required_policy_keys(executor)
+        missing = [key for key in required_keys if key not in extensions]
         if native:
             errors = [f"missing {key}" for key in missing]
             errors.extend(self._phase2_structure_errors(extensions, executor))
@@ -1032,9 +1043,20 @@ class RunnerState:
                     persisted_extensions = {}
                 if not isinstance(persisted_workspace, dict):
                     persisted_workspace = {}
-                if not any(
-                    key not in persisted_extensions for key in PHASE2_POLICY_EXTENSION_KEYS
-                ):
+                persisted_required = _phase2_required_policy_keys(executor)
+                persisted_missing = [
+                    key for key in persisted_required if key not in persisted_extensions
+                ]
+                persisted_errors = self._phase2_structure_errors(
+                    persisted_extensions, executor
+                )
+                if persisted_errors:
+                    reason = f"invalid_execution_policy: {'; '.join(persisted_errors)}"
+                    self._phase2_append_audit(
+                        board, task_id, executor, "fail", reason
+                    )
+                    raise RunnerError(reason)
+                if not persisted_missing:
                     return persisted
                 resources, session = _phase2_legacy_default_snapshots(
                     executor,
@@ -1043,8 +1065,14 @@ class RunnerState:
                 )
                 updated_extensions = attach_execution_policy(
                     persisted_extensions,
-                    resources=resources,
-                    session=session,
+                    resources=(
+                        resources
+                        if RESOURCE_EXTENSION_KEY in persisted_missing
+                        else None
+                    ),
+                    session=(
+                        session if SESSION_EXTENSION_KEY in persisted_missing else None
+                    ),
                 )
                 execution = dict(persisted_extensions.get(PHASE2_EXECUTION_EXTENSION_KEY) or {})
                 execution[PHASE2_LEGACY_BACKFILLED_KEY] = True
@@ -1066,7 +1094,12 @@ class RunnerState:
         refreshed_extensions = refreshed.get("extensions")
         if not isinstance(refreshed_extensions, dict):
             refreshed_extensions = {}
-        errors = self._phase2_structure_errors(refreshed_extensions, executor)
+        errors = [
+            f"missing {key}"
+            for key in _phase2_required_policy_keys(executor)
+            if key not in refreshed_extensions
+        ]
+        errors.extend(self._phase2_structure_errors(refreshed_extensions, executor))
         if errors:
             reason = f"invalid_execution_policy: {'; '.join(errors)}"
             self._phase2_append_audit(board, task_id, executor, "fail", reason)
@@ -1110,7 +1143,9 @@ class RunnerState:
         if not isinstance(persisted_extensions, dict):
             persisted_extensions = {}
         errors = [
-            f"missing {key}" for key in PHASE2_POLICY_EXTENSION_KEYS if key not in persisted_extensions
+            f"missing {key}"
+            for key in _phase2_required_policy_keys(executor)
+            if key not in persisted_extensions
         ]
         errors.extend(self._phase2_structure_errors(persisted_extensions, executor))
         if errors:

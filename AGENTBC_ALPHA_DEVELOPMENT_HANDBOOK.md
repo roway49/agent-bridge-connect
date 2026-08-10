@@ -2132,9 +2132,19 @@ session 只展示 retain/session_id/session_state/project_mode。内部 task.jso
 临时 Claude Project 不计入 artifact；终态 record compaction 完整保留两个策略扩展并继续
 受 10 KiB 上限约束。
 
-以上只完成 task-contract/public-view 子项。PathPlan 原生字段和安全校验由 Phase 2 Task 2
-及 integration 收口；Executor CLI 参数、Runner 参数核对、同会话 resume、purge/cleanup 与
-资源耗尽处理仍保持打开，因此不得关闭完整 `SESSION-001/CFG-001/CFG-002`。
+Phase 2 同时完成了内部 `workspace.executor_project_root` 规划与校验：路径严格为
+`<agentbc_root>/tasks/artifacts/<date>/<TASKCODE>/<TASK-ID>/claude`，并验证 canonical
+metadata、managed-root containment 与已有父级 symlink escape。legacy 非终态任务在 Runner
+锁内以固定 Claude `10`、Hermes `90`、retention `false` 补齐一次；Claude UUID 单独记录在
+session snapshot，不进入目录名。原生任务缺失/损坏必要快照以及 Worker packet 对磁盘快照的
+缺失、修改、注入、过期都会 fail closed 并写入不含路径和凭据的审计事件。Codex 只要求
+session snapshot，不要求不存在的资源快照。
+
+以上只完成 task-contract/path-plan/Runner snapshot/public-view 子项。Executor CLI 参数、
+Runner argument/snapshot 核对、同会话 resume、purge/cleanup 与资源耗尽处理仍保持打开，
+因此不得关闭完整 `SESSION-001/CFG-001/CFG-002`。Phase 2 最终验证为专属回归 `55` 项、
+全量 discovery `700` 项通过并保留 `3` 个后续阶段预期失败；Ruff、compileall 与
+`git diff --check` 通过。
 
 **Claude Project 分流**：设置只对后续新 run 生效，每个 run 创建时必须固化
 project mode/path/session ID，不得在 resume 时因全局设置变更而切换。保留模式

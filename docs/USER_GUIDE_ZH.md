@@ -89,7 +89,9 @@ resume、retry、recover 和再次 dispatch 都保留原快照。
 create/dispatch accepted、preflight、status、report 与 Task Brief 统一使用无内部路径的
 `execution_policy` 视图：展示有效上限、来源、冻结状态（Codex resources 为 `null`），以及
 retain、执行器 session ID/state 和 project mode。执行器内部 project path 只保留在 task
-packet，不作为 artifact 展示。Hermes `--max-turns`、同会话 resume、终态 cleanup/purge 和
+packet，不作为 artifact 展示。Claude 临时 Project 使用 canonical `<TASK-ID>/claude`
+受管路径；Runner 会校验 legacy 补齐结果及 Worker packet 与持久化快照的一致性。Hermes
+`--max-turns`、同会话 resume、终态 cleanup/purge 和
 资源耗尽处理仍属于后续运行时阶段；存在冻结快照不代表这些行为已经执行。
 
 该策略只管理 Executor 创建的临时会话。AgentBC 永远不会删除创建或 handoff 任务的

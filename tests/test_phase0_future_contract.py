@@ -77,7 +77,6 @@ class Phase0ExpectedGapTests(unittest.TestCase):
         self.assertEqual(terminal.status, "input_required")
         self.assertEqual(terminal.failure["kind"], "resource_limit_exhausted")
 
-    @unittest.expectedFailure
     def test_terminal_compaction_preserves_resource_and_session_receipts(self) -> None:
         from agent_bridge_connect.record_management import _compact_terminal_extensions
 
@@ -90,7 +89,6 @@ class Phase0ExpectedGapTests(unittest.TestCase):
         self.assertIn("agentbc.resources", compact)
         self.assertIn("agentbc.session", compact)
 
-    @unittest.expectedFailure
     def test_path_plan_owns_iteration_scoped_claude_project(self) -> None:
         config = {"workspace_root": str(self.root / "workspace")}
         workspace = build_path_plan(
@@ -102,7 +100,9 @@ class Phase0ExpectedGapTests(unittest.TestCase):
             task_date="2026-08-10",
         ).to_workspace()
         claude_project = Path(workspace["executor_project_root"])
-        managed_artifacts = self.root / "workspace" / "tasks" / "artifacts"
+        managed_artifacts = (
+            self.root / "workspace" / "tasks" / "artifacts"
+        ).resolve()
         self.assertTrue(claude_project.is_relative_to(managed_artifacts))
         self.assertIn("ABCD-001", claude_project.parts)
         self.assertFalse(claude_project.is_relative_to(self.root / "customer"))
