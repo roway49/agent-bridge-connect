@@ -13,6 +13,7 @@ from .execution_contract import validate_callback_payload
 from .execution_policy import (
     RESOURCE_EXTENSION_KEY,
     SESSION_EXTENSION_KEY,
+    apply_resource_input_decision,
     attach_execution_policy,
     build_task_execution_policy,
     execution_policy_view,
@@ -1028,16 +1029,106 @@ class TaskService:
         if response_type == "message" and not clean_message:
             raise ABCError("invalid_input_response", "--message requires non-empty text")
 
+        is_resource_decision = (
+            request.get("kind") == "resource_limit"
+            or request.get("response_protocol") == "approve_deny"
+        )
+        updated_resources: dict[str, Any] | None = None
+        if is_resource_decision:
+            blocked_step_id = request.get("blocked_step_id")
+            if not any(
+                step.get("id") == blocked_step_id and step.get("status") == "blocked"
+                for step in task.steps
+            ):
+                raise ABCError(
+                    "resource_decision_invalid",
+                    "Resource input does not identify the current blocked step",
+                )
+            updated_resources = apply_resource_input_decision(
+                (task.extensions or {}).get(RESOURCE_EXTENSION_KEY),
+                request,
+                response_type,
+                executor=task.assignee,
+            )
+
         answered = dict(request)
         answered["status"] = "answered"
         answered["responded_at"] = now
         answered["response"] = {"type": response_type, "summary": clean_message}
         extensions = dict(task.extensions or {})
         extensions["agentbc.input"] = answered
-        task.steps = [
-            {**step, "status": "pending"} if step.get("status") == "blocked" else dict(step)
-            for step in task.steps
-        ]
+        if updated_resources is not None:
+            extensions[RESOURCE_EXTENSION_KEY] = updated_resources
+        if is_resource_decision and response_type == "deny":
+            failure_code = {
+                "claude": "budget_exhausted_user_terminated",
+                "hermes": "iteration_exhausted_user_terminated",
+            }.get(task.assignee)
+            if failure_code is None:
+                raise ABCError(
+                    "resource_decision_invalid",
+                    f"Resource decisions are unsupported for executor: {task.assignee}",
+                )
+            failure_message = (
+                "User terminated the task after the executor resource limit was exhausted"
+            )
+            task.extensions = extensions
+            task.updated_at = now
+            self._mark_task_failed_model(
+                task,
+                failure_code,
+                failure_message,
+                {
+                    "failure": {
+                        "kind": failure_code,
+                        "layer": "resource_limit",
+                        "message": failure_message,
+                        "retryable": False,
+                    },
+                    "input_id": current_input_id,
+                    "executor": task.assignee,
+                    "resource": updated_resources["resource"],
+                    "current_limit": updated_resources["current_limit"],
+                },
+            )
+            self.store.append_event(
+                task.id,
+                {
+                    "event_type": "task.input_answered",
+                    "task_id": task.id,
+                    "input_id": current_input_id,
+                    "response_type": response_type,
+                    "created_at": now,
+                },
+            )
+            return {
+                "ok": True,
+                "task_id": task.id,
+                "input_id": current_input_id,
+                "status": "failed",
+                "dispatch_required": False,
+                "resource_terminated": True,
+                "failure": {
+                    "kind": failure_code,
+                    "layer": "resource_limit",
+                    "message": failure_message,
+                    "retryable": False,
+                },
+            }
+
+        if is_resource_decision:
+            blocked_step_id = request.get("blocked_step_id")
+            task.steps = [
+                {**step, "status": "pending"}
+                if step.get("id") == blocked_step_id and step.get("status") == "blocked"
+                else dict(step)
+                for step in task.steps
+            ]
+        else:
+            task.steps = [
+                {**step, "status": "pending"} if step.get("status") == "blocked" else dict(step)
+                for step in task.steps
+            ]
         task.status = "running"
         task.updated_at = now
         task.extensions = _merge_execution(
@@ -1111,9 +1202,29 @@ class TaskService:
         execution_session: dict[str, Any] | None = None,
     ) -> bool:
         """Mark a started task whose executor termination could not be confirmed."""
+        task = self.get_task(task_id)
+        return self._mark_task_failed_model(
+            task,
+            code,
+            message,
+            details,
+            executor_run_id=executor_run_id,
+            execution_session=execution_session,
+        )
+
+    def _mark_task_failed_model(
+        self,
+        task: TaskModel,
+        code: str,
+        message: str,
+        details: dict[str, Any] | None = None,
+        *,
+        executor_run_id: str = "",
+        execution_session: dict[str, Any] | None = None,
+    ) -> bool:
+        """Fail a caller-validated task model with one atomic task-state write."""
         from .task_health import clear_task_progress
 
-        task = self.get_task(task_id)
         task_id = task.id
         if _has_close_intent(task):
             return False
@@ -1145,8 +1256,15 @@ class TaskService:
         else:
             self._set_known_executor_session_state(task, "terminal")
         _supersede_final_callback(task, "failed", compact_message)
+        execution_updates = {"internal_status": "failed"}
+        from .run_lease import RunLeaseState, close_lease, load_lease
+
+        run_lease = load_lease(task_id, self.board_root)
+        if run_lease is not None and run_lease.state == RunLeaseState.SUSPENDED:
+            close_lease(run_lease, self.board_root)
+            execution_updates["lease_state"] = RunLeaseState.CLOSED
         task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
-        task.extensions = _merge_execution(task.extensions, {"internal_status": "failed"})
+        task.extensions = _merge_execution(task.extensions, execution_updates)
         self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)

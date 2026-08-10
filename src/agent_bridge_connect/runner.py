@@ -1398,6 +1398,21 @@ class RunnerState:
             except ABCError as exc:
                 raise RunnerError(f"{exc.code}: {exc}") from exc
             if not result.get("dispatch_required"):
+                if result.get("resource_terminated"):
+                    failure = result.get("failure") or {}
+                    failure_message = str(
+                        failure.get("message")
+                        or "Task terminated after executor resource exhaustion"
+                    )
+                    write_report_files(task_id, board)
+                    notify_terminal(
+                        service,
+                        task_id,
+                        "task.failed",
+                        "error",
+                        failure_message,
+                    )
+                    self._refresh_task_list_dashboard(board)
                 return result
             task = service.get_task(task_id)
             try:
