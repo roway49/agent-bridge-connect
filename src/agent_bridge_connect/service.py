@@ -10,6 +10,15 @@ from typing import Any
 
 from .config import DEFAULT_BOARD_ROOT, get_executor_config, init_board
 from .execution_contract import validate_callback_payload
+from .execution_policy import (
+    RESOURCE_EXTENSION_KEY,
+    SESSION_EXTENSION_KEY,
+    attach_execution_policy,
+    build_task_execution_policy,
+    execution_policy_view,
+    public_task_view,
+    validate_execution_policy_extensions,
+)
 from .executor_registry import get_executor
 from .media import media_extension, normalize_image_inputs, task_image_paths
 from .path_model import build_path_plan, validate_path_plan_workspace
@@ -157,6 +166,26 @@ class TaskService:
             config=self.config,
             inherited=inherited_permission,
         )
+        resources, executor_session = build_task_execution_policy(
+            assignee,
+            self.config,
+            workspace,
+            created_at=now,
+        )
+        extensions = attach_execution_policy(
+            {
+                "agentbc.provenance": {
+                    "source_platform": source_platform or "unknown",
+                    "conversation_id": session_id,
+                },
+                "agentbc.lineage": task_lineage,
+                "agentbc.execution": {"internal_status": "pending"},
+                PERMISSION_EXTENSION_KEY: permission,
+                **media_extension(normalized_images),
+            },
+            resources=resources,
+            session=executor_session,
+        )
         task = TaskModel(
             id=task_id,
             title=title,
@@ -168,16 +197,7 @@ class TaskService:
             workspace=workspace,
             session_id=session_id,
             created_by=source_platform or "user",
-            extensions={
-                "agentbc.provenance": {
-                    "source_platform": source_platform or "unknown",
-                    "conversation_id": session_id,
-                },
-                "agentbc.lineage": task_lineage,
-                "agentbc.execution": {"internal_status": "pending"},
-                PERMISSION_EXTENSION_KEY: permission,
-                **media_extension(normalized_images),
-            },
+            extensions=extensions,
         )
         task_dir = self.store.tasks_dir / workspace["task_code"] / workspace["iteration"]
         (task_dir / "steps").mkdir(parents=True, exist_ok=False)
@@ -1491,6 +1511,21 @@ class TaskService:
             raise ABCError("task_leased", f"Cannot reassign working task: {task_id}")
         if _normalize_status(task.status) not in {"running", "needs_recovery", "cancelled"}:
             raise ABCError("invalid_intervention", f"Cannot reassign task in state: {task.status}")
+        before_policy = execution_policy_view(task.extensions)
+        resources, executor_session = build_task_execution_policy(
+            new_executor,
+            self.config,
+            task.workspace or {},
+        )
+        policy_extensions = dict(task.extensions or {})
+        policy_extensions.pop(RESOURCE_EXTENSION_KEY, None)
+        policy_extensions.pop(SESSION_EXTENSION_KEY, None)
+        task.extensions = attach_execution_policy(
+            policy_extensions,
+            resources=resources,
+            session=executor_session,
+        )
+        after_policy = execution_policy_view(task.extensions)
         self._release_lease(task_id)
         task.assignee = new_executor
         task.status = "pending"
@@ -1499,8 +1534,25 @@ class TaskService:
         task.intervention.update({"paused": False, "pause_reason": None})
         task.extensions = _merge_execution(task.extensions, {"internal_status": "pending"})
         self.store.write_task(task_id, _without_none(task.to_dict()))
-        self.store.append_event(task_id, {"event_type": "reassigned", "task_id": task_id, "assignee": new_executor, "created_at": task.updated_at})
-        self._append_intervention(task_id, "reassign", task.updated_at, new_executor=new_executor)
+        self.store.append_event(
+            task_id,
+            {
+                "event_type": "reassigned",
+                "task_id": task_id,
+                "assignee": new_executor,
+                "created_at": task.updated_at,
+                "execution_policy_before": before_policy,
+                "execution_policy_after": after_policy,
+            },
+        )
+        self._append_intervention(
+            task_id,
+            "reassign",
+            task.updated_at,
+            new_executor=new_executor,
+            execution_policy_before=before_policy,
+            execution_policy_after=after_policy,
+        )
         self._refresh_task_index()
 
     def handoff_task(
@@ -1648,6 +1700,7 @@ class TaskService:
             validate_path_plan_workspace(task.workspace or {})
         except ABCError as exc:
             errors.append(str(exc))
+        errors.extend(validate_execution_policy_extensions(task.extensions or {}))
         if _normalize_status(task.status) in TASK_TERMINAL_STATES:
             errors.append(f"task is terminal: {task.status}")
         try:
@@ -1665,7 +1718,11 @@ class TaskService:
             errors.append(f"{exc.code}: {exc}")
         except (TypeError, ValueError):
             errors.append(f"assignee does not exist: {task.assignee}")
-        return PreflightResult(ok=not errors, errors=errors)
+        return PreflightResult(
+            ok=not errors,
+            errors=errors,
+            execution_policy=execution_policy_view(task.extensions),
+        )
 
     def _supports_immediate_pause(self, assignee: str) -> bool:
         try:
@@ -1966,7 +2023,7 @@ def task_to_status(task: TaskModel) -> dict[str, Any]:
         extensions = dict(data.get("extensions") or {})
         data["extensions"] = _merge_execution(extensions, {"internal_status": raw_status})
     data["health"] = task_health(task)
-    return data
+    return public_task_view(data)
 
 
 def task_resolution(
@@ -2147,6 +2204,9 @@ def _write_task_requirements(task: TaskModel, path: Path) -> None:
     lineage = task.extensions.get("agentbc.lineage") or {}
     images = task_image_paths(task.to_dict())
     permission = permission_record_from_extensions(task.extensions)
+    policy = execution_policy_view(task.extensions)
+    resources = policy.get("resources") or {}
+    executor_session = policy.get("session") or {}
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         f"# Task Requirements: {task.title}",
@@ -2161,6 +2221,14 @@ def _write_task_requirements(task: TaskModel, path: Path) -> None:
         f"- Requested permission mode: `{permission['requested_mode']}`",
         f"- Effective permission mode: `{permission['effective_mode']}`",
         f"- Permission selection source: `{permission['selection_source']}`",
+        f"- Resource policy: `{resources.get('resource') or 'none'}`",
+        f"- Effective resource limit: `{resources.get('limit') if resources else 'none'}`",
+        f"- Resource policy source: `{resources.get('source') or 'none'}`",
+        f"- Resource policy frozen: `{'yes' if resources.get('frozen') else 'no'}`",
+        f"- Retain executor session: `{'yes' if executor_session.get('retain') else 'no'}`",
+        f"- Executor session ID: `{executor_session.get('session_id') or 'pending'}`",
+        f"- Executor session state: `{executor_session.get('session_state') or 'unavailable'}`",
+        f"- Executor project mode: `{executor_session.get('project_mode') or 'unavailable'}`",
         f"- Customer directory: `{workspace.get('customer_dir', '')}`",
         f"- Customer path: `{workspace.get('customer_path', '')}`",
         f"- Project root: `{workspace.get('project_root', workspace.get('root', ''))}`",

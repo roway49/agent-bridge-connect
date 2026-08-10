@@ -86,14 +86,21 @@ max_turns = 150
 retain_executor_sessions = true
 ```
 
-Phase 1 status: the Claude adapter consumes the configured budget for future
-runs. Hermes `max_turns` is currently persisted and validated but is not passed
-as native `--max-turns` until the later runtime-wiring phase; Hermes continues
-to use its own active configuration in the meantime. Session retention is also
-currently a persisted policy setting; terminal cleanup, retained-session
-receipts, and same-session resume arrive in the later session-lifecycle phase.
-Enabling it now must not be interpreted as proof that a terminal executor
-session was retained.
+Phase 2 task-contract status: every new Claude or Hermes task freezes its
+effective resource limit in `agentbc.resources`, and every new Claude, Hermes,
+or Codex task freezes retention and executor-session metadata in
+`agentbc.session`. Missing settings use `$10`, `90`, and retention `false`;
+present invalid settings fail closed. Handoff creates a new snapshot for its
+target executor, reassign rebuilds the snapshot, and resume, retry, recover, or
+re-dispatch of the same task keeps the original snapshot.
+
+Accepted create/dispatch output, preflight, status, report, and task briefs use
+one path-free `execution_policy` view. It shows the effective limit, source, and
+frozen state (or `null` resources for Codex), plus retention, executor session
+ID/state, and project mode. Executor-only project paths remain inside the task
+packet and are not listed as artifacts. Hermes `--max-turns`, same-session
+resume, terminal cleanup/purge, and resource-exhaustion handling are still
+later runtime work; a frozen policy is not proof that those behaviors ran.
 
 This policy concerns executor-created temporary sessions only. AgentBC never
 deletes the dispatcher conversation that created or handed off a task. Global

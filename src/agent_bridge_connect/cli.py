@@ -496,6 +496,9 @@ def command_task_create(args: argparse.Namespace) -> int:
         print(f"report: {task.workspace.get('report_file', '')}")
     if task.session_id:
         print(f"conversation: {source_platform}:{task.session_id}")
+    from .execution_policy import execution_policy_view
+
+    _print_execution_policy(execution_policy_view(task.extensions))
     return 0
 
 
@@ -787,6 +790,7 @@ def command_task_dispatch(args: argparse.Namespace) -> int:
     print(f"worker_run_id: {result.get('run_id', '')}")
     print(f"status: {result.get('dispatch_status', '')}")
     print(f"monitor: {result.get('monitor_status', 'not_requested')}")
+    _print_execution_policy(result.get("execution_policy"))
     return 0
 
 
@@ -1148,7 +1152,16 @@ def _finish_task_chain_close_cleanup(task_ids: list[str], board_root: str | Path
 
 def command_task_preflight(args: argparse.Namespace) -> int:
     result = _task_service(args.root).preflight(args.id)
-    print(json.dumps({"ok": result.ok, "errors": result.errors}, indent=2))
+    print(
+        json.dumps(
+            {
+                "ok": result.ok,
+                "errors": result.errors,
+                "execution_policy": result.execution_policy,
+            },
+            indent=2,
+        )
+    )
     return 0 if result.ok else 1
 
 
@@ -1695,6 +1708,7 @@ def _print_task_status(status: dict, as_json: bool = False) -> None:
             f"effective={permission.get('effective_mode', '-')} "
             f"source={permission.get('selection_source', '-')}"
         )
+    _print_execution_policy(status.get("execution_policy"))
     if status.get("chain_root_task_id"):
         heads = ", ".join(status.get("head_task_ids") or []) or "-"
         print(
@@ -1912,6 +1926,31 @@ def _print_atomic_dispatch(result: dict[str, Any]) -> None:
     print(f"worker_run_id: {result.get('run_id', '')}")
     print(f"status: {result.get('dispatch_status', '')}")
     print(f"monitor: {result.get('monitor_status', 'not_requested')}")
+    _print_execution_policy(result.get("execution_policy"))
+
+
+def _print_execution_policy(policy: Any) -> None:
+    if not isinstance(policy, dict):
+        return
+    resources = policy.get("resources")
+    if isinstance(resources, dict):
+        print(
+            "Resources: "
+            f"{resources.get('resource', '-')}={resources.get('limit')} "
+            f"source={resources.get('source', '-')} "
+            f"frozen={'yes' if resources.get('frozen') else 'no'}"
+        )
+    else:
+        print("Resources: none")
+    session = policy.get("session")
+    if isinstance(session, dict):
+        print(
+            "Executor session: "
+            f"retain={'yes' if session.get('retain') else 'no'} "
+            f"session_id={session.get('session_id') or '-'} "
+            f"state={session.get('session_state') or '-'} "
+            f"project_mode={session.get('project_mode') or '-'}"
+        )
 
 
 def _write_terminal_report(task_id: str, board_root: Path) -> None:

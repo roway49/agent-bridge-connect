@@ -52,11 +52,18 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
 - `2026-08-10 / Phase 1`：已完成配置事务层、setup 保留式合并、Claude `$10`
   新默认、Hermes `agent.max_turns -> legacy max_turns -> 90` 提取，以及
   `claude budget`、`hermes max-turns`、`session retention` 三组配置命令。
-- Phase 1 只证明配置入口可靠；任务级 `agentbc.resources` 快照、Runner 参数校验、
-  Hermes `--max-turns` 注入、临时会话生命周期、预算耗尽翻倍恢复和 Claude purge
-  仍保持未完成，不得将 `CFG-001/SESSION-001/CFG-002` 整项提前关闭。
-- 当前证据：`645` 项全量 unittest 通过，保留 `5` 个后续阶段预期失败；Ruff、
-  compileall 与 `git diff --check` 通过。
+- `2026-08-10 / Phase 2 task-contract`：已完成新任务 `agentbc.resources` / `agentbc.session`
+  快照、handoff/reassign 重建、同 Task ID 冻结、Claude UUID、统一公开视图与终态
+  compaction 保留；Task 1/4 侧兼容 canonical Claude Project 公式及 Task 2 将提供的
+  `workspace.executor_project_root`。内部路径不进入公共 workspace/session/artifact。
+- Phase 2 仅关闭上述 task-contract/public-view 子项；PathPlan 字段生成与校验由独立
+  Task 2/integration 收口。Runner 参数校验、Executor CLI 注入、同会话 resume、终态
+  cleanup/purge 与预算耗尽决策仍未完成，不得将 `CFG-001/SESSION-001/CFG-002` 整项关闭。
+- Phase 2 Task 1/4 当前证据：相关定向回归 `173` 项通过；全量 discovery 运行 `660`
+  项，仅因 integration 拥有的 `test_phase0_future_contract.py` 中 compaction
+  `expectedFailure` 已转 unexpected success 而非绿色（保留 `4` 个真实预期失败）。该文件
+  按任务边界未修改；最终标记由 integration 收口。Ruff、compileall 与
+  `git diff --check` 通过。
 
 ## 3. 需求总表
 
@@ -120,6 +127,16 @@ agentbc session retention disable
 Phase 1 已实现上述配置键和三命令的原子、幂等持久化，并明确输出只影响后续
 Executor run、永不删除 dispatcher conversation。终态清理、`input_required` 强制保留、
 session ID receipt 和同会话 resume 仍属于后续阶段。
+
+Phase 2 子项状态（不代表 `SESSION-001` 整项完成）：
+
+- [x] 新 Claude/Hermes/Codex 任务冻结 `agentbc.session`；Claude 预分配 UUID，
+  Hermes/Codex pending receipt 为空；
+- [x] handoff/reassign 新建目标策略，同 Task ID resume/retry/recover/re-dispatch 不漂移；
+- [x] 公共 `execution_policy` 隐藏 `project_path`/`executor_project_root`，临时 Claude
+  Project 不计入 artifact；终态 compaction 完整保留 session receipt；
+- [ ] PathPlan 原生字段/containment/symlink 校验由 Phase 2 Task 2 与 integration 收口；
+- [ ] Executor resume、终态 cleanup/purge 和 cleanup capability/receipt 尚未接线。
 
 要求：
 
@@ -190,8 +207,8 @@ setup 提供两项执行资源配置：Claude 单任务预算 `max_budget_usd` �
 单任务迭代上限 `max_turns`。交互逐项询问「自定义 / 使用默认」：
 
 Phase 1 已完成 config/setup/CLI 入口和用户值保护；Hermes `max_turns` 在本阶段仅作为
-Hermes 专属 config-only key 被 Registry 接受，不注入执行命令。任务快照、Adapter 参数、
-Runner fail-closed 校验和 preflight/status 一致性在后续阶段贯通。
+Hermes 专属 config-only key 被 Registry 接受，不注入执行命令。Phase 2 已贯通任务快照和
+preflight/status/report 公共视图；Adapter 参数与 Runner fail-closed 参数校验仍在后续阶段完成。
 
 - 自定义：用户输入。Claude 输入 USD 金额；Hermes 输入迭代轮数（正整数）；
 - 使用默认：Claude 为 `$10`；Hermes 从 `~/.hermes/config.yaml` 读取
@@ -216,6 +233,13 @@ agentbc hermes max-turns <turns>
 - task 记录只保存金额/轮数，不保存凭据或 Executor 私有配置；
 - setup 的 executor refresh 不得覆盖用户已配置值（修复当前 Claude budget
   被重置为 1.0 的缺陷）。
+
+Phase 2 子项状态（不代表 `CFG-001` 整项完成）：
+
+- [x] create/handoff/reassign 持久化任务级 `agentbc.resources`，默认/自定义/非法配置、
+  冻结与公共 effective/source/frozen 视图已覆盖；
+- [x] 同 Task ID resume/retry/recover/re-dispatch 保持原资源快照；
+- [ ] Claude/Hermes Adapter 参数注入与 Runner snapshot/argument 校验仍待后续 Task 3/5。
 
 验收：首次 setup、升级 setup、自定义/默认两分支、空值、非法数、NaN/Inf、
 两命令幂等、配置保真、setup 后用户值保留和真实任务预算/迭代可见性通过。
