@@ -10,6 +10,9 @@ version.
 - `agentbc setup`: discover executors and install local integrations.
 - `agentbc uninstall`: remove AgentBC with separate managed-data choices.
 - `agentbc init`: initialize the managed runtime record directory.
+- `agentbc claude budget`: configure the Claude budget for future runs.
+- `agentbc hermes max-turns`: configure the Hermes turn limit for future runs.
+- `agentbc session retention`: inspect or change executor temporary-session retention.
 - `agentbc record clean`: clean eligible runtime diagnostics.
 - `agentbc task`: create, inspect, hand off, intervene, close, delete, and recover.
 - `agentbc worker`: run task-board worker operations.
@@ -40,6 +43,61 @@ agentbc task handoff 4XMC --to hermes --source-platform claude --dispatch
 Direct terminal use may omit the flag and is recorded as `cli`. Restart agent
 clients after setup so they reload installed skills. Executor-specific model
 selection is not part of the stable Alpha contract.
+
+## Executor Resources And Session Retention
+
+Configure the defaults used for future executor runs:
+
+```bash
+agentbc claude budget 50
+agentbc hermes max-turns 150
+agentbc session retention status
+agentbc session retention enable
+agentbc session retention disable
+```
+
+The Claude value is a positive finite USD amount. Hermes accepts a positive
+integer. Claude and Hermes must already be configured by `agentbc setup`; those
+two commands otherwise return `not_configured` with exit code 2. Session
+retention can be configured independently. Successful commands emit stable JSON
+with the previous value, new value, whether the file changed, and
+`"scope": "future_executor_runs"`. Repeating the current value is safe and does
+not rewrite the config.
+
+Interactive setup offers default or custom values and preserves an existing
+value when Enter is pressed. Non-interactive setup also preserves existing
+values. New settings use these defaults:
+
+- Claude budget: `$10`;
+- Hermes turns: `agent.max_turns` from the path returned by
+  `hermes config path`, then legacy top-level `max_turns`, then `90`;
+- executor session retention: `false`.
+
+They are stored in AgentBC config as:
+
+```toml
+[executors.claude]
+max_budget_usd = 50.0
+
+[executors.hermes]
+max_turns = 150
+
+[sessions]
+retain_executor_sessions = true
+```
+
+Phase 1 status: the Claude adapter consumes the configured budget for future
+runs. Hermes `max_turns` is currently persisted and validated but is not passed
+as native `--max-turns` until the later runtime-wiring phase; Hermes continues
+to use its own active configuration in the meantime. Session retention is also
+currently a persisted policy setting; terminal cleanup, retained-session
+receipts, and same-session resume arrive in the later session-lifecycle phase.
+Enabling it now must not be interpreted as proof that a terminal executor
+session was retained.
+
+This policy concerns executor-created temporary sessions only. AgentBC never
+deletes the dispatcher conversation that created or handed off a task. Global
+changes do not mutate active, `input_required`, or recovery tasks.
 
 ## Create Versus Handoff
 

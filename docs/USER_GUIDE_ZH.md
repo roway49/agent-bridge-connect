@@ -9,6 +9,9 @@
 - `agentbc setup`：发现执行器并安装本地集成。
 - `agentbc uninstall`：卸载 AgentBC，并分别选择是否删除托管数据。
 - `agentbc init`：初始化托管运行记录目录。
+- `agentbc claude budget`：设置后续 Claude run 的预算。
+- `agentbc hermes max-turns`：设置后续 Hermes run 的迭代上限。
+- `agentbc session retention`：查看或修改执行器临时会话保留策略。
 - `agentbc record clean`：清理符合条件的运行时诊断记录。
 - `agentbc task`：创建、检查、handoff、干预、关闭、删除和恢复任务。
 - `agentbc worker`：执行 task board worker 操作。
@@ -37,6 +40,55 @@ agentbc task handoff 4XMC --to hermes --source-platform claude --dispatch
 
 直接从终端调用时可省略该字段，此时派发者记录为 `cli`。setup 后请重启 Agent
 客户端，使其重新加载已安装的 Skill。执行器模型选择暂不属于稳定的 Alpha 契约。
+
+## 执行资源与临时会话保留
+
+使用以下命令设置后续 Executor run 的默认值：
+
+```bash
+agentbc claude budget 50
+agentbc hermes max-turns 150
+agentbc session retention status
+agentbc session retention enable
+agentbc session retention disable
+```
+
+Claude 参数必须是大于零的有限 USD 金额；Hermes 参数必须是正整数。Claude 和
+Hermes 必须先由 `agentbc setup` 配置，否则对应命令以退出码 2 返回
+`not_configured`。retention 命令可独立使用。成功时输出稳定 JSON，包括旧值、新值、
+是否实际改写配置以及 `"scope": "future_executor_runs"`；重复设置相同值是幂等操作，
+不会重写配置文件。
+
+交互式 setup 提供“使用默认 / 自定义”，已有值时按 Enter 保留；非交互 setup 同样
+保留已有值。首次缺失时使用：
+
+- Claude 预算：`$10`；
+- Hermes turns：先读取 `hermes config path` 返回文件中的 `agent.max_turns`，再尝试
+  兼容的顶层 `max_turns`，最后回退 `90`；
+- 执行器临时会话保留：`false`。
+
+设置保存在 AgentBC 配置中：
+
+```toml
+[executors.claude]
+max_budget_usd = 50.0
+
+[executors.hermes]
+max_turns = 150
+
+[sessions]
+retain_executor_sessions = true
+```
+
+Phase 1 状态说明：Claude Adapter 已在后续 run 中消费配置预算；Hermes
+`max_turns` 当前已经持久化并校验，但要到后续运行时接线阶段才会传入原生
+`--max-turns`，在此之前 Hermes 仍使用自身当前配置。retention 当前也是已持久化的
+策略入口；终态清理、保留会话回执和同 session resume 将在后续会话生命周期阶段完成。
+因此现在执行 enable，不应被解释为已经证明某个终态 Executor session 得到保留。
+
+该策略只管理 Executor 创建的临时会话。AgentBC 永远不会删除创建或 handoff 任务的
+dispatcher conversation。修改全局设置不会改变 active、`input_required` 或 recovery
+任务的既有语义。
 
 ## Create 与 Handoff
 
