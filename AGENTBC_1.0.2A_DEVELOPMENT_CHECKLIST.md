@@ -1,12 +1,73 @@
 # AgentBC 1.0.2A 需求开发清单
 
 > 制定日期：2026-08-08  
-> 状态：开发进行中（Phase 0～Phase 3 已完成）
+> 最近状态快照：2026-08-10 23:24 CST
+> 状态：开发进行中（Phase 0～Phase 3 已完成；Phase 4 Tasks 1～3 已合入，Task 4 运行中）
 > 当前开发分支：`private/integration`  
 > 固定 Agent 分支：`agent/codex`、`agent/claude`、`agent/hermes`  
-> 开发基线：`private/integration@cfddccba246e6d057172f6716ab4318ade9a40ad`  
+> 初始开发基线：`private/integration@cfddccba246e6d057172f6716ab4318ade9a40ad`
+> 当前集成基线：`private/integration@b7ba051c6203f3f6cd7e2af985ee4a53696137c0`（本地领先远端 3 个提交，尚未 push）
 > 对应公开稳定修订：`v1.0.1A3` / Python `1.0.1a3` / `5e74de65c9b49867ac7957969138db59e2208572`  
 > 目标版本：`v1.0.2A` / Python `1.0.2a1`
+
+## 0. 继续开发时的唯一状态入口
+
+后续会话先读本节，再按需进入详细需求；不得仅凭历史聊天、Agent 自述或一次
+`accepted` 判断完成状态。状态优先级固定为：当前 Git/测试事实 → AgentBC
+`task status/report/RunLease` → 本清单快照。运行中任务结束后必须先验收并更新本节，
+再安排下一 Phase。
+
+状态标记：`✅ 已合入`、`🟡 运行中/部分完成`、`⬜ 未开始或未闭环`。
+
+### 0.1 已完成并合入
+
+| 工作项 | 状态 | 已具备能力 | 主要证据 |
+| --- | --- | --- | --- |
+| `DEL-001` | ✅ | 终态任务链 dry-run/confirm、安全 staging、task code 归还与 customer path 保护 | `48de7dc`、`tests/test_task_delete.py` |
+| `REPORT-001` + `OBS-001` | ✅ | 按真实 run interval 累计 execution duration，当前 lease 使用权威派生视图 | `795e2db`、`tests/test_timing_view.py` |
+| `PROMPT-001` | ✅ | 三 Executor 公共 Prompt contract 单一 builder、golden 与长度门禁 | `0b51af5`、`b3da287`、`fe48ba3` |
+| Phase 0 | ✅ | 冻结资源、session、耗尽路由、Claude Project 和真实 CLI fixture 契约 | Phase 0 contract tests |
+| Phase 1 / `CFG-001` 配置入口 | ✅ | 原子 TOML 事务、setup 保留式合并、Claude 默认 `$10`、Hermes 默认提取，以及三组配置命令 | `4e60e4f`、`7164bc2` |
+| Phase 2 | ✅ | 任务级 resource/session 冻结快照、handoff/reassign 重建、PathPlan、Runner packet 一致性和公共视图 | `b38c8da`、`fea07b2`、`6de4cf1`、`75ffc23` |
+| Phase 3 / `CFG-001` 端到端 | ✅ | Claude `--max-budget-usd`、Hermes `--max-turns`、三 Executor session receipt、明确 ID resume 和 Runner fail-closed 校验 | `438030f` |
+| Phase 4 Tasks 1～3 | ✅ | Claude/Hermes 资源耗尽结构化识别、Core `input_required` 阻塞、approve 翻倍继续、deny 明确失败、Runner respond-and-dispatch | `2b02891`、`24be4dd`、`b7ba051` |
+
+当前 `b7ba051` 全量 discovery 为 `765` 项通过，Ruff、compileall、Shell 语法和
+`git diff --check` 通过。已生成并安装本地 `1.0.1a3` Phase 4 构建，build provenance
+指向 `b7ba051`；正式版本尚未提升为 `1.0.2a1`。
+
+### 0.2 正在执行
+
+| 工作项 | AgentBC 任务 | 当前事实 | 完成后动作 |
+| --- | --- | --- | --- |
+| Phase 4 Task 4 / `CFG-002` UX、公共视图与文档 | `97FK-001`（Hermes） | `running`、RunLease active、Runner alive；health yellow/unresponsive 表示缺少主动 progress 更新但心跳仍在，不是终态失败；新根任务；`max_turns=150`、source=configured、frozen=yes；目标分支 `agent/hermes@438030f` | 继续以 status/RunLease 判断；完成后检查 final callback、report、测试和 diff；审阅合入 integration，再跑全量回归与真实 exhaustion canary |
+
+旧任务 `QDKN-001` 已因 Hermes 旧运行达到 `60/60` 且 final marker 无效而终态
+`failed`；它不再恢复、不 handoff，也不是当前开发基线。`97FK-001` 是不继承其 lineage、
+session、resource 或运行记录的全新根任务。
+
+### 0.3 尚未完成，禁止提前关闭
+
+| 工作项 | 状态 | 剩余闭环 |
+| --- | --- | --- |
+| Phase 4 / `CFG-002` | 🟡 | Task 4 尚未验收/合入；真实 Claude/Hermes 耗尽、approve 翻倍同 session 继续、deny 明确 failed 的安装包 canary 尚未完成 |
+| `SESSION-001` | 🟡 | session 快照、receipt、input wait 保留和同 ID resume 已完成；终态 cleanup/purge、capability 与 cleanup receipt 未实现 |
+| `SAFE-001` | ⬜ | linked worktree Git 元数据预检、`commit_required`、控制端审查提交和恢复链路均未实现 |
+| `SKILL-001` | ⬜ | canonical controller contract 的安装身份、协议版本和 template hash 握手未实现 |
+| `DOC-002` | ⬜ | doctor 稳定 schema/退出码以及 Skill、session cleanup、safe Git、config/runtime 漂移诊断未闭环 |
+| `DOCFIX-001` | ⬜ | help、Record README、Quick Start、双语 User Guide 与三类 Skill 的最终一致性收口未完成 |
+| `REL-102` | ⬜ | 版本提升、Python 3.10/3.11/3.14、wheel/sdist、双机和三真实 Executor 发布 Gate 未执行 |
+
+### 0.4 后续固定顺序
+
+1. 验收并合入 `97FK-001`，完成 Phase 4 代码/视图/文档回归与真实 canary；
+2. Phase 5：完成 `SESSION-001` 终态 cleanup/purge、capability/receipt；
+3. Phase 6：完成 `SAFE-001` linked-worktree 控制端提交闭环；
+4. Phase 7：完成 `SKILL-001`、`DOC-002`、`DOCFIX-001`；
+5. Phase 8：执行 `REL-102` 版本与发布 Gate。
+
+除非本清单被显式更新，后续 Agent 不得跳过 Phase 4 验收，不得把 session resume
+等同于 session cleanup 完成，也不得因本地新包可运行而宣称 `1.0.2A` 已发布。
 
 ## 1. 文档地位与范围
 
@@ -34,21 +95,22 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
 
 | 项目 | 当前状态 | 1.0.2A 处理口径 |
 | --- | --- | --- |
-| `task delete` | 未实现；现有 `task close` 只删除当前非终态 head | 新增整条终态历史链删除命令 |
-| `doctor [--json]` | 已有基础实现和 A3 构建身份 | 增量补齐 Skill 漂移、配置/runtime 漂移、稳定 schema/退出码和 blocker |
-| 执行会话保留 | 未实现 | 作为本版主功能实现安全策略与能力回执 |
-| Claude 预算 | Executor/setup 存在隐藏默认值 `1.0` | 改为用户可见、可验证、可独立配置 |
+| `task delete` | 已完成并合入 | 保持整条终态历史链安全删除的回归门禁 |
+| `doctor [--json]` | 只有基础实现和 A3 构建身份；完整契约未闭环 | 增量补齐 Skill 漂移、配置/runtime 漂移、稳定 schema/退出码和 blocker |
+| 执行会话保留 | 快照、receipt、等待保留与同 ID resume 已完成；终态清理未实现 | 只继续实现 cleanup capability/receipt 与 Claude purge/目录安全清理 |
+| Claude 预算 / Hermes 迭代 | 配置、任务快照、Adapter argv 与 Runner 校验已完成 | Phase 4 继续完成耗尽决策 UX 和真实 canary |
 | Codex safe 与 linked worktree | `workspace-write` 可修改工作树，但共享 Git 元数据位于 customer root 外，`git add/commit` 会失败；普通 input 响应不能改变沙箱授权 | 派发前识别并给出可接管的安全提交路径，禁止静默扩大权限 |
-| 执行时长 | 已区分 input waiting，但仍以 wall-waiting 近似 execution | 改为真实 run interval 累计，排除恢复等待等非运行区间 |
-| Prompt 公共契约 | 三个 Adapter 各自构造，公共规则重复 | 做行为不变的公共 builder 和长度门禁 |
+| 执行时长 | 已完成真实 run interval 累计和权威 lease 当前视图 | 保持 status/report/notification 同源回归 |
+| Prompt 公共契约 | 已完成共享 builder、golden 和长度门禁 | 保持 v1 行为不变回归 |
 | Skill 身份 | package template 是 canonical source，但无安装 hash 握手 | 写入版本/协议/template hash，doctor 检查漂移 |
 | build identity | 已在 A3 修复并通过发布链验证 | 作为回归门禁，不重复开发 |
-| execution lease 快照 | 原始 extension 可能滞后 | 统一当前视图来源，避免 status/report 展示旧 lease 事实 |
+| execution lease 快照 | 已统一为权威当前视图，原始 extension 只作历史证据 | 保持 status/report 不被旧快照覆盖的回归 |
 
 ### 2.1 分阶段实施记录
 
 - `2026-08-10 / Phase 0`：已冻结资源、session、耗尽路由与 Claude Project 的 v1
-  契约和真实 CLI fixture；后续缺口以可执行 `expectedFailure` 固定。
+  契约和真实 CLI fixture；当时缺口以可执行 `expectedFailure` 固定，Phase 1～4 实现后已
+  逐项转为正常测试，当前全量基线不保留 Phase 4 `expectedFailure`。
 - `2026-08-10 / Phase 1`：已完成配置事务层、setup 保留式合并、Claude `$10`
   新默认、Hermes `agent.max_turns -> legacy max_turns -> 90` 提取，以及
   `claude budget`、`hermes max-turns`、`session retention` 三组配置命令。
@@ -61,29 +123,33 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
   任务快照注入，Claude/Hermes/Codex 官方 session receipt、同 Task 显式 ID resume，及
   Runner command/snapshot/cwd fail-closed 校验。`CFG-001` 端到端完成；`SESSION-001`
   只剩终态 cleanup/purge 与能力回执，`CFG-002` 仍保持打开。
-- Phase 3 最终证据：全量 discovery `726` 项通过，只保留 `1` 个 Phase 4 资源耗尽
-  `expectedFailure`；Ruff、compileall 与 `git diff --check` 通过。
+- `2026-08-10 / Phase 4 Tasks 1～3`：已完成资源耗尽的 Adapter 结构化识别、Core
+  `input_required`、任务级翻倍/终止决策和 Runner 原子响应派发，并合入 `b7ba051`。
+  全量 discovery `765` 项通过，不再保留 Phase 4 `expectedFailure`；Ruff、compileall、
+  Shell 语法和 `git diff --check` 通过。
+- `2026-08-10 / Phase 4 Task 4`：旧 Hermes 任务 `QDKN-001` 在旧运行 `60/60` 后失败并
+  已放弃；新根任务 `97FK-001` 使用冻结 `max_turns=150` 运行中，负责通知/dialog、公共
+  resource 视图与 Phase 4 文档。只有验收并合入后才可标记 Phase 4 完成。
 
 ## 3. 需求总表
 
-| ID | 优先级 | 需求 | 复杂度 | 预计工作量 | 主要责任模块 | 依赖 |
-| --- | --- | --- | --- | --- | --- | --- |
-| `DEL-001` | P0 | 安全删除终态历史链并归还 task code | 中高 | 4～5 人日 | Service、Store、ID、CLI、Index | A3 基线 |
-| `SESSION-001` | P0 | 执行 Agent 临时会话保留策略 | 高 | 5～8 人日 | Config、Setup、CLI、Adapter、Worker/Service、Doctor | cleanup contract |
-| `SKILL-001` | P0 | Controller contract 单一来源与 Skill hash 握手 | 中高 | 4～5 人日 | Skill template、Setup、Doctor | doctor 基础实现 |
-| `DOC-002` | P0 | 完成只诊断 doctor 契约 | 中 | 3～4 人日 | Doctor、Registry、Runner query、CLI | SKILL-001、SESSION-001 receipt |
-| `REPORT-001` | P1 | 修正恢复任务累计执行时长 | 中 | 2～3 人日 | RunLease、Service timing、Report、Task List、Notification | A3 input waiting 基线 |
-| `CFG-001` | P0 | Claude 预算与 Hermes 迭代上限配置（setup 自定义/默认 + 更改命令） | 低至中 | 2～3 人日 | Config、Setup、CLI、Claude/Hermes Adapter、Preflight | doctor 配置视图 |
-| `CFG-002` | P0 | 预算/迭代耗尽可能决策：弹窗翻倍继续或终止 | 中 | 2～3 人日 | Adapter、Worker/Core、Notifications、Service respond | CFG-001、SESSION-001 |
-| `SAFE-001` | P0 | Codex safe 在 linked worktree 下的 Git 写入预检与可接管提交 | 中高 | 4～6 人日 | Path Plan、Codex Adapter、Runner、Preflight、Input、Notification、Doctor | 权限三档、SESSION-001 resume |
-| `PROMPT-001` | P1 | 三 Executor 公共 Prompt 契约去重 | 中 | 2～3 人日 | 新公共 builder、Codex/Claude/Hermes Adapter | characterization tests |
-| `OBS-001` | P1 | 当前 execution lease 状态单一派生视图 | 低至中 | 1～2 人日 | RunLease query、Status、Report | REPORT-001 |
-| `DOCFIX-001` | P2 | 修正文档/help 漂移 | 低 | 0.5～1 人日 | Record README、CLI help、双语文档 | DEL-001 |
-| `REL-102` | Gate | 1.0.2A 版本、双机、真实 Executor 与发布验收 | 中 | 2～3 人日 | Build/CI/docs/release | 全部需求 |
+| ID | 状态 | 优先级 | 需求 | 主要责任模块 | 依赖/剩余边界 |
+| --- | --- | --- | --- | --- | --- |
+| `DEL-001` | ✅ 已合入 | P0 | 安全删除终态历史链并归还 task code | Service、Store、ID、CLI、Index | 只保留回归 |
+| `SESSION-001` | 🟡 部分完成 | P0 | 执行 Agent 临时会话保留策略 | Config、Setup、CLI、Adapter、Worker/Service、Doctor | 仅剩终态 cleanup/purge、capability/receipt |
+| `SKILL-001` | ⬜ 未开始 | P0 | Controller contract 单一来源与 Skill hash 握手 | Skill template、Setup、Doctor | doctor 基础实现 |
+| `DOC-002` | ⬜ 未闭环 | P0 | 完成只诊断 doctor 契约 | Doctor、Registry、Runner query、CLI | SKILL-001、SESSION-001 receipt、SAFE-001 |
+| `REPORT-001` | ✅ 已合入 | P1 | 修正恢复任务累计执行时长 | RunLease、Service timing、Report、Task List、Notification | 只保留回归 |
+| `CFG-001` | ✅ 已合入 | P0 | Claude 预算与 Hermes 迭代上限配置及执行注入 | Config、Setup、CLI、Claude/Hermes Adapter、Preflight | doctor 最终视图待 DOC-002 |
+| `CFG-002` | 🟡 Task 4 运行中 | P0 | 预算/迭代耗尽决策：弹窗翻倍继续或终止 | Adapter、Worker/Core、Notifications、Service respond | `97FK-001`、集成回归、真实 canary |
+| `SAFE-001` | ⬜ 未开始 | P0 | Codex safe 在 linked worktree 下的 Git 写入预检与可接管提交 | Path Plan、Codex Adapter、Runner、Preflight、Input、Notification、Doctor | 权限三档、SESSION-001 resume 已具备 |
+| `PROMPT-001` | ✅ 已合入 | P1 | 三 Executor 公共 Prompt 契约去重 | 公共 builder、Codex/Claude/Hermes Adapter | 只保留回归 |
+| `OBS-001` | ✅ 已合入 | P1 | 当前 execution lease 状态单一派生视图 | RunLease query、Status、Report | 与 REPORT-001 同步完成 |
+| `DOCFIX-001` | ⬜ 未闭环 | P2 | 修正文档/help 漂移 | Record README、CLI help、双语文档、Skills | Phase 4/5/6 字段稳定后收口 |
+| `REL-102` | ⬜ 未开始 | Gate | 1.0.2A 版本、双机、真实 Executor 与发布验收 | Build/CI/docs/release | 全部需求 |
 
-建议功能开发净工作量约 `29～43` 人日；三个 Agent 并行且严格控制巨型文件冲突时，目标
-日历周期约 3～4 周。任何真实 Executor 能力缺失应按 `unsupported` 交付，不得用危险
-文件扫描缩短排期。
+原始工作量估算只保留为历史规划，不再用于推断当前剩余进度。剩余工作以 0.3 和 0.4
+为准；任何真实 Executor 能力缺失应按 `unsupported` 交付，不得用危险文件扫描缩短排期。
 
 ## 4. 详细需求与验收
 
@@ -124,8 +190,9 @@ agentbc session retention disable
 ```
 
 Phase 1 已实现上述配置键和三命令的原子、幂等持久化，并明确输出只影响后续
-Executor run、永不删除 dispatcher conversation。终态清理、`input_required` 强制保留、
-session ID receipt 和同会话 resume 仍属于后续阶段。
+Executor run、永不删除 dispatcher conversation。Phase 2～3 已完成 `input_required`
+强制保留、session ID receipt 和同会话 resume；当前唯一未闭环部分是终态
+cleanup/purge、cleanup capability 与 receipt。
 
 Phase 2～3 子项状态（不代表 `SESSION-001` 整项完成）：
 
@@ -210,9 +277,9 @@ conversation 不受影响。
 setup 提供两项执行资源配置：Claude 单任务预算 `max_budget_usd` 与 Hermes
 单任务迭代上限 `max_turns`。交互逐项询问「自定义 / 使用默认」：
 
-Phase 1 已完成 config/setup/CLI 入口和用户值保护；Hermes `max_turns` 在本阶段仅作为
-Hermes 专属 config-only key 被 Registry 接受，不注入执行命令。Phase 2 已贯通任务快照和
-preflight/status/report 公共视图；Adapter 参数与 Runner fail-closed 参数校验仍在后续阶段完成。
+Phase 1 已完成 config/setup/CLI 入口和用户值保护；Phase 2 已贯通任务快照和
+preflight/status/report 公共视图；Phase 3 已完成 Claude/Hermes Adapter 参数注入与
+Runner fail-closed 参数校验。`CFG-001` 已端到端完成，不再是 config-only 状态。
 
 - 自定义：用户输入。Claude 输入 USD 金额；Hermes 输入迭代轮数（正整数）；
 - 使用默认：Claude 为 `$10`；Hermes 从 `~/.hermes/config.yaml` 读取
@@ -256,10 +323,13 @@ Claude 预算耗尽（`Exceeded USD budget`）或 Hermes 迭代耗尽
 （`max_iterations_reached(N/M)` 等）不再直接进入 failed，而是转为
 `input_required`（`type=choice`）等待用户决策：
 
-- Adapter 在解析结果中识别资源耗尽信号（Claude stdout 含
-  `Exceeded USD budget`；Hermes 复用 `_iteration_budget_diagnostics`），
-  构造 input_required 声明：blocked step 为当前步骤，reason 写明
-  `已使用 X / 上限 Y`（不含密钥或正文）；
+- Adapter 在无有效 final callback 且优先级允许时识别锚定资源耗尽信号，输出结构化
+  `resource_exhaustion` / `failure.kind=resource_limit_exhausted`；Claude 优先结构化
+  `error_max_budget_usd`，文本 fallback 只接受 CLI error 位置的精确形式；Hermes 只接受
+  既定锚定信号，缺少数字上限时使用任务冻结快照，禁止从普通 prompt/output 回声误判；
+- Core 校验 task/run、resource 快照与 execution session receipt 后进入
+  `input_required`：保留 done step，阻塞第一个未完成 step，reason 只显示资源使用/上限，
+  不含密钥、正文或内部路径；
 - 弹窗两按钮：「提高预算并继续」/「终止任务」，附逐项说明；
 - `approve`（提高并继续）：执行资源按任务级翻倍（Claude `max_budget_usd`
   ×2、Hermes `max_turns` ×2），仅本次任务生效，不写入全局配置；配合
@@ -269,6 +339,16 @@ Claude 预算耗尽（`Exceeded USD budget`）或 Hermes 迭代耗尽
   （`budget_exhausted_user_terminated` / `iteration_exhausted_user_terminated`），
   `retryable=false`；
 - 用户 24 小时未响应沿用 input_required 到期语义（转 `needs_recovery`）。
+
+Phase 4 当前状态：
+
+- [x] Tasks 1～2：Adapter 耗尽识别、终态优先级、Core 资源阻塞入口；
+- [x] Task 3：approve 按任务快照翻倍并恢复同 session，deny 以明确原因 failed，Runner
+  原子 respond-and-dispatch；
+- [ ] Task 4：通知/dialog 两按钮、fallback 命令、公共视图字段和三份文档；当前由
+  `97FK-001` 执行，尚未验收和合入；
+- [ ] 安装包真实 canary：Claude 与 Hermes 各覆盖耗尽→approve→同 session 继续，以及
+  耗尽→deny→明确 failed；验证前不得关闭 `CFG-002`。
 
 验收：claude 预算耗尽、hermes 迭代耗尽、翻倍继续成功、终止 failed 带原因、
 到期转恢复、弹窗文案、无密钥泄漏与 status/report 一致展示通过。
@@ -345,38 +425,35 @@ Codex/Claude/Hermes canary 通过。
 - 增加 help/template/用户文档一致性测试；
 - 同步中英文 User Guide、Quick Start 和三类 Skill 的新增命令。
 
-## 5. 开发波次与分工原则
+## 5. 当前 Phase 计划与分工原则
 
-### Wave 1：可并行、低冲突
+### 5.1 已结束的开发批次
 
-| Agent 分支 | 首项任务 | 文件所有权重点 |
-| --- | --- | --- |
-| `agent/codex` | `DEL-001` | delete 的 Service/Store/ID/CLI 路径；不改 Executor prompt |
-| `agent/claude` | `REPORT-001` + `OBS-001` | timing/RunLease/Report/View；非必要不改 `cli.py` |
-| `agent/hermes` | `PROMPT-001` | prompt contract 与三 Adapter；不改 Service 生命周期 |
+- 初始 Wave 1：`DEL-001`、`REPORT-001/OBS-001`、`PROMPT-001` 已合入；
+- Phase 0～3：资源配置、任务冻结、PathPlan、Adapter argv、session receipt/resume 已完成；
+- Phase 4 Tasks 1～3：资源耗尽识别、Core wait、approve/deny 与 Runner 响应派发已合入。
 
-Wave 1 每个分支必须交付完整、可单独测试、可合并的清洁提交。禁止三个 Agent 同时在
-`service.py/runner.py/cli.py/setup.py` 上做交叉语义修改；发现必须跨边界时先停在接口契约，
-由 integration 审查后安排下一波。
+以上项目只做回归或缺陷修正，不得在后续 Phase 中被重新规划成“尚未实现”。
 
-### Wave 2：在 Wave 1 合入后推进
+### 5.2 当前与后续 Phase
 
-1. `SAFE-001`：先冻结 linked-worktree 预检、`commit_required` 和禁止隐式提权边界，优先解除日常开发阻断；
-2. `SESSION-001`：冻结 cleanup capability/receipt contract，再接 Setup、CLI、终态 hook 与同会话 resume；
-3. `CFG-001`：与 SESSION 的 setup/config 改动串行，避免 TOML 和交互流程冲突；
-4. `CFG-002`：依赖 SESSION-001 的 resume 会话与 CFG-001 的配置入口，实现资源耗尽弹窗决策；
-5. `SKILL-001`：抽取 controller contract 并生成 Skill 身份；
-6. `DOC-002`：消费 Skill、session、budget、timing 和 safe Git 预检的最终诊断字段；
-7. `DOCFIX-001`：随相邻功能合入，但保持独立提交。
+| Phase | 状态 | 目标 | 进入下一阶段的硬门禁 |
+| --- | --- | --- | --- |
+| Phase 4 | 🟡 | 完成 `CFG-002` UX、公共视图、文档和真实耗尽决策闭环 | `97FK-001` 验收并合入；全量测试；Claude/Hermes approve/deny canary |
+| Phase 5 | ⬜ | `SESSION-001` 终态 cleanup/purge、capability/receipt、失败重试与 doctor warning 数据 | retain on/off、三 Executor capability、Claude 路径/非空目录保护、cleanup 失败不改任务终态 |
+| Phase 6 | ⬜ | `SAFE-001` linked-worktree Git 元数据预检、`commit_required`、控制端审查提交与同 Task 恢复 | 普通 clone/safe 与 linked-worktree/safe 双 canary；不扩大共享 Git 权限 |
+| Phase 7 | ⬜ | `SKILL-001`、`DOC-002`、`DOCFIX-001` | Skill hash/版本握手、doctor 0/1/2、text/JSON 同源、双语文档/help/Skill 一致 |
+| Phase 8 | ⬜ | `REL-102` 发布收口 | 全量与 Python 矩阵、wheel/sdist、clean install、三 Executor、双机、唯一 SHA |
 
-### Wave 3：版本收口
+### 5.3 分工与合并护栏
 
-1. 全量单元/Service/Runner 回归；
-2. Python 3.10/3.11/3.14 Gate；
-3. wheel/sdist、Twine、clean-install smoke；
-4. 三 Executor 真实任务和 retain on/off 能力验证；
-5. MacBook 私有 Gate、唯一 commit 构建、开发机同 SHA canary；
-6. 文档、版本、tag、Release、PyPI 三方身份与哈希一致。
+- 三个固定 agent worktree 每轮开始前同步最新 `private/integration`；
+- 同一 Phase 可并行的任务必须先冻结文件所有权；`service.py`、`runner.py`、`cli.py`、
+  `setup.py` 不允许多个 Agent 同时做交叉语义修改；
+- Agent 分支任务失败时先回滚到干净基线，再以新根任务重新派发；不得把失败现场当完成产物；
+- integration 必须审阅 Agent diff，允许在合并提交中修正跨模块契约，再跑全量门禁；
+- Task 4/文档任务不得提前勾选 Phase 5 session cleanup、Phase 6 SAFE 或 Phase 7 doctor；
+- 真实 Executor 能力不足用 `unsupported` capability/receipt 表达，不得扫描私有目录模拟支持。
 
 ## 6. 分支、提交与验收规则
 
@@ -407,12 +484,16 @@ Wave 1 每个分支必须交付完整、可单独测试、可合并的清洁提�
 - 当前全量测试基线及新增测试全部通过，真实 Executor 与双机 Gate 通过；
 - 工作树清洁，候选版本、提交、构建来源和 SHA256 可追溯。
 
-## 8. 首轮启动检查
+## 8. 每个新会话/Phase 的启动检查
 
-- [ ] `private/integration` 已 fetch 并确认基线；
-- [ ] `agent/codex`、`agent/claude`、`agent/hermes` 已同步本文档所在提交；
-- [ ] 开发机 CLI、Skill、Runner 已升级到 `1.0.1a3` 同一构建；
-- [ ] 无 active/input_required/needs_recovery 任务后再刷新 Runner；
-- [ ] Wave 1 三任务 steps 明确文件边界、测试命令和 final marker；
-- [ ] 三个任务使用各自固定 worktree 作为精确 `--customer-path`；
-- [ ] 派发后记录 task ID，不把 `accepted` 当完成。
+- [ ] 先读取第 0 节，确认当前 Phase、集成 SHA、运行中 AgentBC task ID 和未闭环边界；
+- [ ] 运行 `git status --short --branch`，不得覆盖 integration 或固定 Agent 分支上的未知改动；
+- [ ] 用 `agentbc task status` 读取当前任务；存在 active/input_required/needs_recovery 时先按
+  status/report/RunLease 处理，不创建重复任务；
+- [ ] 派发前确认 Runner ready、目标 Executor available、配置有效，并使用精确固定 worktree
+  作为 `--customer-path`；
+- [ ] 新任务 steps 明确文件所有权、验收测试和唯一合法 final marker；
+- [ ] `accepted` 后记录 task ID；完成验收必须同时检查 callback、report、RunLease、测试和 diff；
+- [ ] Agent 完成后先审阅再合入；合入后跑全量门禁并更新第 0 节，不把聊天总结当长期状态；
+- [ ] 构建/安装包记录版本、commit SHA、source tree hash 和 SHA256；正式版本提升只在
+  `REL-102` Gate 执行。
