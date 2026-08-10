@@ -14,9 +14,11 @@ from .execution_policy import (
     RESOURCE_EXTENSION_KEY,
     RESOURCE_KIND_BY_EXECUTOR,
     SESSION_EXTENSION_KEY,
+    apply_resource_input_decision,
     attach_execution_policy,
     build_task_execution_policy,
     execution_policy_view,
+    next_resource_limit,
     public_task_view,
     validate_execution_session_receipt,
     validate_execution_policy_extensions,
@@ -1040,6 +1042,19 @@ class TaskService:
                 details={"reason": "no incomplete step exists to block"},
             )
 
+        extensions = dict(task.extensions or {})
+        resources = dict(extensions[RESOURCE_EXTENSION_KEY])
+        current_limit = resources["current_limit"]
+        try:
+            next_limit = next_resource_limit(resources, executor=task.assignee)
+        except ABCError:
+            return self._fail_closed_resource_block(
+                task,
+                "resource_block_next_limit_invalid",
+                normalized_run_id,
+                execution_session,
+            )
+
         if execution_session is not None:
             self._apply_executor_session_result(
                 task,
@@ -1052,17 +1067,13 @@ class TaskService:
 
         extensions = dict(task.extensions or {})
         resources = dict(extensions[RESOURCE_EXTENSION_KEY])
-        current_limit = resources["current_limit"]
-        next_limit = _next_resource_limit(
-            current_limit,
-            int(resources.get("multiplier") or 1),
-        )
         now = _utc_now()
         deadline_at = (
             _parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)
         ).isoformat().replace("+00:00", "Z")
         used = resource_exhaustion.get("used")
-        limit = resource_exhaustion.get("limit")
+        observed_limit = resource_exhaustion.get("limit")
+        limit = observed_limit if isinstance(observed_limit, (int, float)) else current_limit
         reason = _resource_block_reason(
             resource_exhaustion.get("executor") or task.assignee,
             used,
@@ -1075,9 +1086,12 @@ class TaskService:
             "type": "choice",
             "kind": "resource_limit",
             "response_protocol": "approve_deny",
+            "executor": task.assignee,
             "resource": resources["resource"],
             "current_limit": current_limit,
             "next_limit": next_limit,
+            "used": used,
+            "source": str(resource_exhaustion.get("source") or ""),
             "summary": "任务执行达到资源上限，等待用户决定是否提高资源上限并继续",
             "reason": str(redact_secrets(reason)),
             "options": ["提高预算并继续", "终止任务"],
@@ -1246,16 +1260,121 @@ class TaskService:
         if response_type == "message" and not clean_message:
             raise ABCError("invalid_input_response", "--message requires non-empty text")
 
+        is_resource_decision = (
+            request.get("kind") == "resource_limit"
+            or request.get("response_protocol") == "approve_deny"
+        )
+        updated_resources: dict[str, Any] | None = None
+        if is_resource_decision:
+            blocked_step_id = request.get("blocked_step_id")
+            if not any(
+                step.get("id") == blocked_step_id and step.get("status") == "blocked"
+                for step in task.steps
+            ):
+                raise ABCError(
+                    "resource_decision_invalid",
+                    "Resource input does not identify the current blocked step",
+                )
+            updated_resources = apply_resource_input_decision(
+                (task.extensions or {}).get(RESOURCE_EXTENSION_KEY),
+                request,
+                response_type,
+                executor=task.assignee,
+            )
+
         answered = dict(request)
         answered["status"] = "answered"
         answered["responded_at"] = now
         answered["response"] = {"type": response_type, "summary": clean_message}
         extensions = dict(task.extensions or {})
         extensions["agentbc.input"] = answered
-        task.steps = [
-            {**step, "status": "pending"} if step.get("status") == "blocked" else dict(step)
-            for step in task.steps
-        ]
+        if updated_resources is not None:
+            extensions[RESOURCE_EXTENSION_KEY] = updated_resources
+        if is_resource_decision and response_type == "deny":
+            failure_code = {
+                "claude": "budget_exhausted_user_terminated",
+                "hermes": "iteration_exhausted_user_terminated",
+            }.get(task.assignee)
+            if failure_code is None:
+                raise ABCError(
+                    "resource_decision_invalid",
+                    f"Resource decisions are unsupported for executor: {task.assignee}",
+                )
+            failure_message = (
+                "User terminated the task after the executor resource limit was exhausted"
+            )
+            task.extensions = extensions
+            task.updated_at = now
+            self._mark_task_failed_model(
+                task,
+                failure_code,
+                failure_message,
+                {
+                    "failure": {
+                        "kind": failure_code,
+                        "layer": "resource_limit",
+                        "message": failure_message,
+                        "retryable": False,
+                    },
+                    "input_id": current_input_id,
+                    "executor": task.assignee,
+                    "resource": updated_resources["resource"],
+                    "current_limit": updated_resources["current_limit"],
+                },
+            )
+            self.store.append_event(
+                task.id,
+                {
+                    "event_type": "task.input_answered",
+                    "task_id": task.id,
+                    "input_id": current_input_id,
+                    "response_type": response_type,
+                    "created_at": now,
+                },
+            )
+            return {
+                "ok": True,
+                "task_id": task.id,
+                "input_id": current_input_id,
+                "status": "failed",
+                "dispatch_required": False,
+                "resource_terminated": True,
+                "failure": {
+                    "kind": failure_code,
+                    "layer": "resource_limit",
+                    "message": failure_message,
+                    "retryable": False,
+                },
+            }
+
+        if is_resource_decision:
+            blocked_step_id = request.get("blocked_step_id")
+            task.steps = [
+                {**step, "status": "pending"}
+                if step.get("id") == blocked_step_id and step.get("status") == "blocked"
+                else dict(step)
+                for step in task.steps
+            ]
+            session = extensions.get(SESSION_EXTENSION_KEY)
+            if isinstance(session, dict) and str(session.get("session_id") or "").strip():
+                updated_session = dict(session)
+                updated_session["session_state"] = "active"
+                session_errors = validate_session_snapshot(
+                    updated_session,
+                    executor=task.assignee,
+                )
+                if session_errors:
+                    raise ABCError(
+                        "resource_decision_invalid",
+                        "; ".join(session_errors),
+                        {"errors": session_errors},
+                    )
+                extensions[SESSION_EXTENSION_KEY] = updated_session
+        else:
+            task.steps = [
+                {**step, "status": "pending"} if step.get("status") == "blocked" else dict(step)
+                for step in task.steps
+            ]
         task.status = "running"
         task.updated_at = now
         task.extensions = _merge_execution(
@@ -1277,6 +1396,21 @@ class TaskService:
                 "created_at": now,
             },
         )
+        if is_resource_decision:
+            self.store.append_event(
+                task.id,
+                {
+                    "event_type": "task.resource_limit_increased",
+                    "task_id": task.id,
+                    "input_id": current_input_id,
+                    "executor": task.assignee,
+                    "resource": updated_resources["resource"],
+                    "previous_limit": request.get("current_limit"),
+                    "current_limit": updated_resources["current_limit"],
+                    "exhaustion_count": updated_resources["exhaustion_count"],
+                    "created_at": now,
+                },
+            )
         write_task_progress(task, state="resuming", message="user response received; resuming task", source="runner")
         self._refresh_task_index()
         return {
@@ -1329,9 +1463,29 @@ class TaskService:
         execution_session: dict[str, Any] | None = None,
     ) -> bool:
         """Mark a started task whose executor termination could not be confirmed."""
+        task = self.get_task(task_id)
+        return self._mark_task_failed_model(
+            task,
+            code,
+            message,
+            details,
+            executor_run_id=executor_run_id,
+            execution_session=execution_session,
+        )
+
+    def _mark_task_failed_model(
+        self,
+        task: TaskModel,
+        code: str,
+        message: str,
+        details: dict[str, Any] | None = None,
+        *,
+        executor_run_id: str = "",
+        execution_session: dict[str, Any] | None = None,
+    ) -> bool:
+        """Fail a caller-validated task model with one atomic task-state write."""
         from .task_health import clear_task_progress
 
-        task = self.get_task(task_id)
         task_id = task.id
         if _has_close_intent(task):
             return False
@@ -1363,8 +1517,15 @@ class TaskService:
         else:
             self._set_known_executor_session_state(task, "terminal")
         _supersede_final_callback(task, "failed", compact_message)
+        execution_updates = {"internal_status": "failed"}
+        from .run_lease import RunLeaseState, close_lease, load_lease
+
+        run_lease = load_lease(task_id, self.board_root)
+        if run_lease is not None and run_lease.state == RunLeaseState.SUSPENDED:
+            close_lease(run_lease, self.board_root)
+            execution_updates["lease_state"] = RunLeaseState.CLOSED
         task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
-        task.extensions = _merge_execution(task.extensions, {"internal_status": "failed"})
+        task.extensions = _merge_execution(task.extensions, execution_updates)
         self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)
@@ -2487,9 +2648,6 @@ def _validate_resource_block_receipt(
     resource = str(resource_exhaustion.get("resource") or "").strip()
     if resource != RESOURCE_KIND_BY_EXECUTOR.get(executor):
         return "resource_block_resource_mismatch"
-    limit = resource_exhaustion.get("limit")
-    if isinstance(limit, bool) or not isinstance(limit, (int, float)):
-        return "resource_block_invalid_receipt"
     if not str(run_id or "").strip():
         return "resource_block_run_mismatch"
     extensions = task.extensions or {}
@@ -2498,6 +2656,25 @@ def _validate_resource_block_receipt(
     if snapshot_errors:
         return "resource_block_snapshot_invalid"
     if resources.get("resource") != resource:
+        return "resource_block_snapshot_invalid"
+    source = str(resource_exhaustion.get("source") or "").strip()
+    allowed_sources = {
+        "claude": {"structured_error_max_budget_usd", "text_exceeded_usd_budget"},
+        "hermes": {
+            "max_iterations_reached",
+            "budget_exhausted",
+            "iteration_budget_message",
+            "reached_maximum_iterations",
+        },
+    }
+    if source not in allowed_sources.get(executor, set()):
+        return "resource_block_invalid_receipt"
+    limit = resource_exhaustion.get("limit")
+    if limit is not None and (
+        isinstance(limit, bool) or not isinstance(limit, (int, float))
+    ):
+        return "resource_block_invalid_receipt"
+    if resource_exhaustion.get("limit_matches_snapshot") is False:
         return "resource_block_snapshot_invalid"
     session = extensions.get(SESSION_EXTENSION_KEY)
     session_errors = validate_session_snapshot(session, executor=executor)
@@ -2539,15 +2716,6 @@ def _resource_block_step(
     else:
         updated["status"] = str(updated.get("status") or "pending")
     return updated
-
-
-def _next_resource_limit(limit: Any, multiplier: int) -> Any:
-    if isinstance(limit, bool) or not isinstance(limit, (int, float)):
-        raise ABCError("invalid_execution_resource_limit", "Invalid current resource limit")
-    factor = max(int(multiplier or 1), 1)
-    if isinstance(limit, int):
-        return limit * factor
-    return round(float(limit) * factor, 6)
 
 
 def _resource_block_reason(executor: str, used: Any, limit: Any) -> str:

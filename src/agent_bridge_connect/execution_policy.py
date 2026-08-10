@@ -115,6 +115,82 @@ def validate_resource_snapshot(
     return errors
 
 
+def apply_resource_input_decision(
+    value: Any,
+    request: Any,
+    response_type: str,
+    *,
+    executor: str,
+) -> dict[str, Any]:
+    """Validate and apply one task-scoped resource approve/deny decision."""
+    errors = validate_resource_snapshot(value, executor=executor)
+    if errors:
+        raise ABCError("resource_decision_invalid", "; ".join(errors), {"errors": errors})
+    if not isinstance(request, dict):
+        raise ABCError("resource_decision_invalid", "Resource input request must be an object")
+    if request.get("kind") != "resource_limit":
+        raise ABCError("resource_decision_invalid", "Input is not a resource-limit request")
+    if request.get("response_protocol") != "approve_deny":
+        raise ABCError(
+            "resource_decision_invalid",
+            "Resource-limit input must use the approve_deny response protocol",
+        )
+    decision = str(response_type or "").strip()
+    if decision not in {"approve", "deny"}:
+        raise ABCError(
+            "invalid_input_response",
+            "Resource-limit input requires --approve or --deny",
+        )
+
+    resource = dict(value)
+    current_limit = resource["current_limit"]
+    request_current_limit = request.get("current_limit")
+    if isinstance(request_current_limit, bool) or request_current_limit != current_limit:
+        raise ABCError(
+            "resource_decision_stale",
+            "Resource input current_limit no longer matches the task snapshot",
+        )
+    request_executor = request.get("executor")
+    if request_executor not in (None, "") and request_executor != resource["executor"]:
+        raise ABCError(
+            "resource_decision_stale",
+            "Resource input executor no longer matches the task snapshot",
+        )
+    request_resource = request.get("resource")
+    if request_resource not in (None, "") and request_resource != resource["resource"]:
+        raise ABCError(
+            "resource_decision_stale",
+            "Resource input kind no longer matches the task snapshot",
+        )
+
+    if decision == "approve":
+        next_limit = next_resource_limit(resource, executor=executor)
+        request_next_limit = request.get("next_limit")
+        if isinstance(request_next_limit, bool) or request_next_limit != next_limit:
+            raise ABCError(
+                "resource_decision_stale",
+                "Resource input next_limit does not match the exact task multiplier",
+            )
+        resource["current_limit"] = next_limit
+        resource["last_decision"] = "increase"
+    else:
+        resource["last_decision"] = "terminate"
+    errors = validate_resource_snapshot(resource, executor=executor)
+    if errors:
+        raise ABCError("resource_decision_invalid", "; ".join(errors), {"errors": errors})
+    return resource
+
+
+def next_resource_limit(value: Any, *, executor: str) -> int | float:
+    """Return the exact validated next task limit without mutating the snapshot."""
+    errors = validate_resource_snapshot(value, executor=executor)
+    if errors:
+        raise ABCError("resource_decision_invalid", "; ".join(errors), {"errors": errors})
+    current_limit = value["current_limit"]
+    multiplier = value["multiplier"]
+    return _normalize_resource_limit(executor, current_limit * multiplier)
+
+
 def build_session_snapshot(
     executor: str,
     *,

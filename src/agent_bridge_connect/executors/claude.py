@@ -39,7 +39,9 @@ from ..path_provider import find_binary
 
 SAFETY_TIMEOUT_S = 24 * 60 * 60
 
-_CLAUDE_BUDGET_ERROR_RE = re.compile(r"Exceeded\s+USD\s+budget")
+_CLAUDE_BUDGET_ERROR_RE = re.compile(
+    r"(?m)^Error:\s+Exceeded\s+USD\s+budget(?:\s*\(|\s*$)"
+)
 _CLAUDE_BUDGET_AMOUNT_RE = re.compile(
     r"Exceeded\s+USD\s+budget\s*\(\s*\$?\s*(?P<amount>\d+(?:\.\d+)?)"
 )
@@ -647,8 +649,10 @@ def _claude_resource_exhaustion(
     CLI error output. A valid callback or a retryable transport failure always
     wins the terminal-state priority regardless of these diagnostics.
     """
-    structured_limit = _claude_structured_budget_limit(parsed_output)
-    if structured_limit is not None:
+    structured_detected, structured_limit = _claude_structured_budget_receipt(
+        parsed_output
+    )
+    if structured_detected:
         return build_resource_exhaustion(
             "claude",
             "max_budget_usd",
@@ -659,7 +663,10 @@ def _claude_resource_exhaustion(
         )
     if validation.valid or returncode == 0:
         return None
-    error_output = f"{stderr}\n{stdout}"
+    error_output = str(stderr or "")
+    if _CLAUDE_BUDGET_ERROR_RE.search(error_output) is None:
+        candidate = str(stdout or "").lstrip()
+        error_output = candidate if _CLAUDE_BUDGET_ERROR_RE.match(candidate) else ""
     if _CLAUDE_BUDGET_ERROR_RE.search(error_output) is None:
         return None
     amount = _claude_budget_amount_from_text(error_output)
@@ -673,8 +680,10 @@ def _claude_resource_exhaustion(
     )
 
 
-def _claude_structured_budget_limit(parsed_output: Any) -> int | float | None:
-    """Recursively find the ``error_max_budget_usd`` subtype and its limit."""
+def _claude_structured_budget_receipt(
+    parsed_output: Any,
+) -> tuple[bool, int | float | None]:
+    """Recursively find the authoritative subtype and its optional limit."""
     if isinstance(parsed_output, dict):
         if (
             str(parsed_output.get("subtype") or "").strip() == "error_max_budget_usd"
@@ -684,21 +693,22 @@ def _claude_structured_budget_limit(parsed_output: Any) -> int | float | None:
                 str(parsed_output.get("message") or "")
             )
             if amount is not None:
-                return amount
+                return True, amount
             for field in ("budget", "max_budget_usd", "limit", "amount"):
                 value = parsed_output.get(field)
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    return float(value)
+                    return True, float(value)
+            return True, None
         for value in parsed_output.values():
-            found = _claude_structured_budget_limit(value)
-            if found is not None:
-                return found
+            detected, limit = _claude_structured_budget_receipt(value)
+            if detected:
+                return True, limit
     elif isinstance(parsed_output, list):
         for item in parsed_output:
-            found = _claude_structured_budget_limit(item)
-            if found is not None:
-                return found
-    return None
+            detected, limit = _claude_structured_budget_receipt(item)
+            if detected:
+                return True, limit
+    return False, None
 
 
 def _claude_budget_amount_from_text(text: str) -> int | float | None:

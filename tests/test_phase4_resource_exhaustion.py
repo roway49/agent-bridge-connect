@@ -92,6 +92,25 @@ class ClaudeExhaustionDetectionTests(unittest.TestCase):
         self.assertIsNotNone(detection)
         self.assertEqual(detection["limit"], 2.5)
 
+    def test_structured_subtype_without_amount_uses_snapshot_limit(self) -> None:
+        packet = _claude_packet(budget=2.5)
+        parsed = {
+            "type": "error",
+            "subtype": "error_max_budget_usd",
+            "message": "Budget limit reached",
+        }
+        detection = _claude_resource_exhaustion(
+            json.dumps(parsed),
+            "",
+            parsed,
+            packet,
+            extract_callback_validation_from_output("", packet, "run-1"),
+            1,
+        )
+        self.assertIsNotNone(detection)
+        self.assertIsNone(detection["limit"])
+        self.assertIsNone(detection["limit_matches_snapshot"])
+
     def test_text_fallback_requires_nonzero_exit_and_exact_phrase(self) -> None:
         packet = _claude_packet(budget=2.5)
         stderr = "Error: Exceeded USD budget ($2.5). This run used too much."
@@ -138,6 +157,18 @@ class ClaudeExhaustionDetectionTests(unittest.TestCase):
                     1,
                 )
                 self.assertIsNone(detection)
+
+    def test_text_fallback_rejects_prompt_echo_in_stdout(self) -> None:
+        packet = _claude_packet(budget=2.5)
+        detection = _claude_resource_exhaustion(
+            "Task text says Exceeded USD budget ($2.5)",
+            "",
+            None,
+            packet,
+            extract_callback_validation_from_output("", packet, "run-1"),
+            1,
+        )
+        self.assertIsNone(detection)
 
     def test_text_fallback_rejects_valid_callback(self) -> None:
         packet = _claude_packet(budget=2.5)
@@ -308,8 +339,18 @@ class ClaudeExecutorEndToEndTests(unittest.TestCase):
             },
         }
 
-    def _start(self, packet: dict, completed: subprocess.CompletedProcess):
-        executor = ClaudeExecutor(command=sys.executable, transport="direct")
+    def _start(
+        self,
+        packet: dict,
+        completed: subprocess.CompletedProcess,
+        *,
+        output_format: str = "text",
+    ):
+        executor = ClaudeExecutor(
+            command=sys.executable,
+            transport="direct",
+            output_format=output_format,
+        )
         with (
             mock.patch.object(executor, "_start_run_lease"),
             mock.patch.object(executor, "_heartbeat_run"),
@@ -332,7 +373,7 @@ class ClaudeExecutorEndToEndTests(unittest.TestCase):
             }
         )
         completed = subprocess.CompletedProcess([], 1, stdout=structured, stderr="")
-        poll = self._start(self._packet(), completed)
+        poll = self._start(self._packet(), completed, output_format="json")
         self.assertEqual(poll.status, "input_required")
         self.assertEqual(poll.result["failure"]["kind"], "resource_limit_exhausted")
         self.assertIsNone(poll.result["agent_callback"])
@@ -432,6 +473,12 @@ class HermesExhaustionRoutingTests(unittest.TestCase):
                 )
                 self.assertIsNone(terminal.callback)
                 self.assertTrue(terminal.resource_exhaustion["detected"])
+
+    def test_budget_exhausted_without_numeric_limit_uses_frozen_snapshot(self) -> None:
+        terminal = self._terminal("turn_exit_reason: budget_exhausted")
+        self.assertEqual(terminal.status, "input_required")
+        self.assertIsNone(terminal.resource_exhaustion["limit"])
+        self.assertIsNone(terminal.resource_exhaustion["limit_matches_snapshot"])
 
     def test_pseudo_signal_is_not_exhaustion(self) -> None:
         for pseudo in (
@@ -612,6 +659,7 @@ class CoreResourceBlockTests(unittest.TestCase):
         self.assertEqual(request["response_protocol"], "approve_deny")
         self.assertEqual(request["type"], "choice")
         self.assertEqual(request["resource"], "max_turns")
+        self.assertEqual(request["executor"], "hermes")
         self.assertEqual(request["current_limit"], 60)
         self.assertEqual(request["next_limit"], 120)
         self.assertEqual(request["status"], "waiting")
@@ -623,6 +671,24 @@ class CoreResourceBlockTests(unittest.TestCase):
         self.assertEqual(lease.state, RunLeaseState.SUSPENDED)
         events = self.service.store.read_events(task.id)
         self.assertEqual(events[-1]["event_type"], "task.resource_limit_blocked")
+
+    def test_block_accepts_budget_exhausted_without_reported_limit(self) -> None:
+        task = self._hermes_task()
+        run_id = self._started_run(task.id)
+        exhaustion = self._exhaustion()
+        exhaustion.update(
+            {
+                "used": None,
+                "limit": None,
+                "source": "budget_exhausted",
+                "limit_matches_snapshot": None,
+            }
+        )
+        result = self.service.block_task_for_resource(task.id, run_id, exhaustion)
+        self.assertTrue(result["ok"])
+        request = self.service.get_task(task.id).extensions["agentbc.input"]
+        self.assertEqual(request["current_limit"], 60)
+        self.assertEqual(request["next_limit"], 120)
 
     def test_block_preserves_prior_done_steps(self) -> None:
         task = self._hermes_task()
