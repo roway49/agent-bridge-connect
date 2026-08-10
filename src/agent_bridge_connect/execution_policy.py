@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import copy
 import math
 import re
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -248,6 +250,129 @@ def attach_execution_policy(
     return updated
 
 
+def build_task_execution_policy(
+    executor: str,
+    config: dict[str, Any] | None,
+    workspace: dict[str, Any],
+    *,
+    created_at: str | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Freeze the v1 resource and session policy for one new task assignment."""
+    normalized_executor = str(executor or "").strip().lower()
+    if normalized_executor not in {"claude", "hermes", "codex"}:
+        return None, None
+
+    from .config import (
+        configured_claude_budget,
+        configured_hermes_max_turns,
+        configured_session_retention,
+        validate_config,
+    )
+
+    config_value = config if isinstance(config, dict) else {}
+    config_errors = validate_config(config_value)
+    if config_errors:
+        raise ABCError(
+            "config_invalid",
+            "; ".join(config_errors),
+            {"errors": config_errors},
+        )
+
+    resources: dict[str, Any] | None = None
+    if normalized_executor == "claude":
+        limit, source = configured_claude_budget(config_value)
+        resources = build_resource_snapshot(
+            normalized_executor,
+            limit,
+            source=source,
+            created_at=created_at,
+        )
+    elif normalized_executor == "hermes":
+        limit, source = configured_hermes_max_turns(config_value)
+        resources = build_resource_snapshot(
+            normalized_executor,
+            limit,
+            source=source,
+            created_at=created_at,
+        )
+
+    retain, _retention_source = configured_session_retention(config_value)
+    project_path = ""
+    session_id = ""
+    if normalized_executor == "claude":
+        session_id = str(uuid.uuid4())
+        if retain:
+            project_path = str(workspace.get("project_root") or workspace.get("root") or "")
+        else:
+            project_path = str(
+                workspace.get("executor_project_root")
+                or _canonical_claude_project_path(workspace)
+            )
+    session = build_session_snapshot(
+        normalized_executor,
+        retain=retain,
+        session_id=session_id,
+        project_path=project_path,
+        session_state="pending",
+        created_at=created_at,
+    )
+    return resources, session
+
+
+def execution_policy_view(extensions: Any) -> dict[str, Any]:
+    """Return the stable, path-free policy projection used by public interfaces."""
+    value = extensions if isinstance(extensions, dict) else {}
+    resource = value.get(RESOURCE_EXTENSION_KEY)
+    session = value.get(SESSION_EXTENSION_KEY)
+    resource_view = None
+    if isinstance(resource, dict):
+        resource_view = {
+            "resource": resource.get("resource"),
+            "limit": resource.get("current_limit"),
+            "source": resource.get("source"),
+            "frozen": True,
+        }
+    session_view = None
+    if isinstance(session, dict):
+        session_view = {
+            "retain": session.get("retain"),
+            "session_id": session.get("session_id"),
+            "session_state": session.get("session_state"),
+            "project_mode": session.get("project_mode"),
+        }
+    return {
+        "version": EXECUTION_POLICY_VERSION,
+        "resources": resource_view,
+        "session": session_view,
+    }
+
+
+def public_workspace_view(workspace: Any) -> dict[str, Any]:
+    """Remove executor-only path-plan fields from a public workspace projection."""
+    public = copy.deepcopy(workspace) if isinstance(workspace, dict) else {}
+    public.pop("executor_project_root", None)
+    return public
+
+
+def public_extensions_view(extensions: Any) -> dict[str, Any]:
+    """Remove internal session paths while preserving the remaining extension record."""
+    public = copy.deepcopy(extensions) if isinstance(extensions, dict) else {}
+    session = public.get(SESSION_EXTENSION_KEY)
+    if isinstance(session, dict):
+        session.pop("project_path", None)
+    return public
+
+
+def public_task_view(task: dict[str, Any]) -> dict[str, Any]:
+    """Return one public task projection without mutating the durable packet."""
+    public = copy.deepcopy(task)
+    extensions = task.get("extensions") if isinstance(task.get("extensions"), dict) else {}
+    public["workspace"] = public_workspace_view(task.get("workspace"))
+    public["extensions"] = public_extensions_view(extensions)
+    public["execution_policy"] = execution_policy_view(extensions)
+    return public
+
+
 def extract_hermes_session_id(stderr: str) -> str | None:
     """Extract only Hermes' official single-query session receipt."""
     matches = _HERMES_SESSION_RECEIPT_RE.findall(str(stderr or ""))
@@ -313,6 +438,28 @@ def _valid_resource_limit(executor: str, value: Any) -> bool:
     if executor == "claude":
         return isinstance(value, (int, float)) and math.isfinite(float(value)) and value > 0
     return False
+
+
+def _canonical_claude_project_path(workspace: dict[str, Any]) -> Path:
+    agentbc_root = Path(str(workspace.get("agentbc_root") or "")).expanduser()
+    task_code = str(workspace.get("task_code") or "").strip()
+    iteration = str(workspace.get("iteration") or "").strip()
+    task_date = str(workspace.get("task_date") or "").strip()
+    if not agentbc_root.is_absolute() or not task_code or not iteration or not task_date:
+        raise ABCError(
+            "path_plan_missing",
+            "Claude session policy requires the canonical task path-plan fields",
+        )
+    task_id = f"{task_code}-{int(iteration):03d}"
+    return (
+        agentbc_root
+        / "tasks"
+        / "artifacts"
+        / task_date
+        / task_code
+        / task_id
+        / "claude"
+    ).resolve()
 
 
 def _raise_policy_errors(errors: list[str], key: str) -> None:

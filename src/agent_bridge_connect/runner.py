@@ -969,6 +969,7 @@ class RunnerState:
 
     def dispatch_task(self, request: dict[str, Any]) -> dict[str, Any]:
         from .config import load_config
+        from .execution_policy import execution_policy_view
         from .service import TaskService
 
         board = self._atomic_board(str(request.get("board_root") or ""))
@@ -996,7 +997,10 @@ class RunnerState:
             bool(request.get("monitor", False)),
         )
         self._ensure_task_list_dashboard(board, task_id=task_id)
-        return dispatched
+        return {
+            **dispatched,
+            "execution_policy": execution_policy_view(task_model.extensions),
+        }
 
     def respond_and_dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
         """Record an input answer and launch the same task under one Runner lock."""
@@ -1139,6 +1143,7 @@ class RunnerState:
         config: Path | None,
         request: dict[str, Any],
     ) -> dict[str, Any]:
+        from .execution_policy import execution_policy_view, public_workspace_view
         from .reports import write_report_files
 
         try:
@@ -1165,7 +1170,8 @@ class RunnerState:
             **dispatched,
             "task_id": task.id,
             "assignee": task.assignee,
-            "workspace": task.workspace,
+            "workspace": public_workspace_view(task.workspace),
+            "execution_policy": execution_policy_view(task.extensions),
         }
 
     def _validate_task_path_plan(self, task: dict[str, Any]) -> None:

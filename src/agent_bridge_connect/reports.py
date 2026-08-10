@@ -19,6 +19,7 @@ from .task_id import split_task_ref, task_sequence
 from .task_store import TaskStore
 from .terminal_states import TASK_TERMINAL_STATES
 from .timing_view import build_timing_view
+from .execution_policy import execution_policy_view, public_workspace_view
 
 
 _OPENAI_KEY_RE = re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{12,}", re.IGNORECASE)
@@ -68,18 +69,24 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
     created_at = _created_at(task, events)
     completed_at = _completed_at(task, events)
     workspace = task.get("workspace") or {}
+    extensions = task.get("extensions") or {}
+    session_snapshot = extensions.get("agentbc.session") or {}
     artifacts = _dedupe_values(
         [
             *_collect_named_values(steps, "artifacts"),
-            *_collect_workspace_artifacts(workspace),
+            *_collect_workspace_artifacts(workspace, session_snapshot),
         ]
     )
+    artifacts = [
+        artifact
+        for artifact in artifacts
+        if not _is_internal_executor_artifact(artifact, workspace, session_snapshot)
+    ]
     errors = list(task.get("errors") or [])
     errors.extend(_collect_named_values(steps, "error", include_scalars=True))
     lease = load_lease(task_id, root)
     lease_state = lease.state if lease is not None else RunLeaseState.CLOSED
     heartbeat_age = round(heartbeat_age_s(lease), 3) if lease is not None else None
-    extensions = task.get("extensions") or {}
     final_callback = extensions.get("agentbc.final_callback") or {}
     report_ready = bool(workspace.get("report_file")) and Path(str(workspace.get("report_file"))).expanduser().exists()
     chain = _chain_snapshot(task_id, root, task)
@@ -117,7 +124,7 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "artifacts": artifacts,
         "interventions": interventions,
         "errors": errors,
-        "workspace": workspace,
+        "workspace": public_workspace_view(workspace),
         "session_id": task.get("session_id"),
         "provenance": extensions.get("agentbc.provenance") or {},
         "lineage": extensions.get("agentbc.lineage") or {},
@@ -143,6 +150,7 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "timing": timing,
         "input": input_request,
         "permission": permission,
+        "execution_policy": execution_policy_view(extensions),
         "run_lease_state": lease_state,
         "time_since_last_heartbeat_s": heartbeat_age,
         "recovery_recommendation": (
@@ -199,6 +207,7 @@ def generate_task_brief(task_id: str, board_root: Path) -> dict[str, Any]:
             "interventions": report["interventions"],
             "workspace": report.get("workspace") or {},
             "permission": report.get("permission") or {},
+            "execution_policy": report.get("execution_policy") or {},
         },
         "changed_files": changed_files,
         "verification": verification,
@@ -389,7 +398,10 @@ def _collect_named_values(
     return _dedupe_values(collected)
 
 
-def _collect_workspace_artifacts(workspace: dict[str, Any]) -> list[str]:
+def _collect_workspace_artifacts(
+    workspace: dict[str, Any],
+    session: dict[str, Any] | None = None,
+) -> list[str]:
     if workspace.get("customer_dir") is True:
         return []
     artifacts_dir = workspace.get("artifacts_dir") if isinstance(workspace, dict) else None
@@ -401,11 +413,37 @@ def _collect_workspace_artifacts(workspace: dict[str, Any]) -> list[str]:
     values: list[str] = []
     for path in sorted(root.rglob("*")):
         if path.is_file():
+            if _is_internal_executor_artifact(str(path), workspace, session or {}):
+                continue
             try:
                 values.append(str(path.relative_to(root)))
             except ValueError:
                 values.append(str(path))
     return values
+
+
+def _is_internal_executor_artifact(
+    artifact: Any,
+    workspace: dict[str, Any],
+    session: dict[str, Any],
+) -> bool:
+    if not isinstance(artifact, str) or session.get("project_mode") != "ephemeral":
+        return False
+    project_path = str(session.get("project_path") or "").strip()
+    if not project_path:
+        return False
+    internal_root = Path(project_path).expanduser().resolve()
+    candidate = Path(artifact).expanduser()
+    if not candidate.is_absolute():
+        artifact_root = str(workspace.get("artifact_root") or workspace.get("artifacts_dir") or "")
+        if not artifact_root:
+            return False
+        candidate = Path(artifact_root).expanduser() / candidate
+    try:
+        candidate.resolve().relative_to(internal_root)
+    except ValueError:
+        return False
+    return True
 
 
 def _dedupe_values(values: list[Any]) -> list[Any]:
@@ -595,6 +633,24 @@ def _render_report_md(report: dict[str, Any]) -> str:
         )
     else:
         lines.append("- None")
+
+    policy = report.get("execution_policy") or {}
+    resources = policy.get("resources") or {}
+    executor_session = policy.get("session") or {}
+    lines.extend(
+        [
+            "",
+            "## Execution Policy",
+            f"- Resource: `{resources.get('resource') or 'none'}`",
+            f"- Effective limit: `{resources.get('limit') if resources else 'none'}`",
+            f"- Resource source: `{resources.get('source') or 'none'}`",
+            f"- Resource frozen: `{'yes' if resources.get('frozen') else 'no'}`",
+            f"- Retain executor session: `{'yes' if executor_session.get('retain') else 'no'}`",
+            f"- Executor session ID: `{executor_session.get('session_id') or 'pending'}`",
+            f"- Session state: `{executor_session.get('session_state') or 'unavailable'}`",
+            f"- Project mode: `{executor_session.get('project_mode') or 'unavailable'}`",
+        ]
+    )
 
     image_inputs = (report.get("media") or {}).get("images") or []
     if image_inputs:

@@ -64,6 +64,8 @@ def validate_config(config: dict[str, Any]) -> list[str]:
     executors = config.get("executors")
     if isinstance(executors, dict):
         claude = executors.get("claude")
+        if "claude" in executors and not isinstance(claude, dict):
+            errors.append("executors.claude must be a table")
         if isinstance(claude, dict) and "max_budget_usd" in claude:
             budget = claude["max_budget_usd"]
             if (
@@ -74,6 +76,8 @@ def validate_config(config: dict[str, Any]) -> list[str]:
             ):
                 errors.append("executors.claude.max_budget_usd must be a positive finite number")
         hermes = executors.get("hermes")
+        if "hermes" in executors and not isinstance(hermes, dict):
+            errors.append("executors.hermes must be a table")
         if isinstance(hermes, dict) and "max_turns" in hermes:
             max_turns = hermes["max_turns"]
             if isinstance(max_turns, bool) or not isinstance(max_turns, int) or max_turns <= 0:

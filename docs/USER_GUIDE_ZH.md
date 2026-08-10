@@ -80,11 +80,17 @@ max_turns = 150
 retain_executor_sessions = true
 ```
 
-Phase 1 状态说明：Claude Adapter 已在后续 run 中消费配置预算；Hermes
-`max_turns` 当前已经持久化并校验，但要到后续运行时接线阶段才会传入原生
-`--max-turns`，在此之前 Hermes 仍使用自身当前配置。retention 当前也是已持久化的
-策略入口；终态清理、保留会话回执和同 session resume 将在后续会话生命周期阶段完成。
-因此现在执行 enable，不应被解释为已经证明某个终态 Executor session 得到保留。
+Phase 2 任务契约状态：每个新的 Claude/Hermes 任务会把有效资源上限冻结到
+`agentbc.resources`；每个新的 Claude/Hermes/Codex 任务会把 retention 与执行器会话元数据
+冻结到 `agentbc.session`。配置缺失时使用 `$10`、`90` 和 retention `false`；字段存在但
+非法时 fail closed。handoff 按目标执行器创建新快照，reassign 重建快照；同一 Task ID 的
+resume、retry、recover 和再次 dispatch 都保留原快照。
+
+create/dispatch accepted、preflight、status、report 与 Task Brief 统一使用无内部路径的
+`execution_policy` 视图：展示有效上限、来源、冻结状态（Codex resources 为 `null`），以及
+retain、执行器 session ID/state 和 project mode。执行器内部 project path 只保留在 task
+packet，不作为 artifact 展示。Hermes `--max-turns`、同会话 resume、终态 cleanup/purge 和
+资源耗尽处理仍属于后续运行时阶段；存在冻结快照不代表这些行为已经执行。
 
 该策略只管理 Executor 创建的临时会话。AgentBC 永远不会删除创建或 handoff 任务的
 dispatcher conversation。修改全局设置不会改变 active、`input_required` 或 recovery

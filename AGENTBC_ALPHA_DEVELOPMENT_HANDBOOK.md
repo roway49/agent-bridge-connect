@@ -2118,6 +2118,24 @@ read-modify-write 事务；setup refresh 只合并 AgentBC 拥有字段，不再
 已改变资源。`agentbc.resources` 任务快照、Hermes `--max-turns` 注入、Runner 参数校验、
 会话清理/恢复、预算耗尽弹窗和翻倍继续均未在 Phase 1 实现；相关需求必须继续保持打开。
 
+**2026-08-10 Phase 2 task-contract 状态**：新 Claude/Hermes 任务已冻结
+`agentbc.resources`，新 Claude/Hermes/Codex 任务已冻结 `agentbc.session`。配置字段缺失
+分别回退 Claude `10`、Hermes `90`、retention `false`；字段存在但非法时 fail closed。
+Claude pending session 预分配 UUID，Hermes/Codex pending receipt 为空。handoff 按目标
+Executor 与当前配置创建新快照；reassign 重建并记录无内部路径的前后策略；同 Task ID 的
+resume/retry/recover/re-dispatch 不重新读取配置。
+
+create/dispatch accepted、preflight、status、report 与 Task Brief 统一消费公开
+`execution_policy` 投影：resources 只展示 effective limit/source/frozen（Codex 为 null），
+session 只展示 retain/session_id/session_state/project_mode。内部 task.json 与 Runner packet
+保留完整 snapshot，但公共 workspace/session 移除 `executor_project_root`/`project_path`，
+临时 Claude Project 不计入 artifact；终态 record compaction 完整保留两个策略扩展并继续
+受 10 KiB 上限约束。
+
+以上只完成 task-contract/public-view 子项。PathPlan 原生字段和安全校验由 Phase 2 Task 2
+及 integration 收口；Executor CLI 参数、Runner 参数核对、同会话 resume、purge/cleanup 与
+资源耗尽处理仍保持打开，因此不得关闭完整 `SESSION-001/CFG-001/CFG-002`。
+
 **Claude Project 分流**：设置只对后续新 run 生效，每个 run 创建时必须固化
 project mode/path/session ID，不得在 resume 时因全局设置变更而切换。保留模式
 直接以已解析的用户工程作为 Claude Project，不创建临时目录，也绝不对
