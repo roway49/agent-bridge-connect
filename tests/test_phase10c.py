@@ -738,7 +738,10 @@ class SetupModeTests(unittest.TestCase):
             from agent_bridge_connect import setup
 
             with contextlib.redirect_stdout(io.StringIO()), \
-                 mock.patch("builtins.input", side_effect=["safe", *(["y"] * 10)]), \
+                 mock.patch(
+                     "builtins.input",
+                     side_effect=["safe", "y", "y", "1", "y", "1", "n", *(["y"] * 10)],
+                 ), \
                  mock.patch.object(setup, "_configure_alias", return_value={"status": "skipped"}):
                 result = setup.run_setup(interactive=True)
 

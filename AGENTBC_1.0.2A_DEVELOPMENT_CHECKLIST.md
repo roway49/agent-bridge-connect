@@ -1,7 +1,7 @@
 # AgentBC 1.0.2A 需求开发清单
 
 > 制定日期：2026-08-08  
-> 状态：开发启动  
+> 状态：开发进行中（Phase 0、Phase 1 已完成）
 > 当前开发分支：`private/integration`  
 > 固定 Agent 分支：`agent/codex`、`agent/claude`、`agent/hermes`  
 > 开发基线：`private/integration@cfddccba246e6d057172f6716ab4318ade9a40ad`  
@@ -44,6 +44,19 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
 | Skill 身份 | package template 是 canonical source，但无安装 hash 握手 | 写入版本/协议/template hash，doctor 检查漂移 |
 | build identity | 已在 A3 修复并通过发布链验证 | 作为回归门禁，不重复开发 |
 | execution lease 快照 | 原始 extension 可能滞后 | 统一当前视图来源，避免 status/report 展示旧 lease 事实 |
+
+### 2.1 分阶段实施记录
+
+- `2026-08-10 / Phase 0`：已冻结资源、session、耗尽路由与 Claude Project 的 v1
+  契约和真实 CLI fixture；后续缺口以可执行 `expectedFailure` 固定。
+- `2026-08-10 / Phase 1`：已完成配置事务层、setup 保留式合并、Claude `$10`
+  新默认、Hermes `agent.max_turns -> legacy max_turns -> 90` 提取，以及
+  `claude budget`、`hermes max-turns`、`session retention` 三组配置命令。
+- Phase 1 只证明配置入口可靠；任务级 `agentbc.resources` 快照、Runner 参数校验、
+  Hermes `--max-turns` 注入、临时会话生命周期、预算耗尽翻倍恢复和 Claude purge
+  仍保持未完成，不得将 `CFG-001/SESSION-001/CFG-002` 整项提前关闭。
+- 当前证据：`645` 项全量 unittest 通过，保留 `5` 个后续阶段预期失败；Ruff、
+  compileall 与 `git diff --check` 通过。
 
 ## 3. 需求总表
 
@@ -104,6 +117,10 @@ agentbc session retention enable
 agentbc session retention disable
 ```
 
+Phase 1 已实现上述配置键和三命令的原子、幂等持久化，并明确输出只影响后续
+Executor run、永不删除 dispatcher conversation。终态清理、`input_required` 强制保留、
+session ID receipt 和同会话 resume 仍属于后续阶段。
+
 要求：
 
 - 默认 `false`（默认清理）：任务以终态（completed/failed/cancelled）结束时移除
@@ -121,11 +138,26 @@ agentbc session retention disable
 - Adapter 明确报告 session ID、是否持久化、是否支持官方安全清理及清理结果；
 - 只在 terminal、RunLease closed、最终 task/report 落盘、通知入队后请求清理；
 - 只使用官方 CLI/API 的不持久化或删除能力；禁止猜路径、扫描最新会话或递归删除目录；
+- Claude 保留模式直接使用任务已解析的用户工程目录，不创建临时 Claude Project，
+  终态不得对该用户工程执行 `claude project purge`；
+- Claude 默认清理模式不新建顶层 runtime 根；临时 Claude Project 复用 AgentBC
+  `tasks/artifacts/YYYY-MM-DD/<TASKCODE>/` 下的任务内部目录，并以完整
+  `<TASK-ID>` 隔离 iteration，不得直接共用整条 handoff 链的 `<TASKCODE>` 目录；
+- Claude 清理必须是后台、幂等且可重试的单一流程：根据任务记录的精确路径
+  执行 `claude project purge --yes <project-path>`，再移除 AgentBC 拥有的 Claude
+  子目录，最后只在 task/chain artifact 目录为空时删除空目录；
+- 临时 Claude Project 只是内部执行锚点，不计入用户产物、不出现在正常
+  status/report/artifact 列表中，也不增加独立的用户清理入口；正常体验必须与
+  Hermes/Codex 运行时一致；
+- Claude 清理路径必须由 Path Plan 生成并做 containment/symlink 校验；
+  意外非空目录不得当作空壳递归删除，避免误删任务产物；
 - unsupported/failed 只生成 receipt 和 doctor warning，不改变原任务终态。
 
 验收：默认清理、enable/disable 保留、input_required 期间会话保留与
 resume 同会话继续、三命令幂等、三 Executor capability、恢复路径、handoff、
-失败回执、secret redaction 与 dispatcher conversation 不受影响。
+Claude 保留模式无临时目录、默认模式 purge 后无空壳、链路 iteration/分支隔离、
+非空目录保护、用户界面无 runtime 暴露、失败回执、secret redaction 与 dispatcher
+conversation 不受影响。
 
 ### 4.3 `SKILL-001` + `DOC-002`：Skill 握手与 doctor 完整契约
 
@@ -156,6 +188,10 @@ resume 同会话继续、三命令幂等、三 Executor capability、恢复路�
 
 setup 提供两项执行资源配置：Claude 单任务预算 `max_budget_usd` 与 Hermes
 单任务迭代上限 `max_turns`。交互逐项询问「自定义 / 使用默认」：
+
+Phase 1 已完成 config/setup/CLI 入口和用户值保护；Hermes `max_turns` 在本阶段仅作为
+Hermes 专属 config-only key 被 Registry 接受，不注入执行命令。任务快照、Adapter 参数、
+Runner fail-closed 校验和 preflight/status 一致性在后续阶段贯通。
 
 - 自定义：用户输入。Claude 输入 USD 金额；Hermes 输入迭代轮数（正整数）；
 - 使用默认：Claude 为 `$10`；Hermes 从 `~/.hermes/config.yaml` 读取

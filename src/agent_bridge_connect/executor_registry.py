@@ -48,6 +48,16 @@ BUILTIN_EXECUTOR_RUNTIME_KEYS = {
     ),
 }
 
+# Phase 1 persists this setting before Phase 3 begins injecting --max-turns.
+# Keep it executor-specific so unrelated executors still fail closed on the key.
+BUILTIN_EXECUTOR_CONFIG_ONLY_KEYS = {
+    "mock": frozenset(),
+    "shell": frozenset(),
+    "codex": frozenset(),
+    "hermes": frozenset({"max_turns"}),
+    "claude": frozenset(),
+}
+
 EXECUTOR_METADATA_KEYS = frozenset(
     {
         "type",
@@ -80,7 +90,10 @@ def get_executor(name: str, config: dict | None = None) -> ExecutorPort:
     executor_class = getattr(importlib.import_module(module_name), class_name)
     raw_config = config or {}
     runtime_keys = BUILTIN_EXECUTOR_RUNTIME_KEYS[name]
-    unknown_keys = sorted(set(raw_config) - runtime_keys - EXECUTOR_METADATA_KEYS)
+    config_only_keys = BUILTIN_EXECUTOR_CONFIG_ONLY_KEYS[name]
+    unknown_keys = sorted(
+        set(raw_config) - runtime_keys - config_only_keys - EXECUTOR_METADATA_KEYS
+    )
     if unknown_keys:
         joined = ", ".join(unknown_keys)
         raise ValueError(f"Unsupported {name} executor config: {joined}")

@@ -1,0 +1,14 @@
+Hermes Agent v0.17.0 (2026.6.19) · upstream 3d7dda4c
+  --resume SESSION_ID, -r SESSION_ID
+                        Resume a previous session by ID (shown on exit)
+  --max-turns N         Maximum tool-calling iterations per conversation turn
+                        (default: 90, or agent.max_turns in config)
+
+usage: hermes sessions delete [-h] [--yes] session_id
+
+positional arguments:
+  session_id  Session ID to delete
+
+options:
+  -h, --help  show this help message and exit
+  --yes, -y   Skip confirmation

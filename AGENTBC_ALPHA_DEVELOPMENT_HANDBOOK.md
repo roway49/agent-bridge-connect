@@ -2107,6 +2107,34 @@ delete/update 等运维入口，均不再作为 1.0.1A 改动处理。
 `agentbc session retention status|enable|disable`；配置为
 `sessions.retain_executor_sessions`。
 
+**2026-08-10 Phase 1 实现状态**：配置写入已统一到带 POSIX 文件锁的原子
+read-modify-write 事务；setup refresh 只合并 AgentBC 拥有字段，不再覆盖已有 Claude
+预算、Hermes turns、retention 或未知配置。Claude 新安装默认 `$10`，已有 `$1/$25`
+等值保留；Hermes 只通过 `hermes config path` 定位 YAML，并严格按
+`agent.max_turns -> 顶层 max_turns -> 90` 取默认。新增的预算、turns 和 retention
+命令输出稳定 JSON、幂等且只修改目标键，不启动或重启 Runner。
+
+本阶段的 `scope=future_executor_runs` 仅表示配置入口已持久化，不代表活动任务或恢复任务
+已改变资源。`agentbc.resources` 任务快照、Hermes `--max-turns` 注入、Runner 参数校验、
+会话清理/恢复、预算耗尽弹窗和翻倍继续均未在 Phase 1 实现；相关需求必须继续保持打开。
+
+**Claude Project 分流**：设置只对后续新 run 生效，每个 run 创建时必须固化
+project mode/path/session ID，不得在 resume 时因全局设置变更而切换。保留模式
+直接以已解析的用户工程作为 Claude Project，不创建临时目录，也绝不对
+用户工程执行 project purge。默认清理模式的临时 Claude Project 复用
+`tasks/artifacts/YYYY-MM-DD/<TASKCODE>/` 下的 AgentBC 内部目录，并以完整
+`<TASK-ID>` 隔离单次 iteration；不新建顶层 runtime 根，不在用户工程中
+混入 AgentBC 内部目录。
+
+**Claude 无感清理**：终态条件满足后由后台幂等协调器按固定顺序执行：
+用已持久化的精确 project path 调用 `claude project purge --yes`；移除 AgentBC
+拥有的 Claude 子目录；再逐层尝试删除空的 task/chain artifact 目录。该过程
+不弹窗、不要求用户查看或管理 runtime，临时项目也不得出现在正常
+status/report/artifact 列表。purge 失败或路径暂时被占用只写有界 cleanup
+receipt，由同一协调器后续重试并在 doctor 报告 warning，不改变任务终态。
+删除前必须重做 Path Plan ownership、containment 和 symlink 校验；意外非空的 Claude
+目录不得当作空壳递归删除，避免误删任务产物。
+
 **清理边界**：只处理执行 Agent 临时会话，永不处理派发源对话。默认关闭保留时，也只有
 terminal task 在 RunLease 关闭、最终报告落盘和通知入队后才能请求清理；`input_required`
 无论全局开关都必须保留当前会话，并通过官方 resume/continue 继续同一会话；

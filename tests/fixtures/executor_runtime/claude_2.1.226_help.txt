@@ -1,0 +1,27 @@
+2.1.226 (Claude Code)
+  --fork-session                        When resuming, create a new session ID
+                                        instead of reusing the original (use
+                                        with --resume or --continue)
+  --max-budget-usd <amount>             Maximum dollar amount to spend on API
+                                        calls (only works with --print)
+  --no-session-persistence              Disable session persistence - sessions
+                                        will not be saved to disk and cannot be
+                                        resumed (only works with --print)
+  -r, --resume [value]                  Resume a conversation by session ID, or
+                                        open interactive picker with optional
+                                        search term
+  --session-id <uuid>                   Use a specific session ID for the
+                                        conversation (must be a valid UUID)
+
+Usage: claude project purge [options] [path]
+
+Delete all Claude Code state for a project (transcripts, tasks, file history,
+config entry)
+
+Options:
+  --all              Purge state for every project (mutually exclusive with
+                     [path])
+  --dry-run          List what would be deleted without deleting anything
+  -h, --help         Display help for command
+  -i, --interactive  Prompt for each item before deleting
+  -y, --yes          Skip confirmation prompt

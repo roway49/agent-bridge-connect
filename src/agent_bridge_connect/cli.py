@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
+import math
 import os
 import signal
 import sys
@@ -14,11 +15,15 @@ from typing import Any
 from . import __version__
 from .config import (
     DEFAULT_BOARD_ROOT,
+    DEFAULT_RETAIN_EXECUTOR_SESSIONS,
+    configured_session_retention,
     get_executor_config,
     init_board,
     load_config,
     resolve_runner_allowed_roots,
     resolve_workspace_root,
+    update_config_atomic,
+    validate_config,
 )
 from .executor_registry import get_executor
 from .path_model import DEFAULT_CUSTOMER_PATH, derive_customer_path_plan
@@ -47,6 +52,22 @@ _SHORTHAND_SUGGESTIONS = [
 
 def add_task_root(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--root", default=str(DEFAULT_BOARD_ROOT), help="AgentBC runtime record root.")
+
+
+def _positive_finite_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive finite number")
+    return parsed
+
+
+def _positive_integer(value: str) -> int:
+    if not value.isascii() or not value.isdecimal() or int(value) <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return int(value)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -85,6 +106,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     init = sub.add_parser("init", help="Initialize the AgentBC runtime record directory.")
     add_task_root(init)
+
+    claude = sub.add_parser("claude", help="Configure Claude executor settings.")
+    claude_sub = claude.add_subparsers(dest="claude_command", required=True)
+    claude_budget = claude_sub.add_parser("budget", help="Set the Claude budget for future executor runs.")
+    claude_budget.add_argument("usd", type=_positive_finite_float)
+
+    hermes = sub.add_parser("hermes", help="Configure Hermes executor settings.")
+    hermes_sub = hermes.add_subparsers(dest="hermes_command", required=True)
+    hermes_turns = hermes_sub.add_parser("max-turns", help="Set Hermes turns for future executor runs.")
+    hermes_turns.add_argument("turns", type=_positive_integer)
+
+    session = sub.add_parser("session", help="Configure executor temporary-session handling.")
+    session_sub = session.add_subparsers(dest="session_command", required=True)
+    retention = session_sub.add_parser("retention", help="Inspect or change executor session retention.")
+    retention_sub = retention.add_subparsers(dest="retention_command", required=True)
+    retention_sub.add_parser("status", help="Show the effective retention setting.")
+    retention_sub.add_parser("enable", help="Retain executor temporary sessions after terminal tasks.")
+    retention_sub.add_parser("disable", help="Remove executor temporary sessions after terminal tasks.")
 
     record = sub.add_parser("record", help="Inspect or clean AgentBC task records.")
     record_sub = record.add_subparsers(dest="record_command", required=True)
@@ -1968,6 +2007,134 @@ def _utc_now_cli() -> str:
     return utc_now()
 
 
+def command_executor_setting(executor: str, key: str, value: int | float) -> int:
+    previous: Any = None
+
+    def mutate(config: dict[str, Any]) -> None:
+        nonlocal previous
+        executors = config.get("executors")
+        executor_config = executors.get(executor) if isinstance(executors, dict) else None
+        if not isinstance(executor_config, dict) or not any(
+            marker in executor_config for marker in ("type", "command")
+        ):
+            raise ABCError(
+                "not_configured",
+                f"{executor} executor is not configured; run agentbc setup first",
+                {"executor": executor},
+            )
+        previous = executor_config.get(key)
+        executor_config[key] = value
+
+    setting = f"executors.{executor}.{key}"
+    try:
+        _, changed = update_config_atomic(mutate)
+    except (ABCError, OSError, ValueError, TypeError) as exc:
+        _print_config_command_error(exc, setting)
+        return 2
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "setting": setting,
+                "previous": previous,
+                "value": value,
+                "changed": changed,
+                "source": "command" if changed else "configured",
+                "scope": "future_executor_runs",
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def command_session_retention(action: str) -> int:
+    setting = "sessions.retain_executor_sessions"
+    if action == "status":
+        try:
+            config = load_config()
+            errors = validate_config(config)
+            if errors:
+                raise ABCError("config_invalid", "; ".join(errors), {"errors": errors})
+            value, source = configured_session_retention(config)
+        except (ABCError, OSError, ValueError, TypeError) as exc:
+            _print_config_command_error(exc, setting)
+            return 2
+        payload = _retention_payload(
+            previous=value,
+            value=value,
+            changed=False,
+            source=source,
+        )
+    else:
+        desired = action == "enable"
+        previous = DEFAULT_RETAIN_EXECUTOR_SESSIONS
+
+        def mutate(config: dict[str, Any]) -> None:
+            nonlocal previous
+            previous, _ = configured_session_retention(config)
+            config.setdefault("sessions", {})["retain_executor_sessions"] = desired
+
+        try:
+            _, changed = update_config_atomic(mutate)
+        except (ABCError, OSError, ValueError, TypeError) as exc:
+            _print_config_command_error(exc, setting)
+            return 2
+        payload = _retention_payload(
+            previous=previous,
+            value=desired,
+            changed=changed,
+            source="command" if changed else "configured",
+        )
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _retention_payload(
+    *,
+    previous: bool,
+    value: bool,
+    changed: bool,
+    source: str,
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "setting": "sessions.retain_executor_sessions",
+        "previous": previous,
+        "value": value,
+        "changed": changed,
+        "source": source,
+        "scope": "future_executor_runs",
+        "dispatcher_conversations": "never_deleted_by_agentbc",
+        "managed_sessions": "executor_temporary_sessions_only",
+    }
+
+
+def _print_config_command_error(exc: Exception, setting: str) -> None:
+    if isinstance(exc, ABCError):
+        error = exc.code
+        message = exc.message
+        details = exc.details
+    else:
+        error = "config_error"
+        message = str(exc)
+        details = {}
+    print(
+        json.dumps(
+            {
+                "ok": False,
+                "setting": setting,
+                "error": error,
+                "message": message,
+                "details": details,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if not raw_argv:
@@ -2012,6 +2179,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "doctor":
         return command_doctor(args)
+
+    if args.command == "claude":
+        return command_executor_setting("claude", "max_budget_usd", args.usd)
+
+    if args.command == "hermes":
+        return command_executor_setting("hermes", "max_turns", args.turns)
+
+    if args.command == "session":
+        return command_session_retention(args.retention_command)
 
     if args.command == "uninstall":
         from .setup import run_uninstall
@@ -2089,6 +2265,9 @@ def _expand_shorthand(argv: list[str]) -> list[str]:
         "doctor",
         "uninstall",
         "init",
+        "claude",
+        "hermes",
+        "session",
         "record",
         "task",
         "worker",

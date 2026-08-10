@@ -7,6 +7,17 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from .config import (
+    DEFAULT_CLAUDE_MAX_BUDGET_USD,
+    DEFAULT_HERMES_MAX_TURNS,
+    configured_claude_budget,
+    configured_hermes_max_turns,
+    configured_session_retention,
+    load_config,
+    resolve_config_path,
+    update_config_atomic,
+    validate_config,
+)
 from .path_provider import find_binary
 from .permission_modes import (
     DEFAULT_PERMISSION_MODE,
@@ -15,14 +26,15 @@ from .permission_modes import (
 )
 from .protocol import ABCError
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10
-    tomllib = None  # type: ignore[assignment]
-
 
 _OWNED_ALIAS_MARKER = "# AgentBC-owned abc shim"
 _COMMAND_TIMEOUT_S = 10
+_HERMES_CONFIG_TIMEOUT_S = 5
+_HERMES_CONFIG_MAX_BYTES = 1024 * 1024
+_PROTECTED_EXECUTOR_SETTINGS = {
+    "claude": frozenset({"max_budget_usd"}),
+    "hermes": frozenset({"max_turns"}),
+}
 _SKILL_TEMPLATE_FALLBACK = """# AgentBC Skill
 
 当用户要求执行、审查或管理任务时，使用 agentbc CLI：
@@ -294,6 +306,8 @@ def run_show() -> dict[str, Any]:
     _print_scan_report(agents, workspace_root)
     permission_mode, permission_source = configured_permission_mode(config)
     _print_permission_mode_help(permission_mode)
+    resources = _configured_resource_report(config)
+    _print_resource_settings(resources)
     return {
         "ok": True,
         "mode": "show",
@@ -302,6 +316,7 @@ def run_show() -> dict[str, Any]:
         "workspace_root": workspace_root,
         "permission_mode": permission_mode,
         "permission_source": permission_source,
+        "resources": resources,
     }
 
 
@@ -313,8 +328,6 @@ def run_setup(
     config_path = _config_path()
     config = _load_config(config_path)
     agents = scan_all_agents()
-    config.setdefault("workspace_root", str(_default_workspace_root()))
-    config["board_root"] = str(_effective_workspace_root(config) / "record")
     workspace_root = str(_effective_workspace_root(config))
     _print_scan_report(agents, workspace_root)
     previous_permission = config.get("permission_mode")
@@ -323,10 +336,11 @@ def run_setup(
         explicit_mode=permission_mode,
         interactive=interactive,
     )
-    config["permission_mode"] = selected_permission
-    executors = config.setdefault("executors", {})
+    permission_touched = previous_permission is None or selected_permission != previous_permission
     enabled: list[str] = []
     skipped: list[str] = []
+    executor_updates: dict[str, dict[str, Any]] = {}
+    resource_updates: dict[str, tuple[Any, bool, str]] = {}
 
     for agent in agents:
         if not agent["found"] or not agent["supported_executor"]:
@@ -340,13 +354,44 @@ def run_setup(
             ):
                 skipped.append(agent["name"])
                 continue
-        executors[agent["name"]] = _executor_config_for(agent)
+        executor_updates[agent["name"]] = _executor_config_for(agent)
+        if agent["name"] == "claude":
+            resource_updates["claude"] = _select_claude_budget(config, interactive=interactive)
+        elif agent["name"] == "hermes":
+            resource_updates["hermes"] = _select_hermes_max_turns(
+                config,
+                command=agent.get("path") or agent.get("binary") or "hermes",
+                interactive=interactive,
+            )
         enabled.append(agent["name"])
 
-    config_written = False
-    if enabled or not config_path.exists() or previous_permission != selected_permission:
-        _write_config(config_path, config)
-        config_written = True
+    retention_value, retention_touched, retention_source = _select_session_retention(
+        config,
+        interactive=interactive,
+    )
+
+    def apply_setup(latest: dict[str, Any]) -> None:
+        latest.setdefault("workspace_root", str(_default_workspace_root()))
+        latest.setdefault("board_root", str(_effective_workspace_root(latest) / "record"))
+        if permission_touched:
+            latest["permission_mode"] = selected_permission
+        executors = latest.setdefault("executors", {})
+        for name, desired in executor_updates.items():
+            current = executors.get(name)
+            if not isinstance(current, dict):
+                current = {}
+            executors[name] = _merge_executor_config(name, current, desired)
+        claude_setting = resource_updates.get("claude")
+        if claude_setting and claude_setting[1]:
+            executors.setdefault("claude", {})["max_budget_usd"] = claude_setting[0]
+        hermes_setting = resource_updates.get("hermes")
+        if hermes_setting and hermes_setting[1]:
+            executors.setdefault("hermes", {})["max_turns"] = hermes_setting[0]
+        if retention_touched:
+            latest.setdefault("sessions", {})["retain_executor_sessions"] = retention_value
+
+    config, config_written = update_config_atomic(apply_setup, config_path)
+    workspace_root = str(_effective_workspace_root(config))
     from .config import init_board
 
     init_board(config["board_root"])
@@ -405,6 +450,10 @@ def run_setup(
         "config_written": config_written,
         "workspace_root": workspace_root,
         "permission_mode": selected_permission,
+        "resources": {
+            **_configured_resource_report(config),
+            "retention_selection_source": retention_source,
+        },
         "codex": codex,
         "capabilities": capabilities,
         "agents": agents,
@@ -429,7 +478,24 @@ def run_update(interactive: bool = True) -> dict[str, Any]:
     selected = _select_items(items, interactive=interactive)
     actions = [_apply_update_item(item, config) for item in selected]
     if any(action.get("config_changed") for action in actions):
-        _write_config(config_path, config)
+        selected_executors = [
+            item for item in selected if item.get("action") == "update_executor"
+        ]
+
+        def apply_updates(latest: dict[str, Any]) -> None:
+            latest.setdefault("workspace_root", str(_default_workspace_root()))
+            latest.setdefault("board_root", str(_effective_workspace_root(latest) / "record"))
+            executors = latest.setdefault("executors", {})
+            for item in selected_executors:
+                agent = item["agent"]
+                current = executors.get(agent["name"])
+                if not isinstance(current, dict):
+                    current = {}
+                executors[agent["name"]] = _merge_executor_config(
+                    agent["name"], current, _executor_config_for(agent)
+                )
+
+        update_config_atomic(apply_updates, config_path)
     return {
         "ok": True,
         "mode": "update",
@@ -1005,26 +1071,236 @@ def _executor_config_for(agent: dict[str, Any]) -> dict[str, Any]:
         result["safe_mode"] = True
         result["permission_mode"] = "acceptEdits"
         result["output_format"] = "text"
-        result["max_budget_usd"] = 1.0
+        result["max_budget_usd"] = DEFAULT_CLAUDE_MAX_BUDGET_USD
         result["allowed_tools"] = ["Read", "Write", "Edit", "Bash"]
     return result
 
 
-def _write_config(path: Path, config: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(_toml_dumps(config), encoding="utf-8")
-    temporary.replace(path)
+def _merge_executor_config(
+    name: str,
+    current: dict[str, Any],
+    desired: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(current)
+    protected = _PROTECTED_EXECUTOR_SETTINGS.get(name, frozenset())
+    for key, value in desired.items():
+        if key not in protected:
+            merged[key] = value
+    return merged
 
 
 def _load_config(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    if tomllib is not None:
-        with path.open("rb") as handle:
-            data = tomllib.load(handle)
-        return data if isinstance(data, dict) else {}
-    return _load_toml_compat(path.read_text(encoding="utf-8"))
+    config = load_config(path)
+    errors = validate_config(config)
+    if errors:
+        raise ABCError("config_invalid", "; ".join(errors), {"errors": errors})
+    return config
+
+
+def resolve_hermes_default_max_turns(command: str) -> tuple[int, str]:
+    """Read only Hermes' documented max-turns field without exposing its config."""
+    try:
+        completed = subprocess.run(
+            [command, "config", "path"],
+            capture_output=True,
+            text=True,
+            timeout=_HERMES_CONFIG_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return DEFAULT_HERMES_MAX_TURNS, "hermes_default_90"
+    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    if completed.returncode != 0 or len(lines) != 1:
+        return DEFAULT_HERMES_MAX_TURNS, "hermes_default_90"
+    path = Path(lines[0]).expanduser()
+    try:
+        if not path.is_file() or path.stat().st_size > _HERMES_CONFIG_MAX_BYTES:
+            return DEFAULT_HERMES_MAX_TURNS, "hermes_default_90"
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return DEFAULT_HERMES_MAX_TURNS, "hermes_default_90"
+    nested, legacy = _extract_hermes_max_turns(text)
+    if nested is not None:
+        return nested, "hermes_agent_config"
+    if legacy is not None:
+        return legacy, "hermes_legacy_config"
+    return DEFAULT_HERMES_MAX_TURNS, "hermes_default_90"
+
+
+def _extract_hermes_max_turns(text: str) -> tuple[int | None, int | None]:
+    nested: int | None = None
+    legacy: int | None = None
+    in_agent = False
+    agent_child_indent: int | None = None
+    for raw_line in text.splitlines():
+        content = raw_line.split("#", 1)[0].rstrip()
+        if not content.strip() or "\t" in content[: len(content) - len(content.lstrip())]:
+            continue
+        indent = len(content) - len(content.lstrip(" "))
+        stripped = content.strip()
+        if indent == 0:
+            in_agent = stripped == "agent:"
+            agent_child_indent = None
+            value = _plain_yaml_positive_int(stripped, "max_turns")
+            if value is not None:
+                legacy = value
+            continue
+        if in_agent:
+            if agent_child_indent is None:
+                agent_child_indent = indent
+            value = _plain_yaml_positive_int(stripped, "max_turns")
+            if value is not None and indent == agent_child_indent:
+                nested = value
+    return nested, legacy
+
+
+def _plain_yaml_positive_int(line: str, key: str) -> int | None:
+    prefix = f"{key}:"
+    if not line.startswith(prefix):
+        return None
+    raw = line[len(prefix) :].strip()
+    if not raw.isascii() or not raw.isdecimal():
+        return None
+    value = int(raw)
+    return value if value > 0 else None
+
+
+def _select_claude_budget(
+    config: dict[str, Any],
+    *,
+    interactive: bool,
+) -> tuple[float, bool, str]:
+    current_table = config.get("executors", {}).get("claude", {})
+    has_current = isinstance(current_table, dict) and "max_budget_usd" in current_table
+    current, current_source = configured_claude_budget(config)
+    if not interactive:
+        return (current, not has_current, current_source)
+    prompt = (
+        f"Claude max budget current ${current:g} "
+        f"[Enter=keep, 1=default ${DEFAULT_CLAUDE_MAX_BUDGET_USD:g}, 2=custom]: "
+        if has_current
+        else f"Claude max budget [1=default ${DEFAULT_CLAUDE_MAX_BUDGET_USD:g}, 2=custom] (1): "
+    )
+    answer = _prompt(prompt, default="").strip().lower()
+    if has_current and not answer:
+        return current, False, "configured"
+    if not answer or answer in {"1", "default"}:
+        return DEFAULT_CLAUDE_MAX_BUDGET_USD, True, "claude_default_10"
+    if answer not in {"2", "custom"}:
+        print("Choose 1 for default or 2 for custom.")
+        return _select_claude_budget(config, interactive=interactive)
+    while True:
+        raw = _prompt("Claude max budget USD: ", default="").strip()
+        if not raw:
+            return (current, False, "configured") if has_current else (
+                DEFAULT_CLAUDE_MAX_BUDGET_USD,
+                True,
+                "claude_default_10",
+            )
+        try:
+            value = float(raw)
+        except ValueError:
+            value = 0.0
+        if value > 0 and value != float("inf") and value == value:
+            return value, True, "custom"
+        print("Enter a positive finite number.")
+
+
+def _select_hermes_max_turns(
+    config: dict[str, Any],
+    *,
+    command: str,
+    interactive: bool,
+) -> tuple[int, bool, str]:
+    current_table = config.get("executors", {}).get("hermes", {})
+    has_current = isinstance(current_table, dict) and "max_turns" in current_table
+    current, current_source = configured_hermes_max_turns(config)
+    if not interactive:
+        if has_current:
+            return current, False, current_source
+        value, source = resolve_hermes_default_max_turns(command)
+        return value, True, source
+    prompt = (
+        f"Hermes max turns current {current} [Enter=keep, 1=use Hermes default, 2=custom]: "
+        if has_current
+        else "Hermes max turns [1=use Hermes default, 2=custom] (1): "
+    )
+    answer = _prompt(prompt, default="").strip().lower()
+    if has_current and not answer:
+        return current, False, "configured"
+    if not answer or answer in {"1", "default"}:
+        value, source = resolve_hermes_default_max_turns(command)
+        return value, True, source
+    if answer not in {"2", "custom"}:
+        print("Choose 1 for default or 2 for custom.")
+        return _select_hermes_max_turns(config, command=command, interactive=interactive)
+    while True:
+        raw = _prompt("Hermes max turns: ", default="").strip()
+        if not raw:
+            if has_current:
+                return current, False, "configured"
+            value, source = resolve_hermes_default_max_turns(command)
+            return value, True, source
+        if raw.isascii() and raw.isdecimal() and int(raw) > 0:
+            return int(raw), True, "custom"
+        print("Enter a positive integer.")
+
+
+def _select_session_retention(
+    config: dict[str, Any],
+    *,
+    interactive: bool,
+) -> tuple[bool, bool, str]:
+    sessions = config.get("sessions")
+    has_current = isinstance(sessions, dict) and "retain_executor_sessions" in sessions
+    current, source = configured_session_retention(config)
+    if not interactive:
+        return current, not has_current, source
+    default_label = "enabled" if current else "disabled"
+    answer = _prompt(
+        f"Retain executor temporary sessions? [y/n, Enter={default_label}]: ",
+        default="",
+    ).strip().lower()
+    if not answer:
+        return current, not has_current, source
+    if answer in {"y", "yes", "enable", "enabled"}:
+        return True, True, "interactive"
+    if answer in {"n", "no", "disable", "disabled"}:
+        return False, True, "interactive"
+    print("Choose y or n.")
+    return _select_session_retention(config, interactive=interactive)
+
+
+def _configured_resource_report(config: dict[str, Any]) -> dict[str, Any]:
+    claude, claude_source = configured_claude_budget(config)
+    hermes, hermes_source = configured_hermes_max_turns(config)
+    retention, retention_source = configured_session_retention(config)
+    return {
+        "claude_max_budget_usd": claude,
+        "claude_source": claude_source,
+        "hermes_max_turns": hermes,
+        "hermes_source": hermes_source,
+        "retain_executor_sessions": retention,
+        "retention_source": retention_source,
+    }
+
+
+def _print_resource_settings(resources: dict[str, Any]) -> None:
+    print()
+    print("Executor resource settings:")
+    print(
+        f"  Claude max budget: ${resources['claude_max_budget_usd']:g} "
+        f"({resources['claude_source']})"
+    )
+    print(
+        f"  Hermes max turns: {resources['hermes_max_turns']} "
+        f"({resources['hermes_source']})"
+    )
+    print(
+        "  Retain executor sessions: "
+        f"{str(resources['retain_executor_sessions']).lower()} "
+        f"({resources['retention_source']})"
+    )
 
 
 def _update_items(agents: list[dict[str, Any]], config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1035,7 +1311,10 @@ def _update_items(agents: list[dict[str, Any]], config: dict[str, Any]) -> list[
             continue
         current = executors.get(agent["name"], {})
         desired = _executor_config_for(agent)
-        if not isinstance(current, dict) or current != desired:
+        merged = _merge_executor_config(
+            agent["name"], current if isinstance(current, dict) else {}, desired
+        )
+        if not isinstance(current, dict) or current != merged:
             status = "enable" if not current else "refresh"
             items.append(
                 {
@@ -1159,8 +1438,12 @@ def _apply_update_item(item: dict[str, Any], config: dict[str, Any]) -> dict[str
     if action == "update_executor":
         agent = item["agent"]
         config.setdefault("workspace_root", str(_default_workspace_root()))
-        config["board_root"] = str(_effective_workspace_root(config) / "record")
-        config.setdefault("executors", {})[agent["name"]] = _executor_config_for(agent)
+        config.setdefault("board_root", str(_effective_workspace_root(config) / "record"))
+        executors = config.setdefault("executors", {})
+        current = executors.get(agent["name"])
+        executors[agent["name"]] = _merge_executor_config(
+            agent["name"], current if isinstance(current, dict) else {}, _executor_config_for(agent)
+        )
         return {"item": item["id"], "status": "updated", "config_changed": True}
     if action == "install_skill":
         result = install_hermes_skill(interactive=False, force=True, all_profiles=True)
@@ -1752,10 +2035,7 @@ def _command_output(result: subprocess.CompletedProcess[str] | None) -> str:
 
 
 def _config_path() -> Path:
-    override = os.environ.get("AGENTBC_CONFIG_PATH")
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / ".abc" / "config.toml"
+    return resolve_config_path()
 
 
 def _default_workspace_root() -> Path:
@@ -1838,71 +2118,3 @@ def _unique_paths(paths: list[Path]) -> list[Path]:
             seen.add(marker)
             unique.append(path.expanduser())
     return unique
-
-
-def _load_toml_compat(text: str) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    current = result
-    for raw_line in text.splitlines():
-        line = raw_line.split("#", 1)[0].strip()
-        if not line:
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            current = result
-            for part in line[1:-1].split("."):
-                current = current.setdefault(part.strip(), {})
-            continue
-        if "=" not in line:
-            raise ValueError(f"Invalid TOML line: {raw_line}")
-        key, raw_value = line.split("=", 1)
-        current[key.strip()] = _parse_toml_value(raw_value.strip())
-    return result
-
-
-def _parse_toml_value(value: str) -> Any:
-    if value.lower() in {"true", "false"}:
-        return value.lower() == "true"
-    try:
-        return json.loads(value)
-    except json.JSONDecodeError:
-        try:
-            return int(value)
-        except ValueError:
-            return value
-
-
-def _toml_dumps(config: dict[str, Any]) -> str:
-    lines: list[str] = []
-
-    def write_table(table: dict[str, Any], prefix: tuple[str, ...]) -> None:
-        scalar_items = [
-            (key, value) for key, value in table.items() if not isinstance(value, dict)
-        ]
-        child_tables = [
-            (key, value) for key, value in table.items() if isinstance(value, dict)
-        ]
-        if prefix:
-            lines.append(f"[{'.'.join(prefix)}]")
-        for key, value in scalar_items:
-            lines.append(f"{key} = {_toml_value(value)}")
-        if scalar_items and child_tables:
-            lines.append("")
-        for index, (key, value) in enumerate(child_tables):
-            write_table(value, (*prefix, key))
-            if index != len(child_tables) - 1:
-                lines.append("")
-
-    write_table(config, ())
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def _toml_value(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, str):
-        return json.dumps(value)
-    if isinstance(value, list):
-        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
-    if isinstance(value, (int, float)):
-        return str(value)
-    raise TypeError(f"Unsupported TOML value: {value!r}")
