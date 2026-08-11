@@ -13,6 +13,9 @@ from agent_bridge_connect.adapters import (
     ExecutorLevel,
     PollResult,
     ProbeResult,
+    SessionCleanupCapability,
+    SessionCleanupRequest,
+    SessionCleanupResult,
     StartResult,
 )
 from agent_bridge_connect.execution_contract import (
@@ -39,6 +42,14 @@ from ..path_provider import find_binary
 from ..runner import RunnerClient, RunnerError
 
 SAFETY_TIMEOUT_S = 24 * 60 * 60
+HERMES_CLEANUP_UNSUPPORTED_CODE = "hermes_session_delete_unavailable"
+HERMES_SESSION_DELETE_FAILED_CODE = "hermes_session_delete_failed"
+HERMES_SESSION_DELETE_MISSING_SESSION_ID_CODE = "hermes_session_delete_missing_session_id"
+HERMES_SESSION_DELETE_INVALID_SESSION_ID_CODE = "hermes_session_delete_invalid_session_id"
+_HERMES_FROZEN_HELP_FIXTURE = "hermes_0.17.0_help.txt"
+_HERMES_FROZEN_VERSION = "0.17.0"
+_HERMES_CLEANUP_TIMEOUT_S = 60
+_HERMES_SESSION_ID_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z_.-]{0,127}$")
 _HERMES_INITIALIZING_LINE_RE = re.compile(
     r"(?m)^[ \t]*Initializing agent\.\.\.[ \t]*\r?$"
 )
@@ -185,6 +196,126 @@ class HermesExecutor(CLIExecutorBase):
             parallelism=1,
             level=ExecutorLevel.L2,
         )
+
+    def session_cleanup_capability(
+        self,
+        request: SessionCleanupRequest,
+    ) -> SessionCleanupCapability:
+        """Probe the frozen Hermes 0.17.0 help fixture plus the discovered CLI.
+
+        The determination is based only on the frozen help fixture (which pins
+        the official ``hermes sessions delete <session_id> [--yes]`` entry) and
+        the discovered CLI's own ``--version`` output. No user data, session
+        content, SQLite store, logs or recent-session lists are ever read.
+        Support is claimed only when the frozen fixture exposes the exact
+        positional ``session_id`` delete entry AND the discovered binary
+        reports the frozen version; anything else fails closed to
+        ``unsupported``.
+        """
+        help_text = _frozen_help_fixture_text(_HERMES_FROZEN_HELP_FIXTURE)
+        if not help_text:
+            return _hermes_cleanup_unsupported()
+        capability = _hermes_session_cleanup_capability(help_text)
+        if capability.capability != "supported":
+            return capability
+        if not self._discovered_cli_is_frozen_version():
+            return _hermes_cleanup_unsupported()
+        return capability
+
+    def cleanup_session(self, request: SessionCleanupRequest) -> SessionCleanupResult:
+        """Delete exactly one session through the official CLI entry.
+
+        The canonical shell-less argv is frozen from the help fixture:
+        ``hermes sessions delete <session_id> --yes``. The capability probe
+        runs first and fails closed, so no deletion subprocess is ever spawned
+        unless the frozen fixture and the discovered CLI version both qualify.
+        The session ID is validated as a plain token so it can never inject
+        additional flags. Raw CLI output, argv and paths are never included in
+        the result.
+        """
+        capability = self.session_cleanup_capability(request)
+        if capability.capability != "supported":
+            return SessionCleanupResult(
+                state="unsupported",
+                capability=capability.capability,
+                strategy=capability.strategy,
+                error_code=capability.error_code,
+                retryable=False,
+            )
+        if self.agent_bin is None:
+            return SessionCleanupResult(
+                state="failed",
+                capability="supported",
+                strategy="official_session_delete",
+                error_code=HERMES_CLEANUP_UNSUPPORTED_CODE,
+                retryable=False,
+            )
+        session_id = request.session_id.strip()
+        if not session_id:
+            return SessionCleanupResult(
+                state="failed",
+                capability="supported",
+                strategy="official_session_delete",
+                error_code=HERMES_SESSION_DELETE_MISSING_SESSION_ID_CODE,
+                retryable=False,
+            )
+        if _HERMES_SESSION_ID_RE.fullmatch(session_id) is None:
+            return SessionCleanupResult(
+                state="failed",
+                capability="supported",
+                strategy="official_session_delete",
+                error_code=HERMES_SESSION_DELETE_INVALID_SESSION_ID_CODE,
+                retryable=False,
+            )
+        command = [
+            str(self.agent_bin),
+            "sessions",
+            "delete",
+            session_id,
+            "--yes",
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=_HERMES_CLEANUP_TIMEOUT_S,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            completed = None
+        if completed is not None and completed.returncode == 0:
+            return SessionCleanupResult(
+                state="succeeded",
+                capability="supported",
+                strategy="official_session_delete",
+                error_code="",
+                retryable=False,
+            )
+        return SessionCleanupResult(
+            state="failed",
+            capability="supported",
+            strategy="official_session_delete",
+            error_code=HERMES_SESSION_DELETE_FAILED_CODE,
+            retryable=False,
+        )
+
+    def _discovered_cli_is_frozen_version(self) -> bool:
+        """Return True only when the discovered CLI reports the frozen version."""
+        if self.agent_bin is None:
+            return False
+        try:
+            completed = subprocess.run(
+                [str(self.agent_bin), "--version"],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+        return _version_number_matches(output, _HERMES_FROZEN_VERSION)
 
     def start(self, task_packet: dict[str, Any]) -> StartResult:
         steps = task_packet.get("steps") or []
@@ -591,6 +722,84 @@ def _discover_hermes_binary(configured_command: str | None = None) -> dict[str, 
         "hermes",
         extra_paths=[str(path) for path in HermesExecutor.COMMON_PATHS],
     )
+
+
+_HERMES_SESSIONS_DELETE_USAGE_RE = re.compile(
+    r"^usage:\s+hermes\s+sessions\s+delete\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+_HERMES_DELETE_POSITIONAL_RE = re.compile(
+    r"^\s+session_id\b",
+    re.MULTILINE,
+)
+_HERMES_REJECTED_ENTRY_MARKERS = (
+    "or session name",
+    "takes precedence",
+    "--last",
+    "picker",
+    "prune",
+    "purge",
+    "--continue",
+)
+
+
+def _frozen_help_fixture_text(fixture_name: str) -> str:
+    """Read a frozen CLI help fixture from the source checkout.
+
+    The frozen fixture is the version-pinned evidence the cleanup capability
+    probe is based on. Returns an empty string when the fixture cannot be
+    resolved so callers fail closed; the fixture path itself is never exposed
+    in any result.
+    """
+    here = Path(__file__).resolve()
+    candidate = here.parents[3] / "tests" / "fixtures" / "executor_runtime" / fixture_name
+    try:
+        return candidate.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _hermes_has_exact_session_delete_entry(help_text: str) -> bool:
+    """Return True only for the official ``sessions delete`` exact-ID entry.
+
+    The qualifying entry is the documented ``hermes sessions delete [-h]
+    [--yes] session_id`` form: a delete action with one positional exact
+    session ID and a skip-confirmation flag. Resume/continue flags, recent
+    session pickers, fuzzy "id or name" selectors and global prune/purge
+    entries do not qualify.
+    """
+    if not help_text:
+        return False
+    if _HERMES_SESSIONS_DELETE_USAGE_RE.search(help_text) is None:
+        return False
+    if _HERMES_DELETE_POSITIONAL_RE.search(help_text) is None:
+        return False
+    lowered = help_text.lower()
+    return not any(marker in lowered for marker in _HERMES_REJECTED_ENTRY_MARKERS)
+
+
+def _hermes_session_cleanup_capability(help_text: str) -> SessionCleanupCapability:
+    """Derive the Hermes cleanup capability from frozen help fixture text."""
+    if _hermes_has_exact_session_delete_entry(help_text):
+        return SessionCleanupCapability(
+            capability="supported",
+            strategy="official_session_delete",
+            error_code="",
+        )
+    return _hermes_cleanup_unsupported()
+
+
+def _hermes_cleanup_unsupported() -> SessionCleanupCapability:
+    return SessionCleanupCapability(
+        capability="unsupported",
+        strategy="none",
+        error_code=HERMES_CLEANUP_UNSUPPORTED_CODE,
+    )
+
+
+def _version_number_matches(output: str, expected: str) -> bool:
+    match = re.search(r"v?(\d+\.\d+\.\d+)", output)
+    return match is not None and match.group(1) == expected
 
 
 def _find_hermes_binary() -> Path | None:

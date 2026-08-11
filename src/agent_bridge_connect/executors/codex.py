@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import uuid
 from pathlib import Path
@@ -11,6 +12,9 @@ from agent_bridge_connect.adapters import (
     ExecutorLevel,
     PollResult,
     ProbeResult,
+    SessionCleanupCapability,
+    SessionCleanupRequest,
+    SessionCleanupResult,
     StartResult,
 )
 from agent_bridge_connect.execution_contract import (
@@ -34,6 +38,9 @@ from ..path_provider import find_binary
 
 SAFETY_TIMEOUT_S = 24 * 60 * 60
 SESSION_EXTENSION_KEY = "agentbc.session"
+CODEX_CLEANUP_UNSUPPORTED_CODE = "codex_session_delete_unavailable"
+_CODEX_FROZEN_HELP_FIXTURE = "codex_0.146.0_help.txt"
+_CODEX_FROZEN_VERSION = "0.146.0"
 
 
 class CodexExecutor(CLIExecutorBase):
@@ -105,6 +112,38 @@ class CodexExecutor(CLIExecutorBase):
             image_editing=True,
             parallelism=1,
             level=ExecutorLevel.L2,
+        )
+
+    def session_cleanup_capability(
+        self,
+        request: SessionCleanupRequest,
+    ) -> SessionCleanupCapability:
+        """Probe the frozen Codex 0.146.0 help fixture for an exact-session delete entry.
+
+        The probe never spawns a subprocess and never touches user data: it
+        derives the determination purely from the frozen help fixture captured
+        from the discovered CLI. Codex 0.146.0 only exposes ``codex delete``
+        with a fuzzy "session id (UUID) or session name" selector plus
+        ``resume --last`` pickers, so the capability is stable ``unsupported``.
+        """
+        return _codex_session_cleanup_capability(
+            _frozen_help_fixture_text(_CODEX_FROZEN_HELP_FIXTURE)
+        )
+
+    def cleanup_session(self, request: SessionCleanupRequest) -> SessionCleanupResult:
+        """Resolve Codex cleanup as ``unsupported`` without any deletion action.
+
+        Codex 0.146.0 has no official entry that deletes one session by the
+        exact official session ID, so no subprocess is ever spawned here. The
+        result is fully deterministic and idempotent; it carries only stable
+        enum values and the executor-specific reason code.
+        """
+        return SessionCleanupResult(
+            state="unsupported",
+            capability="unsupported",
+            strategy="none",
+            error_code=CODEX_CLEANUP_UNSUPPORTED_CODE,
+            retryable=False,
         )
 
     def start(self, task_packet: dict) -> StartResult:
@@ -287,6 +326,71 @@ class CodexExecutor(CLIExecutorBase):
 def _discover_codex_binary(command: str | None) -> dict[str, Any]:
     configured = command.strip() if isinstance(command, str) else ""
     return find_binary("codex", extra_paths=[configured] if configured else None)
+
+
+_FUZZY_SELECTOR_MARKERS = (
+    "or session name",
+    "session name",
+    "takes precedence",
+    "--last",
+    "picker",
+    "saved session",
+)
+_GLOBAL_PURGE_MARKERS = ("prune", "purge", "delete old", "delete all")
+_CODEX_DELETE_USAGE_RE = re.compile(
+    r"^usage:\s+codex\s+delete\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _frozen_help_fixture_text(fixture_name: str) -> str:
+    """Read a frozen CLI help fixture from the source checkout.
+
+    The frozen fixture is the version-pinned evidence the cleanup capability
+    probe is based on. Returns an empty string when the fixture cannot be
+    resolved so callers fail closed; the fixture path itself is never exposed
+    in any result.
+    """
+    here = Path(__file__).resolve()
+    candidate = here.parents[3] / "tests" / "fixtures" / "executor_runtime" / fixture_name
+    try:
+        return candidate.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _codex_has_exact_session_delete_entry(help_text: str) -> bool:
+    """Return True only for an official delete entry accepting an exact session ID.
+
+    A qualifying entry must be a ``delete`` action targeting exactly one
+    session by its exact official session ID. Entries documented with a fuzzy
+    selector ("id or session name", "takes precedence", "--last", picker,
+    "saved session") or with global purge semantics are rejected as
+    pseudo-capabilities.
+    """
+    if not help_text or _CODEX_DELETE_USAGE_RE.search(help_text) is None:
+        return False
+    lowered = help_text.lower()
+    if any(marker in lowered for marker in _FUZZY_SELECTOR_MARKERS):
+        return False
+    if any(marker in lowered for marker in _GLOBAL_PURGE_MARKERS):
+        return False
+    return True
+
+
+def _codex_session_cleanup_capability(help_text: str) -> SessionCleanupCapability:
+    """Derive the Codex cleanup capability from frozen help fixture text."""
+    if _codex_has_exact_session_delete_entry(help_text):
+        return SessionCleanupCapability(
+            capability="supported",
+            strategy="official_session_delete",
+            error_code="",
+        )
+    return SessionCleanupCapability(
+        capability="unsupported",
+        strategy="none",
+        error_code=CODEX_CLEANUP_UNSUPPORTED_CODE,
+    )
 
 
 def _codex_writable_roots(task_packet: dict[str, Any], workspace_root: Path) -> list[Path]:
