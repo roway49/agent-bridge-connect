@@ -1,12 +1,12 @@
 # AgentBC 1.0.2A 需求开发清单
 
 > 制定日期：2026-08-08  
-> 最近状态快照：2026-08-11（Phase 4 Task 4 合并验收）
-> 状态：开发进行中（Phase 0～Phase 3 已完成；Phase 4 Tasks 1～4 已合入，CFG-002 只剩安装包真实 canary）
+> 最近状态快照：2026-08-11（测试策略冻结与 Phase 5 规划）
+> 状态：开发进行中（Phase 0～Phase 4 代码已合入；真实点对点与全面测试延后，下一阶段为 Phase 5）
 > 当前开发分支：`private/integration`  
 > 固定 Agent 分支：`agent/codex`、`agent/claude`、`agent/hermes`  
 > 初始开发基线：`private/integration@cfddccba246e6d057172f6716ab4318ade9a40ad`
-> 当前集成基线：`private/integration@bd6d6a2`（本地尚未 push）
+> 当前集成基线：`private/integration@6f19505`（本地尚未 push）
 > 对应公开稳定修订：`v1.0.1A3` / Python `1.0.1a3` / `5e74de65c9b49867ac7957969138db59e2208572`  
 > 目标版本：`v1.0.2A` / Python `1.0.2a1`
 
@@ -36,14 +36,14 @@
 Phase 4 Tasks 1～3 的集成基线 `b7ba051` 全量 discovery 为 `765` 项通过；Task 4
 分支验收新增 `17` 项 UX 测试通过。合并基线 `bd6d6a2` 的 Phase 4 定向 `56` 项和全量
 discovery `782` 项全部通过，Ruff、compileall 与 `git diff --check` 通过。已生成并安装的
-本地 `1.0.1a3` Phase 4 构建仍指向 `b7ba051`；正式版本尚未提升为 `1.0.2a1`，Task 4
-合并后尚未出新包。
+本地 `1.0.1a3` Phase 4 Task 4 构建已指向 `6f19505`，`build_source=local-phase4-task4`，
+package-only smoke 与 CLI/Runner identity 验证通过；正式版本尚未提升为 `1.0.2a1`。
 
 ### 0.2 本轮任务与失败链路
 
 | 工作项 | AgentBC 任务 | 当前事实 | 完成后动作 |
 | --- | --- | --- | --- |
-| Phase 4 Task 4 / `CFG-002` UX、公共视图与文档 | `QECT-001`（Hermes） | `completed`；冻结 `max_turns=150`、显式 `full` 权限，实际运行约 26 分 41 秒；合法 final callback、完成标记、关闭 RunLease 与官方 session receipt `20260811_004323_d3bd9b` 均已验收 | 成果已合入 integration；继续执行安装包真实资源耗尽 canary |
+| Phase 4 Task 4 / `CFG-002` UX、公共视图与文档 | `QECT-001`（Hermes） | `completed`；冻结 `max_turns=150`、显式 `full` 权限，实际运行约 26 分 41 秒；合法 final callback、完成标记、关闭 RunLease 与官方 session receipt `20260811_004323_d3bd9b` 均已验收 | 成果已合入 integration；安装包真实资源耗尽 canary 进入集中全面测试批次，本阶段不单独执行 |
 
 旧任务 `QDKN-001` 已因旧运行达到 `60/60` 且 final marker 无效而终态 `failed`；
 `97FK-001` 因旧 Hermes quiet review 竞争丢失官方 receipt 而 `needs_recovery`。二者均不恢复、
@@ -54,7 +54,7 @@ discovery `782` 项全部通过，Ruff、compileall 与 `git diff --check` 通�
 
 | 工作项 | 状态 | 剩余闭环 |
 | --- | --- | --- |
-| Phase 4 / `CFG-002` | 🟡 | Tasks 1～4 已合入；真实 Claude/Hermes 耗尽、approve 翻倍同 session 继续、deny 明确 failed 的安装包 canary 尚未完成 |
+| Phase 4 / `CFG-002` | 🟡 代码完成/待集中验证 | Tasks 1～4 已合入；真实 Claude/Hermes 耗尽、approve 翻倍同 session 继续、deny 明确 failed 的安装包 canary 延后到集中全面测试 |
 | `SESSION-001` | 🟡 | session 快照、receipt、input wait 保留和同 ID resume 已完成；终态 cleanup/purge、capability 与 cleanup receipt 未实现 |
 | `SAFE-001` | ⬜ | linked worktree Git 元数据预检、`commit_required`、控制端审查提交和恢复链路均未实现 |
 | `SKILL-001` | ⬜ | canonical controller contract 的安装身份、协议版本和 template hash 握手未实现 |
@@ -64,15 +64,41 @@ discovery `782` 项全部通过，Ruff、compileall 与 `git diff --check` 通�
 
 ### 0.4 后续固定顺序
 
-1. 完成 Phase 4 安装包真实 canary：Claude/Hermes 各验证耗尽→approve→同 session 继续，
-   以及耗尽→deny→明确 failed；
-2. Phase 5：完成 `SESSION-001` 终态 cleanup/purge、capability/receipt；
-3. Phase 6：完成 `SAFE-001` linked-worktree 控制端提交闭环；
-4. Phase 7：完成 `SKILL-001`、`DOC-002`、`DOCFIX-001`；
-5. Phase 8：执行 `REL-102` 版本与发布 Gate。
+1. Phase 5：完成 `SESSION-001` 终态 cleanup/purge、capability/receipt；
+2. Phase 6：完成 `SAFE-001` linked-worktree 控制端提交闭环；
+3. Phase 7：完成 `SKILL-001`、`DOC-002`、`DOCFIX-001`；
+4. Phase 5～7 核心功能基本完成后，统一执行源码全面回归、安装包验证、真实 Executor
+   点对点 canary、Python/双机矩阵和安全/恢复测试；
+5. Phase 8：根据集中测试结果修复阻断项，再执行 `REL-102` 版本与发布 Gate。
 
 除非本清单被显式更新，后续 Agent 不得跳过 Phase 4 验收，不得把 session resume
 等同于 session cleanup 完成，也不得因本地新包可运行而宣称 `1.0.2A` 已发布。
+
+### 0.5 当前测试策略冻结（2026-08-11）
+
+为了避免功能尚未收口时反复消耗真实 Agent 预算、会话和安装环境，Phase 5～7 开发期间
+暂停逐功能的真实点对点测试，也不把每个小任务都升级为完整发布回归。当前阶段只执行：
+
+1. 本任务新增契约的定向自动化测试；
+2. 与改动模块直接相邻的受影响回归；
+3. Ruff、compileall、`git diff --check`，以及必要的 Shell 语法检查；
+4. 对删除、purge、配置写入和路径操作只使用临时目录、fixture、fake CLI 或 mock，
+   禁止触碰真实用户 session、Claude Project、customer project 或 dispatcher conversation；
+5. 只有修改共享状态机、Runner 授权、终态 finalize 等高风险公共路径，或出现难以定位的
+   回归时，集成控制端才额外运行扩大回归；全量 discovery 不再作为每个子任务的默认门禁。
+
+本阶段明确暂缓：Claude/Hermes 真实资源耗尽 approve/deny、真实 session purge/delete、
+Codex safe 普通 clone/linked-worktree 双 canary、三 Executor 端到端串联、Python 版本矩阵、
+双机、clean install/upgrade/rollback 和完整发布包测试。暂停测试不等于验收通过；对应项目
+继续保持“代码完成/待集中验证”或“部分完成”。
+
+当 Phase 5～7 代码路径均已合入、无已知 P0 实现缺口且接口/文档基本冻结后，集中测试按
+以下顺序执行：源码全量回归 → 构建 provenance 与 wheel/sdist → clean install/upgrade →
+CFG-002 资源耗尽点对点 → SESSION-001 retain/cleanup 点对点 → SAFE-001 linked-worktree →
+doctor/Skill/help 一致性 → Python/双机矩阵 → 失败注入、恢复、回滚与数据安全复核。集中测试
+重点不是单纯“命令退出 0”，而是核对 task/status/report/RunLease/receipt/session ID、同
+Task resume、清理边界、用户数据保护、secret redaction、CLI/Runner identity 与最终 SHA
+是否一致。
 
 ## 1. 文档地位与范围
 
@@ -113,7 +139,7 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
 | `task delete` | 已完成并合入 | 保持整条终态历史链安全删除的回归门禁 |
 | `doctor [--json]` | 只有基础实现和 A3 构建身份；完整契约未闭环 | 增量补齐 Skill 漂移、配置/runtime 漂移、稳定 schema/退出码和 blocker |
 | 执行会话保留 | 快照、receipt、等待保留与同 ID resume 已完成；终态清理未实现 | 只继续实现 cleanup capability/receipt 与 Claude purge/目录安全清理 |
-| Claude 预算 / Hermes 迭代 | 配置、任务快照、Adapter argv 与 Runner 校验已完成 | Phase 4 继续完成耗尽决策 UX 和真实 canary |
+| Claude 预算 / Hermes 迭代 | 配置、任务快照、Adapter argv、Runner 校验和耗尽决策 UX 已完成 | 真实 approve/deny canary 延后到集中全面测试 |
 | Codex safe 与 linked worktree | `workspace-write` 可修改工作树，但共享 Git 元数据位于 customer root 外，`git add/commit` 会失败；普通 input 响应不能改变沙箱授权 | 派发前识别并给出可接管的安全提交路径，禁止静默扩大权限 |
 | 执行时长 | 已完成真实 run interval 累计和权威 lease 当前视图 | 保持 status/report/notification 同源回归 |
 | Prompt 公共契约 | 已完成共享 builder、golden 和长度门禁 | 保持 v1 行为不变回归 |
@@ -164,7 +190,7 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
 | `DOC-002` | ⬜ 未闭环 | P0 | 完成只诊断 doctor 契约 | Doctor、Registry、Runner query、CLI | SKILL-001、SESSION-001 receipt、SAFE-001 |
 | `REPORT-001` | ✅ 已合入 | P1 | 修正恢复任务累计执行时长 | RunLease、Service timing、Report、Task List、Notification | 只保留回归 |
 | `CFG-001` | ✅ 已合入 | P0 | Claude 预算与 Hermes 迭代上限配置及执行注入 | Config、Setup、CLI、Claude/Hermes Adapter、Preflight | doctor 最终视图待 DOC-002 |
-| `CFG-002` | 🟡 代码已合入 | P0 | 预算/迭代耗尽决策：弹窗翻倍继续或终止 | Adapter、Worker/Core、Notifications、Service respond | 只剩安装包真实 canary |
+| `CFG-002` | 🟡 代码已合入/待集中验证 | P0 | 预算/迭代耗尽决策：弹窗翻倍继续或终止 | Adapter、Worker/Core、Notifications、Service respond | 安装包真实 canary 按 0.5 节延后 |
 | `SAFE-001` | ⬜ 未开始 | P0 | Codex safe 在 linked worktree 下的 Git 写入预检与可接管提交 | Path Plan、Codex Adapter、Runner、Preflight、Input、Notification、Doctor | 权限三档、SESSION-001 resume 已具备 |
 | `PROMPT-001` | ✅ 已合入 | P1 | 三 Executor 公共 Prompt 契约去重 | 公共 builder、Codex/Claude/Hermes Adapter | 只保留回归 |
 | `OBS-001` | ✅ 已合入 | P1 | 当前 execution lease 状态单一派生视图 | RunLease query、Status、Report | 与 REPORT-001 同步完成 |
@@ -369,8 +395,9 @@ Phase 4 当前状态（对照集成基线 `b7ba051`，Tasks 1～3 已合入）�
 - [x] Task 3：approve 按任务快照翻倍并恢复同 session，deny 以明确原因 failed，
   Runner 原子 respond-and-dispatch；
 - [x] Task 4（本切片）：通知/dialog 两按钮、fallback 命令、公共视图字段和三份文档；
-- [ ] 安装包真实 canary：Claude 与 Hermes 各覆盖耗尽→approve→同 session 继续，以及
-  耗尽→deny→明确 failed；验证前不得关闭 `CFG-002`。
+- [ ] 集中全面测试中的安装包真实 canary：Claude 与 Hermes 各覆盖耗尽→approve→同
+  session 继续，以及耗尽→deny→明确 failed；验证前不得关闭 `CFG-002`，但不阻塞
+  Phase 5～7 继续开发。
 
 Task 4 已落地子项（弹窗/视图/文档切片）：
 
@@ -384,8 +411,8 @@ Task 4 已落地子项（弹窗/视图/文档切片）：
 - [x] 1.0.2A 清单、开发手册、中文用户指南三份文档同步 Phase 4/CFG-002；
   `SESSION-001` 终态 cleanup/purge 保持打开，本切片不实现 purge/delete。
 
-`SESSION-001` 终态 cleanup/purge 与能力回执仍保持打开；`CFG-002` 只剩安装包真实
-canary 未验收。
+`SESSION-001` 终态 cleanup/purge 与能力回执仍保持打开；`CFG-002` 只剩集中全面测试中的
+安装包真实 canary 未验收。
 
 验收：claude 预算耗尽、hermes 迭代耗尽、翻倍继续成功、终止 failed 带原因、
 到期转恢复、弹窗文案、无密钥泄漏与 status/report 一致展示通过。
@@ -452,8 +479,8 @@ Git 目录篡改、禁止写 main/其他 refs、通知原因与下一步、statu
 - 10 步 task 的公共 prompt 目标不超过约 3,000 字符，并阻止按 step 重复公共规则；
 - 机械迁移和文本/协议语义变化分提交，本版不引入 v2 sidecar。
 
-验收：三个 Executor prompt snapshot、10 步长度、resumed turn、图片/权限差异和真实
-Codex/Claude/Hermes canary 通过。
+验收：三个 Executor prompt snapshot、10 步长度、resumed turn、图片/权限差异通过；真实
+Codex/Claude/Hermes canary 纳入 0.5 节集中全面测试。
 
 ### 4.9 `DOCFIX-001`：文档与 help 一致性
 
@@ -476,20 +503,92 @@ Codex/Claude/Hermes canary 通过。
 
 | Phase | 状态 | 目标 | 进入下一阶段的硬门禁 |
 | --- | --- | --- | --- |
-| Phase 4 | 🟡 | 完成 `CFG-002` UX、公共视图、文档和真实耗尽决策闭环 | `97FK-001` 验收并合入；全量测试；Claude/Hermes approve/deny canary |
-| Phase 5 | ⬜ | `SESSION-001` 终态 cleanup/purge、capability/receipt、失败重试与 doctor warning 数据 | retain on/off、三 Executor capability、Claude 路径/非空目录保护、cleanup 失败不改任务终态 |
-| Phase 6 | ⬜ | `SAFE-001` linked-worktree Git 元数据预检、`commit_required`、控制端审查提交与同 Task 恢复 | 普通 clone/safe 与 linked-worktree/safe 双 canary；不扩大共享 Git 权限 |
+| Phase 4 | 🟡 代码完成/待集中验证 | `CFG-002` UX、公共视图、文档已合入 | 定向与受影响回归通过；真实 approve/deny canary 延后，不阻塞 Phase 5 |
+| Phase 5 | ▶ 下一阶段 | `SESSION-001` 终态 cleanup/purge、capability/receipt、失败重试与 doctor warning 数据 | 临时目录/fake CLI 下 retain on/off、三 Executor capability、Claude 路径/非空目录保护、失败不改终态的定向契约通过 |
+| Phase 6 | ⬜ | `SAFE-001` linked-worktree Git 元数据预检、`commit_required`、控制端审查提交与同 Task 恢复 | 自动化 fixture 覆盖普通 clone/linked worktree、分支/HEAD/路径竞态与禁止扩大共享 Git 权限；真实双 canary 延后 |
 | Phase 7 | ⬜ | `SKILL-001`、`DOC-002`、`DOCFIX-001` | Skill hash/版本握手、doctor 0/1/2、text/JSON 同源、双语文档/help/Skill 一致 |
-| Phase 8 | ⬜ | `REL-102` 发布收口 | 全量与 Python 矩阵、wheel/sdist、clean install、三 Executor、双机、唯一 SHA |
+| 集中全面测试 | ⏸ 延后 | 源码全量、安装包、真实点对点、Python/双机、安全/恢复/回滚 | Phase 5～7 代码完成且接口基本冻结；所有打开 canary 逐项给出可追溯证据 |
+| Phase 8 | ⬜ | `REL-102` 阻断修复与发布收口 | 集中测试阻断清零；wheel/sdist、clean install、三 Executor、双机、唯一 SHA |
 
-### 5.3 分工与合并护栏
+### 5.3 Phase 5 开发任务规划
+
+Phase 5 只完成 `SESSION-001` 终态清理代码闭环，不顺带实现 `SAFE-001`、统一权限或
+1.0.3A approval 协议。按以下依赖顺序实施；任务 2 依赖任务 1，任务 3～4 依赖任务 2，
+任务 5 在前四项合入后收口：
+
+#### Task 1：cleanup contract、状态机与能力模型
+
+- 在现有 `agentbc.session.cleanup.state/attempts` 和 `session_cleanup_blockers()` 基础上
+  冻结 cleanup receipt v1；至少表达 `capability`、`strategy`、`state`、`attempts`、
+  `requested_at`、`completed_at`、稳定 `error_code`，不得保存命令正文、用户 prompt、
+  secret 或 Executor 私有数据库路径；
+- eligibility 固定为：Task 属于 terminal 集合、RunLease closed、最终 report 已写入、
+  终态 notification 已记录、`retain=false`、session state 为 terminal、官方 session ID
+  存在且 cleanup 尚未解决；`input_required/needs_recovery/active/stale` 必须阻断；
+- 定义 `not_requested -> pending -> succeeded|unsupported|failed|retained` 的幂等迁移，
+  `failed` 可重试但不得无限热循环，已解决状态重复调用必须零副作用；
+- 只新增纯 contract/fixture 测试，不在此任务接入真实删除动作。
+
+#### Task 2：终态 cleanup coordinator 与原子 receipt
+
+- 在 terminal finalize 的既有顺序之后触发：RunLease 关闭、最终报告落盘、终态通知入队
+  均成功后，才在 task 锁内把 cleanup 从可执行状态切换到 `pending`；
+- coordinator 读取磁盘权威 session snapshot，调用 Executor cleanup capability，并将结果
+  原子写回同一 Task；进程中断后可根据 receipt 恢复或重试，不重复 purge；
+- cleanup 的 `unsupported/failed` 只形成 receipt 与 warning，不修改原任务终态、final
+  callback、report readiness 或已完成 step；
+- retry 采用有界 attempts/backoff/maintenance 路径；不增加要求用户管理 runtime 的新入口。
+
+#### Task 3：Claude 官方 purge 与受管目录无感清理
+
+- 只允许 `retain=false + project_mode=ephemeral`；`retain=true + project_mode=native` 的
+  用户工程固定为 `retained`，永不调用 purge，也不删除任何用户目录；
+- 通过真实 help fixture/capability probe 固定无 shell 的规范 argv：
+  `claude project purge --yes <project-path>`；只使用任务快照中的精确 session/project
+  绑定，不按“最近项目”或模糊名称查找；
+- purge 成功后按固定顺序尝试 `rmdir <TASK-ID>/claude`、空的 `<TASK-ID>`、空的 chain
+  artifact 目录；每一步重做 ownership、canonical containment、symlink 和预期路径校验；
+- 意外文件、用户产物、非空目录、路径漂移或 purge 失败时停止后续删除并写失败 receipt，
+  禁止递归删除，禁止把清理失败改写为任务 failed；
+- 当前阶段只使用 fake Claude CLI 和临时 artifact tree，不执行真实 Claude Project purge。
+
+#### Task 4：Codex/Hermes capability 与 unsupported 闭环
+
+- 从已发现的 CLI 和冻结 help fixture 探测官方、定向、可审计的 session 删除能力；只有
+  能用精确官方 session ID 删除当前任务会话时才标记 supported；
+- 若 Codex/Hermes 当前版本无官方删除入口，稳定写入 `capability=unsupported`、
+  `state=unsupported` 和原因码；不得扫描 `~/.codex`、`~/.hermes`、SQLite、日志、进程
+  或“最近会话”来模拟支持；
+- unsupported 必须是已解决 cleanup 状态，避免重复重试，同时由 doctor/status/report
+  明确提示能力缺口，不泄露 session 内容。
+
+#### Task 5：公共视图、doctor、文档与阶段集成
+
+- status/preflight/report 只展示 cleanup capability/state/attempts/error code 与是否可重试，
+  不展示 Claude internal project path、原生命令、raw output 或 secret；
+- doctor 对 unsupported/failed/stale pending 给出稳定 warning 与下一步，对 retain=true 的
+  retained 状态不误报警；text/JSON 同源；
+- 同步中英文 User Guide、开发手册和三类 Skill 的用户语义：清理始终后台无感，只管理
+  Executor 临时会话，永不删除 dispatcher conversation；
+- 合并验收执行 Phase 5 定向测试、受影响 session/finalize/report/doctor 回归、Ruff、
+  compileall 与 `git diff --check`。真实三 Executor cleanup 点对点和全量 discovery 按
+  0.5 节延后到集中全面测试。
+
+Phase 5 推荐文件所有权：Task 1 独占 `execution_policy.py` 与 cleanup schema/fixtures；
+Task 2 独占 coordinator 及 `service.py`/terminal finalize 接线；Task 3 独占 Claude Adapter、
+PathPlan 清理实现；Task 4 独占 Codex/Hermes Adapter 与 capability probe；Task 5 最后统一
+修改 CLI/report/doctor/docs。共享文件不得并行交叉写，先合入依赖项再开始下游任务。
+
+### 5.4 分工与合并护栏
 
 - 三个固定 agent worktree 每轮开始前同步最新 `private/integration`；
 - 同一 Phase 可并行的任务必须先冻结文件所有权；`service.py`、`runner.py`、`cli.py`、
   `setup.py` 不允许多个 Agent 同时做交叉语义修改；
 - Agent 分支任务失败时先回滚到干净基线，再以新根任务重新派发；不得把失败现场当完成产物；
-- integration 必须审阅 Agent diff，允许在合并提交中修正跨模块契约，再跑全量门禁；
-- Task 4/文档任务不得提前勾选 Phase 5 session cleanup、Phase 6 SAFE 或 Phase 7 doctor；
+- integration 必须审阅 Agent diff，允许在合并提交中修正跨模块契约，再按 0.5 节运行
+  本阶段定向与受影响回归；开发期不默认重复完整发布门禁；
+- 任一 Phase 5 子任务不得因 cleanup schema 或 Claude purge 单项完成就提前关闭整个
+  `SESSION-001`；Phase 6 SAFE 与 Phase 7 doctor 继续保持独立边界；
 - 真实 Executor 能力不足用 `unsupported` capability/receipt 表达，不得扫描私有目录模拟支持。
 
 ## 6. 分支、提交与验收规则
@@ -502,6 +601,8 @@ Codex/Claude/Hermes canary 通过。
 - 功能实现、机械重构、协议语义变化和文档更新使用可辨认的独立提交；
 - `accepted` 只证明派发；完成验收必须检查 status、report、RunLease、测试和 git diff；
 - 涉及删除、会话清理和配置写入的测试只能使用临时根目录，不触碰真实用户数据。
+- Phase 5～7 每个子任务按 0.5 节执行定向与受影响回归；不得自行启动真实 Executor
+  点对点、真实 purge 或完整发布矩阵。扩大测试范围必须由 integration 控制端基于风险决定。
 
 ## 7. 版本级完成定义
 
@@ -531,6 +632,7 @@ Codex/Claude/Hermes canary 通过。
   作为 `--customer-path`；
 - [ ] 新任务 steps 明确文件所有权、验收测试和唯一合法 final marker；
 - [ ] `accepted` 后记录 task ID；完成验收必须同时检查 callback、report、RunLease、测试和 diff；
-- [ ] Agent 完成后先审阅再合入；合入后跑全量门禁并更新第 0 节，不把聊天总结当长期状态；
+- [ ] Agent 完成后先审阅再合入；合入后按 0.5 节跑本阶段门禁并更新第 0 节，不把聊天
+  总结当长期状态；全量与真实点对点只在集中测试批次执行；
 - [ ] 构建/安装包记录版本、commit SHA、source tree hash 和 SHA256；正式版本提升只在
   `REL-102` Gate 执行。
