@@ -886,7 +886,8 @@ class TaskService:
             if isinstance(item, dict) and item.get("status") == "blocked"
         ]
         blocked_step_id = int(blocked_results[0]["id"])
-        input_details = callback.get("input") if isinstance(callback.get("input"), dict) else {}
+        raw_input_details = callback.get("input")
+        input_details = raw_input_details if isinstance(raw_input_details, dict) else {}
         input_type = str(
             input_details.get("type")
             or callback.get("input_type")
@@ -931,6 +932,12 @@ class TaskService:
                 str(redact_secrets(str(option.get("description") or "").strip()))
                 for option in input_choices
             ]
+        input_kind = str(input_details.get("kind") or "").strip()
+        if input_kind:
+            request["kind"] = str(redact_secrets(input_kind))
+        response_protocol = str(input_details.get("response_protocol") or "").strip()
+        if response_protocol:
+            request["response_protocol"] = str(redact_secrets(response_protocol))
 
         task.status = "input_required"
         task.updated_at = created_at

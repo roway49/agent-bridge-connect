@@ -643,6 +643,9 @@ def _render_report_md(report: dict[str, Any]) -> str:
             "## Execution Policy",
             f"- Resource: `{resources.get('resource') or 'none'}`",
             f"- Effective limit: `{resources.get('limit') if resources else 'none'}`",
+            f"- Configured limit: `{resources.get('configured_limit') if resources else 'none'}`",
+            f"- Exhaustion count: `{resources.get('exhaustion_count') if resources else 'none'}`",
+            f"- Last decision: `{resources.get('last_decision') or 'none'}`",
             f"- Resource source: `{resources.get('source') or 'none'}`",
             f"- Resource frozen: `{'yes' if resources.get('frozen') else 'no'}`",
             f"- Retain executor session: `{'yes' if executor_session.get('retain') else 'no'}`",
@@ -682,6 +685,11 @@ def _render_report_md(report: dict[str, Any]) -> str:
             f"- Blocked step/type: `{input_request.get('blocked_step_id', '')}` / `{input_request.get('type', '')}`",
             f"- Summary: {input_request.get('summary', '')}",
         ]
+        if input_request.get("kind") or input_request.get("response_protocol"):
+            input_lines.append(
+                f"- Kind/response protocol: `{input_request.get('kind', '')}` / "
+                f"`{input_request.get('response_protocol', '')}`"
+            )
         if input_request.get("reason"):
             input_lines.append(f"- Decision reason: {input_request.get('reason', '')}")
         if input_request.get("options"):

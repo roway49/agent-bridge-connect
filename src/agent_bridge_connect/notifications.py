@@ -10,6 +10,11 @@ from .reports import redact_secrets
 from .terminal_states import TASK_TERMINAL_STATES, terminal_status_label
 from .timing_view import build_timing_view
 
+RESOURCE_DECISION_APPROVE_LABEL = "提高预算并继续"
+RESOURCE_DECISION_DENY_LABEL = "终止任务"
+RESOURCE_DECISION_KIND = "resource_limit"
+RESOURCE_DECISION_PROTOCOL = "approve_deny"
+
 
 def notify_terminal(
     service: Any,
@@ -126,11 +131,20 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
     if not input_id:
         raise ValueError(f"Task {task_id} input request has no response ID")
     input_type = str(request.get("type") or "message").strip().lower()
+    input_kind = str(request.get("kind") or "").strip()
+    response_protocol = str(request.get("response_protocol") or "").strip()
+    is_resource_decision = (
+        input_type == "choice"
+        and input_kind == RESOURCE_DECISION_KIND
+        and response_protocol == RESOURCE_DECISION_PROTOCOL
+    )
     input_options = (
         [str(option).strip() for option in request.get("options", []) if str(option).strip()]
         if input_type == "choice" and isinstance(request.get("options"), list)
         else []
     )
+    if is_resource_decision:
+        input_options = [RESOURCE_DECISION_APPROVE_LABEL, RESOURCE_DECISION_DENY_LABEL]
     option_descriptions = (
         [
             compact_notification_text(str(description).strip(), 160)
@@ -142,7 +156,7 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
     )
     if len(option_descriptions) != len(input_options):
         option_descriptions = []
-    if input_type == "permission":
+    if input_type == "permission" or is_resource_decision:
         command = (
             f"agentbc task respond {task_id} --input {input_id} --approve"
             f" (or --deny)"
@@ -154,6 +168,11 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
     summary = compact_notification_text(str(request.get("summary") or ""), 240)
     if input_type == "choice":
         reason = compact_notification_text(str(request.get("reason") or summary), 240)
+        if is_resource_decision and not option_descriptions:
+            option_descriptions = [
+                "Approve: double this task's resource limit and continue the same session.",
+                "Deny: terminate the task with a failed terminal state.",
+            ]
         body_lines = [
             f"Task: {task_id} needs your decision",
             f"Blocked step: {blocked_step}",
@@ -198,6 +217,8 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         "deadline_at": str(request.get("deadline_at") or ""),
         "input_id": input_id,
         "input_type": input_type,
+        "input_kind": input_kind,
+        "response_protocol": response_protocol,
         "input_reason": str(request.get("reason") or ""),
         "input_options": input_options,
         "input_option_descriptions": option_descriptions,

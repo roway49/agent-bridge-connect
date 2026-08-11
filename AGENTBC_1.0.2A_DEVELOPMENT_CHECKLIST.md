@@ -1,10 +1,11 @@
 # AgentBC 1.0.2A 需求开发清单
 
 > 制定日期：2026-08-08  
-> 状态：开发进行中（Phase 0～Phase 3 已完成）
+> 状态：开发进行中（Phase 0～Phase 3 已完成；Phase 4 Tasks 1～3 已合入，Task 4 CFG-002 弹窗/视图/文档切片已完成）
 > 当前开发分支：`private/integration`  
 > 固定 Agent 分支：`agent/codex`、`agent/claude`、`agent/hermes`  
 > 开发基线：`private/integration@cfddccba246e6d057172f6716ab4318ade9a40ad`  
+> 当前集成基线：`private/integration@615fbb8cb95847c7a04f90226ab9de9d0ba2ff76`（本地领先远端，尚未 push）
 > 对应公开稳定修订：`v1.0.1A3` / Python `1.0.1a3` / `5e74de65c9b49867ac7957969138db59e2208572`  
 > 目标版本：`v1.0.2A` / Python `1.0.2a1`
 
@@ -26,7 +27,17 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
 - completion/liveness/schema v2；
 - GUI、Webhook、Email 等通知扩展；
 - 跨机派发、链式自动派发；
-- `service.py`、`runner.py`、`cli.py`、`setup.py` 的大规模结构拆分。
+- `service.py`、`runner.py`、`cli.py`、`setup.py` 的大规模结构拆分；
+- 统一 Agent 权限设置、三 Executor 权限 registry、结构化 approval event，以及权限受阻
+  自动进入桌面 `input_required` 弹窗；这些协议级改造全部冻结到 `1.0.3A`，不得继续给
+  `1.0.2A` 增加需求负担。
+
+`1.0.2A` 剩余开发期间采用人工过渡规则：每次创建新的根任务或 handoff 前，控制端必须先
+向用户确认目标 Agent 完成本任务实际需要 `safe` 还是 `full`，再在派发命令中显式传入
+`--permission-mode <safe|full>`；不得依赖 AgentBC 配置、来源任务或 Executor 原生配置的
+隐式继承。`full` 必须明确提示风险并取得本次派发授权。同 Task 的 retry/recover/resume
+继续使用已冻结权限，不通过普通 input 文本改权。该人工确认只约束派发流程，不在
+`1.0.2A` 新增权限弹窗或权限协议实现。
 
 允许的重构只限于支撑本清单功能的局部公共模块，并且机械迁移与语义变化必须分提交。
 
@@ -48,7 +59,8 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
 ### 2.1 分阶段实施记录
 
 - `2026-08-10 / Phase 0`：已冻结资源、session、耗尽路由与 Claude Project 的 v1
-  契约和真实 CLI fixture；后续缺口以可执行 `expectedFailure` 固定。
+  契约和真实 CLI fixture；当时缺口以可执行 `expectedFailure` 固定，Phase 1～4
+  实现后已逐项转为正常测试，当前全量基线不保留 Phase 4 `expectedFailure`。
 - `2026-08-10 / Phase 1`：已完成配置事务层、setup 保留式合并、Claude `$10`
   新默认、Hermes `agent.max_turns -> legacy max_turns -> 90` 提取，以及
   `claude budget`、`hermes max-turns`、`session retention` 三组配置命令。
@@ -61,8 +73,19 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
   任务快照注入，Claude/Hermes/Codex 官方 session receipt、同 Task 显式 ID resume，及
   Runner command/snapshot/cwd fail-closed 校验。`CFG-001` 端到端完成；`SESSION-001`
   只剩终态 cleanup/purge 与能力回执，`CFG-002` 仍保持打开。
-- Phase 3 最终证据：全量 discovery `726` 项通过，只保留 `1` 个 Phase 4 资源耗尽
-  `expectedFailure`；Ruff、compileall 与 `git diff --check` 通过。
+- `2026-08-10 / Phase 4 Tasks 1～3`：已完成资源耗尽的 Adapter 结构化识别、Core
+  `input_required`、任务级翻倍/终止决策和 Runner 原子响应派发，并合入集成基线
+  `b7ba051`；全量 discovery `765` 项通过，不再保留 Phase 4 `expectedFailure`；
+  Ruff、compileall、Shell 语法和 `git diff --check` 通过。
+- `2026-08-11 / Phase 4 Task 4（CFG-002 UX 切片）`：已完成资源耗尽 choice 的弹窗
+  按钮映射（`kind=resource_limit` + `response_protocol=approve_deny` 下
+  「提高预算并继续」→ `approve`、「终止任务」→ `deny`，Later/关闭/超时保持
+  waiting）、fallback `--approve/--deny` 命令、公共 execution policy 视图新增
+  `configured_limit` / `exhaustion_count` / `last_decision`、status/preflight/report
+  一致展示，以及 1.0.2A 清单、开发手册、中文用户指南三份文档同步。`SESSION-001`
+  终态 cleanup/purge 与能力回执仍保持打开；本切片不实现 purge/delete。
+- Phase 3 最终证据：全量 discovery `726` 项通过；Phase 4 Tasks 1～3 落地后当前
+  集成基线全量 discovery `765` 项通过，不再保留 Phase 4 `expectedFailure`。
 
 ## 3. 需求总表
 
@@ -269,6 +292,30 @@ Claude 预算耗尽（`Exceeded USD budget`）或 Hermes 迭代耗尽
   （`budget_exhausted_user_terminated` / `iteration_exhausted_user_terminated`），
   `retryable=false`；
 - 用户 24 小时未响应沿用 input_required 到期语义（转 `needs_recovery`）。
+
+Phase 4 当前状态（对照集成基线 `b7ba051`，Tasks 1～3 已合入）：
+
+- [x] Tasks 1～2：Adapter 耗尽识别、终态优先级、Core 资源阻塞入口；
+- [x] Task 3：approve 按任务快照翻倍并恢复同 session，deny 以明确原因 failed，
+  Runner 原子 respond-and-dispatch；
+- [x] Task 4（本切片）：通知/dialog 两按钮、fallback 命令、公共视图字段和三份文档；
+- [ ] 安装包真实 canary：Claude 与 Hermes 各覆盖耗尽→approve→同 session 继续，以及
+  耗尽→deny→明确 failed；验证前不得关闭 `CFG-002`。
+
+Task 4 已落地子项（弹窗/视图/文档切片）：
+
+- [x] `kind=resource_limit` + `response_protocol=approve_deny` 的 choice 弹窗两按钮
+  「提高预算并继续」/「终止任务」分别映射 `approve` / `deny`；Later、关闭弹窗与
+  超时保持 `waiting`（dismissed，不推进任务状态）；fallback 命令展示
+  `--approve` / `--deny`；普通 choice 仍以消息选项提交（`--message`），语义不变；
+- [x] 公共 execution policy 视图在兼容 `limit`（当前生效上限）字段基础上新增
+  `configured_limit`、`exhaustion_count`、`last_decision`；status/preflight/report
+  一致展示，不暴露 raw output、secret 或内部 Claude project path；
+- [x] 1.0.2A 清单、开发手册、中文用户指南三份文档同步 Phase 4/CFG-002；
+  `SESSION-001` 终态 cleanup/purge 保持打开，本切片不实现 purge/delete。
+
+`SESSION-001` 终态 cleanup/purge 与能力回执仍保持打开；`CFG-002` 只剩安装包真实
+canary 未验收。
 
 验收：claude 预算耗尽、hermes 迭代耗尽、翻倍继续成功、终止 failed 带原因、
 到期转恢复、弹窗文案、无密钥泄漏与 status/report 一致展示通过。
