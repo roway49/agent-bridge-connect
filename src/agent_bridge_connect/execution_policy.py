@@ -13,9 +13,11 @@ from .protocol import ABCError
 
 EXECUTION_POLICY_VERSION = 1
 EXECUTION_SESSION_RECEIPT_VERSION = 1
+SESSION_CLEANUP_RECEIPT_VERSION = 1
 RESOURCE_EXTENSION_KEY = "agentbc.resources"
 SESSION_EXTENSION_KEY = "agentbc.session"
 RESOURCE_MULTIPLIER = 2
+MAX_SESSION_CLEANUP_ATTEMPTS = 3
 
 RESOURCE_KIND_BY_EXECUTOR = {
     "claude": "max_budget_usd",
@@ -28,6 +30,28 @@ SESSION_STATES = frozenset(
 CLEANUP_STATES = frozenset(
     {"not_requested", "retained", "pending", "succeeded", "unsupported", "failed"}
 )
+CLEANUP_CAPABILITIES = frozenset(
+    {"unknown", "supported", "unsupported", "not_applicable"}
+)
+CLEANUP_STRATEGIES = frozenset(
+    {"none", "retain", "claude_project_purge", "official_session_delete"}
+)
+RESOLVED_CLEANUP_STATES = frozenset({"retained", "succeeded", "unsupported"})
+CLEANUP_RECEIPT_FIELDS = frozenset(
+    {
+        "version",
+        "capability",
+        "strategy",
+        "state",
+        "attempts",
+        "requested_at",
+        "last_attempt_at",
+        "next_attempt_at",
+        "completed_at",
+        "error_code",
+        "retryable",
+    }
+)
 RESOURCE_DECISIONS = frozenset({"", "increase", "terminate"})
 TERMINAL_SESSION_CLEANUP_STATUSES = frozenset(
     {"completed", "failed", "cancelled", "rejected"}
@@ -36,6 +60,7 @@ TERMINAL_SESSION_CLEANUP_STATUSES = frozenset(
 _HERMES_SESSION_RECEIPT_RE = re.compile(
     r"(?m)^[ \t]*session_id:[ \t]*([^\s]+)[ \t]*$"
 )
+_CLEANUP_ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 SESSION_RECEIPT_SOURCES = {
     "claude": "preallocated",
@@ -220,11 +245,163 @@ def build_session_snapshot(
         "project_path": str(project_path or "").strip(),
         "run_ids": [str(item).strip() for item in (run_ids or []) if str(item).strip()],
         "resume_count": 0,
-        "cleanup": {"state": "not_requested", "attempts": 0},
+        "cleanup": build_session_cleanup_receipt(),
         "created_at": created_at or _utc_now(),
     }
     _raise_policy_errors(validate_session_snapshot(snapshot), SESSION_EXTENSION_KEY)
     return snapshot
+
+
+def build_session_cleanup_receipt() -> dict[str, Any]:
+    """Build the safe, inert v1 receipt used before cleanup is requested."""
+    return {
+        "version": SESSION_CLEANUP_RECEIPT_VERSION,
+        "capability": "unknown",
+        "strategy": "none",
+        "state": "not_requested",
+        "attempts": 0,
+        "requested_at": "",
+        "last_attempt_at": "",
+        "next_attempt_at": "",
+        "completed_at": "",
+        "error_code": "",
+        "retryable": False,
+    }
+
+
+def read_session_cleanup_receipt(value: Any) -> dict[str, Any]:
+    """Read v1 or the historical two-field receipt without mutating stored tasks.
+
+    Historical receipts remain readable, but absent capability, strategy, timing, and
+    retry policy are projected to inert fail-closed values. Callers must explicitly
+    persist a later state transition; this helper never rewrites task history.
+    """
+    errors = validate_session_cleanup_receipt(value, allow_legacy=True)
+    if errors:
+        _raise_policy_errors(errors, f"{SESSION_EXTENSION_KEY}.cleanup")
+    if set(value) == {"state", "attempts"}:
+        receipt = build_session_cleanup_receipt()
+        receipt["state"] = value["state"]
+        receipt["attempts"] = value["attempts"]
+        return receipt
+    return copy.deepcopy(value)
+
+
+def validate_session_cleanup_receipt(
+    value: Any,
+    *,
+    allow_legacy: bool = False,
+) -> list[str]:
+    """Validate the strict receipt schema, optionally accepting the exact legacy form."""
+    prefix = f"{SESSION_EXTENSION_KEY}.cleanup"
+    if not isinstance(value, dict):
+        return [f"{prefix} must be an object"]
+
+    fields = set(value)
+    if allow_legacy and fields == {"state", "attempts"}:
+        errors: list[str] = []
+        if type(value.get("state")) is not str or value.get("state") not in CLEANUP_STATES:
+            errors.append(f"{prefix}.state is invalid")
+        attempts = value.get("attempts")
+        if type(attempts) is not int or attempts < 0:
+            errors.append(f"{prefix}.attempts must be a non-negative integer")
+        return errors
+
+    errors = []
+    missing = sorted(CLEANUP_RECEIPT_FIELDS - fields)
+    unknown = sorted(fields - CLEANUP_RECEIPT_FIELDS)
+    if missing:
+        errors.append(f"{prefix} missing fields: {', '.join(missing)}")
+    if unknown:
+        errors.append(f"{prefix} contains unsupported fields: {', '.join(unknown)}")
+    if missing or unknown:
+        return errors
+
+    if type(value.get("version")) is not int or (
+        value.get("version") != SESSION_CLEANUP_RECEIPT_VERSION
+    ):
+        errors.append(
+            f"{prefix}.version must be {SESSION_CLEANUP_RECEIPT_VERSION}"
+        )
+    capability = value.get("capability")
+    if type(capability) is not str or capability not in CLEANUP_CAPABILITIES:
+        errors.append(f"{prefix}.capability is invalid")
+    strategy = value.get("strategy")
+    if type(strategy) is not str or strategy not in CLEANUP_STRATEGIES:
+        errors.append(f"{prefix}.strategy is invalid")
+    state = value.get("state")
+    if type(state) is not str or state not in CLEANUP_STATES:
+        errors.append(f"{prefix}.state is invalid")
+    attempts = value.get("attempts")
+    if type(attempts) is not int or attempts < 0:
+        errors.append(f"{prefix}.attempts must be a non-negative integer")
+    for field in (
+        "requested_at",
+        "last_attempt_at",
+        "next_attempt_at",
+        "completed_at",
+    ):
+        timestamp = value.get(field)
+        if type(timestamp) is not str:
+            errors.append(f"{prefix}.{field} must be a string")
+        elif timestamp and not _valid_utc_timestamp(timestamp):
+            errors.append(f"{prefix}.{field} must be an ISO-8601 timestamp with timezone")
+    error_code = value.get("error_code")
+    if type(error_code) is not str:
+        errors.append(f"{prefix}.error_code must be a string")
+    elif error_code and not _CLEANUP_ERROR_CODE_RE.fullmatch(error_code):
+        errors.append(f"{prefix}.error_code must be a stable lowercase code")
+    if type(value.get("retryable")) is not bool:
+        errors.append(f"{prefix}.retryable must be a boolean")
+    if errors:
+        return errors
+
+    if state == "not_requested":
+        if attempts != 0 or any(
+            value[field]
+            for field in (
+                "requested_at",
+                "last_attempt_at",
+                "next_attempt_at",
+                "completed_at",
+                "error_code",
+            )
+        ):
+            errors.append(f"{prefix}.not_requested receipt must be inert")
+        if capability != "unknown" or strategy != "none" or value["retryable"]:
+            errors.append(f"{prefix}.not_requested receipt uses unsafe metadata")
+    elif state == "retained":
+        if capability != "not_applicable" or strategy != "retain":
+            errors.append(f"{prefix}.retained receipt requires retain semantics")
+        if not value["completed_at"] or value["retryable"] or error_code:
+            errors.append(f"{prefix}.retained receipt must be resolved")
+    elif state == "pending":
+        if capability not in {"unknown", "supported"} or strategy == "retain":
+            errors.append(f"{prefix}.pending receipt has incompatible capability metadata")
+        if attempts < 1 or not value["requested_at"] or not value["last_attempt_at"]:
+            errors.append(f"{prefix}.pending receipt requires request and attempt metadata")
+        if value["completed_at"] or value["retryable"] or error_code:
+            errors.append(f"{prefix}.pending receipt must remain unresolved")
+    elif state == "succeeded":
+        if capability != "supported" or strategy in {"none", "retain"}:
+            errors.append(f"{prefix}.succeeded receipt requires a supported delete strategy")
+        if not value["completed_at"] or value["retryable"] or error_code:
+            errors.append(f"{prefix}.succeeded receipt must be resolved")
+    elif state == "unsupported":
+        if capability != "unsupported" or strategy != "none":
+            errors.append(f"{prefix}.unsupported receipt requires unsupported capability")
+        if not value["completed_at"] or value["retryable"] or not error_code:
+            errors.append(f"{prefix}.unsupported receipt must contain a stable reason")
+    elif state == "failed":
+        if capability not in {"unknown", "supported"} or strategy == "retain":
+            errors.append(f"{prefix}.failed receipt has incompatible capability metadata")
+        if attempts < 1 or not value["requested_at"] or not value["last_attempt_at"]:
+            errors.append(f"{prefix}.failed receipt requires attempt metadata")
+        if value["completed_at"] or not error_code:
+            errors.append(f"{prefix}.failed receipt must remain unresolved with a reason")
+        if value["retryable"] != bool(value["next_attempt_at"]):
+            errors.append(f"{prefix}.failed retry metadata is inconsistent")
+    return errors
 
 
 def validate_session_snapshot(
@@ -290,16 +467,7 @@ def validate_session_snapshot(
     ):
         errors.append(f"{SESSION_EXTENSION_KEY}.resume_count must be a non-negative integer")
     cleanup = value.get("cleanup")
-    if not isinstance(cleanup, dict):
-        errors.append(f"{SESSION_EXTENSION_KEY}.cleanup must be an object")
-    else:
-        if str(cleanup.get("state") or "") not in CLEANUP_STATES:
-            errors.append(f"{SESSION_EXTENSION_KEY}.cleanup.state is invalid")
-        attempts = cleanup.get("attempts")
-        if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 0:
-            errors.append(
-                f"{SESSION_EXTENSION_KEY}.cleanup.attempts must be a non-negative integer"
-            )
+    errors.extend(validate_session_cleanup_receipt(cleanup, allow_legacy=True))
     if not isinstance(value.get("created_at"), str) or not str(value.get("created_at")).strip():
         errors.append(f"{SESSION_EXTENSION_KEY}.created_at must be non-empty")
     return errors
@@ -527,14 +695,166 @@ def session_cleanup_blockers(
         blockers.append("session_not_terminal")
     if not str(session.get("session_id") or "").strip():
         blockers.append("session_id_missing")
-    cleanup = session.get("cleanup") or {}
-    if str(cleanup.get("state") or "") in {"retained", "succeeded", "unsupported"}:
+    cleanup = read_session_cleanup_receipt(session.get("cleanup"))
+    if cleanup["state"] in RESOLVED_CLEANUP_STATES:
         blockers.append("cleanup_already_resolved")
     return blockers
 
 
 def is_session_cleanup_eligible(**kwargs: Any) -> bool:
     return not session_cleanup_blockers(**kwargs)
+
+
+def is_session_cleanup_resolved(value: Any) -> bool:
+    """Return whether a strict or historical receipt is in an idempotent end state."""
+    try:
+        receipt = read_session_cleanup_receipt(value)
+    except ABCError:
+        return False
+    return receipt["state"] in RESOLVED_CLEANUP_STATES
+
+
+def transition_session_cleanup(
+    session: Any,
+    target_state: str,
+    *,
+    task_status: str,
+    lease_state: str,
+    report_written: bool,
+    notification_recorded: bool,
+    capability: str | None = None,
+    strategy: str | None = None,
+    error_code: str = "",
+    retryable: bool = False,
+    next_attempt_at: str = "",
+    occurred_at: str | None = None,
+) -> dict[str, Any]:
+    """Apply one pure, fail-closed cleanup receipt transition.
+
+    The returned receipt is detached from ``session``. No Executor, filesystem, task
+    record, project, or dispatcher conversation is touched by this state machine.
+    """
+    if type(target_state) is not str or target_state not in CLEANUP_STATES:
+        _raise_cleanup_transition(f"invalid target state: {target_state}")
+    session_errors = validate_session_snapshot(session)
+    if session_errors:
+        _raise_cleanup_transition("session receipt is invalid", session_errors)
+
+    stored_receipt = copy.deepcopy(session["cleanup"])
+    receipt = read_session_cleanup_receipt(stored_receipt)
+    current_state = receipt["state"]
+    if current_state in RESOLVED_CLEANUP_STATES or current_state == target_state:
+        return stored_receipt
+
+    now = occurred_at or _utc_now()
+    if not _valid_utc_timestamp(now):
+        _raise_cleanup_transition("occurred_at must be an ISO-8601 timestamp with timezone")
+
+    blockers = session_cleanup_blockers(
+        task_status=task_status,
+        lease_state=lease_state,
+        report_written=report_written,
+        notification_recorded=notification_recorded,
+        session=session,
+    )
+    if target_state == "retained":
+        if current_state != "not_requested" or session.get("retain") is not True:
+            _raise_cleanup_transition(f"illegal transition: {current_state} -> retained")
+        blockers = [item for item in blockers if item != "retention_enabled"]
+        if blockers:
+            _raise_cleanup_transition("retained transition is blocked", blockers)
+        updated = dict(receipt)
+        updated.update(
+            {
+                "capability": "not_applicable",
+                "strategy": "retain",
+                "state": "retained",
+                "completed_at": now,
+                "error_code": "",
+                "retryable": False,
+                "next_attempt_at": "",
+            }
+        )
+        return _validated_cleanup_transition(updated)
+
+    if target_state == "pending":
+        if current_state not in {"not_requested", "failed"}:
+            _raise_cleanup_transition(f"illegal transition: {current_state} -> pending")
+        if blockers:
+            _raise_cleanup_transition("cleanup request is blocked", blockers)
+        if current_state == "failed":
+            if receipt["retryable"] is not True:
+                _raise_cleanup_transition("failed cleanup is not retryable")
+            if receipt["attempts"] >= MAX_SESSION_CLEANUP_ATTEMPTS:
+                _raise_cleanup_transition("cleanup attempt limit reached")
+            due_at = receipt["next_attempt_at"]
+            if not due_at or _parse_utc_timestamp(now) < _parse_utc_timestamp(due_at):
+                _raise_cleanup_transition("cleanup retry backoff has not elapsed")
+        updated = dict(receipt)
+        updated.update(
+            {
+                "capability": capability or receipt["capability"],
+                "strategy": strategy or receipt["strategy"],
+                "state": "pending",
+                "attempts": receipt["attempts"] + 1,
+                "requested_at": receipt["requested_at"] or now,
+                "last_attempt_at": now,
+                "next_attempt_at": "",
+                "completed_at": "",
+                "error_code": "",
+                "retryable": False,
+            }
+        )
+        return _validated_cleanup_transition(updated)
+
+    if current_state != "pending" or target_state not in {
+        "succeeded",
+        "unsupported",
+        "failed",
+    }:
+        _raise_cleanup_transition(f"illegal transition: {current_state} -> {target_state}")
+    if blockers:
+        _raise_cleanup_transition("cleanup result is blocked", blockers)
+
+    updated = dict(receipt)
+    updated["last_attempt_at"] = now
+    if target_state == "succeeded":
+        updated.update(
+            {
+                "capability": capability or receipt["capability"],
+                "strategy": strategy or receipt["strategy"],
+                "state": "succeeded",
+                "completed_at": now,
+                "error_code": "",
+                "retryable": False,
+                "next_attempt_at": "",
+            }
+        )
+    elif target_state == "unsupported":
+        updated.update(
+            {
+                "capability": capability or "unsupported",
+                "strategy": strategy or "none",
+                "state": "unsupported",
+                "completed_at": now,
+                "error_code": error_code or "session_cleanup_unsupported",
+                "retryable": False,
+                "next_attempt_at": "",
+            }
+        )
+    else:
+        updated.update(
+            {
+                "capability": capability or receipt["capability"],
+                "strategy": strategy or receipt["strategy"],
+                "state": "failed",
+                "completed_at": "",
+                "error_code": error_code,
+                "retryable": retryable,
+                "next_attempt_at": next_attempt_at,
+            }
+        )
+    return _validated_cleanup_transition(updated)
 
 
 def _normalize_resource_limit(executor: str, value: int | float) -> int | float:
@@ -588,6 +908,33 @@ def _raise_policy_errors(errors: list[str], key: str) -> None:
             f"Invalid {key}: {'; '.join(errors)}",
             {"extension": key, "errors": errors},
         )
+
+
+def _validated_cleanup_transition(value: dict[str, Any]) -> dict[str, Any]:
+    errors = validate_session_cleanup_receipt(value)
+    if errors:
+        _raise_cleanup_transition("transition produced an invalid receipt", errors)
+    return value
+
+
+def _raise_cleanup_transition(
+    message: str,
+    blockers: list[str] | None = None,
+) -> None:
+    details = {"blockers": blockers} if blockers else None
+    raise ABCError("invalid_session_cleanup_transition", message, details)
+
+
+def _parse_utc_timestamp(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _valid_utc_timestamp(value: str) -> bool:
+    try:
+        parsed = _parse_utc_timestamp(value)
+    except (TypeError, ValueError):
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None
 
 
 def _utc_now() -> str:
