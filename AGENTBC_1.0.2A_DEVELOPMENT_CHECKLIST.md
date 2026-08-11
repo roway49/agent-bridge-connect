@@ -6,7 +6,7 @@
 > 当前开发分支：`private/integration`  
 > 固定 Agent 分支：`agent/codex`、`agent/claude`、`agent/hermes`  
 > 初始开发基线：`private/integration@cfddccba246e6d057172f6716ab4318ade9a40ad`
-> 当前集成基线：Phase 4 Task 4 合并提交（本地尚未 push）
+> 当前集成基线：`private/integration@bd6d6a2`（本地尚未 push）
 > 对应公开稳定修订：`v1.0.1A3` / Python `1.0.1a3` / `5e74de65c9b49867ac7957969138db59e2208572`  
 > 目标版本：`v1.0.2A` / Python `1.0.2a1`
 
@@ -34,10 +34,10 @@
 | Phase 4 Task 4 / `CFG-002` UX | ✅ | 资源决策固定两按钮、approve/deny 映射、fallback 命令、公共资源视图与三份文档 | `QECT-001`、`22c8d61`、`tests/test_phase4_resource_decision_ux.py` |
 
 Phase 4 Tasks 1～3 的集成基线 `b7ba051` 全量 discovery 为 `765` 项通过；Task 4
-分支验收新增 `17` 项 UX 测试通过、分支全量 `743` 项通过（`1` 项 expected failure），
-Ruff、compileall 与 `git diff --check` 通过。合并后的 integration 全量结果以本轮最终
-验证为准。已生成并安装的本地 `1.0.1a3` Phase 4 构建仍指向 `b7ba051`；正式版本尚未
-提升为 `1.0.2a1`，Task 4 合并后尚未出新包。
+分支验收新增 `17` 项 UX 测试通过。合并基线 `bd6d6a2` 的 Phase 4 定向 `56` 项和全量
+discovery `782` 项全部通过，Ruff、compileall 与 `git diff --check` 通过。已生成并安装的
+本地 `1.0.1a3` Phase 4 构建仍指向 `b7ba051`；正式版本尚未提升为 `1.0.2a1`，Task 4
+合并后尚未出新包。
 
 ### 0.2 本轮任务与失败链路
 
@@ -148,9 +148,11 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
   waiting）、fallback `--approve/--deny` 命令、公共 execution policy 视图新增
   `configured_limit` / `exhaustion_count` / `last_decision`、status/preflight/report
   一致展示，以及 1.0.2A 清单、开发手册、中文用户指南三份文档同步。`SESSION-001`
-  终态 cleanup/purge 与能力回执仍保持打开；本切片不实现 purge/delete。
-- Phase 3 最终证据：全量 discovery `726` 项通过；Phase 4 Tasks 1～3 落地后当前
-  集成基线全量 discovery `765` 项通过，不再保留 Phase 4 `expectedFailure`。
+  终态 cleanup/purge 与能力回执仍保持打开；本切片不实现 purge/delete。Hermes
+  `QECT-001` 以 `max_turns=150`、`full` 权限完成约 26 分 41 秒实跑并保存官方 session
+  receipt `20260811_004323_d3bd9b`；成果由 `22c8d61` 经 `bd6d6a2` 合入。
+- Phase 4 合并最终证据：定向 `56` 项、全量 discovery `782` 项通过，Ruff、compileall
+  与 `git diff --check` 通过，不保留 Phase 4 `expectedFailure`。
 
 ## 3. 需求总表
 

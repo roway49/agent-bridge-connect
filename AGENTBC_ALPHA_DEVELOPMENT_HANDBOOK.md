@@ -2198,9 +2198,10 @@ Phase 3 完成后 `CFG-001` 端到端关闭；`SESSION-001` 已完成 receipt/re
 purge/cleanup 与 cleanup capability/receipt 仍保持打开。`CFG-002` 已随 Phase 4
 落地：Tasks 1～3 完成 Adapter 耗尽识别、Core 资源阻塞、approve 翻倍继续、deny
 明确失败与 Runner 原子响应派发（集成基线 `b7ba051`）；Task 4 完成弹窗按钮映射、
-fallback 命令、公共视图字段与三份文档。集成基线全量 discovery `765` 项通过，不再
-保留 Phase 4 `expectedFailure`；Ruff、compileall、Shell 语法与 `git diff --check`
-通过。
+fallback 命令、公共视图字段与三份文档，并由 `bd6d6a2` 合入。合并基线定向 `56` 项、
+全量 discovery `782` 项通过，不再保留 Phase 4 `expectedFailure`；Ruff、compileall
+与 `git diff --check` 通过。`CFG-002` 代码路径已落地，但 Claude/Hermes 安装包真实
+耗尽→approve/deny canary 完成前仍不得关闭发布验收。
 
 **Claude Project 分流**：设置只对后续新 run 生效，每个 run 创建时必须固化
 project mode/path/session ID，不得在 resume 时因全局设置变更而切换。保留模式
