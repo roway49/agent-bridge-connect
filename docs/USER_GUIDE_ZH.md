@@ -87,11 +87,12 @@ retain_executor_sessions = true
 resume、retry、recover 和再次 dispatch 都保留原快照。
 
 create/dispatch accepted、preflight、status、report 与 Task Brief 统一使用无内部路径的
-`execution_policy` 视图：展示有效上限、来源、冻结状态（Codex resources 为 `null`），以及
-retain、执行器 session ID/state 和 project mode。执行器内部 project path 只保留在 task
-packet，不作为 artifact 展示。Claude 临时 Project 使用 canonical `<TASK-ID>/claude`
-受管路径。实际运行时 Claude 使用冻结的 `--max-budget-usd`，Hermes 使用冻结的
-`--max-turns`；Claude、Hermes、Codex 都会记录执行器官方 session ID。同一 Task 在
+`execution_policy` 视图：展示当前生效上限（`limit`）、配置上限（`configured_limit`）、
+耗尽次数（`exhaustion_count`）、上次决策（`last_decision`）、来源、冻结状态（Codex
+resources 为 `null`），以及 retain、执行器 session ID/state 和 project mode。执行器内部
+project path 只保留在 task packet，不作为 artifact 展示。Claude 临时 Project 使用 canonical
+`<TASK-ID>/claude` 受管路径。实际运行时 Claude 使用冻结的 `--max-budget-usd`，Hermes 使用
+冻结的 `--max-turns`；Claude、Hermes、Codex 都会记录执行器官方 session ID。同一 Task 在
 `input_required`、retry 或 recovery 后再次运行时，会通过明确 session ID 恢复原会话，不会
 选择“最近一次会话”或新建会话重构上下文。
 
@@ -99,7 +100,10 @@ Runner 会同时校验 Worker packet、持久化快照、资源参数、session 
 缺失、重复、篡改或模糊恢复参数都会 fail closed。修改全局预算、迭代次数或 retention
 只影响后续新任务，不改变现有 Task 的冻结值。
 
-终态 cleanup/purge 和预算/迭代耗尽后的“翻倍继续 / 终止任务”仍属于下一阶段；当前版本在
+资源耗尽决策弹窗已随 Phase 4 提供：当任务以 `kind=resource_limit`（响应协议
+`approve_deny`）的 choice 等待决策时，弹窗提供「提高预算并继续」（approve）与
+「终止任务」（deny）两个按钮；「Later」、关闭弹窗或超时保持等待。终端兜底命令使用
+`--approve` / `--deny`。终态 cleanup/purge 仍属于下一阶段；当前版本在
 `input_required` 和 `needs_recovery` 期间不会清理执行器会话。
 
 该策略只管理 Executor 创建的临时会话。AgentBC 永远不会删除创建或 handoff 任务的
@@ -202,6 +206,21 @@ delete 只接受任务码，不接受 iteration ID。整条链的每次迭代都
 等待恢复的迭代时会拒绝整条链。`--dry-run` 零写入，并列出将删除与保留的对象；
 `--confirm` 只删除 AgentBC 自有 record、report、index entry 和 managed artifact，
 成功后释放任务码。用户工程始终保留。
+
+## 等待输入与决策
+
+任务进入 `input_required` 后保持 open 并等待响应，桌面弹窗只展示任务、阻塞步骤、
+原因与直接操作按钮。终端兜底命令：
+
+```bash
+agentbc task respond 4XMC-001 --input INPUT_ID --message "继续"
+agentbc task respond 4XMC-001 --input INPUT_ID --approve
+agentbc task respond 4XMC-001 --input INPUT_ID --deny
+```
+
+普通 choice 以 `--message` 提交所选选项；资源耗尽类决策（`kind=resource_limit`、
+`response_protocol=approve_deny`）使用 `--approve`（「提高预算并继续」）或 `--deny`
+（「终止任务」）。弹窗中的「Later」、关闭弹窗或超时不提交响应，任务保持等待。
 
 ## Record 与进程压力
 

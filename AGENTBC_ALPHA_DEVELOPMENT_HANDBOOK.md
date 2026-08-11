@@ -505,8 +505,8 @@ Report 与产物质量继续由用户或下一 Agent 验收。
 - 缺少、重复或无效完成信号，以及非零退出，默认进入 `failed`；
 - 只有 Adapter 能给出结构化 `retryable=true` 的传输/基础设施失败才进入恢复语义；
 - 权限、审批或预算耗尽但没有合法 `input_required` 声明时仍为 `failed`；
-- **【CFG-002 落地后】** Adapter 能识别的资源耗尽（Claude `Exceeded USD budget`；
-  Hermes `max_iterations_reached(N/M)`、`budget_exhausted`、
+- **【CFG-002 落地后】** Adapter 能识别的资源耗尽（Claude `Exceeded USD budget`；Hermes
+  `max_iterations_reached(N/M)`、`budget_exhausted`、
   `Iteration budget exhausted (N/M)`、`Reached maximum iterations (N)`）不再直接
   failed，转为 `input_required`（`type=choice`）弹窗决策：approve 翻倍资源并
   `--resume` 继续，deny 以 `failed` 终态并携带明确原因
@@ -546,9 +546,11 @@ description；默认 deadline 是 24 小时。
    `agentbc task respond` 仍保存在通知事件、任务状态和报告中作为运维兜底；
 5. Task List 保持黄色、open；read-only list/status/report 不得推进 24 小时到期状态。
 
-**资源耗尽类 choice（CFG-002）**：Adapter 检测到 Claude 预算或 Hermes 迭代耗尽时，
-以 `type=choice` 声明 input_required，桌面弹窗两按钮：「提高预算并继续」与
-「终止任务」。
+**资源耗尽类 choice（CFG-002；Phase 4 已落地）**：Adapter 检测到 Claude 预算或
+Hermes 迭代耗尽时，以 `type=choice` 声明 input_required，桌面弹窗两按钮：
+「提高预算并继续」与「终止任务」。
+
+Tasks 1～3（已合入集成基线 `b7ba051`）落地：
 
 - approve 按任务级翻倍当前资源（Claude `max_budget_usd` ×2、Hermes `max_turns`
   ×2），仅本次任务生效，不写全局配置；配合 SESSION-001 以 `--resume` 继续同一
@@ -558,6 +560,21 @@ description；默认 deadline 是 24 小时。
   `retryable=false`；
 - 等待期间任务临时会话必须保留并记录 `session_id`（SESSION-001 的
   `input_required` 例外），resume 派发直接继续该会话。
+
+Task 4（弹窗/视图/文档切片）落地：
+
+- 声明携带 `kind=resource_limit` 与 `response_protocol=approve_deny`；Service 原样
+  脱敏持久化到 `agentbc.input`，通知层据此渲染固定两按钮：第一按钮
+  「提高预算并继续」映射 `approve`，第二按钮「终止任务」映射 `deny`；「Later」、
+  关闭弹窗或超时返回 `dismissed`，任务保持 `waiting`，不推进状态；
+- fallback 命令为 `agentbc task respond TASK_ID --input INPUT_ID --approve`（或
+  `--deny`）；普通 choice 仍以 `--message "<响应>"` 提交选项，语义不变；
+- 公共 execution policy 视图在 `limit`（当前生效上限）之外新增
+  `configured_limit`、`exhaustion_count`、`last_decision`，status/preflight/report
+  一致展示，不含 raw output、secret 或内部 Claude project path；报告输入小节同时
+  展示 `kind` / `response_protocol`。
+
+`SESSION-001` 终态 cleanup/purge 与能力回执仍保持打开。
 
 用户响应的唯一运行入口是：
 
@@ -2178,9 +2195,12 @@ ID 与 Claude cwd，缺失、重复、篡改、非规范形式和 packet/disk �
 不记录 prompt、完整 command、内部路径或凭据。
 
 Phase 3 完成后 `CFG-001` 端到端关闭；`SESSION-001` 已完成 receipt/resume，但终态
-purge/cleanup 与 cleanup capability/receipt 仍保持打开；`CFG-002` 的资源耗尽弹窗、翻倍继续
-和用户终止仍未实现。全量 discovery `726` 项通过，只保留 `1` 个 Phase 4
-`expectedFailure`；Ruff、compileall 与 `git diff --check` 通过。
+purge/cleanup 与 cleanup capability/receipt 仍保持打开。`CFG-002` 已随 Phase 4
+落地：Tasks 1～3 完成 Adapter 耗尽识别、Core 资源阻塞、approve 翻倍继续、deny
+明确失败与 Runner 原子响应派发（集成基线 `b7ba051`）；Task 4 完成弹窗按钮映射、
+fallback 命令、公共视图字段与三份文档。集成基线全量 discovery `765` 项通过，不再
+保留 Phase 4 `expectedFailure`；Ruff、compileall、Shell 语法与 `git diff --check`
+通过。
 
 **Claude Project 分流**：设置只对后续新 run 生效，每个 run 创建时必须固化
 project mode/path/session ID，不得在 resume 时因全局设置变更而切换。保留模式

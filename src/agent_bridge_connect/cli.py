@@ -2025,7 +2025,10 @@ def _print_execution_policy(policy: Any) -> None:
             "Resources: "
             f"{resources.get('resource', '-')}={resources.get('limit')} "
             f"source={resources.get('source', '-')} "
-            f"frozen={'yes' if resources.get('frozen') else 'no'}"
+            f"frozen={'yes' if resources.get('frozen') else 'no'} "
+            f"configured={resources.get('configured_limit', '-')} "
+            f"exhaustions={resources.get('exhaustion_count', 0)} "
+            f"last_decision={resources.get('last_decision') or '-'}"
         )
     else:
         print("Resources: none")

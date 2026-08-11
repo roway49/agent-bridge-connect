@@ -29,6 +29,8 @@ class DialogNotifier:
         body = str(clean.get("message", ""))
         report_path = str(clean.get("report_path") or "").strip()
         input_type = str(clean.get("input_type") or "message").strip().lower()
+        input_kind = str(clean.get("input_kind") or "").strip().lower()
+        response_protocol = str(clean.get("response_protocol") or "").strip().lower()
         input_options = tuple(
             str(option).strip()
             for option in clean.get("input_options", [])
@@ -74,7 +76,14 @@ class DialogNotifier:
         gave_up = gave_up_match.group(1).lower() == "true" if gave_up_match else False
         message = f"dialog shown; button={button}; gave_up={str(gave_up).lower()}"
         if event_type == _INPUT_EVENT:
-            action = self._input_action(button, input_type, gave_up, input_options)
+            action = self._input_action(
+                button,
+                input_type,
+                gave_up,
+                input_options,
+                input_kind=input_kind,
+                response_protocol=response_protocol,
+            )
             details = {"action": action}
             if action == "message":
                 if input_type == "choice":
@@ -168,11 +177,20 @@ class DialogNotifier:
         input_type: str,
         gave_up: bool,
         input_options: tuple[str, ...] = (),
+        input_kind: str = "",
+        response_protocol: str = "",
     ) -> str:
         if gave_up or button in {"Later", "unknown"}:
             return "dismissed"
         if input_type == "permission":
             return "approve" if button == "Approve" else "deny" if button == "Deny" else "dismissed"
         if input_type == "choice":
+            if input_kind == "resource_limit" and response_protocol == "approve_deny":
+                if len(input_options) >= 2:
+                    if button == input_options[0]:
+                        return "approve"
+                    if button == input_options[1]:
+                        return "deny"
+                return "dismissed"
             return "message" if button in input_options else "dismissed"
         return "message" if button == "Submit" else "dismissed"

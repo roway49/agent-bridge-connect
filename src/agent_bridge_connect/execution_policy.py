@@ -445,6 +445,9 @@ def execution_policy_view(extensions: Any) -> dict[str, Any]:
         resource_view = {
             "resource": resource.get("resource"),
             "limit": resource.get("current_limit"),
+            "configured_limit": resource.get("configured_limit"),
+            "exhaustion_count": resource.get("exhaustion_count"),
+            "last_decision": resource.get("last_decision"),
             "source": resource.get("source"),
             "frozen": True,
         }

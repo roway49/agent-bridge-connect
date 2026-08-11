@@ -1,12 +1,12 @@
 # AgentBC 1.0.2A 需求开发清单
 
 > 制定日期：2026-08-08  
-> 最近状态快照：2026-08-11 00:45 CST
-> 状态：开发进行中（Phase 0～Phase 3 已完成；Phase 4 Tasks 1～3 已合入，Task 4 因 Hermes session receipt 丢失待重新派发）
+> 最近状态快照：2026-08-11（Phase 4 Task 4 合并验收）
+> 状态：开发进行中（Phase 0～Phase 3 已完成；Phase 4 Tasks 1～4 已合入，CFG-002 只剩安装包真实 canary）
 > 当前开发分支：`private/integration`  
 > 固定 Agent 分支：`agent/codex`、`agent/claude`、`agent/hermes`  
 > 初始开发基线：`private/integration@cfddccba246e6d057172f6716ab4318ade9a40ad`
-> 当前集成基线：`private/integration@615fbb8cb95847c7a04f90226ab9de9d0ba2ff76`（本地领先远端 4 个提交，尚未 push）
+> 当前集成基线：Phase 4 Task 4 合并提交（本地尚未 push）
 > 对应公开稳定修订：`v1.0.1A3` / Python `1.0.1a3` / `5e74de65c9b49867ac7957969138db59e2208572`  
 > 目标版本：`v1.0.2A` / Python `1.0.2a1`
 
@@ -31,26 +31,30 @@
 | Phase 2 | ✅ | 任务级 resource/session 冻结快照、handoff/reassign 重建、PathPlan、Runner packet 一致性和公共视图 | `b38c8da`、`fea07b2`、`6de4cf1`、`75ffc23` |
 | Phase 3 / `CFG-001` 端到端 | ✅ | Claude `--max-budget-usd`、Hermes `--max-turns`、三 Executor session receipt、明确 ID resume 和 Runner fail-closed 校验 | `438030f` |
 | Phase 4 Tasks 1～3 | ✅ | Claude/Hermes 资源耗尽结构化识别、Core `input_required` 阻塞、approve 翻倍继续、deny 明确失败、Runner respond-and-dispatch | `2b02891`、`24be4dd`、`b7ba051` |
+| Phase 4 Task 4 / `CFG-002` UX | ✅ | 资源决策固定两按钮、approve/deny 映射、fallback 命令、公共资源视图与三份文档 | `QECT-001`、`22c8d61`、`tests/test_phase4_resource_decision_ux.py` |
 
-当前已验收代码基线 `b7ba051` 全量 discovery 为 `765` 项通过，Ruff、compileall、Shell 语法和
-`git diff --check` 通过。已生成并安装本地 `1.0.1a3` Phase 4 构建，build provenance
-指向 `b7ba051`；正式版本尚未提升为 `1.0.2a1`。
+Phase 4 Tasks 1～3 的集成基线 `b7ba051` 全量 discovery 为 `765` 项通过；Task 4
+分支验收新增 `17` 项 UX 测试通过、分支全量 `743` 项通过（`1` 项 expected failure），
+Ruff、compileall 与 `git diff --check` 通过。合并后的 integration 全量结果以本轮最终
+验证为准。已生成并安装的本地 `1.0.1a3` Phase 4 构建仍指向 `b7ba051`；正式版本尚未
+提升为 `1.0.2a1`，Task 4 合并后尚未出新包。
 
-### 0.2 正在执行
+### 0.2 本轮任务与失败链路
 
 | 工作项 | AgentBC 任务 | 当前事实 | 完成后动作 |
 | --- | --- | --- | --- |
-| Phase 4 Task 4 / `CFG-002` UX、公共视图与文档 | `97FK-001`（Hermes） | `needs_recovery`；Hermes 实际完成 81/150 turns 并生成最终回复，但 quiet CLI 在后台 review 竞争窗口丢失 stdout 与官方 stderr `session_id:`，Worker 因 `executor_session_receipt_invalid` fail closed；RunLease 已关闭，任务未产生合法 callback/report | 不从 Hermes DB、日志或“最近会话”猜 ID，不恢复该 Task；已最小回移 Hermes 官方 `b5267671` thread-scoped output 修复，3 项并发回归及真实 `-Q` receipt canary 通过；下一步按人工权限确认规则创建全新根任务重跑 |
+| Phase 4 Task 4 / `CFG-002` UX、公共视图与文档 | `QECT-001`（Hermes） | `completed`；冻结 `max_turns=150`、显式 `full` 权限，实际运行约 26 分 41 秒；合法 final callback、完成标记、关闭 RunLease 与官方 session receipt `20260811_004323_d3bd9b` 均已验收 | 成果已合入 integration；继续执行安装包真实资源耗尽 canary |
 
-旧任务 `QDKN-001` 已因 Hermes 旧运行达到 `60/60` 且 final marker 无效而终态
-`failed`；它不再恢复、不 handoff，也不是当前开发基线。`97FK-001` 是不继承其 lineage、
-session、resource 或运行记录的全新根任务。
+旧任务 `QDKN-001` 已因旧运行达到 `60/60` 且 final marker 无效而终态 `failed`；
+`97FK-001` 因旧 Hermes quiet review 竞争丢失官方 receipt 而 `needs_recovery`。二者均不恢复、
+不 handoff，也不是当前开发基线。`QECT-001` 是不继承其 lineage、session、resource 或
+运行记录的全新根任务，并验证 thread-scoped output 修复后长任务 receipt 可稳定落盘。
 
 ### 0.3 尚未完成，禁止提前关闭
 
 | 工作项 | 状态 | 剩余闭环 |
 | --- | --- | --- |
-| Phase 4 / `CFG-002` | 🟡 | Task 4 尚未验收/合入；真实 Claude/Hermes 耗尽、approve 翻倍同 session 继续、deny 明确 failed 的安装包 canary 尚未完成 |
+| Phase 4 / `CFG-002` | 🟡 | Tasks 1～4 已合入；真实 Claude/Hermes 耗尽、approve 翻倍同 session 继续、deny 明确 failed 的安装包 canary 尚未完成 |
 | `SESSION-001` | 🟡 | session 快照、receipt、input wait 保留和同 ID resume 已完成；终态 cleanup/purge、capability 与 cleanup receipt 未实现 |
 | `SAFE-001` | ⬜ | linked worktree Git 元数据预检、`commit_required`、控制端审查提交和恢复链路均未实现 |
 | `SKILL-001` | ⬜ | canonical controller contract 的安装身份、协议版本和 template hash 握手未实现 |
@@ -60,12 +64,12 @@ session、resource 或运行记录的全新根任务。
 
 ### 0.4 后续固定顺序
 
-1. 修复 Hermes quiet 长任务 receipt 丢失并完成 review-trigger canary；废弃 `97FK-001` 的恢复路径，创建全新根任务重跑 Task 4；
-2. 验收并合入新的 Phase 4 Task 4，完成代码/视图/文档回归与真实 canary；
-3. Phase 5：完成 `SESSION-001` 终态 cleanup/purge、capability/receipt；
-4. Phase 6：完成 `SAFE-001` linked-worktree 控制端提交闭环；
-5. Phase 7：完成 `SKILL-001`、`DOC-002`、`DOCFIX-001`；
-6. Phase 8：执行 `REL-102` 版本与发布 Gate。
+1. 完成 Phase 4 安装包真实 canary：Claude/Hermes 各验证耗尽→approve→同 session 继续，
+   以及耗尽→deny→明确 failed；
+2. Phase 5：完成 `SESSION-001` 终态 cleanup/purge、capability/receipt；
+3. Phase 6：完成 `SAFE-001` linked-worktree 控制端提交闭环；
+4. Phase 7：完成 `SKILL-001`、`DOC-002`、`DOCFIX-001`；
+5. Phase 8：执行 `REL-102` 版本与发布 Gate。
 
 除非本清单被显式更新，后续 Agent 不得跳过 Phase 4 验收，不得把 session resume
 等同于 session cleanup 完成，也不得因本地新包可运行而宣称 `1.0.2A` 已发布。
@@ -88,7 +92,7 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
 - completion/liveness/schema v2；
 - GUI、Webhook、Email 等通知扩展；
 - 跨机派发、链式自动派发；
-- `service.py`、`runner.py`、`cli.py`、`setup.py` 的大规模结构拆分。
+- `service.py`、`runner.py`、`cli.py`、`setup.py` 的大规模结构拆分；
 - 统一 Agent 权限设置、三 Executor 权限 registry、结构化 approval event，以及权限受阻
   自动进入桌面 `input_required` 弹窗；这些协议级改造全部冻结到 `1.0.3A`，不得继续给
   `1.0.2A` 增加需求负担。
@@ -120,8 +124,8 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
 ### 2.1 分阶段实施记录
 
 - `2026-08-10 / Phase 0`：已冻结资源、session、耗尽路由与 Claude Project 的 v1
-  契约和真实 CLI fixture；当时缺口以可执行 `expectedFailure` 固定，Phase 1～4 实现后已
-  逐项转为正常测试，当前全量基线不保留 Phase 4 `expectedFailure`。
+  契约和真实 CLI fixture；当时缺口以可执行 `expectedFailure` 固定，Phase 1～4
+  实现后已逐项转为正常测试，当前全量基线不保留 Phase 4 `expectedFailure`。
 - `2026-08-10 / Phase 1`：已完成配置事务层、setup 保留式合并、Claude `$10`
   新默认、Hermes `agent.max_turns -> legacy max_turns -> 90` 提取，以及
   `claude budget`、`hermes max-turns`、`session retention` 三组配置命令。
@@ -135,17 +139,18 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
   Runner command/snapshot/cwd fail-closed 校验。`CFG-001` 端到端完成；`SESSION-001`
   只剩终态 cleanup/purge 与能力回执，`CFG-002` 仍保持打开。
 - `2026-08-10 / Phase 4 Tasks 1～3`：已完成资源耗尽的 Adapter 结构化识别、Core
-  `input_required`、任务级翻倍/终止决策和 Runner 原子响应派发，并合入 `b7ba051`。
-  全量 discovery `765` 项通过，不再保留 Phase 4 `expectedFailure`；Ruff、compileall、
-  Shell 语法和 `git diff --check` 通过。
-- `2026-08-11 / Phase 4 Task 4`：旧 Hermes 任务 `QDKN-001` 已放弃；新根任务
-  `97FK-001` 使用冻结 `max_turns=150` 完成 81 次调用并生成最终回复，但本机 Hermes
-  `v0.17.0` 的后台 review 使用进程级 stdout/stderr 重定向，竞争吞掉 quiet CLI 最终输出
-  与 session receipt，因此按 `executor_session_receipt_invalid` 进入 `needs_recovery`。
-  已回移 Hermes 官方 `b5267671` thread-scoped output 修复；3 项定向并发测试与真实
-  `hermes chat -Q` receipt canary 通过。不得猜测或补写 `97FK-001` 的 ID；后续在人工确认
-  Hermes 所需权限并显式传参后，以全新根任务重跑。只有新任务验收并合入后才可标记
-  Phase 4 完成。
+  `input_required`、任务级翻倍/终止决策和 Runner 原子响应派发，并合入集成基线
+  `b7ba051`；全量 discovery `765` 项通过，不再保留 Phase 4 `expectedFailure`；
+  Ruff、compileall、Shell 语法和 `git diff --check` 通过。
+- `2026-08-11 / Phase 4 Task 4（CFG-002 UX 切片）`：已完成资源耗尽 choice 的弹窗
+  按钮映射（`kind=resource_limit` + `response_protocol=approve_deny` 下
+  「提高预算并继续」→ `approve`、「终止任务」→ `deny`，Later/关闭/超时保持
+  waiting）、fallback `--approve/--deny` 命令、公共 execution policy 视图新增
+  `configured_limit` / `exhaustion_count` / `last_decision`、status/preflight/report
+  一致展示，以及 1.0.2A 清单、开发手册、中文用户指南三份文档同步。`SESSION-001`
+  终态 cleanup/purge 与能力回执仍保持打开；本切片不实现 purge/delete。
+- Phase 3 最终证据：全量 discovery `726` 项通过；Phase 4 Tasks 1～3 落地后当前
+  集成基线全量 discovery `765` 项通过，不再保留 Phase 4 `expectedFailure`。
 
 ## 3. 需求总表
 
@@ -157,7 +162,7 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
 | `DOC-002` | ⬜ 未闭环 | P0 | 完成只诊断 doctor 契约 | Doctor、Registry、Runner query、CLI | SKILL-001、SESSION-001 receipt、SAFE-001 |
 | `REPORT-001` | ✅ 已合入 | P1 | 修正恢复任务累计执行时长 | RunLease、Service timing、Report、Task List、Notification | 只保留回归 |
 | `CFG-001` | ✅ 已合入 | P0 | Claude 预算与 Hermes 迭代上限配置及执行注入 | Config、Setup、CLI、Claude/Hermes Adapter、Preflight | doctor 最终视图待 DOC-002 |
-| `CFG-002` | 🟡 Task 4 运行中 | P0 | 预算/迭代耗尽决策：弹窗翻倍继续或终止 | Adapter、Worker/Core、Notifications、Service respond | `97FK-001`、集成回归、真实 canary |
+| `CFG-002` | 🟡 代码已合入 | P0 | 预算/迭代耗尽决策：弹窗翻倍继续或终止 | Adapter、Worker/Core、Notifications、Service respond | 只剩安装包真实 canary |
 | `SAFE-001` | ⬜ 未开始 | P0 | Codex safe 在 linked worktree 下的 Git 写入预检与可接管提交 | Path Plan、Codex Adapter、Runner、Preflight、Input、Notification、Doctor | 权限三档、SESSION-001 resume 已具备 |
 | `PROMPT-001` | ✅ 已合入 | P1 | 三 Executor 公共 Prompt 契约去重 | 公共 builder、Codex/Claude/Hermes Adapter | 只保留回归 |
 | `OBS-001` | ✅ 已合入 | P1 | 当前 execution lease 状态单一派生视图 | RunLease query、Status、Report | 与 REPORT-001 同步完成 |
@@ -356,15 +361,29 @@ Claude 预算耗尽（`Exceeded USD budget`）或 Hermes 迭代耗尽
   `retryable=false`；
 - 用户 24 小时未响应沿用 input_required 到期语义（转 `needs_recovery`）。
 
-Phase 4 当前状态：
+Phase 4 当前状态（对照集成基线 `b7ba051`，Tasks 1～3 已合入）：
 
 - [x] Tasks 1～2：Adapter 耗尽识别、终态优先级、Core 资源阻塞入口；
-- [x] Task 3：approve 按任务快照翻倍并恢复同 session，deny 以明确原因 failed，Runner
-  原子 respond-and-dispatch；
-- [ ] Task 4：通知/dialog 两按钮、fallback 命令、公共视图字段和三份文档；当前由
-  `97FK-001` 执行，尚未验收和合入；
+- [x] Task 3：approve 按任务快照翻倍并恢复同 session，deny 以明确原因 failed，
+  Runner 原子 respond-and-dispatch；
+- [x] Task 4（本切片）：通知/dialog 两按钮、fallback 命令、公共视图字段和三份文档；
 - [ ] 安装包真实 canary：Claude 与 Hermes 各覆盖耗尽→approve→同 session 继续，以及
   耗尽→deny→明确 failed；验证前不得关闭 `CFG-002`。
+
+Task 4 已落地子项（弹窗/视图/文档切片）：
+
+- [x] `kind=resource_limit` + `response_protocol=approve_deny` 的 choice 弹窗两按钮
+  「提高预算并继续」/「终止任务」分别映射 `approve` / `deny`；Later、关闭弹窗与
+  超时保持 `waiting`（dismissed，不推进任务状态）；fallback 命令展示
+  `--approve` / `--deny`；普通 choice 仍以消息选项提交（`--message`），语义不变；
+- [x] 公共 execution policy 视图在兼容 `limit`（当前生效上限）字段基础上新增
+  `configured_limit`、`exhaustion_count`、`last_decision`；status/preflight/report
+  一致展示，不暴露 raw output、secret 或内部 Claude project path；
+- [x] 1.0.2A 清单、开发手册、中文用户指南三份文档同步 Phase 4/CFG-002；
+  `SESSION-001` 终态 cleanup/purge 保持打开，本切片不实现 purge/delete。
+
+`SESSION-001` 终态 cleanup/purge 与能力回执仍保持打开；`CFG-002` 只剩安装包真实
+canary 未验收。
 
 验收：claude 预算耗尽、hermes 迭代耗尽、翻倍继续成功、终止 failed 带原因、
 到期转恢复、弹窗文案、无密钥泄漏与 status/report 一致展示通过。
