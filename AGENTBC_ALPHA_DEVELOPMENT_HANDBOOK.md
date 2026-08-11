@@ -574,7 +574,8 @@ Task 4（弹窗/视图/文档切片）落地：
   一致展示，不含 raw output、secret 或内部 Claude project path；报告输入小节同时
   展示 `kind` / `response_protocol`。
 
-`SESSION-001` 终态 cleanup/purge 与能力回执仍保持打开。
+该 Phase 4 切片当时仍保持 `SESSION-001` 终态 cleanup/purge 与能力回执打开；Phase 5
+已完成代码接线，真实 retain/cleanup P2P 门禁仍待集中验证。
 
 用户响应的唯一运行入口是：
 
@@ -2194,8 +2195,9 @@ Worker/Service 持久化每次 executor run、session state 与 `resume_count`�
 ID 与 Claude cwd，缺失、重复、篡改、非规范形式和 packet/disk 漂移全部 fail closed，审计
 不记录 prompt、完整 command、内部路径或凭据。
 
-Phase 3 完成后 `CFG-001` 端到端关闭；`SESSION-001` 已完成 receipt/resume，但终态
-purge/cleanup 与 cleanup capability/receipt 仍保持打开。`CFG-002` 已随 Phase 4
+Phase 3 完成后 `CFG-001` 端到端关闭；`SESSION-001` 已完成 receipt/resume。终态
+purge/cleanup 与 cleanup capability/receipt 已在 Phase 5 基线 `270d671` 之后完成代码接线，
+但 `SESSION-001` 在真实 retain/cleanup P2P 门禁通过前仍保持部分完成。`CFG-002` 已随 Phase 4
 落地：Tasks 1～3 完成 Adapter 耗尽识别、Core 资源阻塞、approve 翻倍继续、deny
 明确失败与 Runner 原子响应派发（集成基线 `b7ba051`）；Task 4 完成弹窗按钮映射、
 fallback 命令、公共视图字段与三份文档，并由 `bd6d6a2` 合入。合并基线定向 `56` 项、
@@ -2228,6 +2230,18 @@ terminal task 在 RunLease 关闭、最终报告落盘和通知入队后才能�
 
 **失败语义**：不支持或清理失败只产生 cleanup receipt 和 doctor warning，不改变原任务
 终态。Adapter 必须报告 execution session ID、删除能力和结果。
+
+**2026-08-11 Phase 5 集成状态**：集成基线为 `270d671`。status、preflight 与 report
+统一消费只读 cleanup 公共投影，只公开 capability、state、attempts、稳定 error code 与
+retryable；coordinator 的 strategy、时间戳、原生命令/help/output、Executor 私有数据库路径、
+customer path 与 secret 不进入该投影。doctor 的 text/JSON 由同一结构化诊断数据生成：
+unsupported、failed 和超过五分钟的 stale pending 为 warning，retained 与 succeeded 健康。
+当前 Phase 5 为代码完成/待集中验证；本阶段未执行真实 Claude purge、Codex/Hermes session
+delete 或三 Executor P2P，因此 `SESSION-001` 不得提前标记完全完成。
+
+产品语义保持一致：cleanup 在后台无感运行，只管理 Executor 创建的临时会话，永不删除
+dispatcher conversation，也不要求用户管理单独的 runtime 目录。能力为 unsupported 或
+cleanup failed 时只形成有界 receipt/doctor warning，不改变 Task/report 的原终态。
 
 详细规格以
 `~/hermes-team/codex/plan/20260805_plan_AgentBC对话溯源与执行会话保留.md` 为准。

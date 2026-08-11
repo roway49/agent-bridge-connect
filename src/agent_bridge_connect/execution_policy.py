@@ -287,6 +287,27 @@ def read_session_cleanup_receipt(value: Any) -> dict[str, Any]:
     return copy.deepcopy(value)
 
 
+def session_cleanup_view(value: Any) -> dict[str, Any]:
+    """Return the single safe cleanup projection used by public interfaces.
+
+    The durable receipt contains internal strategy and timing data used by the
+    coordinator.  Public views intentionally expose only stable outcome fields.
+    Historical two-field receipts receive the same fail-closed defaults as the
+    coordinator reader, without rewriting the stored task.
+    """
+    try:
+        receipt = read_session_cleanup_receipt(value)
+    except ABCError:
+        receipt = build_session_cleanup_receipt()
+    return {
+        "capability": receipt["capability"],
+        "state": receipt["state"],
+        "attempts": receipt["attempts"],
+        "error_code": receipt["error_code"],
+        "retryable": receipt["retryable"],
+    }
+
+
 def validate_session_cleanup_receipt(
     value: Any,
     *,
@@ -626,6 +647,7 @@ def execution_policy_view(extensions: Any) -> dict[str, Any]:
             "session_id": session.get("session_id"),
             "session_state": session.get("session_state"),
             "project_mode": session.get("project_mode"),
+            "cleanup": session_cleanup_view(session.get("cleanup")),
         }
     return {
         "version": EXECUTION_POLICY_VERSION,
@@ -642,11 +664,12 @@ def public_workspace_view(workspace: Any) -> dict[str, Any]:
 
 
 def public_extensions_view(extensions: Any) -> dict[str, Any]:
-    """Remove internal session paths while preserving the remaining extension record."""
+    """Remove internal session data while preserving the public extension record."""
     public = copy.deepcopy(extensions) if isinstance(extensions, dict) else {}
     session = public.get(SESSION_EXTENSION_KEY)
     if isinstance(session, dict):
         session.pop("project_path", None)
+        session["cleanup"] = session_cleanup_view(session.get("cleanup"))
     return public
 
 

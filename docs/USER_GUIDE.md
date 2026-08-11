@@ -100,13 +100,17 @@ frozen state (or `null` resources for Codex), plus retention, executor session
 ID/state, and project mode. Executor-only project paths remain inside the task
 packet and are not listed as artifacts. Ephemeral Claude projects use the
 canonical managed path `<TASK-ID>/claude`; Runner validates legacy backfill and
-the worker packet against the durable snapshot. Hermes `--max-turns`, same-session
-resume, terminal cleanup/purge, and resource-exhaustion handling are still
-later runtime work; a frozen policy is not proof that those behaviors ran.
+the worker packet against the durable snapshot. The same public policy includes a
+bounded cleanup projection containing only capability, state, attempts, stable
+error code, and retryability. Doctor uses the authoritative receipt: unsupported,
+failed, and cleanup pending for more than five minutes are warnings; retained and
+succeeded are healthy.
 
-This policy concerns executor-created temporary sessions only. AgentBC never
-deletes the dispatcher conversation that created or handed off a task. Global
-changes do not mutate active, `input_required`, or recovery tasks.
+Cleanup is background and user-transparent. It manages only temporary sessions
+created by the Executor, never deletes the dispatcher conversation that created or
+handed off a task, and never requires users to manage a separate runtime directory.
+Active, `input_required`, and recovery tasks keep their session; cleanup failure or
+an unsupported capability does not change the terminal task/report result.
 
 ## Create Versus Handoff
 

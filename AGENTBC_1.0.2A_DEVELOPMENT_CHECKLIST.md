@@ -44,6 +44,7 @@ package-only smoke 与 CLI/Runner identity 验证通过；正式版本尚未提�
 | 工作项 | AgentBC 任务 | 当前事实 | 完成后动作 |
 | --- | --- | --- | --- |
 | Phase 4 Task 4 / `CFG-002` UX、公共视图与文档 | `QECT-001`（Hermes） | `completed`；冻结 `max_turns=150`、显式 `full` 权限，实际运行约 26 分 41 秒；合法 final callback、完成标记、关闭 RunLease 与官方 session receipt `20260811_004323_d3bd9b` 均已验收 | 成果已合入 integration；安装包真实资源耗尽 canary 进入集中全面测试批次，本阶段不单独执行 |
+| Phase 5 Task 5 / 公共视图、doctor、文档 | `F6CS-001`（Codex） | 以 `270d671` 为集成基线收口；代码完成，集中验证与真实 P2P 待执行 | 保持 worktree 未暂存供 controller 审阅，不在本任务执行真实删除或 P2P |
 
 旧任务 `QDKN-001` 已因旧运行达到 `60/60` 且 final marker 无效而终态 `failed`；
 `97FK-001` 因旧 Hermes quiet review 竞争丢失官方 receipt 而 `needs_recovery`。二者均不恢复、
@@ -55,7 +56,7 @@ package-only smoke 与 CLI/Runner identity 验证通过；正式版本尚未提�
 | 工作项 | 状态 | 剩余闭环 |
 | --- | --- | --- |
 | Phase 4 / `CFG-002` | 🟡 代码完成/待集中验证 | Tasks 1～4 已合入；真实 Claude/Hermes 耗尽、approve 翻倍同 session 继续、deny 明确 failed 的安装包 canary 延后到集中全面测试 |
-| `SESSION-001` | 🟡 | session 快照、receipt、input wait 保留和同 ID resume 已完成；终态 cleanup/purge、capability 与 cleanup receipt 未实现 |
+| `SESSION-001` | 🟡 代码完成/待真实 P2P | session 快照、receipt、同 ID resume、终态 cleanup/purge、capability、公共视图与 doctor warning 已完成；真实 retain/cleanup P2P 门禁尚未通过 |
 | `SAFE-001` | ⬜ | linked worktree Git 元数据预检、`commit_required`、控制端审查提交和恢复链路均未实现 |
 | `SKILL-001` | ⬜ | canonical controller contract 的安装身份、协议版本和 template hash 握手未实现 |
 | `DOC-002` | ⬜ | doctor 稳定 schema/退出码以及 Skill、session cleanup、safe Git、config/runtime 漂移诊断未闭环 |
@@ -64,7 +65,7 @@ package-only smoke 与 CLI/Runner identity 验证通过；正式版本尚未提�
 
 ### 0.4 后续固定顺序
 
-1. Phase 5：完成 `SESSION-001` 终态 cleanup/purge、capability/receipt；
+1. Phase 5：代码已完成，进入集中验证并保留真实 retain/cleanup P2P 门禁；
 2. Phase 6：完成 `SAFE-001` linked-worktree 控制端提交闭环；
 3. Phase 7：完成 `SKILL-001`、`DOC-002`、`DOCFIX-001`；
 4. Phase 5～7 核心功能基本完成后，统一执行源码全面回归、安装包验证、真实 Executor
@@ -162,8 +163,8 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
   workspace/session/artifact，Codex 只要求 session 快照而不虚构资源上限。
 - `2026-08-10 / Phase 3`：已完成 Claude `--max-budget-usd`、Hermes `--max-turns` 的
   任务快照注入，Claude/Hermes/Codex 官方 session receipt、同 Task 显式 ID resume，及
-  Runner command/snapshot/cwd fail-closed 校验。`CFG-001` 端到端完成；`SESSION-001`
-  只剩终态 cleanup/purge 与能力回执，`CFG-002` 仍保持打开。
+  Runner command/snapshot/cwd fail-closed 校验。`CFG-001` 端到端完成；该 Phase 3
+  时点的 `SESSION-001` 只剩终态 cleanup/purge 与能力回执，`CFG-002` 当时仍保持打开。
 - `2026-08-10 / Phase 4 Tasks 1～3`：已完成资源耗尽的 Adapter 结构化识别、Core
   `input_required`、任务级翻倍/终止决策和 Runner 原子响应派发，并合入集成基线
   `b7ba051`；全量 discovery `765` 项通过，不再保留 Phase 4 `expectedFailure`；
@@ -173,10 +174,15 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
   「提高预算并继续」→ `approve`、「终止任务」→ `deny`，Later/关闭/超时保持
   waiting）、fallback `--approve/--deny` 命令、公共 execution policy 视图新增
   `configured_limit` / `exhaustion_count` / `last_decision`、status/preflight/report
-  一致展示，以及 1.0.2A 清单、开发手册、中文用户指南三份文档同步。`SESSION-001`
-  终态 cleanup/purge 与能力回执仍保持打开；本切片不实现 purge/delete。Hermes
+  一致展示，以及 1.0.2A 清单、开发手册、中文用户指南三份文档同步。该 Phase 4
+  时点的 `SESSION-001` cleanup 仍保持打开；本切片不实现 purge/delete。Hermes
   `QECT-001` 以 `max_turns=150`、`full` 权限完成约 26 分 41 秒实跑并保存官方 session
   receipt `20260811_004323_d3bd9b`；成果由 `22c8d61` 经 `bd6d6a2` 合入。
+- `2026-08-11 / Phase 5`：以集成基线 `270d671` 完成 cleanup contract/coordinator、Claude
+  managed project purge、Codex exact UUID delete with `--force`、Hermes official sessions
+  delete capability，以及 status/preflight/report 单一安全投影、doctor text/JSON 同源 warning
+  与双语/Skill 文档。Phase 5 为代码完成/待集中验证；未执行真实 session deletion 或 P2P，
+  `SESSION-001` 在后续真实 retain/cleanup P2P 通过前仍为部分完成。
 - Phase 4 合并最终证据：定向 `56` 项、全量 discovery `782` 项通过，Ruff、compileall
   与 `git diff --check` 通过，不保留 Phase 4 `expectedFailure`。
 
@@ -185,7 +191,7 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
 | ID | 状态 | 优先级 | 需求 | 主要责任模块 | 依赖/剩余边界 |
 | --- | --- | --- | --- | --- | --- |
 | `DEL-001` | ✅ 已合入 | P0 | 安全删除终态历史链并归还 task code | Service、Store、ID、CLI、Index | 只保留回归 |
-| `SESSION-001` | 🟡 部分完成 | P0 | 执行 Agent 临时会话保留策略 | Config、Setup、CLI、Adapter、Worker/Service、Doctor | 仅剩终态 cleanup/purge、capability/receipt |
+| `SESSION-001` | 🟡 代码完成/待真实 P2P | P0 | 执行 Agent 临时会话保留策略 | Config、Setup、CLI、Adapter、Worker/Service、Doctor | 自动化与公共诊断完成；真实 retain/cleanup P2P 门禁待通过 |
 | `SKILL-001` | ⬜ 未开始 | P0 | Controller contract 单一来源与 Skill hash 握手 | Skill template、Setup、Doctor | doctor 基础实现 |
 | `DOC-002` | ⬜ 未闭环 | P0 | 完成只诊断 doctor 契约 | Doctor、Registry、Runner query、CLI | SKILL-001、SESSION-001 receipt、SAFE-001 |
 | `REPORT-001` | ✅ 已合入 | P1 | 修正恢复任务累计执行时长 | RunLease、Service timing、Report、Task List、Notification | 只保留回归 |
@@ -240,8 +246,9 @@ agentbc session retention disable
 
 Phase 1 已实现上述配置键和三命令的原子、幂等持久化，并明确输出只影响后续
 Executor run、永不删除 dispatcher conversation。Phase 2～3 已完成 `input_required`
-强制保留、session ID receipt 和同会话 resume；当前唯一未闭环部分是终态
-cleanup/purge、cleanup capability 与 receipt。
+强制保留、session ID receipt 和同会话 resume；Phase 5 已完成终态 cleanup/purge、
+cleanup capability/receipt、公共投影与 doctor warning 的代码接线。真实 retain/cleanup
+P2P 门禁通过前，`SESSION-001` 仍保持部分完成。
 
 Phase 2～3 子项状态（不代表 `SESSION-001` 整项完成）：
 
@@ -256,7 +263,8 @@ Phase 2～3 子项状态（不代表 `SESSION-001` 整项完成）：
   恢复同一会话，`input_required` 状态保存 ID/run history/resume count；
 - [x] Runner 拒绝缺失、重复、篡改或模糊 session 参数，禁止 Claude 不持久化、Hermes
   `--continue` 和 Codex `--last`；
-- [ ] 终态 cleanup/purge 和 cleanup capability/receipt 尚未接线。
+- [x] 终态 cleanup/purge、cleanup capability/receipt、status/preflight/report 公共投影与
+  doctor warning 已接线；真实 retain/cleanup P2P 延后到集中验证。
 
 要求：
 
@@ -409,10 +417,10 @@ Task 4 已落地子项（弹窗/视图/文档切片）：
   `configured_limit`、`exhaustion_count`、`last_decision`；status/preflight/report
   一致展示，不暴露 raw output、secret 或内部 Claude project path；
 - [x] 1.0.2A 清单、开发手册、中文用户指南三份文档同步 Phase 4/CFG-002；
-  `SESSION-001` 终态 cleanup/purge 保持打开，本切片不实现 purge/delete。
+  该 Phase 4 切片当时保持 `SESSION-001` cleanup 打开；Phase 5 后续已完成代码接线。
 
-`SESSION-001` 终态 cleanup/purge 与能力回执仍保持打开；`CFG-002` 只剩集中全面测试中的
-安装包真实 canary 未验收。
+`SESSION-001` cleanup 代码现已完成，但真实 retain/cleanup P2P 尚未验收；`CFG-002` 只剩
+集中全面测试中的安装包真实 canary 未验收。
 
 验收：claude 预算耗尽、hermes 迭代耗尽、翻倍继续成功、终止 failed 带原因、
 到期转恢复、弹窗文案、无密钥泄漏与 status/report 一致展示通过。
@@ -504,7 +512,7 @@ Codex/Claude/Hermes canary 纳入 0.5 节集中全面测试。
 | Phase | 状态 | 目标 | 进入下一阶段的硬门禁 |
 | --- | --- | --- | --- |
 | Phase 4 | 🟡 代码完成/待集中验证 | `CFG-002` UX、公共视图、文档已合入 | 定向与受影响回归通过；真实 approve/deny canary 延后，不阻塞 Phase 5 |
-| Phase 5 | ▶ 下一阶段 | `SESSION-001` 终态 cleanup/purge、capability/receipt、失败重试与 doctor warning 数据 | 临时目录/fake CLI 下 retain on/off、三 Executor capability、Claude 路径/非空目录保护、失败不改终态的定向契约通过 |
+| Phase 5 | 🟡 代码完成/待集中验证 | `SESSION-001` 终态 cleanup/purge、capability/receipt、失败重试、公共视图与 doctor warning 数据已接线 | 自动化定向与相邻回归通过后进入集中验证；真实 retain/cleanup P2P 延后 |
 | Phase 6 | ⬜ | `SAFE-001` linked-worktree Git 元数据预检、`commit_required`、控制端审查提交与同 Task 恢复 | 自动化 fixture 覆盖普通 clone/linked worktree、分支/HEAD/路径竞态与禁止扩大共享 Git 权限；真实双 canary 延后 |
 | Phase 7 | ⬜ | `SKILL-001`、`DOC-002`、`DOCFIX-001` | Skill hash/版本握手、doctor 0/1/2、text/JSON 同源、双语文档/help/Skill 一致 |
 | 集中全面测试 | ⏸ 延后 | 源码全量、安装包、真实点对点、Python/双机、安全/恢复/回滚 | Phase 5～7 代码完成且接口基本冻结；所有打开 canary 逐项给出可追溯证据 |

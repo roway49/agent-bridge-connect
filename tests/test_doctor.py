@@ -218,7 +218,16 @@ class DoctorTests(unittest.TestCase):
 
         self.assertEqual(
             set(report),
-            {"schema_version", "ok", "status", "package", "config", "runner", "checks"},
+            {
+                "schema_version",
+                "ok",
+                "status",
+                "package",
+                "config",
+                "runner",
+                "session_cleanup",
+                "checks",
+            },
         )
         self.assertEqual(
             set(report["package"]),
@@ -236,6 +245,10 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(
             set(report["runner"]),
             {"status", "pid", "python_executable", "module_path", "executors"},
+        )
+        self.assertEqual(
+            set(report["session_cleanup"]),
+            {"status", "warnings", "diagnostics"},
         )
         self.assertTrue(report["checks"])
         for check in report["checks"]:
@@ -258,6 +271,50 @@ class DoctorTests(unittest.TestCase):
         self.assertEqual(
             text_output.getvalue().rstrip("\n"), render_doctor_text(report)
         )
+        self.assertEqual(json_exit, 0)
+        self.assertEqual(text_exit, 0)
+
+    def test_cleanup_warning_text_and_json_commands_use_identical_data(self) -> None:
+        report = self._report(
+            cleanup_tasks=[
+                {
+                    "id": "CLEAN-001",
+                    "extensions": {
+                        "agentbc.session": {
+                            "executor": "codex",
+                            "cleanup": {
+                                "version": 1,
+                                "capability": "unsupported",
+                                "strategy": "none",
+                                "state": "unsupported",
+                                "attempts": 1,
+                                "requested_at": "2026-08-11T00:00:00Z",
+                                "last_attempt_at": "2026-08-11T00:00:01Z",
+                                "next_attempt_at": "",
+                                "completed_at": "2026-08-11T00:00:01Z",
+                                "error_code": "session_cleanup_unsupported",
+                                "retryable": False,
+                            },
+                        }
+                    },
+                }
+            ],
+            now="2026-08-11T00:10:00Z",
+        )
+        with mock.patch(
+            "agent_bridge_connect.doctor.build_doctor_report",
+            return_value=report,
+        ):
+            json_output = io.StringIO()
+            with contextlib.redirect_stdout(json_output):
+                json_exit = main(["doctor", "--json"])
+            text_output = io.StringIO()
+            with contextlib.redirect_stdout(text_output):
+                text_exit = main(["doctor"])
+
+        self.assertEqual(json.loads(json_output.getvalue()), report)
+        self.assertEqual(text_output.getvalue().rstrip(), render_doctor_text(report))
+        self.assertEqual(report["session_cleanup"]["warnings"], 1)
         self.assertEqual(json_exit, 0)
         self.assertEqual(text_exit, 0)
 

@@ -637,6 +637,7 @@ def _render_report_md(report: dict[str, Any]) -> str:
     policy = report.get("execution_policy") or {}
     resources = policy.get("resources") or {}
     executor_session = policy.get("session") or {}
+    session_cleanup = executor_session.get("cleanup") or {}
     lines.extend(
         [
             "",
@@ -652,6 +653,11 @@ def _render_report_md(report: dict[str, Any]) -> str:
             f"- Executor session ID: `{executor_session.get('session_id') or 'pending'}`",
             f"- Session state: `{executor_session.get('session_state') or 'unavailable'}`",
             f"- Project mode: `{executor_session.get('project_mode') or 'unavailable'}`",
+            f"- Cleanup capability: `{session_cleanup.get('capability') or 'unknown'}`",
+            f"- Cleanup state: `{session_cleanup.get('state') or 'not_requested'}`",
+            f"- Cleanup attempts: `{session_cleanup.get('attempts', 0)}`",
+            f"- Cleanup error code: `{session_cleanup.get('error_code') or 'none'}`",
+            f"- Cleanup retryable: `{'yes' if session_cleanup.get('retryable') else 'no'}`",
         ]
     )
 

@@ -2041,6 +2041,16 @@ def _print_execution_policy(policy: Any) -> None:
             f"state={session.get('session_state') or '-'} "
             f"project_mode={session.get('project_mode') or '-'}"
         )
+        cleanup = session.get("cleanup")
+        if isinstance(cleanup, dict):
+            print(
+                "Session cleanup: "
+                f"capability={cleanup.get('capability') or 'unknown'} "
+                f"state={cleanup.get('state') or 'not_requested'} "
+                f"attempts={cleanup.get('attempts', 0)} "
+                f"error_code={cleanup.get('error_code') or '-'} "
+                f"retryable={'yes' if cleanup.get('retryable') else 'no'}"
+            )
 
 
 def _write_terminal_report(task_id: str, board_root: Path) -> None:

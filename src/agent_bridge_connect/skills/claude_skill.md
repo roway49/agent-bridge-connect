@@ -105,8 +105,10 @@ executor's temporary session.
   `unavailable`.
 - Never guess a conversation ID from processes, paths, history, or a previous task. A handoff records
   the current dispatcher conversation, not the source task conversation.
-- Dispatcher traceability is separate from executor temporary sessions. AgentBC does not delete the
-  dispatcher conversation, and it does not retain, budget, or clean executor temporary sessions here.
+- Dispatcher traceability is separate from executor temporary sessions. AgentBC may retain, resume,
+  or clean only Executor-created temporary sessions in the background. It never deletes the dispatcher
+  conversation and never requires the user to manage a separate runtime directory. Cleanup warnings
+  do not change the terminal task or report result.
 
 ## Final Callback Contract
 

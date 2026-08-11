@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
 from typing import Any, Callable
@@ -48,6 +49,9 @@ def build_doctor_report(
     distribution: Any = _DISTRIBUTION_UNSET,
     candidate_marker_paths: list[str | Path] | None = None,
     build_info_path: str | Path | None = None,
+    board_root: str | Path | None = None,
+    cleanup_tasks: list[dict[str, Any]] | None = None,
+    now: str | None = None,
 ) -> dict[str, Any]:
     """Collect the stable public doctor contract without changing local state."""
     current_module = _resolved_path(module_path or _package_module_path())
@@ -89,8 +93,16 @@ def build_doctor_report(
         source_tree_sha256 = _source_tree_sha256(checkout_root)
         build_source = "source_checkout"
 
-    config, config_error = _collect_config(config_path)
+    config, config_error, loaded_config = _collect_config(config_path)
     runner = _collect_runner(runner_health)
+    cleanup = (
+        build_session_cleanup_diagnostics(cleanup_tasks, now=now)
+        if cleanup_tasks is not None
+        else collect_session_cleanup_diagnostics(
+            board_root or _doctor_board_root(loaded_config),
+            now=now,
+        )
+    )
     checks = _build_checks(
         build_info=build_info,
         build_info_state=build_info_state,
@@ -99,6 +111,7 @@ def build_doctor_report(
         config=config,
         config_error=config_error,
         runner=runner,
+        cleanup=cleanup,
         current_python=current_python,
         current_module=current_module,
     )
@@ -118,6 +131,7 @@ def build_doctor_report(
         },
         "config": config,
         "runner": runner,
+        "session_cleanup": cleanup,
         "checks": checks,
     }
 
@@ -153,6 +167,7 @@ def render_doctor_text(report: dict[str, Any]) -> str:
     package = report["package"]
     config = report["config"]
     runner = report["runner"]
+    cleanup = report["session_cleanup"]
     executor_text = ", ".join(runner["executors"]) or "-"
     lines = [
         f"AgentBC doctor: {str(report['status']).upper()}",
@@ -176,8 +191,25 @@ def render_doctor_text(report: dict[str, Any]) -> str:
         f"  python_executable: {_text_value(runner['python_executable'])}",
         f"  module_path: {_text_value(runner['module_path'])}",
         f"  executors: {executor_text}",
-        "Checks:",
+        "Session cleanup:",
+        f"  status: {_text_value(cleanup['status'])}",
+        f"  warnings: {cleanup['warnings']}",
     ]
+    for diagnostic in cleanup["diagnostics"]:
+        lines.append(
+            "  "
+            f"[{str(diagnostic['status']).upper()}] "
+            f"{diagnostic['task_id']} ({diagnostic['executor']}): "
+            f"capability={diagnostic['capability']} "
+            f"state={diagnostic['state']} "
+            f"attempts={diagnostic['attempts']} "
+            f"error_code={diagnostic['error_code'] or '-'} "
+            f"retryable={str(bool(diagnostic['retryable'])).lower()} - "
+            f"{diagnostic['message']}"
+        )
+    lines.extend([
+        "Checks:",
+    ])
     for check in report["checks"]:
         lines.append(
             f"  [{str(check['status']).upper()}] {check['id']}: {check['message']}"
@@ -187,7 +219,7 @@ def render_doctor_text(report: dict[str, Any]) -> str:
 
 def _collect_config(
     config_path: str | Path | None,
-) -> tuple[dict[str, Any], str | None]:
+) -> tuple[dict[str, Any], str | None, dict[str, Any]]:
     path = _resolved_path(resolve_config_path(config_path))
     exists = path.is_file()
     loaded: dict[str, Any] = {}
@@ -209,7 +241,134 @@ def _collect_config(
             "workspace_root": str(workspace_root),
         },
         error,
+        loaded,
     )
+
+
+def collect_session_cleanup_diagnostics(
+    board_root: str | Path,
+    *,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Read AgentBC task receipts without touching Executor session storage."""
+    root = Path(board_root).expanduser().resolve()
+    if not root.is_dir():
+        return build_session_cleanup_diagnostics([], now=now)
+    try:
+        from .task_store import TaskStore
+
+        tasks = TaskStore(root).list_tasks()
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        tasks = []
+    return build_session_cleanup_diagnostics(tasks, now=now)
+
+
+def build_session_cleanup_diagnostics(
+    tasks: list[dict[str, Any]],
+    *,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Build structured cleanup health data consumed by doctor text and JSON."""
+    from .execution_policy import SESSION_EXTENSION_KEY, session_cleanup_view
+
+    current = _parse_timestamp(now) if now else None
+    current = current or datetime.now(timezone.utc)
+    diagnostics: list[dict[str, Any]] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        extensions = task.get("extensions")
+        session = (
+            extensions.get(SESSION_EXTENSION_KEY)
+            if isinstance(extensions, dict)
+            else None
+        )
+        if not isinstance(session, dict) or "cleanup" not in session:
+            continue
+        cleanup = session_cleanup_view(session.get("cleanup"))
+        state = cleanup["state"]
+        status = "healthy"
+        executor = _safe_label(session.get("executor"), "unknown")
+        if executor not in {"claude", "codex", "hermes"}:
+            executor = "unknown"
+        if state == "unsupported":
+            status = "warning"
+            message = (
+                f"The current {executor} Executor has no official exact-session "
+                "deletion capability; the terminal task is unchanged. Upgrade the "
+                "Executor when an official capability is available."
+            )
+        elif state == "failed":
+            status = "warning"
+            message = (
+                f"Cleanup failed with error_code={cleanup['error_code'] or 'unknown'}; "
+                f"retryable={str(bool(cleanup['retryable'])).lower()}. AgentBC will "
+                "use its bounded retry path when retryable."
+            )
+        elif state == "pending" and _pending_is_stale(
+            session.get("cleanup"), current
+        ):
+            status = "warning"
+            message = (
+                "Cleanup has remained pending for more than five minutes; check "
+                "AgentBC Runner health without inspecting Executor session stores."
+            )
+        elif state == "retained":
+            message = "Executor session retention was requested; no cleanup is needed."
+        elif state == "succeeded":
+            message = "Executor temporary-session cleanup succeeded."
+        elif state == "pending":
+            message = "Executor temporary-session cleanup is pending."
+        else:
+            message = "No executor temporary-session cleanup warning is present."
+        diagnostics.append(
+            {
+                "task_id": _safe_label(task.get("id"), "unknown"),
+                "executor": executor,
+                **cleanup,
+                "status": status,
+                "message": message,
+            }
+        )
+    diagnostics.sort(key=lambda item: (item["task_id"], item["executor"]))
+    warnings = sum(item["status"] == "warning" for item in diagnostics)
+    return {
+        "status": "warning" if warnings else "healthy",
+        "warnings": warnings,
+        "diagnostics": diagnostics,
+    }
+
+
+def _doctor_board_root(config: dict[str, Any]) -> Path:
+    configured = config.get("board_root") if isinstance(config, dict) else None
+    if isinstance(configured, str) and configured.strip():
+        return Path(configured).expanduser().resolve()
+    return resolve_workspace_root(config) / "record"
+
+
+def _pending_is_stale(receipt: Any, now: datetime) -> bool:
+    if not isinstance(receipt, dict):
+        return False
+    timestamp = receipt.get("last_attempt_at") or receipt.get("requested_at")
+    occurred = _parse_timestamp(timestamp)
+    return occurred is not None and (now - occurred).total_seconds() > 300
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _safe_label(value: Any, default: str) -> str:
+    text = str(value or "").strip()
+    return text if _SAFE_NAME.fullmatch(text) else default
 
 
 def _collect_runner(
@@ -266,6 +425,7 @@ def _build_checks(
     config: dict[str, Any],
     config_error: str | None,
     runner: dict[str, Any],
+    cleanup: dict[str, Any],
     current_python: Path,
     current_module: Path,
 ) -> list[dict[str, str]]:
@@ -401,6 +561,22 @@ def _build_checks(
                         "runner.identity", "healthy", "CLI and Runner identities match."
                     )
                 )
+    if cleanup["warnings"]:
+        checks.append(
+            _check(
+                "session.cleanup",
+                "warning",
+                f"{cleanup['warnings']} executor session cleanup warning(s) require attention.",
+            )
+        )
+    else:
+        checks.append(
+            _check(
+                "session.cleanup",
+                "healthy",
+                "No executor session cleanup warnings were found.",
+            )
+        )
     return checks
 
 

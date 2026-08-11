@@ -254,8 +254,9 @@ AgentBC 的紧凑运行状态位于 `~/Documents/AgentBC/workspace/record`；可
   `HERMES_SESSION_ID` 环境变量）；没有可信 ID 时省略，报告显示 `unavailable`。
 - 禁止从进程、路径、历史记录或上一个任务中猜测会话 ID。handoff 记录的是当前派发者会话，
   而不是源任务会话。
-- 派发者溯源与执行器临时会话相互独立。AgentBC 不会删除派发者会话，也不会在此保留、预算或
-  清理执行器的临时会话。
+- 派发者溯源与执行器临时会话相互独立。AgentBC 只会在后台保留、恢复或清理 Executor 创建的
+  临时会话，永远不会删除派发者会话，也不会要求用户管理单独的 runtime 目录；cleanup 告警
+  不会改变 Task 或 report 的原终态。
 
 ## 人工干预
 

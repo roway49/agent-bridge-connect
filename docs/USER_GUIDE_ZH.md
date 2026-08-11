@@ -100,15 +100,21 @@ Runner 会同时校验 Worker packet、持久化快照、资源参数、session 
 缺失、重复、篡改或模糊恢复参数都会 fail closed。修改全局预算、迭代次数或 retention
 只影响后续新任务，不改变现有 Task 的冻结值。
 
+公共策略还包含有界 cleanup 投影，只展示 capability、state、attempts、稳定 error code
+与 retryable。doctor 以任务中的权威 receipt 为准：unsupported、failed，以及超过五分钟的
+pending 会告警；retained 与 succeeded 为健康状态。不会展示 Executor 私有路径、原生命令或
+原始输出。
+
 资源耗尽决策弹窗已随 Phase 4 提供：当任务以 `kind=resource_limit`（响应协议
 `approve_deny`）的 choice 等待决策时，弹窗提供「提高预算并继续」（approve）与
 「终止任务」（deny）两个按钮；「Later」、关闭弹窗或超时保持等待。终端兜底命令使用
-`--approve` / `--deny`。终态 cleanup/purge 仍属于下一阶段；当前版本在
-`input_required` 和 `needs_recovery` 期间不会清理执行器会话。
+`--approve` / `--deny`。终态 cleanup 在后台无感执行；`input_required` 和
+`needs_recovery` 期间不会清理执行器会话，cleanup 失败或当前 Executor 不支持官方精确删除
+也不会改写 Task/report 的原终态。
 
 该策略只管理 Executor 创建的临时会话。AgentBC 永远不会删除创建或 handoff 任务的
-dispatcher conversation。修改全局设置不会改变 active、`input_required` 或 recovery
-任务的既有语义。
+dispatcher conversation，也不会要求用户管理单独的 runtime 目录。修改全局设置不会改变
+active、`input_required` 或 recovery 任务的既有语义。
 
 ## Create 与 Handoff
 
