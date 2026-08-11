@@ -1,6 +1,6 @@
 # AgentBC Alpha 至正式版开发手册
 
-> 文档日期：2026-08-05；最近更新：2026-08-08
+> 文档日期：2026-08-05；最近更新：2026-08-11
 > 当前发布基线：AgentBC `1.0.1A3` / Python `1.0.1a3`
 > `1.0.1A` 开发状态：已于 2026-08-08 截止，不再接收功能或常规缺陷改动
 > `1.0.1A` 已验证代码截止：`private/integration` / `d2ce9d1f7489dadfc7458313a9216065fb1438c7`
@@ -593,6 +593,19 @@ approval、sandbox、safe-mode、yolo 或 writable-root 覆盖；`safe` 保持�
 
 权限模式不改变 Path Plan、Runner cwd/allowed-root 授权、RunLease、strict final marker、
 secret redaction、input_required、model/effort/budget/tool/timeout/session/transport 等合同。
+
+**【1.0.3A 协议目标】** 当前多来源优先级与 Hermes `safe`/`inherit` 同 argv 的语义歧义
+将在统一权限治理中收口。用户通过一个 AgentBC 全局设置选择后续新派发任务的 `safe` 或
+`full`，新的根任务与新协议 handoff iteration 在创建时冻结映射；同 Task 的 retry、recover、
+input response 与 resume 保持原快照。权限阻塞不再依赖 Agent 自行输出 marker，而由 Adapter
+上报绑定官方 session/run/request 的结构化 approval event，Core 统一转
+`input_required(type=permission)`。详细契约与迁移门禁见
+`AGENTBC_1.0.3A_DEVELOPMENT_CHECKLIST.md`。
+
+**【1.0.2A 过渡门禁】** 在上述协议发布前，每次新根任务或 handoff 派发前由控制端人工
+确认目标 Agent 所需 `safe`/`full`，并显式传入 `--permission-mode`；`full` 必须逐次说明
+风险并取得授权。不得依赖隐式继承，也不得为此在 `1.0.2A` 增加权限弹窗、approval event
+或统一权限配置。retry/recover/resume 继续使用已冻结权限。
 
 **【SAFE-001｜1.0.2A P0】Codex safe 与 linked worktree**：Codex safe 的
 `workspace-write` 可以修改 customer worktree，但 linked worktree 的 `.git` 指向主仓
@@ -1971,7 +1984,9 @@ SSH 自动 Gate 不应访问 MacBook 的 `~/Documents/AgentBC`，因为 macOS TC
    Canary 和阻断日常开发流程的 P0/P1 修复，并正式截止；
 2. `1.0.2A` 从截止基线继续收口 delete、doctor 构建身份与 Skill 漂移、预算、执行
    时长、执行会话保留和 prompt 去重；
-3. `1.0.3A` 完成 update/Homebrew、协议 fixtures 和模块机械拆分第一阶段；
+3. `1.0.3A` 完成统一 Agent 权限设置与三 Executor 映射、结构化审批到
+   `input_required`、早期 session handshake，以及 update/Homebrew、协议 fixtures 和
+   模块机械拆分第一阶段；
 4. `1.0.4A` 让 completion/liveness/schema v2 进入私有及真实 Executor 预览；
 5. `1.0.5A` 发布 OpenCode 与 Docker profile，优先覆盖 macOS/Linux/Windows
    Docker 用户，并用真实社区使用验证 v2；
@@ -1988,6 +2003,7 @@ CLI 或 Skill 中加条件分支。
 ## 18. 相关文档
 
 - `1.0.2A` 需求开发清单：仓库根目录 `AGENTBC_1.0.2A_DEVELOPMENT_CHECKLIST.md`
+- `1.0.3A` 需求开发清单：仓库根目录 `AGENTBC_1.0.3A_DEVELOPMENT_CHECKLIST.md`
 - 当前状态与遗留问题：
   `/Users/wangroway/hermes-team/codex/reports/20260723_reports_AgentBC项目状态与下一阶段遗留问题.md`
 - 双机开发流程：
@@ -2094,6 +2110,11 @@ delete/update 等运维入口，均不再作为 1.0.1A 改动处理。
 资源耗尽直接失败、Codex safe 在 linked worktree 中无法安全完成 Git 提交；同时让用户
 决定 AgentBC 任务结束后是否保留 Executor 创建的临时会话。
 
+**范围冻结**：权限统一设置、权限继承收口和权限阻塞桌面弹窗已整体转入 `1.0.3A`。
+本版不再新增权限协议需求；剩余任务派发按 6.5.1 的人工确认与显式 permission mode 门禁
+执行。Hermes quiet 长任务最终 receipt 稳定性属于既有 `SESSION-001` 承诺，仍须在本版
+修复；首次审批前的早期 session handshake 则保留在 `1.0.3A`。
+
 **资源配置**：setup 可自定义 Claude `max_budget_usd` 与 Hermes `max_turns`；默认分别为
 `$10` 和 Hermes 配置中的 `agent.max_turns`（读取失败回退 CLI 默认 `90`）。提供
 `agentbc claude budget <usd>` 与 `agentbc hermes max-turns <turns>`。资源耗尽转为可决策
@@ -2190,7 +2211,30 @@ terminal task 在 RunLease 关闭、最终报告落盘和通知入队后才能�
 详细规格以
 `~/hermes-team/codex/plan/20260805_plan_AgentBC对话溯源与执行会话保留.md` 为准。
 
-### 20.2 `1.0.5A`：OpenCode + Docker 全平台覆盖
+### 20.2 `1.0.3A`：统一权限治理、审批控制平面与安装升级
+
+**产品目标**：以一个 AgentBC 权限设置确定性映射后续新派发的 Codex、Claude、Hermes
+任务，消除 AgentBC 配置、handoff 来源、task override 与 Executor 原生配置之间的隐式
+优先级；把 Executor 工具审批升级为 Runner 可观测、Core 可暂停、桌面可响应、同 session
+可恢复的结构化控制平面事件。
+
+**核心交付**：
+
+- `agentbc permissions status|set` 与 setup 共用一个原子配置来源；
+- 用户主流程统一为 `safe` / `full`，legacy `inherit` 双读但不再作为默认入口；
+- permission registry 统一维护三 Executor capability probe、argv 映射和 Runner 校验；
+- 新根任务与新协议 handoff iteration 创建时读取当前统一设置，同 Task resume 保持冻结；
+- 三 Executor 在工具审批前完成官方 session handshake；
+- Adapter 上报结构化 approval event，Core 系统生成 `input_required(type=permission)`，
+  approve 只授权精确动作，deny/Later/关闭/超时保持明确语义；
+- Hermes safe 无法提供受限 headless approval 时派发前失败，不以 `--yolo` 或长时间审批超时
+  冒充 safe；
+- 同期完成 update/Homebrew、协议 fixtures 和模块机械拆分第一阶段。
+
+详细开发阶段、迁移策略和真实 canary 门禁见
+`AGENTBC_1.0.3A_DEVELOPMENT_CHECKLIST.md`。
+
+### 20.3 `1.0.5A`：OpenCode + Docker 全平台覆盖
 
 **产品目标**：短期不开发原生 Windows/Linux Runner 的情况下，让 macOS、Linux 和
 Windows Docker Desktop 用户都能以一致流程安装、派发、查看状态和取得报告。
@@ -2227,7 +2271,7 @@ Windows Docker Desktop 用户都能以一致流程安装、派发、查看状态
 容器内 status/report/logs 一致；容器重启、网络中断、volume 错配不会误报 completed、
 不会破坏 customer volume。
 
-### 20.3 `1.1.0`：GUI + 多样化通知 + 傻瓜式安装包
+### 20.4 `1.1.0`：GUI + 多样化通知 + 傻瓜式安装包
 
 **产品目标**：结束 Alpha，让不熟悉 Python、终端和 Agent 配置的用户也能完成安装、
 初始化、运行检查和日常状态查看。
@@ -2269,7 +2313,7 @@ Windows Docker Desktop 用户都能以一致流程安装、派发、查看状态
 - 四 Executor、三宿主 Docker、双机候选、安装矩阵和并发性能门禁通过；
 - 没有 P0/P1 数据安全、状态误报、升级损坏或恢复阻断问题。
 
-### 20.4 `1.1.0` 后置项目
+### 20.5 `1.1.0` 后置项目
 
 - 后台链式派发；
 - AgentBC 原生跨机派发；

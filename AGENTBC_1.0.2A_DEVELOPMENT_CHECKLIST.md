@@ -1,12 +1,12 @@
 # AgentBC 1.0.2A 需求开发清单
 
 > 制定日期：2026-08-08  
-> 最近状态快照：2026-08-10 23:24 CST
-> 状态：开发进行中（Phase 0～Phase 3 已完成；Phase 4 Tasks 1～3 已合入，Task 4 运行中）
+> 最近状态快照：2026-08-11 00:45 CST
+> 状态：开发进行中（Phase 0～Phase 3 已完成；Phase 4 Tasks 1～3 已合入，Task 4 因 Hermes session receipt 丢失待重新派发）
 > 当前开发分支：`private/integration`  
 > 固定 Agent 分支：`agent/codex`、`agent/claude`、`agent/hermes`  
 > 初始开发基线：`private/integration@cfddccba246e6d057172f6716ab4318ade9a40ad`
-> 当前集成基线：`private/integration@b7ba051c6203f3f6cd7e2af985ee4a53696137c0`（本地领先远端 3 个提交，尚未 push）
+> 当前集成基线：`private/integration@615fbb8cb95847c7a04f90226ab9de9d0ba2ff76`（本地领先远端 4 个提交，尚未 push）
 > 对应公开稳定修订：`v1.0.1A3` / Python `1.0.1a3` / `5e74de65c9b49867ac7957969138db59e2208572`  
 > 目标版本：`v1.0.2A` / Python `1.0.2a1`
 
@@ -32,7 +32,7 @@
 | Phase 3 / `CFG-001` 端到端 | ✅ | Claude `--max-budget-usd`、Hermes `--max-turns`、三 Executor session receipt、明确 ID resume 和 Runner fail-closed 校验 | `438030f` |
 | Phase 4 Tasks 1～3 | ✅ | Claude/Hermes 资源耗尽结构化识别、Core `input_required` 阻塞、approve 翻倍继续、deny 明确失败、Runner respond-and-dispatch | `2b02891`、`24be4dd`、`b7ba051` |
 
-当前 `b7ba051` 全量 discovery 为 `765` 项通过，Ruff、compileall、Shell 语法和
+当前已验收代码基线 `b7ba051` 全量 discovery 为 `765` 项通过，Ruff、compileall、Shell 语法和
 `git diff --check` 通过。已生成并安装本地 `1.0.1a3` Phase 4 构建，build provenance
 指向 `b7ba051`；正式版本尚未提升为 `1.0.2a1`。
 
@@ -40,7 +40,7 @@
 
 | 工作项 | AgentBC 任务 | 当前事实 | 完成后动作 |
 | --- | --- | --- | --- |
-| Phase 4 Task 4 / `CFG-002` UX、公共视图与文档 | `97FK-001`（Hermes） | `running`、RunLease active、Runner alive；health yellow/unresponsive 表示缺少主动 progress 更新但心跳仍在，不是终态失败；新根任务；`max_turns=150`、source=configured、frozen=yes；目标分支 `agent/hermes@438030f` | 继续以 status/RunLease 判断；完成后检查 final callback、report、测试和 diff；审阅合入 integration，再跑全量回归与真实 exhaustion canary |
+| Phase 4 Task 4 / `CFG-002` UX、公共视图与文档 | `97FK-001`（Hermes） | `needs_recovery`；Hermes 实际完成 81/150 turns 并生成最终回复，但 quiet CLI 在后台 review 竞争窗口丢失 stdout 与官方 stderr `session_id:`，Worker 因 `executor_session_receipt_invalid` fail closed；RunLease 已关闭，任务未产生合法 callback/report | 不从 Hermes DB、日志或“最近会话”猜 ID，不恢复该 Task；已最小回移 Hermes 官方 `b5267671` thread-scoped output 修复，3 项并发回归及真实 `-Q` receipt canary 通过；下一步按人工权限确认规则创建全新根任务重跑 |
 
 旧任务 `QDKN-001` 已因 Hermes 旧运行达到 `60/60` 且 final marker 无效而终态
 `failed`；它不再恢复、不 handoff，也不是当前开发基线。`97FK-001` 是不继承其 lineage、
@@ -60,11 +60,12 @@ session、resource 或运行记录的全新根任务。
 
 ### 0.4 后续固定顺序
 
-1. 验收并合入 `97FK-001`，完成 Phase 4 代码/视图/文档回归与真实 canary；
-2. Phase 5：完成 `SESSION-001` 终态 cleanup/purge、capability/receipt；
-3. Phase 6：完成 `SAFE-001` linked-worktree 控制端提交闭环；
-4. Phase 7：完成 `SKILL-001`、`DOC-002`、`DOCFIX-001`；
-5. Phase 8：执行 `REL-102` 版本与发布 Gate。
+1. 修复 Hermes quiet 长任务 receipt 丢失并完成 review-trigger canary；废弃 `97FK-001` 的恢复路径，创建全新根任务重跑 Task 4；
+2. 验收并合入新的 Phase 4 Task 4，完成代码/视图/文档回归与真实 canary；
+3. Phase 5：完成 `SESSION-001` 终态 cleanup/purge、capability/receipt；
+4. Phase 6：完成 `SAFE-001` linked-worktree 控制端提交闭环；
+5. Phase 7：完成 `SKILL-001`、`DOC-002`、`DOCFIX-001`；
+6. Phase 8：执行 `REL-102` 版本与发布 Gate。
 
 除非本清单被显式更新，后续 Agent 不得跳过 Phase 4 验收，不得把 session resume
 等同于 session cleanup 完成，也不得因本地新包可运行而宣称 `1.0.2A` 已发布。
@@ -88,6 +89,16 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
 - GUI、Webhook、Email 等通知扩展；
 - 跨机派发、链式自动派发；
 - `service.py`、`runner.py`、`cli.py`、`setup.py` 的大规模结构拆分。
+- 统一 Agent 权限设置、三 Executor 权限 registry、结构化 approval event，以及权限受阻
+  自动进入桌面 `input_required` 弹窗；这些协议级改造全部冻结到 `1.0.3A`，不得继续给
+  `1.0.2A` 增加需求负担。
+
+`1.0.2A` 剩余开发期间采用人工过渡规则：每次创建新的根任务或 handoff 前，控制端必须先
+向用户确认目标 Agent 完成本任务实际需要 `safe` 还是 `full`，再在派发命令中显式传入
+`--permission-mode <safe|full>`；不得依赖 AgentBC 配置、来源任务或 Executor 原生配置的
+隐式继承。`full` 必须明确提示风险并取得本次派发授权。同 Task 的 retry/recover/resume
+继续使用已冻结权限，不通过普通 input 文本改权。该人工确认只约束派发流程，不在
+`1.0.2A` 新增权限弹窗或权限协议实现。
 
 允许的重构只限于支撑本清单功能的局部公共模块，并且机械迁移与语义变化必须分提交。
 
@@ -127,9 +138,14 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
   `input_required`、任务级翻倍/终止决策和 Runner 原子响应派发，并合入 `b7ba051`。
   全量 discovery `765` 项通过，不再保留 Phase 4 `expectedFailure`；Ruff、compileall、
   Shell 语法和 `git diff --check` 通过。
-- `2026-08-10 / Phase 4 Task 4`：旧 Hermes 任务 `QDKN-001` 在旧运行 `60/60` 后失败并
-  已放弃；新根任务 `97FK-001` 使用冻结 `max_turns=150` 运行中，负责通知/dialog、公共
-  resource 视图与 Phase 4 文档。只有验收并合入后才可标记 Phase 4 完成。
+- `2026-08-11 / Phase 4 Task 4`：旧 Hermes 任务 `QDKN-001` 已放弃；新根任务
+  `97FK-001` 使用冻结 `max_turns=150` 完成 81 次调用并生成最终回复，但本机 Hermes
+  `v0.17.0` 的后台 review 使用进程级 stdout/stderr 重定向，竞争吞掉 quiet CLI 最终输出
+  与 session receipt，因此按 `executor_session_receipt_invalid` 进入 `needs_recovery`。
+  已回移 Hermes 官方 `b5267671` thread-scoped output 修复；3 项定向并发测试与真实
+  `hermes chat -Q` receipt canary 通过。不得猜测或补写 `97FK-001` 的 ID；后续在人工确认
+  Hermes 所需权限并显式传参后，以全新根任务重跑。只有新任务验收并合入后才可标记
+  Phase 4 完成。
 
 ## 3. 需求总表
 
