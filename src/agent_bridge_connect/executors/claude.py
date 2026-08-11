@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import errno
 import json
 import math
+import os
 import re
 import subprocess
 import uuid
@@ -13,6 +15,9 @@ from agent_bridge_connect.adapters import (
     ExecutorLevel,
     PollResult,
     ProbeResult,
+    SessionCleanupCapability,
+    SessionCleanupRequest,
+    SessionCleanupResult,
     StartResult,
 )
 from agent_bridge_connect.execution_contract import (
@@ -29,7 +34,10 @@ from agent_bridge_connect.permission_modes import (
     permission_flags,
     permission_record_from_extensions,
 )
-from agent_bridge_connect.path_model import validate_path_plan_workspace
+from agent_bridge_connect.path_model import (
+    validate_managed_cleanup_paths,
+    validate_path_plan_workspace,
+)
 from agent_bridge_connect.protocol import ABCError
 from agent_bridge_connect.prompt_contract import PromptPlatformExtras, build_prompt_contract
 from agent_bridge_connect.runner import RunnerClient, RunnerError
@@ -38,12 +46,19 @@ from .base import CLIExecutorBase
 from ..path_provider import find_binary
 
 SAFETY_TIMEOUT_S = 24 * 60 * 60
+CLAUDE_PROJECT_PURGE_TIMEOUT_S = 30
 
 _CLAUDE_BUDGET_ERROR_RE = re.compile(
     r"(?m)^Error:\s+Exceeded\s+USD\s+budget(?:\s*\(|\s*$)"
 )
 _CLAUDE_BUDGET_AMOUNT_RE = re.compile(
     r"Exceeded\s+USD\s+budget\s*\(\s*\$?\s*(?P<amount>\d+(?:\.\d+)?)"
+)
+_CLAUDE_PROJECT_ABSENT_RE = re.compile(
+    r"(?im)^(?:no claude code (?:project )?state found(?: for (?:project )?)?"
+    r"|no project (?:state )?found(?: for (?:path )?)?"
+    r"|project (?:state )?not found)"
+    r"(?:[.: ].*)?$"
 )
 
 
@@ -163,6 +178,150 @@ class ClaudeExecutor(CLIExecutorBase):
             multimodal=True,
             parallelism=1,
             level=ExecutorLevel.L1,
+        )
+
+    def session_cleanup_capability(
+        self,
+        request: SessionCleanupRequest,
+    ) -> SessionCleanupCapability:
+        if request.retain is True or request.project_mode == "native":
+            return SessionCleanupCapability(
+                capability="not_applicable",
+                strategy="retain",
+            )
+        request_error = _claude_cleanup_request_error(request)
+        if request_error:
+            return SessionCleanupCapability(
+                capability="unsupported",
+                strategy="none",
+                error_code=request_error,
+            )
+        if self.agent_bin is None:
+            return SessionCleanupCapability(
+                capability="unsupported",
+                strategy="none",
+                error_code="claude_project_purge_unavailable",
+            )
+        try:
+            completed = subprocess.run(
+                [str(self.agent_bin), "project", "purge", "--help"],
+                text=True,
+                capture_output=True,
+                check=False,
+                shell=False,
+                timeout=CLAUDE_PROJECT_PURGE_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            return SessionCleanupCapability(
+                capability="unsupported",
+                strategy="none",
+                error_code="claude_project_purge_help_timeout",
+            )
+        except OSError:
+            return SessionCleanupCapability(
+                capability="unsupported",
+                strategy="none",
+                error_code="claude_project_purge_unavailable",
+            )
+        help_text = "\n".join((completed.stdout or "", completed.stderr or ""))
+        if completed.returncode != 0 or not _supports_claude_project_purge(help_text):
+            return SessionCleanupCapability(
+                capability="unsupported",
+                strategy="none",
+                error_code="claude_project_purge_unsupported",
+            )
+        return SessionCleanupCapability(
+            capability="supported",
+            strategy="claude_project_purge",
+        )
+
+    def cleanup_session(self, request: SessionCleanupRequest) -> SessionCleanupResult:
+        if request.retain is True or request.project_mode == "native":
+            return SessionCleanupResult(
+                state="retained",
+                capability="not_applicable",
+                strategy="retain",
+            )
+
+        capability = self.session_cleanup_capability(request)
+        if capability.capability != "supported":
+            return SessionCleanupResult(
+                state="unsupported",
+                capability="unsupported",
+                strategy="none",
+                error_code=capability.error_code or "claude_project_purge_unsupported",
+                retryable=False,
+            )
+
+        request_error = _claude_cleanup_request_error(request)
+        if request_error:
+            return _claude_cleanup_failed(request_error)
+        path_error = _validate_claude_cleanup_paths(request)
+        if path_error:
+            return _claude_cleanup_failed(path_error)
+
+        if self.agent_bin is None:  # Guard against mutation after the capability probe.
+            return _claude_cleanup_failed("claude_project_purge_unavailable")
+        purge_command = [
+            str(self.agent_bin),
+            "project",
+            "purge",
+            "--yes",
+            request.project_path,
+        ]
+        try:
+            completed = subprocess.run(
+                purge_command,
+                text=True,
+                capture_output=True,
+                check=False,
+                shell=False,
+                timeout=CLAUDE_PROJECT_PURGE_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            return _claude_cleanup_failed(
+                "claude_project_purge_timeout",
+                retryable=True,
+            )
+        except OSError:
+            return _claude_cleanup_failed(
+                "claude_project_purge_unavailable",
+                retryable=True,
+            )
+
+        purge_output = "\n".join((completed.stdout or "", completed.stderr or ""))
+        if completed.returncode != 0 and not _claude_project_is_absent(purge_output):
+            return _claude_cleanup_failed("claude_project_purge_failed")
+
+        for field in ("executor_project_root", "task_root", "chain_root"):
+            request_error = _claude_cleanup_request_error(request)
+            if request_error:
+                return _claude_cleanup_failed(request_error)
+            try:
+                paths = validate_managed_cleanup_paths(
+                    request.workspace,
+                    task_id=request.task_id,
+                    project_path=request.project_path,
+                )
+            except ABCError as exc:
+                return _claude_cleanup_failed(exc.code)
+            except (OSError, TypeError, ValueError):
+                return _claude_cleanup_failed("cleanup_path_invalid")
+            try:
+                os.rmdir(getattr(paths, field))
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                if exc.errno in {errno.ENOTEMPTY, errno.EEXIST}:
+                    return _claude_cleanup_failed(
+                        "claude_cleanup_directory_not_empty"
+                    )
+                return _claude_cleanup_failed("claude_cleanup_rmdir_failed")
+
+        return SessionCleanupResult(
+            state="succeeded",
+            capability="supported",
+            strategy="claude_project_purge",
         )
 
     def start(self, task_packet: dict) -> StartResult:
@@ -386,6 +545,69 @@ class ClaudeExecutor(CLIExecutorBase):
             "output_format": self.output_format,
             "transport": self.transport,
         }
+
+
+def _claude_cleanup_request_error(request: SessionCleanupRequest) -> str:
+    if str(request.executor or "").strip().lower() != "claude":
+        return "claude_cleanup_executor_mismatch"
+    if request.retain is not False or request.project_mode != "ephemeral":
+        return "claude_cleanup_mode_invalid"
+    if request.strategy != "claude_project_purge":
+        return "claude_cleanup_strategy_mismatch"
+    session_id = str(request.session_id or "").strip()
+    try:
+        parsed_session_id = uuid.UUID(session_id)
+    except (AttributeError, ValueError):
+        return "claude_cleanup_session_invalid"
+    if str(parsed_session_id) != session_id.lower():
+        return "claude_cleanup_session_invalid"
+    if not str(request.task_id or "").strip():
+        return "cleanup_task_mismatch"
+    if not str(request.project_path or "").strip():
+        return "cleanup_project_mismatch"
+    return ""
+
+
+def _supports_claude_project_purge(help_text: str) -> bool:
+    frozen_contract = (
+        "Usage: claude project purge [options] [path]",
+        "Delete all Claude Code state for a project",
+        "--yes",
+        "Skip confirmation prompt",
+    )
+    return all(item in help_text for item in frozen_contract)
+
+
+def _validate_claude_cleanup_paths(request: SessionCleanupRequest) -> str:
+    try:
+        validate_managed_cleanup_paths(
+            request.workspace,
+            task_id=request.task_id,
+            project_path=request.project_path,
+        )
+    except ABCError as exc:
+        return exc.code
+    except (OSError, TypeError, ValueError):
+        return "cleanup_path_invalid"
+    return ""
+
+
+def _claude_project_is_absent(output: str) -> bool:
+    return _CLAUDE_PROJECT_ABSENT_RE.search(output or "") is not None
+
+
+def _claude_cleanup_failed(
+    error_code: str,
+    *,
+    retryable: bool = False,
+) -> SessionCleanupResult:
+    return SessionCleanupResult(
+        state="failed",
+        capability="supported",
+        strategy="claude_project_purge",
+        error_code=error_code,
+        retryable=retryable,
+    )
 
 
 def _claude_max_budget_usd(

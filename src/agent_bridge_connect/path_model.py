@@ -104,6 +104,15 @@ class PathPlan:
         }
 
 
+@dataclass(frozen=True)
+class ManagedCleanupPaths:
+    """Canonical AgentBC-owned directories eligible for non-recursive cleanup."""
+
+    executor_project_root: Path
+    task_root: Path
+    chain_root: Path
+
+
 def build_path_plan(
     *,
     customer_dir: bool | None,
@@ -194,6 +203,80 @@ def validate_path_plan_workspace(workspace: dict[str, Any]) -> None:
         _validate_executor_project_root(workspace)
 
 
+def validate_managed_cleanup_paths(
+    workspace: dict[str, Any],
+    *,
+    task_id: str,
+    project_path: str | Path,
+) -> ManagedCleanupPaths:
+    """Revalidate an exact cleanup request against its authoritative PathPlan.
+
+    This helper is deliberately stricter than normal PathPlan validation.  It
+    accepts only the canonical AgentBC-owned Claude directory for the exact
+    task iteration, and rejects every symlink from the managed artifacts root
+    through the executor leaf.  It does not create, remove, or scan anything.
+    """
+    if not isinstance(workspace, dict):
+        raise ABCError("cleanup_path_invalid", "cleanup workspace must be an object")
+
+    task_code = str(workspace.get("task_code") or "").strip()
+    iteration = str(workspace.get("iteration") or "").strip()
+    try:
+        expected_task_id = format_task_id(task_code, iteration)
+    except ValueError as exc:
+        raise ABCError(
+            "cleanup_task_mismatch",
+            "cleanup task metadata is invalid",
+        ) from exc
+    if str(task_id or "").strip() != expected_task_id:
+        raise ABCError(
+            "cleanup_task_mismatch",
+            "cleanup task id does not match the authoritative PathPlan",
+        )
+
+    agentbc_text = str(workspace.get("agentbc_root") or "").strip()
+    task_date = str(workspace.get("task_date") or "").strip()
+    if not agentbc_text or not task_date:
+        raise ABCError(
+            "cleanup_path_invalid",
+            "cleanup PathPlan metadata is incomplete",
+        )
+    agentbc_root = Path(agentbc_text).expanduser().resolve()
+    expected_project = canonical_executor_project_root(
+        agentbc_root,
+        task_date,
+        task_code,
+        expected_task_id,
+    )
+    planned_text = str(workspace.get("executor_project_root") or "").strip()
+    requested_text = str(project_path or "").strip()
+    if not planned_text or not requested_text:
+        raise ABCError(
+            "cleanup_project_mismatch",
+            "cleanup project path is missing",
+        )
+    planned = Path(planned_text)
+    requested = Path(requested_text)
+    if not planned.is_absolute() or not requested.is_absolute():
+        raise ABCError(
+            "cleanup_project_mismatch",
+            "cleanup project path must be absolute",
+        )
+    if requested_text != planned_text or planned_text != str(expected_project):
+        raise ABCError(
+            "cleanup_project_mismatch",
+            "cleanup project path does not match the authoritative PathPlan",
+        )
+
+    _reject_cleanup_symlinks(expected_project, agentbc_root)
+    validate_path_plan_workspace(workspace)
+    return ManagedCleanupPaths(
+        executor_project_root=expected_project,
+        task_root=expected_project.parent,
+        chain_root=expected_project.parent.parent,
+    )
+
+
 def _validate_executor_project_root(workspace: dict[str, Any]) -> None:
     """Validate the internal executor project root against the canonical form.
 
@@ -260,3 +343,16 @@ def _reject_existing_parent_symlink_escape(candidate: Path, managed_artifacts: P
                 "path_plan_invalid",
                 f"executor_project_root parent escapes managed artifacts: {current}",
             ) from exc
+
+
+def _reject_cleanup_symlinks(candidate: Path, containment_root: Path) -> None:
+    """Reject any symlink in the AgentBC-owned cleanup path."""
+    current = containment_root
+    for part in ("", *candidate.relative_to(containment_root).parts):
+        if part:
+            current = current / part
+        if os.path.islink(current):
+            raise ABCError(
+                "cleanup_path_symlink",
+                "cleanup path contains a symlink",
+            )
