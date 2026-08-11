@@ -1,12 +1,12 @@
 # AgentBC 1.0.2A 需求开发清单
 
 > 制定日期：2026-08-08  
-> 最近状态快照：2026-08-11（测试策略冻结与 Phase 5 规划）
-> 状态：开发进行中（Phase 0～Phase 4 代码已合入；真实点对点与全面测试延后，下一阶段为 Phase 5）
+> 最近状态快照：2026-08-12（Phase 5 已合入；Phase 6 三 Executor 单次授权方案冻结）
+> 状态：开发进行中（Phase 0～Phase 5 代码已合入；真实点对点与全面测试延后，下一阶段为修订后的 Phase 6）
 > 当前开发分支：`private/integration`  
 > 固定 Agent 分支：`agent/codex`、`agent/claude`、`agent/hermes`  
 > 初始开发基线：`private/integration@cfddccba246e6d057172f6716ab4318ade9a40ad`
-> 当前集成基线：`private/integration@6f19505`（本地尚未 push）
+> 当前集成基线：`private/integration@19b3b2c122bd5e3f1b955cbeeff28cb3fead3d9a`
 > 对应公开稳定修订：`v1.0.1A3` / Python `1.0.1a3` / `5e74de65c9b49867ac7957969138db59e2208572`  
 > 目标版本：`v1.0.2A` / Python `1.0.2a1`
 
@@ -44,7 +44,8 @@ package-only smoke 与 CLI/Runner identity 验证通过；正式版本尚未提�
 | 工作项 | AgentBC 任务 | 当前事实 | 完成后动作 |
 | --- | --- | --- | --- |
 | Phase 4 Task 4 / `CFG-002` UX、公共视图与文档 | `QECT-001`（Hermes） | `completed`；冻结 `max_turns=150`、显式 `full` 权限，实际运行约 26 分 41 秒；合法 final callback、完成标记、关闭 RunLease 与官方 session receipt `20260811_004323_d3bd9b` 均已验收 | 成果已合入 integration；安装包真实资源耗尽 canary 进入集中全面测试批次，本阶段不单独执行 |
-| Phase 5 Task 5 / 公共视图、doctor、文档 | `F6CS-001`（Codex） | 以 `270d671` 为集成基线收口；代码完成，集中验证与真实 P2P 待执行 | 保持 worktree 未暂存供 controller 审阅，不在本任务执行真实删除或 P2P |
+| Phase 5 Task 5 / 公共视图、doctor、文档 | `F6CS-001`（Codex） | 以 `270d671` 为任务基线收口；Phase 5 全部成果已合入当前 integration `19b3b2c`，集中验证与真实 P2P 待执行 | 不在开发子任务执行真实删除或 P2P |
+| Phase 6 旧 Task 1 / Git topology 与 `commit_required` 前置合同 | `SWJF-001`（Codex） | Executor 任务已完成，但架构复核后判定 Git 专属状态机和公共 CLI 性价比不足；成果未提交、未合入，Codex worktree 已回退至干净 `19b3b2c` | 任务报告只保留历史证据；不得把该 diff 或其 `--git-write`、Git snapshot、`commit_required` 方案重新带回主线 |
 
 旧任务 `QDKN-001` 已因旧运行达到 `60/60` 且 final marker 无效而终态 `failed`；
 `97FK-001` 因旧 Hermes quiet review 竞争丢失官方 receipt 而 `needs_recovery`。二者均不恢复、
@@ -57,7 +58,7 @@ package-only smoke 与 CLI/Runner identity 验证通过；正式版本尚未提�
 | --- | --- | --- |
 | Phase 4 / `CFG-002` | 🟡 代码完成/待集中验证 | Tasks 1～4 已合入；真实 Claude/Hermes 耗尽、approve 翻倍同 session 继续、deny 明确 failed 的安装包 canary 延后到集中全面测试 |
 | `SESSION-001` | 🟡 代码完成/待真实 P2P | session 快照、receipt、同 ID resume、终态 cleanup/purge、capability、公共视图与 doctor warning 已完成；真实 retain/cleanup P2P 门禁尚未通过 |
-| `SAFE-001` | ⬜ | linked worktree Git 元数据预检、`commit_required`、控制端审查提交和恢复链路均未实现 |
+| `SAFE-001` | ⬜ 方案已重定稿 | 不再新增 Git 专属状态；三 Executor 复用现有 `input_required(type=permission)`，approve 后为同 Task/同官方 session 的下一次 continuation 一次性启用既有 `full`，随后自动失效；Hermes 缺少官方 receipt 时严格阻断 |
 | `SKILL-001` | ⬜ | canonical controller contract 的安装身份、协议版本和 template hash 握手未实现 |
 | `DOC-002` | ⬜ | doctor 稳定 schema/退出码以及 Skill、session cleanup、safe Git、config/runtime 漂移诊断未闭环 |
 | `DOCFIX-001` | ⬜ | help、Record README、Quick Start、双语 User Guide 与三类 Skill 的最终一致性收口未完成 |
@@ -66,7 +67,7 @@ package-only smoke 与 CLI/Runner identity 验证通过；正式版本尚未提�
 ### 0.4 后续固定顺序
 
 1. Phase 5：代码已完成，进入集中验证并保留真实 retain/cleanup P2P 门禁；
-2. Phase 6：完成 `SAFE-001` linked-worktree 控制端提交闭环；
+2. Phase 6：完成 `SAFE-001` 现有 permission input 与一次性 `safe -> full` continuation；
 3. Phase 7：完成 `SKILL-001`、`DOC-002`、`DOCFIX-001`；
 4. Phase 5～7 核心功能基本完成后，统一执行源码全面回归、安装包验证、真实 Executor
    点对点 canary、Python/双机矩阵和安全/恢复测试；
@@ -120,16 +121,23 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
 - GUI、Webhook、Email 等通知扩展；
 - 跨机派发、链式自动派发；
 - `service.py`、`runner.py`、`cli.py`、`setup.py` 的大规模结构拆分；
-- 统一 Agent 权限设置、三 Executor 权限 registry、结构化 approval event，以及权限受阻
-  自动进入桌面 `input_required` 弹窗；这些协议级改造全部冻结到 `1.0.3A`，不得继续给
-  `1.0.2A` 增加需求负担。
+- 统一 Agent 权限设置、三 Executor 权限 registry、细粒度 capability、授权时效和多次 scope
+  仍冻结到 `1.0.3A`。`1.0.2A` 只实现三 Executor 共用的窄场景：基础权限为 `safe` 时，
+  复用已经存在的 `input_required(type=permission)`、approve/deny UI 和同 session resume，
+  为下一次 continuation 发放一次性既有 `full` 授权。不得新增 Git 专属任务状态、权限类别
+  或公共响应命令；`inherit` 不参与临时提升。
+- 内部授权使用版本化、非 Git/Executor 专属的可扩展 envelope；v1 只解释通用绑定、
+  `safe -> full`、下一次 run 和一次消费，保留未知附加字段，未知未来版本 fail closed。
+  Service、Runner 和 Adapter 不得分别写死 Codex/Claude/Hermes 字段合同；1.0.3A 可在不改写
+  v1 基础 `agentbc.permission` 的前提下增加 registry、granular target 和新 scope。
 
 `1.0.2A` 剩余开发期间采用人工过渡规则：每次创建新的根任务或 handoff 前，控制端必须先
 向用户确认目标 Agent 完成本任务实际需要 `safe` 还是 `full`，再在派发命令中显式传入
 `--permission-mode <safe|full>`；不得依赖 AgentBC 配置、来源任务或 Executor 原生配置的
-隐式继承。`full` 必须明确提示风险并取得本次派发授权。同 Task 的 retry/recover/resume
-继续使用已冻结权限，不通过普通 input 文本改权。该人工确认只约束派发流程，不在
-`1.0.2A` 新增权限弹窗或权限协议实现。
+隐式继承。`full` 必须明确提示风险并取得本次派发授权。除上述一次性 permission
+approve 外，同 Task 的 retry/recover/resume 继续使用已冻结权限，普通 message、choice、
+prompt 文本或原生参数都不能改权。一次性授权消费或中断后必须恢复原 `safe`，不得被
+retry、recover、handoff 或新任务继承。
 
 允许的重构只限于支撑本清单功能的局部公共模块，并且机械迁移与语义变化必须分提交。
 
@@ -141,7 +149,7 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
 | `doctor [--json]` | 只有基础实现和 A3 构建身份；完整契约未闭环 | 增量补齐 Skill 漂移、配置/runtime 漂移、稳定 schema/退出码和 blocker |
 | 执行会话保留 | 快照、receipt、等待保留与同 ID resume 已完成；终态清理未实现 | 只继续实现 cleanup capability/receipt 与 Claude purge/目录安全清理 |
 | Claude 预算 / Hermes 迭代 | 配置、任务快照、Adapter argv、Runner 校验和耗尽决策 UX 已完成 | 真实 approve/deny canary 延后到集中全面测试 |
-| Codex safe 与 linked worktree | `workspace-write` 可修改工作树，但共享 Git 元数据位于 customer root 外，`git add/commit` 会失败；普通 input 响应不能改变沙箱授权 | 派发前识别并给出可接管的安全提交路径，禁止静默扩大权限 |
+| Codex safe 与 linked worktree | `workspace-write` 可修改工作树，但共享 Git 元数据位于 customer root 外，`git add/commit` 会失败；现有 permission input 已能暂停和 approve/deny，但 approve 尚不能发放一次性 full | 复用现有 permission input；批准后只让下一次同 session continuation 使用既有 full，随后自动恢复 safe，不新增 Git 专属状态或 CLI |
 | 执行时长 | 已完成真实 run interval 累计和权威 lease 当前视图 | 保持 status/report/notification 同源回归 |
 | Prompt 公共契约 | 已完成共享 builder、golden 和长度门禁 | 保持 v1 行为不变回归 |
 | Skill 身份 | package template 是 canonical source，但无安装 hash 握手 | 写入版本/协议/template hash，doctor 检查漂移 |
@@ -197,7 +205,7 @@ OpenCode/Docker 亮点版本建立稳定运维基线。
 | `REPORT-001` | ✅ 已合入 | P1 | 修正恢复任务累计执行时长 | RunLease、Service timing、Report、Task List、Notification | 只保留回归 |
 | `CFG-001` | ✅ 已合入 | P0 | Claude 预算与 Hermes 迭代上限配置及执行注入 | Config、Setup、CLI、Claude/Hermes Adapter、Preflight | doctor 最终视图待 DOC-002 |
 | `CFG-002` | 🟡 代码已合入/待集中验证 | P0 | 预算/迭代耗尽决策：弹窗翻倍继续或终止 | Adapter、Worker/Core、Notifications、Service respond | 安装包真实 canary 按 0.5 节延后 |
-| `SAFE-001` | ⬜ 未开始 | P0 | Codex safe 在 linked worktree 下的 Git 写入预检与可接管提交 | Path Plan、Codex Adapter、Runner、Preflight、Input、Notification、Doctor | 权限三档、SESSION-001 resume 已具备 |
+| `SAFE-001` | ⬜ 方案已重定稿 | P0 | 三 Executor safe 受阻后，经现有 permission input 明确批准，为下一次同官方 session continuation 一次性启用 full | Permission、三 Adapter、Runner、Input、Notification、Report | 复用权限三档、approve/deny 和 SESSION-001 resume；Hermes receipt 缺失时阻断；不新增 Git 状态/CLI |
 | `PROMPT-001` | ✅ 已合入 | P1 | 三 Executor 公共 Prompt 契约去重 | 公共 builder、Codex/Claude/Hermes Adapter | 只保留回归 |
 | `OBS-001` | ✅ 已合入 | P1 | 当前 execution lease 状态单一派生视图 | RunLease query、Status、Report | 与 REPORT-001 同步完成 |
 | `DOCFIX-001` | ⬜ 未闭环 | P2 | 修正文档/help 漂移 | Record README、CLI help、双语文档、Skills | Phase 4/5/6 字段稳定后收口 |
@@ -425,40 +433,50 @@ Task 4 已落地子项（弹窗/视图/文档切片）：
 验收：claude 预算耗尽、hermes 迭代耗尽、翻倍继续成功、终止 failed 带原因、
 到期转恢复、弹窗文案、无密钥泄漏与 status/report 一致展示通过。
 
-### 4.6 `SAFE-001`：Codex safe linked-worktree Git 写入与可接管提交
+### 4.6 `SAFE-001`：三 Executor safe 受阻后的单次 full continuation
 
-问题边界：Codex `safe` 固定使用 `--sandbox workspace-write`。普通 clone 的 Git 元数据位于
-project root 内时可以正常提交；linked worktree 的 `.git` 是指向主仓
-`.git/worktrees/<name>` 的指针，共享 object/ref 元数据位于 customer root 外，因此源码编辑和
-测试可以成功，但 `git add/commit` 会在 `index.lock`、objects 或 refs 写入阶段被沙箱拒绝。
-用户在普通 message 输入里回复“允许执行”只会恢复任务，不会改变已持久化的 `safe`
-权限，当前实现会重复进入同一不可执行步骤。
+问题边界：Codex `safe` 的 workspace-write 可能阻止 linked worktree 外部 Git 元数据写入；
+Claude 的 acceptEdits 仍可能要求 Bash/tool approval；Hermes 的正常审批路径在非交互执行中
+也可能阻塞。根因都是当前任务冻结为 `safe`，而已有 `input_required(type=permission)` 的
+approve 只恢复任务，不会改变下一次 Executor run 的权限。解决方案复用现有任务状态、
+permission 类型、三 Executor 既有 `full` 映射和 SESSION-001 同 session resume，不把某个
+具体命令、Git 提交或 Executor 建模为新的权限分类。
 
 要求：
 
-- create/dispatch/preflight 解析并记录 checkout 类型、`git_dir`、`git_common_dir`、当前
-  branch/HEAD，以及 Git 元数据是否位于本次可写根内；解析必须使用 Git 官方查询结果并做
-  realpath/containment 校验，不接受任务文本声称的路径；
-- 当任务要求 Git 写入，而 Codex safe 检测到 linked worktree 的元数据位于可写根外时，
-  必须在首次提交前进入可行动的 `input_required`，稳定原因码为
-  `codex_safe_git_metadata_blocked`；status/report/notification 明确显示已完成的源码/测试、
-  被阻塞的 Git 动作和下一步，不得把普通 message 响应描述成“提权”；
-- 默认恢复路径是“由控制端审查并提交”：Executor 保留工作树变更和测试证据，输出结构化
-  `commit_required` 清单；控制端在同一固定 agent 分支审查并提交后，以 commit SHA 响应；
-  Runner 恢复同一 Task ID/会话，Executor 只验证 HEAD、clean tree 和原步骤证据后完成；
-- `safe` 不得把整个主仓 `git_common_dir` 加入 writable roots，不得写 `main`、其他 agent
-  分支或其他 worktree 的 refs，不得自动切换为 `full`；若未来实现 Runner Git proxy，只允许
-  对精确当前 worktree/branch 执行 allowlist 中的 `status/diff/add/commit`，并审计文件清单、
-  commit message、基准 HEAD 和最终 SHA；
-- 用户若明确选择终止或改用 `full`，本次 safe run 必须先以可解释状态结束；`full` 只能通过
-  已有显式、持久化、可审计的任务授权重新派发，不能由自由文本响应隐式升级；
-- response 前后复核 task/input ID、current chain head、branch/HEAD 和 dirty file set；发生
-  stale response、HEAD 变化、越界路径、symlink escape 或 controller commit 不匹配时 fail
-  closed，不重复派发同一必失败的提交尝试。
+- 不新增 `commit_required`、`agentbc.git`、`--git-write`、`--commit-sha`、Git proxy 或
+  controller commit receipt；不要求用户理解 checkout 类型、branch/HEAD、dirty set 或
+  Executor/Controller 提交分工；`SWJF-001` 的未合入实现已回退，不是后续开发基线；
+- 任一 Executor safe 运行遇到确需 `full` 才能继续的步骤时，使用现有 strict final marker 进入
+  `input_required`，`input.type=permission`、`requested_permission=full`，并标记实际 blocked
+  step；普通 message/choice、自由文本“允许”、Executor 原生 flags 均不能触发提权；
+- notification 继续使用现有 Approve/Deny 和 fallback
+  `agentbc task respond <task-id> --input <input-id> --approve|--deny`，不新增响应命令。
+  弹窗必须明确说明：批准将为对应 Executor 的下一次 continuation 临时启用完整 `full`，其技术权限
+  范围不限于 Git；任务结束、中断或再次等待后自动撤销；
+- 创建 permission wait 前必须存在当前 run 的官方 execution session receipt；Codex/Claude/
+  Hermes 一律不得猜测或补写 session ID。Hermes 若在 receipt 产生前受阻，直接以稳定原因
+  `permission_resume_session_unavailable` 进入 `needs_recovery`，不得发放 full 或新开 session；
+- approve 后保持同一 Task ID、current chain head 和 `agentbc.session.session_id`，Runner
+  原子发放一次性授权并恢复下一次 run。授权只绑定当前 task/input/executor/session，只能
+  消费一次；adapter 使用对应 Executor 的现有 `full` argv，Runner 仍执行已有 permission command
+  canonicalization 与 persisted authorization 校验；
+- 基础任务权限仍为 `safe`。一次性授权在成功派发后视为已消费，并在 completed、failed、
+  cancelled、再次 `input_required`、`needs_recovery` 或 resume dispatch 失败时恢复 `safe`。
+  retry、recover、reassign、handoff、新任务和 input replay 均不得继承或重新使用；失败后若
+  仍需 full，必须产生新的 permission input 并重新批准；
+- deny 直接终结任务为带稳定原因 `permission_denied_by_user` 的 failed；expired、stale、
+  task/input/session 不匹配、重复 approve、授权篡改或 Runner 无法验证 full argv 均 fail
+  closed，不自动重派 full；
+- 一次性授权必须留下脱敏审计：原权限、临时权限、input ID、目标 run、issued/consumed/
+  revoked 状态和时间。不得保存 prompt、raw command/output、token、secret 或私有会话内容；
+  status/report 只显示是否存在当前临时授权、来源和消费结果，不引入新的任务状态。
 
-验收：普通 clone safe 编辑并提交、linked worktree safe 编辑后进入 `commit_required`、控制端
-提交并恢复完成、用户终止、重复/错误/stale input、HEAD/branch 竞态、symlink/realpath/共同
-Git 目录篡改、禁止写 main/其他 refs、通知原因与下一步、status/report/doctor 一致展示全部通过。
+验收：三 Executor 原有 safe/full/inherit 派发不受影响；safe 受阻后可进入现有 permission
+input；有官方 receipt 时 approve 后同 Task/同 session 的下一次 run 使用 full，Hermes 无
+receipt 时严格进入 recovery；deny 明确 failed；grant 一次消费、超时、重复响应、resume
+dispatch 失败、needs_recovery、retry、recover、reassign、handoff 和新任务均不能泄漏 full；
+通知、status/report 与 permission audit 同源，且用户流程不出现新的任务状态或 Git 权限概念。
 
 ### 4.7 `REPORT-001` + `OBS-001`：真实执行时长与 lease 当前视图
 
@@ -513,7 +531,7 @@ Codex/Claude/Hermes canary 纳入 0.5 节集中全面测试。
 | --- | --- | --- | --- |
 | Phase 4 | 🟡 代码完成/待集中验证 | `CFG-002` UX、公共视图、文档已合入 | 定向与受影响回归通过；真实 approve/deny canary 延后，不阻塞 Phase 5 |
 | Phase 5 | 🟡 代码完成/待集中验证 | `SESSION-001` 终态 cleanup/purge、capability/receipt、失败重试、公共视图与 doctor warning 数据已接线 | 自动化定向与相邻回归通过后进入集中验证；真实 retain/cleanup P2P 延后 |
-| Phase 6 | ⬜ | `SAFE-001` linked-worktree Git 元数据预检、`commit_required`、控制端审查提交与同 Task 恢复 | 自动化 fixture 覆盖普通 clone/linked worktree、分支/HEAD/路径竞态与禁止扩大共享 Git 权限；真实双 canary 延后 |
+| Phase 6 | ⬜ 方案已重定稿 | `SAFE-001` 由三 Executor 共用现有 permission input；approve 后同 Task/同官方 session 下一次 run 一次性使用 full，随后失效 | 自动化覆盖三 Adapter、Hermes receipt 门禁、grant 绑定/消费/撤销/拒绝/超时/恢复与不继承；真实 canary 延后 |
 | Phase 7 | ⬜ | `SKILL-001`、`DOC-002`、`DOCFIX-001` | Skill hash/版本握手、doctor 0/1/2、text/JSON 同源、双语文档/help/Skill 一致 |
 | 集中全面测试 | ⏸ 延后 | 源码全量、安装包、真实点对点、Python/双机、安全/恢复/回滚 | Phase 5～7 代码完成且接口基本冻结；所有打开 canary 逐项给出可追溯证据 |
 | Phase 8 | ⬜ | `REL-102` 阻断修复与发布收口 | 集中测试阻断清零；wheel/sdist、clean install、三 Executor、双机、唯一 SHA |
@@ -587,7 +605,35 @@ Task 2 独占 coordinator 及 `service.py`/terminal finalize 接线；Task 3 独
 PathPlan 清理实现；Task 4 独占 Codex/Hermes Adapter 与 capability probe；Task 5 最后统一
 修改 CLI/report/doctor/docs。共享文件不得并行交叉写，先合入依赖项再开始下游任务。
 
-### 5.4 分工与合并护栏
+### 5.4 Phase 6 修订后开发任务
+
+Phase 6 不沿用 `SWJF-001` 的代码，也不实现 Git topology/commit 状态机。按以下依赖实施：
+
+1. **Task 1：permission input 与可扩展的一次性授权合同**
+   - 冻结 permission request/grant 的内部 schema、一次消费、失效和审计规则；
+   - 扩展现有 strict permission input 校验，deny 明确 failed；
+   - 三 Executor 使用同一 envelope；v1 只支持基础 safe、请求 full，不提前实现 1.0.3A registry。
+2. **Task 2：Core 输入生命周期与 session receipt 门禁**
+   - permission wait 必须绑定当前 run 的官方 receipt；Hermes receipt 缺失时进入 recovery；
+   - approve 生成 issued grant，deny 明确 failed；terminal/recovery/reassign/dispatch failure 撤销；
+   - retry/recover/handoff/new task 不继承授权，资源决策与 permission 决策严格分流。
+3. **Task 3：Runner、三 Adapter 与同 session resume**
+   - Adapter 通过公共 resolver 复用现有 full argv，不自行解释 grant 字段；
+   - Runner 从持久化 issued grant 原子绑定/消费下一次 run，并拒绝注入、漂移和重放；
+   - 所有终态、中断、再次等待和 dispatch failure 自动撤销，retry/recover/handoff 不继承。
+4. **Task 4：通知、公共视图和文档**
+   - 复用现有 Approve/Deny popup 和 respond 命令；
+   - 明示 full 权限范围不限于 Git且只作用下一次 continuation；
+   - status/report 展示脱敏授权来源、是否临时、消费/撤销结果，不新增任务状态。
+5. **阶段集成与自动化门禁**
+   - fake Executor 覆盖 approve/deny、same session、single-use、stale/replay、崩溃恢复和权限回落；
+   - 普通 clone/linked worktree 只用临时 fixture；真实 Codex canary 按 0.5 节集中执行；
+   - Ruff、compileall、`git diff --check` 与受影响 input/permission/session/Runner 回归通过。
+
+Task 1 合入后 Tasks 2～3 可按文件所有权并行；Task 4 依赖二者全部合入并最后收口。任何子任务不得
+恢复 `--git-write`、`--commit-sha`、`commit_required` 或把临时 full 持久化为 handoff 默认。
+
+### 5.5 分工与合并护栏
 
 - 三个固定 agent worktree 每轮开始前同步最新 `private/integration`；
 - 同一 Phase 可并行的任务必须先冻结文件所有权；`service.py`、`runner.py`、`cli.py`、
@@ -621,7 +667,9 @@ PathPlan 清理实现；Task 4 独占 Codex/Hermes Adapter 与 capability probe�
 - doctor 能识别 package/Runner/Skill/Executor/config/session cleanup 漂移且 JSON schema 稳定；
 - Claude 预算与 Hermes 迭代上限在 setup、配置、preflight/status 和真实执行中一致可见；
 - 预算/迭代耗尽可能决策：弹窗翻倍继续或终止 failed 带明确原因，不再直接 failed；
-- Codex safe 在普通 clone 可正常提交；linked worktree 在提交前给出明确阻塞原因和控制端审查提交路径，不扩大共享 Git 权限、不循环伪提权；
+- 三 Executor safe 受阻时复用现有 permission input；用户 approve 后仅下一次同官方 session
+  continuation 临时使用 full，随后自动失效；Hermes 缺少官方 receipt 时进入 recovery；deny、
+  超时、异常、retry/recover/handoff 均不得泄漏或重放授权；
 - Executor 临时会话默认终态清理，input_required 期间保留并 resume 同会话继续；
 - 恢复等待不再计入 execution duration，全部用户界面使用同一 timing view；
 - 三 Executor prompt 不重复公共规则，v1 完成协议和权限行为不变；
