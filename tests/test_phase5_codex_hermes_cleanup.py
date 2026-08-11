@@ -9,6 +9,8 @@ from unittest import mock
 from agent_bridge_connect.adapters import SessionCleanupRequest
 from agent_bridge_connect.executors.codex import (
     CODEX_CLEANUP_UNSUPPORTED_CODE,
+    CODEX_SESSION_DELETE_FAILED_CODE,
+    CODEX_SESSION_DELETE_INVALID_ID_CODE,
     CodexExecutor,
     _CODEX_FROZEN_VERSION,
     _codex_session_cleanup_capability,
@@ -27,7 +29,8 @@ from agent_bridge_connect.executors.hermes import (
 FIXTURES = Path(__file__).parent / "fixtures" / "executor_runtime"
 CODEX_FIXTURE = FIXTURES / "codex_0.146.0_help.txt"
 HERMES_FIXTURE = FIXTURES / "hermes_0.17.0_help.txt"
-OFFICIAL_SESSION_ID = "20260811_004323_d3bd9b"
+CODEX_SESSION_ID = "019fef10-2f46-7c40-90c8-6d6ebd3cc7d6"
+HERMES_SESSION_ID = "20260811_004323_d3bd9b"
 HERMES_VERSION_OUTPUT = (
     "Hermes Agent v0.17.0 (2026.6.19) \u00b7 upstream 2cdb30a4\n"
 )
@@ -36,7 +39,7 @@ HERMES_VERSION_OUTPUT = (
 def _request(**overrides: object) -> SessionCleanupRequest:
     values: dict[str, object] = {
         "executor": "codex",
-        "session_id": OFFICIAL_SESSION_ID,
+        "session_id": CODEX_SESSION_ID,
         "task_id": "F5AH-001",
         "strategy": "official_session_delete",
     }
@@ -45,14 +48,16 @@ def _request(**overrides: object) -> SessionCleanupRequest:
 
 
 class FrozenFixtureTests(unittest.TestCase):
-    def test_codex_frozen_help_fixture_pins_version_and_fuzzy_delete_only(self) -> None:
+    def test_codex_frozen_help_fixture_pins_exact_force_uuid_delete(self) -> None:
         text = CODEX_FIXTURE.read_text(encoding="utf-8")
         self.assertIn(f"codex-cli {_CODEX_FROZEN_VERSION}", text)
         self.assertIn("Usage: codex delete [OPTIONS] <SESSION>", text)
         self.assertIn("Session id (UUID) or session name", text)
         self.assertIn("UUIDs take precedence if it parses", text)
-        self.assertIn("--last", text)
-        self.assertIn("picker", text)
+        self.assertIn("--force", text)
+        self.assertIn("SESSION must be a UUID", text)
+        self.assertNotIn("--last", text)
+        self.assertNotIn("picker", text)
         self.assertNotIn("sessions delete", text)
 
     def test_hermes_frozen_help_fixture_pins_exact_delete_entry(self) -> None:
@@ -64,13 +69,13 @@ class FrozenFixtureTests(unittest.TestCase):
 
 
 class CodexCapabilityProbeTests(unittest.TestCase):
-    def test_frozen_fixture_probe_is_unsupported_with_stable_code(self) -> None:
+    def test_frozen_fixture_probe_is_supported_by_force_uuid_contract(self) -> None:
         capability = _codex_session_cleanup_capability(
             CODEX_FIXTURE.read_text(encoding="utf-8")
         )
-        self.assertEqual(capability.capability, "unsupported")
-        self.assertEqual(capability.strategy, "none")
-        self.assertEqual(capability.error_code, CODEX_CLEANUP_UNSUPPORTED_CODE)
+        self.assertEqual(capability.capability, "supported")
+        self.assertEqual(capability.strategy, "official_session_delete")
+        self.assertEqual(capability.error_code, "")
 
     def test_misleading_same_name_delete_with_fuzzy_selector_is_rejected(self) -> None:
         # ``codex delete`` looks like a delete entry but accepts "id or session
@@ -207,181 +212,209 @@ class CodexExecutorCleanupTests(unittest.TestCase):
         self.executor = CodexExecutor(command=sys.executable)
         self.request = _request()
 
-    def test_capability_and_cleanup_are_unsupported_without_any_subprocess(self) -> None:
+    @staticmethod
+    def _help_process(text: str | None = None) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(
+            [],
+            0,
+            stdout=text if text is not None else CODEX_FIXTURE.read_text(encoding="utf-8"),
+            stderr="",
+        )
+
+    @staticmethod
+    def _delete_process(returncode: int = 0, stderr: str = "") -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess([], returncode, stdout="", stderr=stderr)
+
+    def test_capability_and_cleanup_use_exact_force_uuid_argv(self) -> None:
         with mock.patch(
-            "agent_bridge_connect.executors.codex.subprocess.run"
+            "agent_bridge_connect.executors.codex.subprocess.run",
+            side_effect=[self._help_process(), self._help_process(), self._delete_process()],
         ) as run:
             capability = self.executor.session_cleanup_capability(self.request)
             result = self.executor.cleanup_session(self.request)
-        self.assertEqual(capability.capability, "unsupported")
-        self.assertEqual(capability.error_code, CODEX_CLEANUP_UNSUPPORTED_CODE)
-        self.assertEqual(result.state, "unsupported")
-        self.assertEqual(result.capability, "unsupported")
-        self.assertEqual(result.strategy, "none")
-        self.assertEqual(result.error_code, CODEX_CLEANUP_UNSUPPORTED_CODE)
-        self.assertFalse(result.retryable)
-        self.assertEqual(result.next_attempt_at, "")
-        run.assert_not_called()
+        self.assertEqual(capability.capability, "supported")
+        self.assertEqual(result.state, "succeeded")
+        self.assertEqual(
+            run.call_args_list[2].args[0],
+            [str(self.executor.agent_bin), "delete", "--force", CODEX_SESSION_ID],
+        )
+        self.assertIs(run.call_args_list[2].kwargs["shell"], False)
 
-    def test_cleanup_unsupported_is_idempotent_and_stable(self) -> None:
-        with mock.patch("agent_bridge_connect.executors.codex.subprocess.run"):
+    def test_cleanup_success_is_idempotent_for_absent_session(self) -> None:
+        with mock.patch(
+            "agent_bridge_connect.executors.codex.subprocess.run",
+            side_effect=[
+                self._help_process(),
+                self._delete_process(),
+                self._help_process(),
+                self._delete_process(1, "Session not found"),
+            ],
+        ):
             first = self.executor.cleanup_session(self.request)
             second = self.executor.cleanup_session(self.request)
         self.assertEqual(first, second)
-        self.assertEqual(first, self.executor.cleanup_session(self.request))
+
+    def test_invalid_uuid_fails_before_any_subprocess(self) -> None:
+        with mock.patch("agent_bridge_connect.executors.codex.subprocess.run") as run:
+            result = self.executor.cleanup_session(_request(session_id="session name"))
+        self.assertEqual(result.state, "failed")
+        self.assertEqual(result.error_code, CODEX_SESSION_DELETE_INVALID_ID_CODE)
+        run.assert_not_called()
+
+    def test_unsupported_help_never_spawns_delete(self) -> None:
+        with mock.patch(
+            "agent_bridge_connect.executors.codex.subprocess.run",
+            return_value=self._help_process("Usage: codex delete <SESSION>"),
+        ) as run:
+            result = self.executor.cleanup_session(self.request)
+        self.assertEqual(result.state, "unsupported")
+        self.assertEqual(result.error_code, CODEX_CLEANUP_UNSUPPORTED_CODE)
+        run.assert_called_once()
+
+    def test_delete_transport_failure_is_retryable(self) -> None:
+        with mock.patch(
+            "agent_bridge_connect.executors.codex.subprocess.run",
+            side_effect=[self._help_process(), subprocess.TimeoutExpired([], 60)],
+        ):
+            result = self.executor.cleanup_session(self.request)
+        self.assertEqual(result.state, "failed")
+        self.assertEqual(result.error_code, CODEX_SESSION_DELETE_FAILED_CODE)
+        self.assertTrue(result.retryable)
 
     def test_cleanup_result_never_leaks_sensitive_inputs(self) -> None:
         request = _request(
-            session_id=OFFICIAL_SESSION_ID,
             project_path="/Users/example/.codex/private",
             workspace={"agentbc_root": "/private/root"},
         )
-        result = self.executor.cleanup_session(request)
+        with mock.patch(
+            "agent_bridge_connect.executors.codex.subprocess.run",
+            side_effect=[self._help_process(), self._delete_process()],
+        ):
+            result = self.executor.cleanup_session(request)
         rendered = repr(result)
-        self.assertNotIn(OFFICIAL_SESSION_ID, rendered)
+        self.assertNotIn(CODEX_SESSION_ID, rendered)
         self.assertNotIn("/Users/example", rendered)
         self.assertNotIn("/private/root", rendered)
-        self.assertNotIn("--yes", rendered)
-        self.assertNotIn("codex delete", rendered)
-        self.assertIn("codex_session_delete_unavailable", rendered)
+        self.assertNotIn("--force", rendered)
+        self.assertIn("official_session_delete", rendered)
 
 
 class HermesExecutorCleanupTests(unittest.TestCase):
     def setUp(self) -> None:
         self.executor = HermesExecutor(command=sys.executable, transport="direct")
-        self.request = _request(executor="hermes")
+        self.request = _request(executor="hermes", session_id=HERMES_SESSION_ID)
 
     @staticmethod
-    def _version_process(output: str = HERMES_VERSION_OUTPUT) -> subprocess.CompletedProcess:
-        return subprocess.CompletedProcess([], 0, stdout=output)
+    def _help_process(text: str | None = None) -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess(
+            [],
+            0,
+            stdout=text if text is not None else HERMES_FIXTURE.read_text(encoding="utf-8"),
+            stderr="",
+        )
 
     @staticmethod
-    def _delete_process(returncode: int) -> subprocess.CompletedProcess:
-        return subprocess.CompletedProcess([], returncode, stdout="", stderr="")
+    def _delete_process(returncode: int, stderr: str = "") -> subprocess.CompletedProcess:
+        return subprocess.CompletedProcess([], returncode, stdout="", stderr=stderr)
 
-    def test_capability_supported_when_discovered_cli_is_frozen_version(self) -> None:
+    def test_capability_supported_from_discovered_exact_help(self) -> None:
         with mock.patch(
             "agent_bridge_connect.executors.hermes.subprocess.run",
-            return_value=self._version_process(),
+            return_value=self._help_process(),
         ) as run:
             capability = self.executor.session_cleanup_capability(self.request)
         self.assertEqual(capability.capability, "supported")
         self.assertEqual(capability.strategy, "official_session_delete")
-        self.assertEqual(capability.error_code, "")
-        run.assert_called_once()
-        self.assertEqual(run.call_args.args[0], [sys.executable, "--version"])
+        self.assertEqual(
+            run.call_args.args[0],
+            [str(self.executor.agent_bin), "sessions", "delete", "--help"],
+        )
 
-    def test_capability_fails_closed_on_version_mismatch(self) -> None:
-        with mock.patch(
-            "agent_bridge_connect.executors.hermes.subprocess.run",
-            return_value=self._version_process("Python 3.14.3\n"),
-        ) as run:
-            capability = self.executor.session_cleanup_capability(self.request)
-        self.assertEqual(capability.capability, "unsupported")
-        self.assertEqual(capability.error_code, HERMES_CLEANUP_UNSUPPORTED_CODE)
-        run.assert_called_once()
-
-    def test_capability_fails_closed_when_fixture_unreadable(self) -> None:
-        with (
-            mock.patch(
-                "agent_bridge_connect.executors.hermes._frozen_help_fixture_text",
-                return_value="",
-            ),
-            mock.patch(
-                "agent_bridge_connect.executors.hermes.subprocess.run"
-            ) as run,
+    def test_capability_fails_closed_on_unqualified_help_or_probe_error(self) -> None:
+        for outcome in (
+            self._help_process("usage: hermes sessions list"),
+            OSError("missing"),
         ):
-            capability = self.executor.session_cleanup_capability(self.request)
-        self.assertEqual(capability.capability, "unsupported")
-        self.assertEqual(capability.error_code, HERMES_CLEANUP_UNSUPPORTED_CODE)
-        run.assert_not_called()
+            with self.subTest(outcome=type(outcome).__name__):
+                patch_kwargs = (
+                    {"side_effect": outcome}
+                    if isinstance(outcome, BaseException)
+                    else {"return_value": outcome}
+                )
+                with mock.patch(
+                    "agent_bridge_connect.executors.hermes.subprocess.run",
+                    **patch_kwargs,
+                ):
+                    capability = self.executor.session_cleanup_capability(self.request)
+                self.assertEqual(capability.capability, "unsupported")
+                self.assertEqual(capability.error_code, HERMES_CLEANUP_UNSUPPORTED_CODE)
 
     def test_cleanup_session_invokes_exact_official_argv(self) -> None:
-        side_effects = [self._version_process(), self._delete_process(0)]
         with mock.patch(
             "agent_bridge_connect.executors.hermes.subprocess.run",
-            side_effect=side_effects,
+            side_effect=[self._help_process(), self._delete_process(0)],
         ) as run:
             result = self.executor.cleanup_session(self.request)
         self.assertEqual(result.state, "succeeded")
-        self.assertEqual(result.capability, "supported")
-        self.assertEqual(result.strategy, "official_session_delete")
-        self.assertEqual(result.error_code, "")
-        self.assertFalse(result.retryable)
-        self.assertEqual(run.call_count, 2)
-        delete_call = run.call_args_list[1]
         self.assertEqual(
-            delete_call.args[0],
-            [sys.executable, "sessions", "delete", OFFICIAL_SESSION_ID, "--yes"],
+            run.call_args_list[1].args[0],
+            [
+                str(self.executor.agent_bin),
+                "sessions",
+                "delete",
+                HERMES_SESSION_ID,
+                "--yes",
+            ],
         )
-        self.assertIsNone(delete_call.kwargs.get("shell"))
-        self.assertEqual(delete_call.kwargs.get("timeout"), 60)
+        self.assertIs(run.call_args_list[1].kwargs["shell"], False)
 
     def test_cleanup_session_failure_maps_to_failed_receipt(self) -> None:
-        side_effects = [self._version_process(), self._delete_process(1)]
         with mock.patch(
             "agent_bridge_connect.executors.hermes.subprocess.run",
-            side_effect=side_effects,
+            side_effect=[self._help_process(), self._delete_process(1)],
         ):
             result = self.executor.cleanup_session(self.request)
         self.assertEqual(result.state, "failed")
         self.assertEqual(result.error_code, HERMES_SESSION_DELETE_FAILED_CODE)
         self.assertFalse(result.retryable)
-        self.assertEqual(result.next_attempt_at, "")
 
-    def test_cleanup_session_rejects_missing_session_id(self) -> None:
-        with mock.patch(
-            "agent_bridge_connect.executors.hermes.subprocess.run",
-            return_value=self._version_process(),
-        ) as run:
-            result = self.executor.cleanup_session(_request(executor="hermes", session_id=""))
-        self.assertEqual(result.state, "failed")
-        self.assertEqual(result.error_code, HERMES_SESSION_DELETE_MISSING_SESSION_ID_CODE)
-        self.assertFalse(result.retryable)
-        run.assert_called_once()
-        self.assertEqual(run.call_args.args[0], [sys.executable, "--version"])
-
-    def test_cleanup_session_rejects_flag_injection_session_id(self) -> None:
-        for session_id in ("--yes", "20260811 bad", "delete --all", "delete/all"):
+    def test_cleanup_session_rejects_missing_or_invalid_session_id_without_probe(self) -> None:
+        cases = (
+            ("", HERMES_SESSION_DELETE_MISSING_SESSION_ID_CODE),
+            ("--yes", HERMES_SESSION_DELETE_INVALID_SESSION_ID_CODE),
+            ("20260811 bad", HERMES_SESSION_DELETE_INVALID_SESSION_ID_CODE),
+            ("delete --all", HERMES_SESSION_DELETE_INVALID_SESSION_ID_CODE),
+            ("session-name", HERMES_SESSION_DELETE_INVALID_SESSION_ID_CODE),
+        )
+        for session_id, expected in cases:
             with self.subTest(session_id=session_id):
-                with mock.patch(
-                    "agent_bridge_connect.executors.hermes.subprocess.run",
-                    return_value=self._version_process(),
-                ) as run:
+                with mock.patch("agent_bridge_connect.executors.hermes.subprocess.run") as run:
                     result = self.executor.cleanup_session(
                         _request(executor="hermes", session_id=session_id)
                     )
                 self.assertEqual(result.state, "failed")
-                self.assertEqual(
-                    result.error_code, HERMES_SESSION_DELETE_INVALID_SESSION_ID_CODE
-                )
-                self.assertFalse(result.retryable)
-                run.assert_called_once()
-                self.assertEqual(run.call_args.args[0], [sys.executable, "--version"])
+                self.assertEqual(result.error_code, expected)
+                run.assert_not_called()
 
-    def test_unsupported_path_never_spawns_deletion_subprocess(self) -> None:
-        # Version mismatch -> capability unsupported -> cleanup must not run
-        # any command that could delete a session.
+    def test_unqualified_help_never_spawns_deletion(self) -> None:
         with mock.patch(
             "agent_bridge_connect.executors.hermes.subprocess.run",
-            return_value=self._version_process("Python 3.14.3\n"),
+            return_value=self._help_process("usage: hermes sessions list"),
         ) as run:
             result = self.executor.cleanup_session(self.request)
         self.assertEqual(result.state, "unsupported")
         self.assertEqual(result.error_code, HERMES_CLEANUP_UNSUPPORTED_CODE)
         run.assert_called_once()
-        self.assertEqual(run.call_args.args[0], [sys.executable, "--version"])
 
     def test_repeated_cleanup_returns_identical_results(self) -> None:
-        side_effects = [
-            self._version_process(),
-            self._delete_process(0),
-            self._version_process(),
-            self._delete_process(0),
-        ]
         with mock.patch(
             "agent_bridge_connect.executors.hermes.subprocess.run",
-            side_effect=side_effects,
+            side_effect=[
+                self._help_process(),
+                self._delete_process(0),
+                self._help_process(),
+                self._delete_process(1, "Session does not exist"),
+            ],
         ):
             first = self.executor.cleanup_session(self.request)
             second = self.executor.cleanup_session(self.request)
@@ -390,17 +423,17 @@ class HermesExecutorCleanupTests(unittest.TestCase):
     def test_cleanup_result_never_leaks_argv_output_or_paths(self) -> None:
         request = _request(
             executor="hermes",
-            session_id=OFFICIAL_SESSION_ID,
+            session_id=HERMES_SESSION_ID,
             project_path="/Users/example/.hermes/private",
             workspace={"agentbc_root": "/private/root"},
         )
         with mock.patch(
             "agent_bridge_connect.executors.hermes.subprocess.run",
-            side_effect=[self._version_process(), self._delete_process(0)],
+            side_effect=[self._help_process(), self._delete_process(0)],
         ):
             result = self.executor.cleanup_session(request)
         rendered = repr(result)
-        self.assertNotIn(OFFICIAL_SESSION_ID, rendered)
+        self.assertNotIn(HERMES_SESSION_ID, rendered)
         self.assertNotIn("/Users/example", rendered)
         self.assertNotIn("/private/root", rendered)
         self.assertNotIn("--yes", rendered)

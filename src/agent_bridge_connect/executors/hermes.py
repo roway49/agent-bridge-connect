@@ -49,7 +49,10 @@ HERMES_SESSION_DELETE_INVALID_SESSION_ID_CODE = "hermes_session_delete_invalid_s
 _HERMES_FROZEN_HELP_FIXTURE = "hermes_0.17.0_help.txt"
 _HERMES_FROZEN_VERSION = "0.17.0"
 _HERMES_CLEANUP_TIMEOUT_S = 60
-_HERMES_SESSION_ID_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z_.-]{0,127}$")
+_HERMES_SESSION_ID_RE = re.compile(r"^\d{8}_\d{6}_[0-9a-fA-F]{6,32}$")
+_HERMES_SESSION_ABSENT_RE = re.compile(
+    r"(?im)^session.*(?:not found|does not exist)"
+)
 _HERMES_INITIALIZING_LINE_RE = re.compile(
     r"(?m)^[ \t]*Initializing agent\.\.\.[ \t]*\r?$"
 )
@@ -201,26 +204,27 @@ class HermesExecutor(CLIExecutorBase):
         self,
         request: SessionCleanupRequest,
     ) -> SessionCleanupCapability:
-        """Probe the frozen Hermes 0.17.0 help fixture plus the discovered CLI.
-
-        The determination is based only on the frozen help fixture (which pins
-        the official ``hermes sessions delete <session_id> [--yes]`` entry) and
-        the discovered CLI's own ``--version`` output. No user data, session
-        content, SQLite store, logs or recent-session lists are ever read.
-        Support is claimed only when the frozen fixture exposes the exact
-        positional ``session_id`` delete entry AND the discovered binary
-        reports the frozen version; anything else fails closed to
-        ``unsupported``.
-        """
-        help_text = _frozen_help_fixture_text(_HERMES_FROZEN_HELP_FIXTURE)
-        if not help_text:
+        """Probe only the discovered CLI's exact delete help entry."""
+        if request.retain is True:
+            return SessionCleanupCapability("not_applicable", "retain")
+        if self.agent_bin is None:
             return _hermes_cleanup_unsupported()
-        capability = _hermes_session_cleanup_capability(help_text)
-        if capability.capability != "supported":
-            return capability
-        if not self._discovered_cli_is_frozen_version():
+        try:
+            completed = subprocess.run(
+                [str(self.agent_bin), "sessions", "delete", "--help"],
+                text=True,
+                capture_output=True,
+                check=False,
+                shell=False,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
             return _hermes_cleanup_unsupported()
-        return capability
+        if completed.returncode != 0:
+            return _hermes_cleanup_unsupported()
+        return _hermes_session_cleanup_capability(
+            f"{completed.stdout or ''}\n{completed.stderr or ''}"
+        )
 
     def cleanup_session(self, request: SessionCleanupRequest) -> SessionCleanupResult:
         """Delete exactly one session through the official CLI entry.
@@ -233,6 +237,17 @@ class HermesExecutor(CLIExecutorBase):
         additional flags. Raw CLI output, argv and paths are never included in
         the result.
         """
+        if request.retain is True:
+            return SessionCleanupResult("retained", "not_applicable", "retain")
+        request_error = _hermes_cleanup_request_error(request)
+        if request_error:
+            return SessionCleanupResult(
+                "failed",
+                "supported",
+                "official_session_delete",
+                request_error,
+                False,
+            )
         capability = self.session_cleanup_capability(request)
         if capability.capability != "supported":
             return SessionCleanupResult(
@@ -251,22 +266,6 @@ class HermesExecutor(CLIExecutorBase):
                 retryable=False,
             )
         session_id = request.session_id.strip()
-        if not session_id:
-            return SessionCleanupResult(
-                state="failed",
-                capability="supported",
-                strategy="official_session_delete",
-                error_code=HERMES_SESSION_DELETE_MISSING_SESSION_ID_CODE,
-                retryable=False,
-            )
-        if _HERMES_SESSION_ID_RE.fullmatch(session_id) is None:
-            return SessionCleanupResult(
-                state="failed",
-                capability="supported",
-                strategy="official_session_delete",
-                error_code=HERMES_SESSION_DELETE_INVALID_SESSION_ID_CODE,
-                retryable=False,
-            )
         command = [
             str(self.agent_bin),
             "sessions",
@@ -280,11 +279,19 @@ class HermesExecutor(CLIExecutorBase):
                 text=True,
                 capture_output=True,
                 check=False,
+                shell=False,
                 timeout=_HERMES_CLEANUP_TIMEOUT_S,
             )
         except (OSError, subprocess.TimeoutExpired):
-            completed = None
-        if completed is not None and completed.returncode == 0:
+            return SessionCleanupResult(
+                state="failed",
+                capability="supported",
+                strategy="official_session_delete",
+                error_code=HERMES_SESSION_DELETE_FAILED_CODE,
+                retryable=True,
+            )
+        output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+        if completed.returncode == 0 or _HERMES_SESSION_ABSENT_RE.search(output):
             return SessionCleanupResult(
                 state="succeeded",
                 capability="supported",
@@ -299,23 +306,6 @@ class HermesExecutor(CLIExecutorBase):
             error_code=HERMES_SESSION_DELETE_FAILED_CODE,
             retryable=False,
         )
-
-    def _discovered_cli_is_frozen_version(self) -> bool:
-        """Return True only when the discovered CLI reports the frozen version."""
-        if self.agent_bin is None:
-            return False
-        try:
-            completed = subprocess.run(
-                [str(self.agent_bin), "--version"],
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=10,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-        output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
-        return _version_number_matches(output, _HERMES_FROZEN_VERSION)
 
     def start(self, task_packet: dict[str, Any]) -> StartResult:
         steps = task_packet.get("steps") or []
@@ -795,6 +785,21 @@ def _hermes_cleanup_unsupported() -> SessionCleanupCapability:
         strategy="none",
         error_code=HERMES_CLEANUP_UNSUPPORTED_CODE,
     )
+
+
+def _hermes_cleanup_request_error(request: SessionCleanupRequest) -> str:
+    if str(request.executor or "").strip().lower() != "hermes":
+        return "hermes_cleanup_executor_mismatch"
+    if request.retain is not False or request.project_mode != "none":
+        return "hermes_cleanup_mode_invalid"
+    if request.strategy != "official_session_delete":
+        return "hermes_cleanup_strategy_mismatch"
+    session_id = str(request.session_id or "").strip()
+    if not session_id:
+        return HERMES_SESSION_DELETE_MISSING_SESSION_ID_CODE
+    if _HERMES_SESSION_ID_RE.fullmatch(session_id) is None:
+        return HERMES_SESSION_DELETE_INVALID_SESSION_ID_CODE
+    return ""
 
 
 def _version_number_matches(output: str, expected: str) -> bool:

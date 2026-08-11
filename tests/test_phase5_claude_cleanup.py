@@ -158,7 +158,8 @@ class ClaudeManagedCleanupTests(unittest.TestCase):
                     project_mode=request.project_mode,
                 ):
                     result = self.executor.cleanup_session(request)
-                    self.assertEqual(result.state, "unsupported")
+                    self.assertEqual(result.state, "failed")
+                    self.assertFalse(result.retryable)
         run.assert_not_called()
 
     def test_ephemeral_cleanup_uses_canonical_argv_and_rmdir_order(self) -> None:
@@ -265,7 +266,7 @@ class ClaudeManagedCleanupTests(unittest.TestCase):
 
         self.assertEqual(result.state, "failed")
         self.assertEqual(result.error_code, "cleanup_path_symlink")
-        self.assertEqual(len(self.fake.calls), 1)
+        self.assertEqual(len(self.fake.calls), 0)
         self.assertTrue(outside.is_dir())
 
     def test_tampered_project_path_and_wrong_task_id_are_rejected(self) -> None:
@@ -300,7 +301,7 @@ class ClaudeManagedCleanupTests(unittest.TestCase):
                     result = self.executor.cleanup_session(request)
                 self.assertEqual(result.state, "failed")
                 self.assertEqual(result.error_code, expected)
-                self.assertEqual(len(fake.calls), 1)
+                self.assertEqual(len(fake.calls), 0)
 
     def test_nonempty_directory_stops_layered_cleanup(self) -> None:
         unexpected = self.project / "unexpected.txt"

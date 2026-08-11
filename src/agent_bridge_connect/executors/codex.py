@@ -39,8 +39,14 @@ from ..path_provider import find_binary
 SAFETY_TIMEOUT_S = 24 * 60 * 60
 SESSION_EXTENSION_KEY = "agentbc.session"
 CODEX_CLEANUP_UNSUPPORTED_CODE = "codex_session_delete_unavailable"
+CODEX_SESSION_DELETE_FAILED_CODE = "codex_session_delete_failed"
+CODEX_SESSION_DELETE_INVALID_ID_CODE = "codex_session_delete_invalid_session_id"
 _CODEX_FROZEN_HELP_FIXTURE = "codex_0.146.0_help.txt"
 _CODEX_FROZEN_VERSION = "0.146.0"
+_CODEX_CLEANUP_TIMEOUT_S = 60
+_CODEX_SESSION_ABSENT_RE = re.compile(
+    r"(?im)^(?:session|saved session).*(?:not found|does not exist)"
+)
 
 
 class CodexExecutor(CLIExecutorBase):
@@ -118,32 +124,81 @@ class CodexExecutor(CLIExecutorBase):
         self,
         request: SessionCleanupRequest,
     ) -> SessionCleanupCapability:
-        """Probe the frozen Codex 0.146.0 help fixture for an exact-session delete entry.
-
-        The probe never spawns a subprocess and never touches user data: it
-        derives the determination purely from the frozen help fixture captured
-        from the discovered CLI. Codex 0.146.0 only exposes ``codex delete``
-        with a fuzzy "session id (UUID) or session name" selector plus
-        ``resume --last`` pickers, so the capability is stable ``unsupported``.
-        """
+        """Probe the discovered CLI help without reading any saved session data."""
+        if request.retain is True:
+            return SessionCleanupCapability("not_applicable", "retain")
+        if self.agent_bin is None:
+            return _codex_cleanup_unsupported()
+        try:
+            completed = subprocess.run(
+                [str(self.agent_bin), "delete", "--help"],
+                text=True,
+                capture_output=True,
+                check=False,
+                shell=False,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return _codex_cleanup_unsupported()
+        if completed.returncode != 0:
+            return _codex_cleanup_unsupported()
         return _codex_session_cleanup_capability(
-            _frozen_help_fixture_text(_CODEX_FROZEN_HELP_FIXTURE)
+            f"{completed.stdout or ''}\n{completed.stderr or ''}"
         )
 
     def cleanup_session(self, request: SessionCleanupRequest) -> SessionCleanupResult:
-        """Resolve Codex cleanup as ``unsupported`` without any deletion action.
-
-        Codex 0.146.0 has no official entry that deletes one session by the
-        exact official session ID, so no subprocess is ever spawned here. The
-        result is fully deterministic and idempotent; it carries only stable
-        enum values and the executor-specific reason code.
-        """
+        """Delete one exact official UUID through ``codex delete --force``."""
+        if request.retain is True:
+            return SessionCleanupResult("retained", "not_applicable", "retain")
+        request_error = _codex_cleanup_request_error(request)
+        if request_error:
+            return SessionCleanupResult(
+                "failed",
+                "supported",
+                "official_session_delete",
+                request_error,
+                False,
+            )
+        capability = self.session_cleanup_capability(request)
+        if capability.capability != "supported":
+            return SessionCleanupResult(
+                "unsupported",
+                "unsupported",
+                "none",
+                capability.error_code or CODEX_CLEANUP_UNSUPPORTED_CODE,
+                False,
+            )
+        assert self.agent_bin is not None
+        try:
+            completed = subprocess.run(
+                [str(self.agent_bin), "delete", "--force", request.session_id],
+                text=True,
+                capture_output=True,
+                check=False,
+                shell=False,
+                timeout=_CODEX_CLEANUP_TIMEOUT_S,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return SessionCleanupResult(
+                "failed",
+                "supported",
+                "official_session_delete",
+                CODEX_SESSION_DELETE_FAILED_CODE,
+                True,
+            )
+        output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+        if completed.returncode == 0 or _CODEX_SESSION_ABSENT_RE.search(output):
+            return SessionCleanupResult(
+                "succeeded",
+                "supported",
+                "official_session_delete",
+            )
         return SessionCleanupResult(
-            state="unsupported",
-            capability="unsupported",
-            strategy="none",
-            error_code=CODEX_CLEANUP_UNSUPPORTED_CODE,
-            retryable=False,
+            "failed",
+            "supported",
+            "official_session_delete",
+            CODEX_SESSION_DELETE_FAILED_CODE,
+            False,
         )
 
     def start(self, task_packet: dict) -> StartResult:
@@ -328,14 +383,7 @@ def _discover_codex_binary(command: str | None) -> dict[str, Any]:
     return find_binary("codex", extra_paths=[configured] if configured else None)
 
 
-_FUZZY_SELECTOR_MARKERS = (
-    "or session name",
-    "session name",
-    "takes precedence",
-    "--last",
-    "picker",
-    "saved session",
-)
+_FUZZY_SELECTOR_MARKERS = ("--last", "picker")
 _GLOBAL_PURGE_MARKERS = ("prune", "purge", "delete old", "delete all")
 _CODEX_DELETE_USAGE_RE = re.compile(
     r"^usage:\s+codex\s+delete\b",
@@ -362,11 +410,9 @@ def _frozen_help_fixture_text(fixture_name: str) -> str:
 def _codex_has_exact_session_delete_entry(help_text: str) -> bool:
     """Return True only for an official delete entry accepting an exact session ID.
 
-    A qualifying entry must be a ``delete`` action targeting exactly one
-    session by its exact official session ID. Entries documented with a fuzzy
-    selector ("id or session name", "takes precedence", "--last", picker,
-    "saved session") or with global purge semantics are rejected as
-    pseudo-capabilities.
+    Codex may also accept names interactively, but ``--force`` explicitly
+    requires SESSION to be a UUID. AgentBC validates the official UUID before
+    invoking that noninteractive form, making the deletion exact.
     """
     if not help_text or _CODEX_DELETE_USAGE_RE.search(help_text) is None:
         return False
@@ -375,7 +421,17 @@ def _codex_has_exact_session_delete_entry(help_text: str) -> bool:
         return False
     if any(marker in lowered for marker in _GLOBAL_PURGE_MARKERS):
         return False
-    return True
+    force_uuid = (
+        "session id (uuid) or session name" in lowered
+        and "--force" in lowered
+        and "session must be a uuid" in lowered
+    )
+    exact_positional = re.search(
+        r"^\s+session_id\b.*session id to delete",
+        help_text,
+        re.IGNORECASE | re.MULTILINE,
+    ) is not None
+    return force_uuid or exact_positional
 
 
 def _codex_session_cleanup_capability(help_text: str) -> SessionCleanupCapability:
@@ -391,6 +447,31 @@ def _codex_session_cleanup_capability(help_text: str) -> SessionCleanupCapabilit
         strategy="none",
         error_code=CODEX_CLEANUP_UNSUPPORTED_CODE,
     )
+
+
+def _codex_cleanup_unsupported() -> SessionCleanupCapability:
+    return SessionCleanupCapability(
+        capability="unsupported",
+        strategy="none",
+        error_code=CODEX_CLEANUP_UNSUPPORTED_CODE,
+    )
+
+
+def _codex_cleanup_request_error(request: SessionCleanupRequest) -> str:
+    if str(request.executor or "").strip().lower() != "codex":
+        return "codex_cleanup_executor_mismatch"
+    if request.retain is not False or request.project_mode != "none":
+        return "codex_cleanup_mode_invalid"
+    if request.strategy != "official_session_delete":
+        return "codex_cleanup_strategy_mismatch"
+    session_id = str(request.session_id or "").strip()
+    try:
+        parsed = uuid.UUID(session_id)
+    except (AttributeError, ValueError):
+        return CODEX_SESSION_DELETE_INVALID_ID_CODE
+    if str(parsed) != session_id.lower():
+        return CODEX_SESSION_DELETE_INVALID_ID_CODE
+    return ""
 
 
 def _codex_writable_roots(task_packet: dict[str, Any], workspace_root: Path) -> list[Path]:

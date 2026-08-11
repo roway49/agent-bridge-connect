@@ -76,6 +76,7 @@ class CleanupCoordinatorTestCase(unittest.TestCase):
         report: bool = True,
         notification: bool = True,
         final_callback: bool = True,
+        lease_state: str | None = "closed",
     ):
         task = self.service.create_task(
             "cleanup coordinator",
@@ -134,6 +135,8 @@ class CleanupCoordinatorTestCase(unittest.TestCase):
                     "created_at": T0,
                 },
             )
+        if lease_state is not None:
+            self._set_lease(task.id, lease_state)
         return task.id
 
     def _set_lease(self, task_id: str, state: str) -> None:
@@ -210,6 +213,22 @@ class CleanupCoordinatorTestCase(unittest.TestCase):
                 self.assertIn("run_lease_not_closed", result["blockers"])
                 self.assertFalse(result["actioned"])
                 self.assertEqual(self._session(task_id)["cleanup"]["state"], "not_requested")
+                self.assertEqual(executor.calls, [])
+
+    def test_closing_and_missing_lease_fail_closed(self) -> None:
+        from agent_bridge_connect.session_cleanup import SessionCleanupCoordinator
+
+        cases = ("closing", None)
+        for lease_state in cases:
+            with self.subTest(lease_state=lease_state):
+                task_id = self._base_task(lease_state=lease_state)
+                executor = FakeCleanupExecutor()
+                result = SessionCleanupCoordinator(
+                    self.board,
+                    executor_port=executor,
+                ).request_cleanup(task_id, now=T0)
+                self.assertEqual(result["status"], "skipped")
+                self.assertIn("run_lease_not_closed", result["blockers"])
                 self.assertEqual(executor.calls, [])
 
     def test_multiple_blockers_preserve_gate_order(self) -> None:
@@ -367,6 +386,28 @@ class CleanupCoordinatorTestCase(unittest.TestCase):
         self.assertEqual(result["receipt"]["error_code"], "session_cleanup_failed")
         self.assertEqual(len(executor.calls), 1)
 
+    def test_nonretryable_adapter_failure_is_not_rescheduled(self) -> None:
+        task_id = self._base_task()
+        executor = FakeCleanupExecutor(
+            SessionCleanupResult(
+                state="failed",
+                capability="supported",
+                strategy="official_session_delete",
+                error_code="session_delete_rejected",
+                retryable=False,
+            )
+        )
+        result = self._coordinator(executor).request_cleanup(task_id, now=T0)
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(result["receipt"]["retryable"])
+        self.assertEqual(result["receipt"]["next_attempt_at"], "")
+        later = self._coordinator(executor).request_cleanup(
+            task_id,
+            now=_add_seconds(T0, 600),
+        )
+        self.assertEqual(later["status"], "final")
+        self.assertEqual(len(executor.calls), 1)
+
     # ------------------------------------------------------ pending recovery
     def _pending_receipt(self, attempts: int = 1) -> dict:
         return {
@@ -420,6 +461,16 @@ class CleanupCoordinatorTestCase(unittest.TestCase):
         self.assertEqual(self._session(task_id)["cleanup"]["state"], "failed")
         self.assertEqual(self._session(task_id)["cleanup"]["retryable"], True)
         self.assertEqual(self._session(task_id)["cleanup"]["next_attempt_at"], _add_seconds(T0, 60))
+
+    def test_crashed_third_attempt_is_not_rescheduled(self) -> None:
+        task_id = self._base_task()
+        self._set_cleanup(task_id, self._pending_receipt(attempts=3))
+        executor = FakeCleanupExecutor()
+        result = self._coordinator(executor).request_cleanup(task_id, now=T0)
+        self.assertEqual(result["status"], "recovered")
+        self.assertFalse(result["receipt"]["retryable"])
+        self.assertEqual(result["receipt"]["next_attempt_at"], "")
+        self.assertEqual(executor.calls, [])
 
     def test_pending_with_unmet_gates_is_left_untouched(self) -> None:
         from agent_bridge_connect.session_cleanup import SessionCleanupCoordinator

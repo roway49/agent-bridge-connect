@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-import sys
 import unittest
 from pathlib import Path
 
@@ -24,9 +23,6 @@ from agent_bridge_connect.execution_policy import (
     validate_session_cleanup_receipt,
     validate_session_snapshot,
 )
-from agent_bridge_connect.executors.claude import ClaudeExecutor
-from agent_bridge_connect.executors.codex import CodexExecutor
-from agent_bridge_connect.executors.hermes import HermesExecutor
 from agent_bridge_connect.executors.mock import MockExecutor
 from agent_bridge_connect.executors.shell import ShellExecutor
 from agent_bridge_connect.protocol import ABCError
@@ -358,13 +354,10 @@ class AdapterCleanupDefaultsTests(unittest.TestCase):
         self.assertNotIn(request.project_path, repr(request))
         self.assertNotIn(workspace["agentbc_root"], repr(request))
 
-    def test_existing_adapters_inherit_non_destructive_unsupported_default(self) -> None:
+    def test_unimplemented_adapters_inherit_non_destructive_unsupported_default(self) -> None:
         adapters = (
             MockExecutor(),
             ShellExecutor(),
-            ClaudeExecutor(command=sys.executable, transport="direct"),
-            CodexExecutor(command=sys.executable),
-            HermesExecutor(command=sys.executable, transport="direct"),
         )
         request = SessionCleanupRequest(
             executor="test",

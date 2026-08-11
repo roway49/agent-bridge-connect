@@ -72,9 +72,11 @@ _ACTIONED_STATUSES = frozenset(
 
 def default_cleanup_port(executor: str) -> ExecutorPort:
     """Resolve the built-in ExecutorPort; adapters fail closed on cleanup."""
+    from .config import get_executor_config, load_config
     from .executor_registry import get_executor
 
-    return get_executor(executor, {})
+    config = load_config()
+    return get_executor(executor, get_executor_config(config, executor))
 
 
 def _utc_now() -> str:
@@ -272,7 +274,10 @@ class SessionCleanupCoordinator:
         receipt: dict[str, Any],
         occurred_at: str,
     ) -> dict[str, Any]:
-        next_attempt_at = _add_delay(occurred_at, CLEANUP_CRASH_RECOVERY_DELAY_S)
+        retryable, next_attempt_at = self._next_retry(
+            receipt["attempts"],
+            occurred_at,
+        )
         return self._transition(
             session,
             "failed",
@@ -281,7 +286,7 @@ class SessionCleanupCoordinator:
             capability=receipt["capability"] or "supported",
             strategy=receipt["strategy"] or "official_session_delete",
             error_code="session_cleanup_interrupted",
-            retryable=True,
+            retryable=retryable,
             next_attempt_at=next_attempt_at,
         )
 
@@ -371,7 +376,11 @@ class SessionCleanupCoordinator:
                 error_code=_sanitize_error_code(result.error_code, "session_cleanup_unsupported"),
             )
         else:
-            retryable, next_attempt_at = self._next_retry(current["attempts"], occurred_at)
+            retryable, next_attempt_at = (
+                self._next_retry(current["attempts"], occurred_at)
+                if result.retryable
+                else (False, "")
+            )
             new_receipt = self._transition(
                 session,
                 "failed",
@@ -471,9 +480,9 @@ class SessionCleanupCoordinator:
         except (ABCError, OSError, ValueError, json.JSONDecodeError):
             return "active"
         if lease is None:
-            return "closed"
+            return "missing"
         state = str(getattr(lease, "state", "") or "")
-        if state in {"closed", "closing"}:
+        if state == "closed":
             return "closed"
         return state or "active"
 

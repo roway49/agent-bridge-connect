@@ -1500,12 +1500,13 @@ class RunnerState:
 
         processed: list[dict[str, Any]] = []
         with self.lock:
-            for board in sorted(self.known_boards, key=str):
-                try:
-                    coordinator = SessionCleanupCoordinator(board)
-                    processed.extend(coordinator.maintain_board(now=now))
-                except (ABCError, OSError, ValueError):
-                    continue
+            boards = tuple(sorted(self.known_boards, key=str))
+        for board in boards:
+            try:
+                coordinator = SessionCleanupCoordinator(board)
+                processed.extend(coordinator.maintain_board(now=now))
+            except (ABCError, OSError, ValueError):
+                continue
         return processed
 
     def handoff_and_dispatch(self, request: dict[str, Any]) -> dict[str, Any]:

@@ -243,6 +243,13 @@ class ClaudeExecutor(CLIExecutorBase):
                 strategy="retain",
             )
 
+        request_error = _claude_cleanup_request_error(request)
+        if request_error:
+            return _claude_cleanup_failed(request_error)
+        path_error = _validate_claude_cleanup_paths(request)
+        if path_error:
+            return _claude_cleanup_failed(path_error)
+
         capability = self.session_cleanup_capability(request)
         if capability.capability != "supported":
             return SessionCleanupResult(
@@ -252,13 +259,6 @@ class ClaudeExecutor(CLIExecutorBase):
                 error_code=capability.error_code or "claude_project_purge_unsupported",
                 retryable=False,
             )
-
-        request_error = _claude_cleanup_request_error(request)
-        if request_error:
-            return _claude_cleanup_failed(request_error)
-        path_error = _validate_claude_cleanup_paths(request)
-        if path_error:
-            return _claude_cleanup_failed(path_error)
 
         if self.agent_bin is None:  # Guard against mutation after the capability probe.
             return _claude_cleanup_failed("claude_project_purge_unavailable")
