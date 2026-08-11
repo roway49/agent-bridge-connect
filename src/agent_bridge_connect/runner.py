@@ -1487,6 +1487,27 @@ class RunnerState:
                     expired.append(item)
         return expired
 
+    def maintain_session_cleanup(self, *, now: str | None = None) -> list[dict[str, Any]]:
+        """Runner-owned cleanup maintenance for terminal executor sessions.
+
+        Scans every known board for terminal sessions that need a cleanup pass:
+        eligible ``not_requested`` sessions, due ``failed`` retries, and
+        ``pending`` receipts left over from a crashed process.  The coordinator
+        re-reads each authoritative snapshot from disk under a per-task lock and
+        never mutates non-eligible tasks.
+        """
+        from .session_cleanup import SessionCleanupCoordinator
+
+        processed: list[dict[str, Any]] = []
+        with self.lock:
+            for board in sorted(self.known_boards, key=str):
+                try:
+                    coordinator = SessionCleanupCoordinator(board)
+                    processed.extend(coordinator.maintain_board(now=now))
+                except (ABCError, OSError, ValueError):
+                    continue
+        return processed
+
     def handoff_and_dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
         from .config import load_config
         from .service import TaskService
@@ -2304,6 +2325,7 @@ class RunnerService:
         now = time.monotonic()
         if now - self._last_maintenance_at >= 60.0:
             self.runner_state.maintain_waiting_inputs()
+            self.runner_state.maintain_session_cleanup()
             self._last_maintenance_at = now
         handled = False
         for request_path in sorted(self.requests_dir.glob("*.json")):

@@ -2422,6 +2422,20 @@ class TaskService:
         task = self.get_task(task_id)
         self.store.append_event(task_id, {"event_type": event_type, "task_id": task.id, "created_at": _utc_now()})
 
+    def request_session_cleanup(self, task_id: str, *, now: str | None = None) -> dict:
+        """Request one authoritative post-terminal session cleanup pass.
+
+        The coordinator re-reads the task/session from disk, re-validates every
+        eligibility gate (terminal task, closed RunLease, written report,
+        recorded terminal notification, terminal session with an exact session
+        ID) under a per-task lock, and only then transitions the cleanup receipt.
+        Retained sessions are marked ``retained``; everything else is dispatched
+        to the Executor cleanup port with an atomic receipt/event write-back.
+        """
+        from .session_cleanup import SessionCleanupCoordinator
+
+        return SessionCleanupCoordinator(self.board_root).request_cleanup(task_id, now=now)
+
     def _refresh_task_index(self) -> None:
         refresh_task_index(self.board_root)
 
