@@ -334,6 +334,30 @@ class CleanupTransitionTests(unittest.TestCase):
 
 
 class AdapterCleanupDefaultsTests(unittest.TestCase):
+    def test_cleanup_request_carries_redacted_path_plan_context(self) -> None:
+        workspace = {
+            "agentbc_root": "/managed/root",
+            "executor_project_root": "/managed/root/tasks/artifacts/2026-08-11/TEST/TEST-001/claude",
+            "task_code": "TEST",
+            "iteration": "001",
+            "task_date": "2026-08-11",
+        }
+        request = SessionCleanupRequest(
+            executor="claude",
+            session_id="exact-session-id",
+            task_id="TEST-001",
+            retain=False,
+            project_mode="ephemeral",
+            strategy="claude_project_purge",
+            project_path=workspace["executor_project_root"],
+            workspace=workspace,
+        )
+        self.assertFalse(request.retain)
+        self.assertEqual(request.project_mode, "ephemeral")
+        self.assertEqual(request.workspace, workspace)
+        self.assertNotIn(request.project_path, repr(request))
+        self.assertNotIn(workspace["agentbc_root"], repr(request))
+
     def test_existing_adapters_inherit_non_destructive_unsupported_default(self) -> None:
         adapters = (
             MockExecutor(),

@@ -64,8 +64,11 @@ class SessionCleanupRequest:
     executor: str
     session_id: str
     task_id: str = ""
+    retain: bool = False
+    project_mode: str = "none"
     strategy: str = "none"
-    project_path: str = ""
+    project_path: str = field(default="", repr=False)
+    workspace: dict[str, Any] = field(default_factory=dict, repr=False)
 
 
 @dataclass(frozen=True)
