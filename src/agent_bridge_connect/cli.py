@@ -1700,7 +1700,7 @@ def command_doctor(args: argparse.Namespace) -> int:
         print(json.dumps(report, indent=2, ensure_ascii=False))
     else:
         print(render_doctor_text(report))
-    return 0 if report["ok"] else 1
+    return int(report["exit_code"])
 
 
 def _probe_existing_runner(spool: Path | None, token: Path | None) -> dict[str, Any] | None:
