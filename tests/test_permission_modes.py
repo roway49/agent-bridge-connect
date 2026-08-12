@@ -216,6 +216,9 @@ class TaskPermissionPersistenceTests(unittest.TestCase):
         )
 
     def test_input_required_response_preserves_permission(self) -> None:
+        from agent_bridge_connect.execution_policy import SESSION_EXTENSION_KEY
+        from agent_bridge_connect.run_lease import RunLeaseState, create_lease, save_lease
+
         service = self._service("safe")
         task = service.create_task(
             "input permission preservation",
@@ -223,12 +226,24 @@ class TaskPermissionPersistenceTests(unittest.TestCase):
             [{"id": 1, "description": "blocked"}],
             customer_dir=True,
             customer_path=self.project,
-            permission_mode="inherit",
+            permission_mode="safe",
         )
         service.start_task_run(task.id, "codex")
-        current = service.get_task(task.id)
-        execution = current.extensions["agentbc.execution"]
-        run_id = str(execution.get("executor_run_id") or "codex-input-test")
+        run_id = "codex-permission-run-1"
+        service.record_executor_run_started(task.id, run_id)
+        lease = create_lease(task.id, "codex", 0, str(self.project))
+        lease.run_id = run_id
+        lease.state = RunLeaseState.CLOSED
+        save_lease(lease, service.board_root)
+        session_id = "019feed0-0000-7000-8000-0000000000aa"
+        receipt = {
+            "version": 1,
+            "executor": "codex",
+            "session_id": session_id,
+            "resumed": False,
+            "persistence": "persistent",
+            "source": "jsonl_thread_started",
+        }
         callback = {
             "version": 1,
             "task_id": task.id,
@@ -242,24 +257,36 @@ class TaskPermissionPersistenceTests(unittest.TestCase):
             },
             "step_results": [{"id": 1, "status": "blocked"}],
         }
-        service.update_execution_metadata(task.id, {"executor_run_id": run_id})
         self.assertTrue(
             service.finalize_task_from_executor_exit(
-                task.id, executor_run_id=run_id, callback=callback
+                task.id,
+                executor_run_id=run_id,
+                callback=callback,
+                execution_session=receipt,
             )
         )
         waiting = service.get_task(task.id)
         expected = dict(waiting.extensions[PERMISSION_EXTENSION_KEY])
+        self.assertEqual(
+            waiting.extensions[SESSION_EXTENSION_KEY]["session_id"],
+            session_id,
+        )
         request = waiting.extensions["agentbc.input"]
-        service.respond_to_input(
+        result = service.respond_to_input(
             task.id,
             request["input_id"],
             response_type="approve",
             message="",
         )
-        self.assertEqual(
-            service.get_task(task.id).extensions[PERMISSION_EXTENSION_KEY], expected
-        )
+        self.assertTrue(result["dispatch_required"])
+        after = service.get_task(task.id)
+        self.assertEqual(after.extensions[PERMISSION_EXTENSION_KEY], expected)
+        grant = after.extensions["agentbc.permission_grant"]
+        self.assertEqual(grant["state"]["status"], "issued")
+        self.assertEqual(grant["binding"]["task_id"], task.id)
+        self.assertEqual(grant["binding"]["input_id"], request["input_id"])
+        self.assertEqual(grant["binding"]["session_id"], session_id)
+        self.assertEqual(grant["binding"]["source_run_id"], run_id)
 
 
 class ExecutorPermissionMappingTests(unittest.TestCase):

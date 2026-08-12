@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 import uuid
 from dataclasses import dataclass
@@ -29,6 +30,11 @@ from .execution_policy import (
 from .executor_registry import get_executor
 from .media import media_extension, normalize_image_inputs, task_image_paths
 from .path_model import build_path_plan, validate_path_plan_workspace
+from .permission_grants import (
+    PERMISSION_GRANT_EXTENSION_KEY,
+    build_permission_grant,
+    revoke_permission_grant as revoke_grant_contract,
+)
 from .permission_modes import (
     PERMISSION_EXTENSION_KEY,
     assert_executor_permission_supported,
@@ -714,7 +720,33 @@ class TaskService:
         if not summary:
             raise ABCError("invalid_agent_callback", "Agent callback summary is required")
         if final_state == "input_required":
-            if execution_session is not None:
+            raw_input_details = callback.get("input")
+            input_type = (
+                str(raw_input_details.get("type") or "").strip().lower()
+                if isinstance(raw_input_details, dict)
+                else ""
+            )
+            if input_type == "permission":
+                if execution_session is None:
+                    return self._fail_closed_permission_wait(
+                        task,
+                        str(callback.get("executor_run_id") or ""),
+                        details={"reason": "executor session receipt is missing"},
+                    )
+                try:
+                    self._apply_executor_session_result(
+                        task,
+                        str(callback.get("executor_run_id") or ""),
+                        execution_session,
+                        "input_required",
+                    )
+                except ABCError:
+                    return self._fail_closed_permission_wait(
+                        task,
+                        str(callback.get("executor_run_id") or ""),
+                        details={"reason": "executor session receipt is malformed or mismatched"},
+                    )
+            elif execution_session is not None:
                 self._apply_executor_session_result(
                     task,
                     str(callback.get("executor_run_id") or ""),
@@ -822,6 +854,7 @@ class TaskService:
             ),
         }
         task.extensions = _merge_execution(task.extensions, {"internal_status": final_state})
+        self.revoke_permission_grant(task.id, "task_terminal", model=task)
         self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)
@@ -867,6 +900,149 @@ class TaskService:
         self._refresh_task_index()
         return True
 
+    def revoke_permission_grant(
+        self,
+        task_id: str,
+        code: str,
+        *,
+        model: TaskModel | None = None,
+    ) -> bool:
+        """Revoke any issued or consumed one-shot grant with a stable reason.
+
+        Core-owned helper the Runner can call when a resume dispatch or start
+        fails.  Tasks without an ``agentbc.permission_grant`` extension remain
+        untouched (idempotent), and a grant already revoked for the same reason
+        is returned unchanged.
+        """
+        current = model if model is not None else self.get_task(task_id)
+        extensions = dict(current.extensions or {})
+        if PERMISSION_GRANT_EXTENSION_KEY not in extensions:
+            return False
+        try:
+            revoked = revoke_grant_contract(
+                extensions[PERMISSION_GRANT_EXTENSION_KEY],
+                _stable_revocation_code(code),
+            )
+        except ABCError:
+            return False
+        extensions[PERMISSION_GRANT_EXTENSION_KEY] = revoked
+        current.extensions = extensions
+        if model is None:
+            current.updated_at = _utc_now()
+            self.store.write_task(task_id, _without_none(current.to_dict()))
+        return True
+
+    def revoke_permission_grant_for_recovery(self, task_id: str) -> None:
+        """Fail-closed revocation used by explicit task recovery.
+
+        Raises ``ABCError`` when a live grant cannot be durably revoked so the
+        caller must not mark the task ready for retry/recover. Tasks without a
+        grant extension and grants already revoked for any lifecycle reason are
+        safe no-ops. ``OSError`` from the durable task write propagates.
+        """
+        current = self.get_task(task_id)
+        extensions = dict(current.extensions or {})
+        if PERMISSION_GRANT_EXTENSION_KEY not in extensions:
+            return
+        try:
+            revoked = revoke_grant_contract(
+                extensions[PERMISSION_GRANT_EXTENSION_KEY],
+                _stable_revocation_code("task_recover"),
+            )
+        except ABCError as exc:
+            if exc.code == "permission_grant_replay":
+                return
+            raise ABCError(
+                "permission_grant_revocation_failed",
+                f"Cannot revoke permission grant for recovery: {exc.code}",
+            ) from exc
+        extensions[PERMISSION_GRANT_EXTENSION_KEY] = revoked
+        current.extensions = extensions
+        current.updated_at = _utc_now()
+        self.store.write_task(task_id, _without_none(current.to_dict()))
+
+    def _permission_wait_contract_failure(
+        self,
+        task: TaskModel,
+        callback: dict[str, Any],
+        executor_run_id: str,
+        blocked_results: list[dict[str, Any]],
+    ) -> str | None:
+        """Return ``permission_resume_session_unavailable`` when no wait may be created.
+
+        The wait is executor-neutral for codex, claude and hermes.  A permission
+        request may only be persisted when the base task permission is safe, the
+        executor asked for full, exactly one declared step is blocked, the task is
+        the unique current chain head, a suspended/closed RunLease matches the run,
+        and the authoritative ``agentbc.session`` snapshot carries a non-empty
+        session id whose latest run entry is the callback run.
+        """
+        from .run_lease import RunLeaseState, load_lease
+
+        try:
+            permission = permission_record_from_extensions(task.extensions)
+        except ABCError:
+            return "permission_resume_session_unavailable"
+        if permission["effective_mode"] != "safe":
+            return "permission_resume_session_unavailable"
+        raw_input = callback.get("input")
+        if not isinstance(raw_input, dict):
+            return "permission_resume_session_unavailable"
+        if str(raw_input.get("requested_permission") or "").strip().lower() != "full":
+            return "permission_resume_session_unavailable"
+        if len(blocked_results) != 1:
+            return "permission_resume_session_unavailable"
+        chain = self.resolve_chain(task.id)
+        if not chain.requested_is_head or len(chain.head_task_ids) != 1:
+            return "permission_resume_session_unavailable"
+        normalized_run_id = str(executor_run_id or "").strip()
+        lease = load_lease(task.id, self.board_root)
+        if lease is None or lease.state not in {
+            RunLeaseState.SUSPENDED,
+            RunLeaseState.CLOSED,
+        }:
+            return "permission_resume_session_unavailable"
+        if str(lease.run_id or "").strip() != normalized_run_id:
+            return "permission_resume_session_unavailable"
+        session = (task.extensions or {}).get(SESSION_EXTENSION_KEY)
+        session_errors = validate_session_snapshot(session, executor=task.assignee)
+        if session_errors:
+            return "permission_resume_session_unavailable"
+        if not str(session.get("session_id") or "").strip():
+            return "permission_resume_session_unavailable"
+        run_ids = list(session.get("run_ids") or [])
+        if not run_ids or run_ids[-1] != normalized_run_id:
+            return "permission_resume_session_unavailable"
+        # The current result must have just emitted a valid receipt: the session
+        # must have been advanced to input_required, never a stale snapshot that
+        # happens to carry an earlier session id/run history.
+        if str(session.get("session_state") or "").strip() != "input_required":
+            return "permission_resume_session_unavailable"
+        return None
+
+    def _fail_closed_permission_wait(
+        self,
+        task: TaskModel,
+        executor_run_id: str,
+        *,
+        details: dict[str, Any] | None = None,
+    ) -> bool:
+        """Convert an unblockable permission wait into a recoverable terminal."""
+        merged_details = {"input_type": "permission"}
+        if details:
+            merged_details.update(details)
+        merged_details["executor_run_id"] = str(executor_run_id or "")
+        return self.mark_task_needs_recovery(
+            task.id,
+            "permission_resume_session_unavailable",
+            (
+                "Permission wait cannot be created safely; the official executor "
+                "session receipt is unavailable"
+            ),
+            merged_details,
+            executor_run_id=executor_run_id,
+        )
+
     def _suspend_task_for_input(
         self,
         task: TaskModel,
@@ -910,6 +1086,21 @@ class TaskService:
             _parse_timestamp(created_at) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)
         ).isoformat().replace("+00:00", "Z")
         executor_run_id = str(callback.get("executor_run_id") or "")
+        if input_type == "permission":
+            failure_code = self._permission_wait_contract_failure(
+                task,
+                callback,
+                executor_run_id,
+                blocked_results,
+            )
+            if failure_code is not None:
+                return self._fail_closed_permission_wait(
+                    task,
+                    executor_run_id,
+                    details={"blocked_step_id": blocked_step_id},
+                )
+        self.revoke_permission_grant(task.id, "input_superseded", model=task)
+        extensions = dict(task.extensions or {})
         request: dict[str, Any] = {
             "input_id": f"input-{uuid.uuid4().hex}",
             "executor_run_id": executor_run_id,
@@ -1264,6 +1455,13 @@ class TaskService:
         if response_type == "message" and not clean_message:
             raise ABCError("invalid_input_response", "--message requires non-empty text")
 
+        is_permission_request = request.get("type") == "permission"
+        if is_permission_request and response_type not in {"approve", "deny"}:
+            raise ABCError(
+                "invalid_input_response",
+                "Permission requests only accept approve or deny",
+            )
+
         is_resource_decision = is_resource_decision_request(request)
         updated_resources: dict[str, Any] | None = None
         if is_resource_decision:
@@ -1348,6 +1546,52 @@ class TaskService:
                 },
             }
 
+        if is_permission_request and response_type == "deny":
+            failure_message = "User denied the requested full permission"
+            failure_code = "permission_denied_by_user"
+            task.extensions = extensions
+            task.updated_at = now
+            self._mark_task_failed_model(
+                task,
+                failure_code,
+                failure_message,
+                {
+                    "failure": {
+                        "kind": failure_code,
+                        "layer": "permission",
+                        "message": failure_message,
+                        "retryable": False,
+                    },
+                    "input_id": current_input_id,
+                    "executor": task.assignee,
+                    "requested_permission": request.get("requested_permission", ""),
+                },
+            )
+            self.store.append_event(
+                task.id,
+                {
+                    "event_type": "task.input_answered",
+                    "task_id": task.id,
+                    "input_id": current_input_id,
+                    "response_type": response_type,
+                    "created_at": now,
+                },
+            )
+            return {
+                "ok": True,
+                "task_id": task.id,
+                "input_id": current_input_id,
+                "status": "failed",
+                "dispatch_required": False,
+                "permission_denied": True,
+                "failure": {
+                    "kind": failure_code,
+                    "layer": "permission",
+                    "message": failure_message,
+                    "retryable": False,
+                },
+            }
+
         if is_resource_decision:
             blocked_step_id = request.get("blocked_step_id")
             task.steps = [
@@ -1371,6 +1615,41 @@ class TaskService:
                         {"errors": session_errors},
                     )
                 extensions[SESSION_EXTENSION_KEY] = updated_session
+        elif is_permission_request:
+            blocked_step_id = request.get("blocked_step_id")
+            if not any(
+                step.get("id") == blocked_step_id and step.get("status") == "blocked"
+                for step in task.steps
+            ):
+                raise ABCError(
+                    "permission_input_invalid",
+                    "Permission input does not identify the current blocked step",
+                )
+            task.steps = [
+                {**step, "status": "pending"}
+                if step.get("id") == blocked_step_id and step.get("status") == "blocked"
+                else dict(step)
+                for step in task.steps
+            ]
+            session = extensions.get(SESSION_EXTENSION_KEY)
+            session_id = (
+                str(session.get("session_id") or "").strip()
+                if isinstance(session, dict)
+                else ""
+            )
+            if not session_id:
+                raise ABCError(
+                    "permission_input_invalid",
+                    "Permission input is missing the authoritative executor session",
+                )
+            extensions[PERMISSION_GRANT_EXTENSION_KEY] = build_permission_grant(
+                executor=task.assignee,
+                task_id=task.id,
+                input_id=current_input_id,
+                session_id=session_id,
+                source_run_id=str(request.get("executor_run_id") or ""),
+                issued_at=now,
+            )
         else:
             task.steps = [
                 {**step, "status": "pending"} if step.get("status") == "blocked" else dict(step)
@@ -1439,6 +1718,7 @@ class TaskService:
             task.extensions = dict(task.extensions or {})
             task.extensions["agentbc.input"] = expired_request
             self.store.write_task(task.id, _without_none(task.to_dict()))
+            self.revoke_permission_grant(task.id, "input_expired")
             changed = self.mark_task_needs_recovery(
                 task.id,
                 "input_deadline_expired",
@@ -1527,6 +1807,7 @@ class TaskService:
             execution_updates["lease_state"] = RunLeaseState.CLOSED
         task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
         task.extensions = _merge_execution(task.extensions, execution_updates)
+        self.revoke_permission_grant(task.id, code, model=task)
         self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)
@@ -1607,6 +1888,7 @@ class TaskService:
             execution_updates["lease_state"] = RunLeaseState.CLOSED
         task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
         task.extensions = _merge_execution(task.extensions, execution_updates)
+        self.revoke_permission_grant(task.id, code, model=task)
         self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)
@@ -1641,6 +1923,7 @@ class TaskService:
             task.extensions,
             {"internal_status": "pending", "requeued_at": now},
         )
+        self.revoke_permission_grant(task.id, "task_retry", model=task)
         if not bool((task.workspace or {}).get("customer_dir")):
             Path(str(task.workspace["artifact_root"])).expanduser().mkdir(parents=True, exist_ok=True)
         Path(task.workspace["task_file"]).parent.mkdir(parents=True, exist_ok=True)
@@ -1695,6 +1978,7 @@ class TaskService:
         task.status = "cancelled"
         task.updated_at = _utc_now()
         task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
+        self.revoke_permission_grant(task.id, "task_cancelled", model=task)
         self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
         cleanup_cancelled_task_files(task)
@@ -1993,6 +2277,7 @@ class TaskService:
         _require_step(task, step_id)
         task.steps = [_retry_step(step, step_id) for step in task.steps]
         task.updated_at = _utc_now()
+        self.revoke_permission_grant(task.id, "task_retry", model=task)
         self.store.write_task(task_id, _without_none(task.to_dict()))
         self.store.append_event(task_id, {"event_type": "step_retry", "task_id": task_id, "step_id": step_id, "created_at": task.updated_at})
         self._append_intervention(task_id, "retry", task.updated_at, step_id=step_id)
@@ -2024,6 +2309,7 @@ class TaskService:
             session=executor_session,
         )
         after_policy = execution_policy_view(task.extensions)
+        self.revoke_permission_grant(task.id, "task_reassign", model=task)
         self._release_lease(task_id)
         task.assignee = new_executor
         task.status = "pending"
@@ -2973,6 +3259,17 @@ def _parse_timestamp(value: Any) -> datetime:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed
     return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _stable_revocation_code(code: str) -> str:
+    """Sanitize a lifecycle reason into a stable non-sensitive revocation code."""
+    cleaned = re.sub(r"[^a-z0-9_]", "_", str(code or "").strip().lower())
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
+    if not cleaned:
+        return "permission_revoked"
+    if not cleaned[0].isalpha():
+        cleaned = f"r_{cleaned}"
+    return cleaned[:64]
 
 
 def _is_running_status(status: str) -> bool:
