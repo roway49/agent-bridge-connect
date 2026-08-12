@@ -27,6 +27,7 @@ from agent_bridge_connect.execution_contract import (
     route_executor_terminal,
     strip_callback_line,
 )
+from agent_bridge_connect.effective_permissions import resolve_effective_permission
 from agent_bridge_connect.execution_policy import extract_hermes_session_id
 from agent_bridge_connect.media import task_image_paths
 from agent_bridge_connect.permission_modes import (
@@ -320,7 +321,18 @@ class HermesExecutor(CLIExecutorBase):
         images = task_image_paths(task_packet)
         if len(images) > 1:
             return StartResult(ok=False, run_id="", message="Hermes CLI accepts one image input per task iteration")
-        permission = permission_record_from_extensions(task_packet.get("extensions"))
+        run_id = f"hermes-{task_packet.get('task_id', 'unknown')}-{uuid.uuid4().hex[:8]}"
+        try:
+            permission = resolve_effective_permission(
+                task_packet,
+                "hermes",
+                run_id,
+                trusted_runner_managed=(
+                    task_packet.get("runner_authorization_required") is True
+                ),
+            )
+        except ABCError as exc:
+            return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
         try:
             assert_executor_permission_supported(
                 "hermes", permission["effective_mode"], self.agent_bin
@@ -329,11 +341,10 @@ class HermesExecutor(CLIExecutorBase):
             return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
 
         if self._should_use_runner():
-            return self._start_with_runner(task_packet, root)
+            return self._start_with_runner(task_packet, root, run_id, permission)
         if self.transport == "runner":
             return StartResult(ok=False, run_id="", message="AgentBC Runner unavailable")
 
-        run_id = f"hermes-{task_packet.get('task_id', 'unknown')}-{uuid.uuid4().hex[:8]}"
         self._task_packets[run_id] = dict(task_packet)
         self._start_run_lease(task_packet, run_id, "hermes")
         prompt = _build_prompt(task_packet)
@@ -350,7 +361,13 @@ class HermesExecutor(CLIExecutorBase):
 
         try:
             if task_packet.get("runner_authorization_required") is True:
-                self._runner_client.authorize_command("hermes", command, root or Path.cwd(), task_packet)
+                self._runner_client.authorize_command(
+                    "hermes",
+                    command,
+                    root or Path.cwd(),
+                    task_packet,
+                    executor_run_id=run_id,
+                )
             self._heartbeat_run(run_id)
             completed = subprocess.run(
                 command,
@@ -561,9 +578,10 @@ class HermesExecutor(CLIExecutorBase):
         self,
         task_packet: dict[str, Any],
         root: Path | None,
+        run_id: str,
+        permission: dict[str, Any],
     ) -> StartResult:
         prompt = _build_prompt(task_packet)
-        permission = permission_record_from_extensions(task_packet.get("extensions"))
         try:
             command = self._build_command(
                 prompt,
@@ -574,10 +592,21 @@ class HermesExecutor(CLIExecutorBase):
         except ValueError as exc:
             return StartResult(ok=False, run_id="", message=f"invalid Hermes task policy: {exc}")
         try:
-            remote = self._runner_client.submit("hermes", command, root or Path.cwd(), task=task_packet)
+            remote = self._runner_client.submit(
+                "hermes",
+                command,
+                root or Path.cwd(),
+                task=task_packet,
+                executor_run_id=run_id,
+            )
         except RunnerError as exc:
             return StartResult(ok=False, run_id="", message=f"Runner submit failed: {exc}")
-        run_id = str(remote["run_id"])
+        if str(remote.get("run_id") or "") != run_id:
+            return StartResult(
+                ok=False,
+                run_id="",
+                message="Runner submit failed: executor run ID mismatch",
+            )
         self._runner_runs.add(run_id)
         self._task_packets[run_id] = dict(task_packet)
         self._start_run_lease(

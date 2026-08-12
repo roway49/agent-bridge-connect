@@ -554,7 +554,10 @@ class HermesExhaustionRoutingTests(unittest.TestCase):
                 mock.patch.object(
                     executor._runner_client,
                     "submit",
-                    return_value={"run_id": "hermes-runner-1", "pid": 9999},
+                    side_effect=lambda *args, **kwargs: {
+                        "run_id": kwargs["executor_run_id"],
+                        "pid": 9999,
+                    },
                 ),
                 mock.patch.object(
                     executor._runner_client,
