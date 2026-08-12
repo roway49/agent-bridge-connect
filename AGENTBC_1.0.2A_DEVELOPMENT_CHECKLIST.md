@@ -1,12 +1,13 @@
 # AgentBC 1.0.2A 需求开发清单
 
 > 制定日期：2026-08-08  
-> 最近状态快照：2026-08-12（Phase 6 Tasks 1～4 与 Phase 7 Tasks 1～3 已合入；Phase 7 Task 4 集成门禁通过）
-> 状态：开发进行中（Phase 0～Phase 7 代码完成、Phase 7 接口冻结；CFG-002、SESSION-001、SAFE-001 真实 canary 与 REL-102 保持打开）
+> 最近状态快照：2026-08-13（Phase 0～Phase 7 代码完成；`1.0.2a1` 手工测试候选包自动门禁通过）
+> 状态：集中手工验收中（CFG-002、SESSION-001、SAFE-001 真实 canary 与 Python/双机发布门禁保持打开）
 > 当前开发分支：`private/integration`  
 > 固定 Agent 分支：`agent/codex`、`agent/claude`、`agent/hermes`  
 > 初始开发基线：`private/integration@cfddccba246e6d057172f6716ab4318ade9a40ad`
-> 当前集成基线：`private/integration@2989410d72357a07a687fe518047e63c72c990da`
+> Phase 7 代码冻结基线：`private/integration@cb350d786d6fb6e6c47e588f48d1bc903a30721d`
+> 候选包基线：由本次 release commit 与包内 `_build_info.json` / `release-manifest.json` 精确绑定
 > 对应公开稳定修订：`v1.0.1A3` / Python `1.0.1a3` / `5e74de65c9b49867ac7957969138db59e2208572`  
 > 目标版本：`v1.0.2A` / Python `1.0.2a1`
 
@@ -71,7 +72,7 @@ package-only smoke 与 CLI/Runner identity 验证通过；正式版本尚未提�
 | Phase 4 / `CFG-002` | 🟡 代码完成/待集中验证 | Tasks 1～4 已合入；真实 Claude/Hermes 耗尽、approve 翻倍同 session 继续、deny 明确 failed 的安装包 canary 延后到集中全面测试 |
 | `SESSION-001` | 🟡 代码完成/待真实 P2P | session 快照、receipt、同 ID resume、终态 cleanup/purge、capability、公共视图与 doctor warning 已完成；真实 retain/cleanup P2P 门禁尚未通过 |
 | `SAFE-001` | 🟡 授权核心已合入/待 canary | grant、Core、Runner、三 Adapter、Hermes receipt 门禁与 Task 4 公共脱敏投影均已合入；真实三 Executor canary 未执行 |
-| `REL-102` | ⬜ | 版本提升、Python 3.10/3.11/3.14、wheel/sdist、双机和三真实 Executor 发布 Gate 未执行 |
+| `REL-102` | 🟡 候选包自动门禁通过 | `1.0.2a1` 版本、wheel/sdist、隔离安装、只读 setup 与 shell 闭环 smoke 已通过；Python 3.10/3.14、双机和三真实 Executor 发布 Gate 未执行 |
 
 禁止回归记录：`commit_required`、`--git-write`、`--commit-sha`、`agentbc.git` 及 Phase 6 旧
 Task 1（`SWJF-001`）移除的 Git 专属公共命令不得以任何形式（CLI、help、Skill、文档或新状态）
@@ -84,7 +85,7 @@ Task 1（`SWJF-001`）移除的 Git 专属公共命令不得以任何形式（CL
 3. Phase 7：Tasks 1～3 已合入，Task 4 集成门禁通过；代码完成、接口冻结；
 4. Phase 5～7 核心功能基本完成后，统一执行源码全面回归、安装包验证、真实 Executor
    点对点 canary、Python/双机矩阵和安全/恢复测试；
-5. Phase 8：根据集中测试结果修复阻断项，再执行 `REL-102` 版本与发布 Gate。
+5. Phase 8：根据集中手测结果修复阻断项，再完成 `REL-102` 剩余 Python/双机/真实 Executor 发布 Gate。
 
 除非本清单被显式更新，后续 Agent 不得跳过 Phase 4 验收，不得把 session resume
 等同于 session cleanup 完成，也不得因本地新包可运行而宣称 `1.0.2A` 已发布。
@@ -252,6 +253,11 @@ retry、recover、handoff 或新任务继承。
   discovery `986` 项、Ruff、compileall、`git diff --check`、clean-export provenance、
   Skill fake install 与公开输出脱敏验证；Phase 7 代码完成、接口冻结，但不关闭真实 canary、
   Python/双机、包验证或 `REL-102`。
+- `2026-08-13 / 1.0.2A 手工测试候选`：版本统一为 Python `1.0.2a1`；Python 3.11
+  源码全量 `986` 项、Ruff、compileall、wheel/sdist provenance 与 SHA256、隔离 wheel 安装、
+  `setup --show` 只读路径和 shell task/report 闭环 smoke 通过。精确候选 commit 与 source hash
+  由包内 `_build_info.json` 和随包 `release-manifest.json` 记录；真实三 Executor、资源耗尽、
+  session retain/cleanup、Python 3.10/3.14 与双机门禁仍保持打开。
 
 ## 3. 需求总表
 
@@ -268,7 +274,7 @@ retry、recover、handoff 或新任务继承。
 | `PROMPT-001` | ✅ 已合入 | P1 | 三 Executor 公共 Prompt 契约去重 | 公共 builder、Codex/Claude/Hermes Adapter | 只保留回归 |
 | `OBS-001` | ✅ 已合入 | P1 | 当前 execution lease 状态单一派生视图 | RunLease query、Status、Report | 与 REPORT-001 同步完成 |
 | `DOCFIX-001` | ✅ 已合入 | P2 | 修正文档/help 漂移 | Record README、CLI help、双语文档、Skills | `GE58-001` 完成，由 `801e7ea` 经 `2989410` 合入；只保留一致性回归 |
-| `REL-102` | ⬜ 未开始 | Gate | 1.0.2A 版本、双机、真实 Executor 与发布验收 | Build/CI/docs/release | 全部需求 |
+| `REL-102` | 🟡 候选包自动门禁通过 | Gate | 1.0.2A 版本、双机、真实 Executor 与发布验收 | Build/CI/docs/release | `1.0.2a1` wheel/sdist、隔离安装与 shell smoke 已通过；其余发布门禁保持打开 |
 
 原始工作量估算只保留为历史规划，不再用于推断当前剩余进度。剩余工作以 0.3 和 0.4
 为准；任何真实 Executor 能力缺失应按 `unsupported` 交付，不得用危险文件扫描缩短排期。
@@ -609,8 +615,8 @@ Phase 7 代码完成、接口冻结。
 | Phase 5 | 🟡 代码完成/待集中验证 | `SESSION-001` 终态 cleanup/purge、capability/receipt、失败重试、公共视图与 doctor warning 数据已接线 | 自动化定向与相邻回归通过后进入集中验证；真实 retain/cleanup P2P 延后 |
 | Phase 6 | ✅ Tasks 1～4 已合入 | `SAFE-001` grant/Core/Runner/三 Adapter 与 Task 4 通知/公共投影完成 | Task 4 定向与相邻回归通过后标记代码完成；真实 canary 延后 |
 | Phase 7 | ✅ 代码完成、接口冻结 | `SKILL-001`、`DOC-002`、`DOCFIX-001` 已合入，Task 4 精确 SHA 集成门禁通过 | Skill hash/版本握手、doctor 0/1/2、text/JSON 同源、双语文档/help/Skill 一致 |
-| 集中全面测试 | ⏸ 延后 | 源码全量、安装包、真实点对点、Python/双机、安全/恢复/回滚 | Phase 5～7 代码完成且接口基本冻结；所有打开 canary 逐项给出可追溯证据 |
-| Phase 8 | ⬜ | `REL-102` 阻断修复与发布收口 | 集中测试阻断清零；wheel/sdist、clean install、三 Executor、双机、唯一 SHA |
+| 集中全面测试 | ▶️ 进行中 | 源码全量与 `1.0.2a1` 安装包自动 smoke 已通过；真实点对点、Python/双机、安全/恢复/回滚待手工验证 | 所有打开 canary 逐项给出可追溯证据 |
+| Phase 8 | 🟡 候选包已生成 | `REL-102` 阻断修复与发布收口 | clean install/shell smoke 已通过；三 Executor、Python 3.10/3.14、双机与唯一正式发布 SHA 待验证 |
 
 ### 5.3 Phase 5 开发任务规划
 
