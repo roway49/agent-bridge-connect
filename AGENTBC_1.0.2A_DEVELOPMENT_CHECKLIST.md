@@ -112,6 +112,14 @@ doctor/Skill/help 一致性 → Python/双机矩阵 → 失败注入、恢复、
 Task resume、清理边界、用户数据保护、secret redaction、CLI/Runner identity 与最终 SHA
 是否一致。
 
+集中测试新增权限持久化一致性门禁：使用同一候选包的 CLI 与 Runner，分别创建三 Executor
+的显式 `safe`、显式 `full` 和配置默认任务；从 create/dispatch 返回、task brief、磁盘权威
+task snapshot、`permission_audit`、Runner 实际授权、终态 status/report 逐层核对
+`requested_mode`、`effective_mode` 与 `selection_source`。显式 `full / explicit_task` 在任何
+Worker、finalize、report 或旧数据兼容路径中都不得降级为 `safe / legacy_task`；同时反向验证
+旧任务缺少 permission extension 时才允许稳定回落 legacy safe。CLI/Runner build identity 或
+协议版本不一致时必须先阻断 canary，不得把混装结果当成权限实现结论。
+
 ## 1. 文档地位与范围
 
 本清单把《AgentBC Alpha 至正式版开发手册》中分散在版本目标、技术债、测试门禁和
