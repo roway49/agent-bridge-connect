@@ -296,6 +296,37 @@ def recover_task(task_id: str, board_root: Path, from_snapshot: bool = False) ->
             )
         close_lease(lease, root)
         task = store.read_task(task_id)
+        recovery_status = "ready_for_retry"
+
+    revocation_error = _revoke_recovered_task_grant(task_id, root)
+    if revocation_error is not None:
+        store.append_event(
+            task_id,
+            {
+                "event_type": "task.recovery_failed",
+                "task_id": task_id,
+                "created_at": _utc_now(),
+                "error": {
+                    "code": revocation_error,
+                    "message": "Permission grant could not be durably revoked before recovery",
+                },
+            },
+        )
+        return {
+            "task_id": task_id,
+            "previous_status": previous_status,
+            "status": "needs_recovery",
+            "run_lease_state": lease.state,
+            "recovery_status": "failed",
+            "error": {
+                "code": revocation_error,
+                "message": "Permission grant could not be durably revoked before recovery",
+            },
+            "from_snapshot": from_snapshot,
+        }
+
+    if recovery_status == "ready_for_retry":
+        task = store.read_task(task_id)
         task["status"] = "needs_recovery"
         _set_recovery_metadata(task, lease, "ready_for_retry")
         _set_internal_status(task, "needs_recovery")
@@ -310,7 +341,6 @@ def recover_task(task_id: str, board_root: Path, from_snapshot: bool = False) ->
                 "message": "Stale run lease closed; dispatch the task to retry execution.",
             },
         )
-        recovery_status = "ready_for_retry"
 
     return {
         "task_id": task_id,
@@ -320,6 +350,23 @@ def recover_task(task_id: str, board_root: Path, from_snapshot: bool = False) ->
         "recovery_status": recovery_status,
         "from_snapshot": from_snapshot,
     }
+
+
+def _revoke_recovered_task_grant(task_id: str, board_root: Path) -> str | None:
+    """Revoke any live one-shot grant; return a stable code when revocation fails.
+
+    Fail closed: a live grant that cannot be durably revoked must prevent the
+    task from being marked ready for retry/recover.
+    """
+    from .service import TaskService
+
+    try:
+        TaskService(board_root).revoke_permission_grant_for_recovery(task_id)
+    except ABCError as exc:
+        return exc.code or "permission_grant_revocation_failed"
+    except (OSError, ValueError):
+        return "permission_grant_revocation_persist_failed"
+    return None
 
 
 def heartbeat_age_s(lease: RunLease) -> float:

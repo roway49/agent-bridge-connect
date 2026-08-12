@@ -59,12 +59,11 @@ class InputResponseLifecycleTests(unittest.TestCase):
             "version": 1,
             "task_id": self.task.id,
             "final_state": "input_required",
-            "summary": "Need approval; password=hidden-value",
+            "summary": "Need input; password=hidden-value",
             "executor_run_id": "shell-first-run",
             "input": {
-                "type": "permission",
-                "requested_permission": "full",
-                "reason": "Allow network; password=hidden-value",
+                "type": "message",
+                "reason": "Continue work; password=hidden-value",
             },
             "step_results": [
                 {"id": 1, "status": "done"},
@@ -106,7 +105,7 @@ class InputResponseLifecycleTests(unittest.TestCase):
         self.assertFalse(Path(current.workspace["report_file"]).exists())
         self.assertEqual(request["executor_run_id"], "shell-first-run")
         self.assertEqual(request["blocked_step_id"], 2)
-        self.assertEqual(request["type"], "permission")
+        self.assertEqual(request["type"], "message")
         self.assertEqual(request["status"], "waiting")
         self.assertNotIn("hidden-value", json.dumps(request))
         deadline = datetime.fromisoformat(request["deadline_at"].replace("Z", "+00:00"))
@@ -128,10 +127,11 @@ class InputResponseLifecycleTests(unittest.TestCase):
         )
         request = self._input()
         exact_command = (
-            f"agentbc task respond {self.task.id} --input {request['input_id']} --approve"
+            f"agentbc task respond {self.task.id} --input {request['input_id']} "
+            '--message "<response>"'
         )
         self.assertEqual(notification["event_type"], "task.input_required")
-        self.assertEqual(notification["respond_command"], f"{exact_command} (or --deny)")
+        self.assertEqual(notification["respond_command"], exact_command)
         self.assertEqual(notification["deadline_at"], request["deadline_at"])
         self.assertNotIn("Respond:", notification["message"])
         self.assertNotIn("Deadline:", notification["message"])
