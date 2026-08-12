@@ -18,6 +18,7 @@ from .execution_policy import (
     attach_execution_policy,
     build_task_execution_policy,
     execution_policy_view,
+    is_resource_decision_request,
     next_resource_limit,
     public_task_view,
     validate_execution_session_receipt,
@@ -892,22 +893,18 @@ class TaskService:
         blocked_step_id = int(blocked_results[0]["id"])
         raw_input_details = callback.get("input")
         input_details = raw_input_details if isinstance(raw_input_details, dict) else {}
-        input_type = str(
-            input_details.get("type")
-            or callback.get("input_type")
-            or "message"
-        ).strip().lower() or "message"
+        input_type = str(input_details.get("type") or "message").strip().lower() or "message"
         input_choices = (
             [dict(option) for option in input_details.get("options", []) if isinstance(option, dict)]
             if input_type == "choice" and isinstance(input_details.get("options"), list)
             else []
         )
         input_reason = str(input_details.get("reason") or "").strip()
-        requested_permission = str(
-            input_details.get("requested_permission")
-            or callback.get("requested_permission")
-            or ""
-        ).strip()
+        requested_permission = (
+            str(input_details.get("requested_permission") or "").strip()
+            if input_type == "permission"
+            else ""
+        )
         created_at = str(callback.get("finished_at") or _utc_now())
         deadline_at = (
             _parse_timestamp(created_at) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)
@@ -1267,10 +1264,7 @@ class TaskService:
         if response_type == "message" and not clean_message:
             raise ABCError("invalid_input_response", "--message requires non-empty text")
 
-        is_resource_decision = (
-            request.get("kind") == "resource_limit"
-            or request.get("response_protocol") == "approve_deny"
-        )
+        is_resource_decision = is_resource_decision_request(request)
         updated_resources: dict[str, Any] | None = None
         if is_resource_decision:
             blocked_step_id = request.get("blocked_step_id")

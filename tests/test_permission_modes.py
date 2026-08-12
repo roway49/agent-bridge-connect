@@ -235,7 +235,11 @@ class TaskPermissionPersistenceTests(unittest.TestCase):
             "final_state": "input_required",
             "summary": "need approval",
             "executor_run_id": run_id,
-            "input": {"type": "permission", "requested_permission": "continue"},
+            "input": {
+                "type": "permission",
+                "requested_permission": "full",
+                "reason": "The next continuation requires temporary full permission.",
+            },
             "step_results": [{"id": 1, "status": "blocked"}],
         }
         service.update_execution_metadata(task.id, {"executor_run_id": run_id})

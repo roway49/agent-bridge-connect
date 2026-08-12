@@ -151,14 +151,13 @@ def apply_resource_input_decision(
     errors = validate_resource_snapshot(value, executor=executor)
     if errors:
         raise ABCError("resource_decision_invalid", "; ".join(errors), {"errors": errors})
-    if not isinstance(request, dict):
-        raise ABCError("resource_decision_invalid", "Resource input request must be an object")
-    if request.get("kind") != "resource_limit":
-        raise ABCError("resource_decision_invalid", "Input is not a resource-limit request")
-    if request.get("response_protocol") != "approve_deny":
+    if not is_resource_decision_request(request):
         raise ABCError(
             "resource_decision_invalid",
-            "Resource-limit input must use the approve_deny response protocol",
+            (
+                "Resource-limit input must be a choice with kind=resource_limit "
+                "and response_protocol=approve_deny"
+            ),
         )
     decision = str(response_type or "").strip()
     if decision not in {"approve", "deny"}:
@@ -204,6 +203,16 @@ def apply_resource_input_decision(
     if errors:
         raise ABCError("resource_decision_invalid", "; ".join(errors), {"errors": errors})
     return resource
+
+
+def is_resource_decision_request(value: Any) -> bool:
+    """Recognize only the complete resource-decision discriminator tuple."""
+    return (
+        isinstance(value, dict)
+        and str(value.get("type") or "").strip().lower() == "choice"
+        and value.get("kind") == "resource_limit"
+        and value.get("response_protocol") == "approve_deny"
+    )
 
 
 def next_resource_limit(value: Any, *, executor: str) -> int | float:

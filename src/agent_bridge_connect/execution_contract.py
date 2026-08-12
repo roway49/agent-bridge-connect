@@ -12,10 +12,16 @@ FINAL_CALLBACK_VERSION = 1
 AGENT_FINAL_STATES = frozenset({"completed", "input_required", "cancelled"})
 STEP_RESULT_STATUSES = frozenset({"done", "failed", "blocked", "pending"})
 CHOICE_INPUT_TYPE = "choice"
+PERMISSION_INPUT_TYPE = "permission"
+PERMISSION_REQUESTED_MODE = "full"
 CHOICE_OPTION_COUNT = 2
 MAX_CHOICE_OPTION_LENGTH = 48
 MAX_CHOICE_REASON_LENGTH = 240
 MAX_CHOICE_DESCRIPTION_LENGTH = 160
+MAX_PERMISSION_REASON_LENGTH = 240
+_NATIVE_PERMISSION_OVERRIDE_FIELDS = frozenset(
+    {"argv", "command", "executor_flags", "flags", "native_executor_flags"}
+)
 
 
 @dataclass(frozen=True)
@@ -136,13 +142,21 @@ def validate_callback_payload(
                 f"Completed marker contains non-done steps: {', '.join(map(str, incomplete))}",
             )
     elif final_state == "input_required":
-        if not any(item.get("status") == "blocked" for item in normalized_results):
+        blocked_results = [
+            item for item in normalized_results if item.get("status") == "blocked"
+        ]
+        if not blocked_results:
             return _invalid(
                 "completion_marker_input_step_missing",
                 "input_required marker must identify at least one blocked step",
             )
         input_details = callback.get("input")
-        if isinstance(input_details, dict) and str(input_details.get("type") or "").strip().lower() == CHOICE_INPUT_TYPE:
+        input_type = (
+            str(input_details.get("type") or "").strip().lower()
+            if isinstance(input_details, dict)
+            else ""
+        )
+        if isinstance(input_details, dict) and input_type == CHOICE_INPUT_TYPE:
             reason = input_details.get("reason")
             if not isinstance(reason, str) or not reason.strip():
                 return _invalid(
@@ -204,6 +218,48 @@ def validate_callback_payload(
                 "type": CHOICE_INPUT_TYPE,
                 "reason": clean_reason,
                 "options": options,
+            }
+        elif isinstance(input_details, dict) and input_type == PERMISSION_INPUT_TYPE:
+            if len(blocked_results) != 1:
+                return _invalid(
+                    "completion_marker_permission_step_invalid",
+                    "permission input must identify exactly one blocked declared step",
+                )
+            reason = input_details.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                return _invalid(
+                    "completion_marker_permission_reason_invalid",
+                    "permission input must give a concrete non-empty reason",
+                )
+            clean_reason = reason.strip()
+            if len(clean_reason) > MAX_PERMISSION_REASON_LENGTH:
+                return _invalid(
+                    "completion_marker_permission_reason_invalid",
+                    f"permission input reason must be at most {MAX_PERMISSION_REASON_LENGTH} characters",
+                )
+            requested_permission = input_details.get("requested_permission")
+            if (
+                not isinstance(requested_permission, str)
+                or requested_permission.strip().lower() != PERMISSION_REQUESTED_MODE
+            ):
+                return _invalid(
+                    "completion_marker_permission_request_invalid",
+                    "permission input requested_permission must be full",
+                )
+            native_fields = sorted(
+                _NATIVE_PERMISSION_OVERRIDE_FIELDS.intersection(input_details)
+            )
+            if native_fields:
+                return _invalid(
+                    "completion_marker_permission_native_flags_invalid",
+                    "permission input must not include native executor flags",
+                )
+            callback = dict(callback)
+            callback["input"] = {
+                **input_details,
+                "type": PERMISSION_INPUT_TYPE,
+                "requested_permission": PERMISSION_REQUESTED_MODE,
+                "reason": clean_reason,
             }
 
     normalized = dict(callback)

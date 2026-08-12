@@ -63,7 +63,8 @@ class InputResponseLifecycleTests(unittest.TestCase):
             "executor_run_id": "shell-first-run",
             "input": {
                 "type": "permission",
-                "requested_permission": "Allow network; password=hidden-value",
+                "requested_permission": "full",
+                "reason": "Allow network; password=hidden-value",
             },
             "step_results": [
                 {"id": 1, "status": "done"},
