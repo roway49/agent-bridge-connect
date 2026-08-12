@@ -20,6 +20,7 @@ description: "AgentBC task orchestration: dispatch, inspect, intervene, and hand
 - Hermes CLI 每轮当前只接收一个 `--image`；Codex 支持重复传入。
 - 派发到 Hermes 前，必须按共享契约先检查 `agentbc runner status`。
 - Executor 临时会话 cleanup 与派发者 runtime 相互独立，绝不删除控制端会话。
+- 配置命令（`claude budget`、`hermes max-turns`、`session retention`）、`doctor` 退出码 0/1/2、`record clean` 与 queued-head `task close` 语义均以共享契约为准。
 
 规范命令形状：
 

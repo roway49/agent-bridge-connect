@@ -129,7 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
     record_sub = record.add_subparsers(dest="record_command", required=True)
     record_clean = record_sub.add_parser(
         "clean",
-        help="Remove terminal-task reports and runtime diagnostics while preserving task state and indexes.",
+        help="Remove eligible terminal-task runtime diagnostics while preserving task state and indexes; reports are never deleted.",
     )
     add_task_root(record_clean)
     record_clean.add_argument("--dry-run", action="store_true", help="Show what would be removed without changing files.")

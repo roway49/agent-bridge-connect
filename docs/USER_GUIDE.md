@@ -8,6 +8,7 @@ Use `agentbc <group> <command> --help` for the exact options installed by your
 version.
 
 - `agentbc setup`: discover executors and install local integrations.
+- `agentbc doctor`: read-only installation and Runner health check.
 - `agentbc uninstall`: remove AgentBC with separate managed-data choices.
 - `agentbc init`: initialize the managed runtime record directory.
 - `agentbc claude budget`: configure the Claude budget for future runs.
@@ -111,6 +112,33 @@ created by the Executor, never deletes the dispatcher conversation that created 
 handed off a task, and never requires users to manage a separate runtime directory.
 Active, `input_required`, and recovery tasks keep their session; cleanup failure or
 an unsupported capability does not change the terminal task/report result.
+
+## Permission Modes
+
+Every task carries one of three canonical permission modes — `inherit`, `safe`, or `full`:
+
+- `inherit` adds no AgentBC permission, approval, sandbox, or yolo override and keeps the executor's existing user/global settings;
+- `safe` is the conservative default and preserves established executor approval behavior;
+- `full` is an explicit audited choice for the installed executor's strongest documented noninteractive access.
+
+Pass `--permission-mode <inherit|safe|full>` on `task create` or `task handoff` only when the user
+chose a task override; otherwise a new task uses the configured default and a handoff inherits its
+source task. Never pass raw executor permission flags (`--yolo`, `--dangerously-skip-permissions`,
+bypass flags, sandbox or config overrides) in AgentBC commands.
+
+A `safe` task that reaches a step genuinely requiring `full` stops with `input_required` and a
+`type: permission` input declaring `requested_permission=full` plus the blocked step. Approve or
+deny through the dialog or the fallback:
+
+```bash
+agentbc task respond 4XMC-001 --input INPUT_ID --approve
+agentbc task respond 4XMC-001 --input INPUT_ID --deny
+```
+
+Approving issues a one-time `full` grant for the next same-session continuation of that task only;
+it is consumed or revoked afterward and is never inherited by retry, recover, reassign, handoff, or
+a new task. Denying ends the task `failed` with the stable reason `permission_denied_by_user`.
+Plain message text or approval prose is not a permission grant and never a completion marker.
 
 ## Create Versus Handoff
 
@@ -230,10 +258,10 @@ agentbc task delete 4XMC --confirm
 agentbc task recover 4XMC
 ```
 
-Close applies only to a queued or active current head. Root-task close releases its code
-and removes AgentBC-owned files. Later chain iterations preserve prior history
-and warn that project changes cannot be rolled back. Customer-project files are
-never deleted.
+Close applies only to the current queued (pending) or active chain head. Terminal iterations
+(completed, failed, cancelled, rejected) and stale non-head iterations are rejected. Root-task close
+releases its code and removes AgentBC-owned files. Later chain iterations preserve prior history
+and warn that project changes cannot be rolled back. Customer-project files are never deleted.
 
 Delete accepts a task code, never an iteration ID. It requires every iteration in
 the chain to be `completed`, `failed`, `cancelled`, or `rejected`; queued, active,
@@ -250,9 +278,23 @@ agentbc record clean
 agentbc runner process-sample
 ```
 
-Record cleaning preserves the global index, authoritative state, readable
-reports, and deliverables. Choose concurrency according to the executor workload
-and machine.
+Record cleaning removes only eligible terminal-task runtime diagnostics (events,
+interventions, run leases, and run logs of terminal tasks). It always preserves the global index,
+authoritative `task.json` state, readable reports, and deliverables; reports are never deleted by
+record cleanup. Choose concurrency according to the executor workload and machine.
+
+## Doctor
+
+```bash
+agentbc doctor
+agentbc doctor --json
+```
+
+`doctor` is a read-only health check of the installation: package/build identity, configuration,
+Runner identity and spool, storage permissions, installed Skill manifests, executor discovery, and
+session-cleanup receipts. The exit code contract is fixed: `0` = healthy, `1` = warning (for
+example a Skill drift or a cleanup receipt in warning state), `2` = unavailable (for example a
+missing Runner or config). `--json` emits the same structured diagnostics as the text view.
 
 ## Troubleshooting
 

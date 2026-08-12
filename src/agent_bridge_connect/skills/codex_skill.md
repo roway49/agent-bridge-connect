@@ -19,6 +19,7 @@ The shared controller contract is authoritative. This file contains only Codex-s
 - Codex accepts repeated `--image` arguments. Hermes currently accepts one image per iteration.
 - If the requested target executor is Hermes, verify `agentbc runner status` first as required by the shared contract.
 - Executor temporary-session cleanup is separate from the dispatcher runtime and never deletes the controller conversation.
+- Configuration (`claude budget`, `hermes max-turns`, `session retention`), `doctor` exit codes 0/1/2, `record clean`, and queued-head `task close` semantics all follow the shared controller contract.
 - After a dispatched create/handoff returns `accepted`, report the exact task ID and return control immediately.
 
 Canonical command shapes:

@@ -134,7 +134,11 @@ duplicate/unknown/missing steps, and non-`done` completion steps fail the flow.
 `blocked`; permission or approval prose alone is a failure. A two-option choice
 declares a concrete decision reason and two label/description objects, for example
 `"input":{"type":"choice","reason":"why a decision is required","options":[{"label":"A","description":"what A does"},{"label":"B","description":"what B does"}]}`.
-The desktop dialog explains the reason and both outcomes, then renders the two
+Approve/deny requests use `"input":{"type":"permission","requested_permission":"full","reason":"..."}`:
+a `safe` task may stop to request a one-time `full` continuation, which the user
+approves or denies; a `full` task runs with its strongest documented noninteractive
+access and does not ask. Plain approval prose never grants permissions or completes
+a task. The desktop dialog explains the reason and both outcomes, then renders the two
 labels as direct buttons. Operational deadline and CLI fallback fields remain in
 the task record/report but are not shown in the desktop dialog. Input dialogs
 remain visible for up to five minutes; dismissing or timing out leaves the task
@@ -192,10 +196,25 @@ root. Reports and runtime records always remain Core-owned.
         `-- bounded progress and run-log files
 ```
 
-Each iteration record is capped at 10KB. `agentbc record clean` removes eligible
-terminal diagnostics while preserving core indexes and state. Empty managed
+Each iteration record is capped at 10KB. `agentbc record clean` removes only eligible
+terminal-task runtime diagnostics while preserving core indexes and state; reports are
+never deleted by record cleanup. Empty managed
 artifact directories are removed after terminal execution; customer projects
 are never automatic-cleanup or uninstall targets.
+
+## Configuration, Cleanup, And Health
+
+- `agentbc claude budget <usd>` and `agentbc hermes max-turns <turns>` set the resource
+  defaults for future executor runs; each task freezes its effective values at dispatch.
+- `agentbc session retention status|enable|disable` controls whether executor temporary
+  sessions survive terminal tasks. Cleanup is background and user-transparent: it manages
+  only temporary sessions created by the Executor, and AgentBC never deletes the dispatcher
+  conversation.
+- `agentbc doctor` (or `agentbc doctor --json`) is a read-only installation and Runner health
+  check with a fixed exit-code contract: `0` healthy, `1` warning, `2` unavailable.
+- `agentbc task close <TASKCODE>` closes the current queued (pending) or active chain head;
+  terminal and stale non-head iterations are rejected. Customer-project files are never
+  deleted by close.
 
 ## Local Security Model
 

@@ -75,13 +75,32 @@ command -v agentbc
 agentbc --version
 agentbc setup --show
 agentbc runner status
+agentbc doctor
 ```
 
-以上四项都成功后再开始派发任务。Release 包还提供不启动 Agent 的纯包验证：
+以上五项全部成功后再开始派发任务；`doctor` 健康时退出码为 `0`，有警告（例如已安装 Skill
+漂移）为 `1`，安装不可用时为 `2`。Release 包还提供不启动 Agent 的纯包验证：
 
 ```bash
 ./run_local_alpha_smoke.sh
 ```
+
+## 6. 命令一览
+
+[用户指南](USER_GUIDE_ZH.md) 是完整的命令与行为契约。以下为其中覆盖的固定命令：
+
+- `agentbc claude budget <usd>` / `agentbc hermes max-turns <turns>`：后续 Executor run 的
+  资源默认值；每个任务在派发时冻结生效值。
+- `agentbc session retention status|enable|disable`：执行器临时会话保留策略。清理在后台
+  无感执行，永远不会删除派发者会话。
+- `agentbc record clean`：只删除符合条件的终态任务运行时诊断；`task.json`、索引和报告始终
+  保留——报告永远不会被删除。
+- `agentbc task close <TASKCODE>`：只关闭当前排队中（pending）或活跃的 chain head；终态与
+  过期迭代都会被拒绝。
+- `agentbc doctor`：只读健康检查，退出码契约固定为 `0` healthy / `1` warning /
+  `2` unavailable。
+- 权限模式 `inherit` / `safe` / `full` 通过 `--permission-mode` 传递；`safe` 任务可以停下来
+  用 approve/deny 的 `permission` 输入请求一次性 `full` 延续。
 
 下一步请阅读[用户指南](USER_GUIDE_ZH.md)，了解任务创建、查询、handoff、
 恢复与关闭流程。
