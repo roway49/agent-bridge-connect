@@ -110,17 +110,36 @@ Hermes 从指定工程或产物目录运行，并受其自身 CLI 能力约束�
 `4XMC-002` 属于同一条链。命令可使用任务码解析当前 head，也可使用完整 ID
 精确定位某次迭代。
 
-Agent callback 仅作为可选元数据，正常情况下以执行器进程退出作为完成依据：
+成功执行要求一个版本化的终态声明。执行器的最终回复必须以单行恰好一个标记结束：
 
-1. Runner 确认任务已启动。
-2. 执行器 CLI 退出。
-3. Runner 判断退出契约。
+```text
+AGENTBC_FINAL_CALLBACK: {"version":1,"task_id":"4XMC-001","final_state":"completed","summary":"已实现并验证请求的改动","step_results":[{"id":1,"status":"done"}]}
+```
+
+`completed` 只有在 `task_id` 匹配、且每个声明的步骤恰好出现一次并标记为 `done` 时才有效。
+JSON 缺失或无效、task ID 错误、步骤重复/未知/缺失以及非 `done` 的完成步骤都会使流程失败。
+`input_required` 必须显式声明至少一个 `blocked` 步骤；单独的权限或批准文字属于失败。两步
+选项必须声明具体决策原因和两个 label/description 对象，例如
+`"input":{"type":"choice","reason":"为什么需要用户决定","options":[{"label":"A","description":"A 做什么"},{"label":"B","description":"B 做什么"}]}`。
+批准/拒绝请求使用 `"input":{"type":"permission","requested_permission":"full","reason":"..."}`：
+`safe` 任务可以停下来请求一次性 `full` 延续，由用户批准或拒绝；`full` 任务直接使用其最强
+文档化非交互访问，不再询问。普通批准文字既不能授予权限，也不能完成任务。桌面弹窗解释原因
+和两种结果，并把两个 label 渲染为直接按钮。运维 deadline 与 CLI 兜底字段保留在任务
+记录/报告中，但不显示在桌面弹窗。输入弹窗最长等待五分钟；关闭或超时后任务继续等待 CLI
+响应。
+
+1. Runner 确认执行已启动。
+2. 执行器输出其最终标记并退出。
+3. Runner 与 Core 只校验该流程声明。
 4. Core 写入终态并同步 Report。
 5. Task List 与桌面通知展示相同状态。
 
-- `completed`：执行已正常启动并结束，不代表产物质量已通过验收。
-- `needs_recovery`：执行未能正常启动或继续。
-- `failed`：执行已启动，但未能确认正常退出流程。
+- `completed`：合法的 completed 标记声明所有任务步骤 done；不代表质量已通过验收。
+- `needs_recovery`：显式可重试的传输或基础设施失败中止了执行。
+- `failed`：标记缺失或无效，或存在不可重试的执行契约违规。
+
+零退出本身永远不算完成。AgentBC 校验流程标记时不检查 Git、测试、文件或产物质量，也绝不
+自动重试恢复状态。
 
 `accepted` 等派发响应不代表任务完成。任务状态、报告、产物和通知才是事实来源。
 
@@ -155,9 +174,20 @@ Agent callback 仅作为可选元数据，正常情况下以执行器进程退�
         `-- 有容量限制的进度与运行日志
 ```
 
-每次迭代的 record 上限为 10KB。`agentbc record clean` 会清理符合条件的终态
-诊断记录，同时保留核心索引和状态。终态任务的空托管产物目录会自动删除；
-用户工程永远不会成为自动清理或卸载目标。
+每次迭代的 record 上限为 10KB。`agentbc record clean` 只删除符合条件的终态任务运行时
+诊断，同时保留核心索引和状态；record clean 永远不会删除报告。终态任务的空托管产物目录会
+自动删除；用户工程永远不会成为自动清理或卸载目标。
+
+## 配置、清理与健康
+
+- `agentbc claude budget <usd>` 与 `agentbc hermes max-turns <turns>` 设置后续 Executor run
+  的资源默认值；每个任务在派发时冻结其生效值。
+- `agentbc session retention status|enable|disable` 控制执行器临时会话在终态任务后是否保留。
+  清理在后台无感执行：只管理 Executor 创建的临时会话，AgentBC 永远不会删除派发者会话。
+- `agentbc doctor`（或 `agentbc doctor --json`）是只读的安装与 Runner 健康检查，退出码契约
+  固定：`0` healthy、`1` warning、`2` unavailable。
+- `agentbc task close <TASKCODE>` 只关闭当前排队中（pending）或活跃的 chain head；终态与
+  过期非 head 迭代都会被拒绝。close 永远不会删除用户工程文件。
 
 ## 本地安全模型
 

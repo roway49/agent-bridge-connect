@@ -49,6 +49,15 @@ handoff inherits its source task. Never pass raw executor permission flags or co
 overrides. Legacy tasks fall back to `safe`. Runner canonicalizes long, short, and equals forms and
 fails closed on alternate, duplicate, conflicting, or bypass arguments.
 
+When a `safe` task hits a step that genuinely needs `full`, the executor stops with
+`input_required`, `input.type=permission`, `requested_permission=full`, and the blocked step
+declared. The user approves or denies through the existing dialog or
+`agentbc task respond <task-id> --input <input-id> --approve|--deny`; a one-time `full` grant is
+issued for the next same-session continuation only. It is consumed when that run is authorized;
+an unused grant is revoked on terminal, recovery, reassignment, or other invalidating paths. A
+`full` task does not ask; plain message/choice text and native executor flags never escalate
+permissions. AgentBC never treats approval prose as a valid completion marker.
+
 ## Steps Contract
 
 Write a temporary YAML file before create. Every requirement is a non-empty `steps[].description`
@@ -138,8 +147,33 @@ create a new root task instead of handoff. Its requirements must identify the so
 artifact/project root, and new output location. Never pass an existing AgentBC-managed artifact
 directory to `task create`; a `handoff_required` response must be followed through the current head.
 
-`agentbc task close` accepts only the current queued or active chain head. Run an interactive close
-once and let AgentBC obtain its own confirmation. Use `--confirm` only after explicit authorization.
+`agentbc task close` accepts only the current queued (pending) or active chain head. Terminal
+iterations and stale (non-head) iterations are rejected. Run an interactive close once and let
+AgentBC obtain its own confirmation. Use `--confirm` only after explicit authorization.
+
+## Configuration And Health
+
+Use the configured values for future executor runs; do not invent executor-native budget or turn
+flags in task commands:
+
+```bash
+agentbc claude budget <usd>
+agentbc hermes max-turns <turns>
+agentbc session retention status
+agentbc session retention enable
+agentbc session retention disable
+```
+
+Executor temporary-session cleanup runs in the background after eligible terminal tasks. It manages
+only temporary sessions created by the Executor, never the dispatcher conversation that created or
+handed off the task.
+
+`agentbc record clean` removes eligible terminal-task runtime diagnostics only; `task.json`, the
+indexes, and all reports are preserved. Reports are never deleted by record cleanup.
+
+Check installation and Runner health with `agentbc doctor` (add `--json` for the stable
+machine-readable contract). The exit code contract is fixed: `0` = healthy, `1` = warning,
+`2` = unavailable.
 
 ## Dispatcher Traceability
 
@@ -147,7 +181,8 @@ Always pass the platform-specific `--source-platform`. Pass `--session-id` only 
 controller exposes a trusted conversation ID or the user explicitly supplies one. Otherwise omit it;
 the report records `unavailable`. Never infer an ID from processes, paths, shell history, a prior
 task, or an executor temporary session. Dispatcher sessions and executor temporary sessions are
-independent; cleanup warnings do not change task/report terminal state.
+independent; cleanup warnings do not change task/report terminal state. AgentBC never deletes the
+dispatcher conversation.
 
 ## Progress, Completion, Intervention, And Acceptance
 

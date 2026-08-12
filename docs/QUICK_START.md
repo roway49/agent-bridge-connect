@@ -80,14 +80,34 @@ command -v agentbc
 agentbc --version
 agentbc setup --show
 agentbc runner status
+agentbc doctor
 ```
 
-All four checks should succeed before dispatching work. The release bundle also
-contains a package-only smoke test that does not launch an agent:
+All five checks should succeed before dispatching work; `doctor` exits `0` when healthy, `1` on
+warnings (for example installed-Skill drift), and `2` when the installation is unavailable. The
+release bundle also contains a package-only smoke test that does not launch an agent:
 
 ```bash
 ./run_local_alpha_smoke.sh
 ```
+
+## 6. Command Surface At A Glance
+
+The [User Guide](USER_GUIDE.md) is the full command and behavior contract. These are the fixed
+commands it covers:
+
+- `agentbc claude budget <usd>` / `agentbc hermes max-turns <turns>`: resource defaults for
+  future executor runs; each task freezes its effective values at dispatch.
+- `agentbc session retention status|enable|disable`: executor temporary-session retention.
+  Cleanup is background and user-transparent and never deletes dispatcher conversations.
+- `agentbc record clean`: removes only eligible terminal-task runtime diagnostics; `task.json`,
+  indexes, and reports are always preserved — reports are never deleted.
+- `agentbc task close <TASKCODE>`: closes the current queued (pending) or active chain head;
+  terminal and stale iterations are rejected.
+- `agentbc doctor`: read-only health check with the fixed exit-code contract `0` healthy /
+  `1` warning / `2` unavailable.
+- Permission modes `inherit` / `safe` / `full` via `--permission-mode`; a `safe` task may stop
+  with an approve/deny `permission` input to request a one-time `full` continuation.
 
 Continue with the [User Guide](USER_GUIDE.md) to create, inspect, hand off,
 recover, and close tasks.

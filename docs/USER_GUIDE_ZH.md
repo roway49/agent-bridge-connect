@@ -7,6 +7,7 @@
 使用 `agentbc <group> <command> --help` 查看当前安装版本的准确选项。
 
 - `agentbc setup`：发现执行器并安装本地集成。
+- `agentbc doctor`：只读的安装与 Runner 健康检查。
 - `agentbc uninstall`：卸载 AgentBC，并分别选择是否删除托管数据。
 - `agentbc init`：初始化托管运行记录目录。
 - `agentbc claude budget`：设置后续 Claude run 的预算。
@@ -116,6 +117,32 @@ pending 会告警；retained 与 succeeded 为健康状态。不会展示 Execut
 dispatcher conversation，也不会要求用户管理单独的 runtime 目录。修改全局设置不会改变
 active、`input_required` 或 recovery 任务的既有语义。
 
+## 权限模式
+
+每个任务都带三种规范权限模式之一：`inherit`、`safe` 或 `full`：
+
+- `inherit` 不注入任何 AgentBC 权限、审批、sandbox 或 yolo 覆盖，保持执行器既有的用户/全局设置；
+- `safe` 是保守默认，保持执行器既有审批行为；
+- `full` 是显式、可审计的选择，使用已安装执行器文档中支持的最强非交互访问。
+
+只有用户明确选择任务级覆盖时才在 `task create` 或 `task handoff` 上传递
+`--permission-mode <inherit|safe|full>`；否则新任务使用配置默认值，handoff 继承源任务。
+禁止在 AgentBC 命令中传递执行器原生权限参数（`--yolo`、`--dangerously-skip-permissions`、
+bypass、sandbox 或配置覆盖）。
+
+`safe` 任务遇到确实需要 `full` 的步骤时，会以 `input_required` 停止并声明
+`type: permission` 输入：`requested_permission=full` 加 blocked step。通过弹窗或兜底命令批准或拒绝：
+
+```bash
+agentbc task respond 4XMC-001 --input INPUT_ID --approve
+agentbc task respond 4XMC-001 --input INPUT_ID --deny
+```
+
+批准只为该任务下一次同 session continuation 发放一次性 `full` 授权；授权随后被消费或撤销，
+绝不被 retry、recover、reassign、handoff 或新任务继承。拒绝以稳定原因
+`permission_denied_by_user` 将任务终态置为 `failed`。普通消息文本或“允许”字样既不是授权，
+也永远不能充当完成标记。
+
 ## Create 与 Handoff
 
 独立任务使用 create：
@@ -164,7 +191,22 @@ agentbc task logs 4XMC
 - `needs_recovery`：执行未能正常启动或继续。
 - `failed`：执行已启动，但未能确认执行器正常退出。
 
-Agent callback 是可选元数据，Runner 观察到的执行器退出才是正常完成依据。
+每次成功的 Codex、Claude 或 Hermes 运行，其最终回复都必须以单行恰好一个 version-1 标记结束：
+
+```text
+AGENTBC_FINAL_CALLBACK: {"version":1,"task_id":"4XMC-001","final_state":"completed","summary":"任务完成","step_results":[{"id":1,"status":"done"}]}
+```
+
+task ID 必须匹配；`completed` 要求每个声明的步骤恰好出现一次且为 `done`。合法
+`input_required` 标记必须声明至少一个 `blocked` 步骤。零退出、无效 JSON、步骤数据不完整或
+纯“允许/拒绝”文本都不等于成功。显式可重试的传输或基础设施失败可以进入 `needs_recovery`，
+但 AgentBC 绝不自动重试。流程校验不检查 Git、测试、文件或产物质量。
+
+两步决策需要给出具体原因并描述两个选项的后果：`"input":{"type":"choice","reason":"为什么需要用户决定","options":[{"label":"Option A","description":"选择 A 会做什么或改变什么"},{"label":"Option B","description":"选择 B 会做什么或改变什么"}]}`。
+AgentBC 在桌面弹窗中显示原因和说明，配两个直接按钮。deadline 与 CLI 兜底命令保留在任务
+报告和通知事件中，但不显示在桌面弹窗。自由文本继续使用 `type: message`，批准/拒绝类请求
+使用 `type: permission`，输入弹窗最长等待五分钟；关闭或超时后同一任务继续等待
+`agentbc task respond`。
 
 每份报告与 task brief 都包含 `Dispatcher Traceability`（派发者溯源）小节，带两个标签：
 `Dispatcher platform`（派发平台）和 `Dispatcher conversation ID`（派发会话 ID）。它们描述
@@ -203,8 +245,9 @@ agentbc task delete 4XMC --confirm
 agentbc task recover 4XMC
 ```
 
-close 只针对当前排队中或活跃的 head。关闭根任务会释放任务码并删除 AgentBC 自有文件；
-关闭后续 chain 迭代会保留历史，并提示工程改动无法回滚。用户工程文件永远不会
+close 只针对当前排队中（pending）或活跃的 chain head；终态迭代（completed、failed、
+cancelled、rejected）与过期非 head 迭代都会被拒绝。关闭根任务会释放任务码并删除 AgentBC
+自有文件；关闭后续 chain 迭代会保留历史，并提示工程改动无法回滚。用户工程文件永远不会
 被 AgentBC 删除。
 
 delete 只接受任务码，不接受 iteration ID。整条链的每次迭代都必须处于
@@ -236,8 +279,22 @@ agentbc record clean
 agentbc runner process-sample
 ```
 
-record clean 会保留全局索引、权威状态、可读报告和产物。请根据执行器负载与机器
-性能选择并发数量。
+record clean 只删除符合条件的终态任务运行时诊断（终态任务的 events、interventions、
+run lease 与 run log），始终保留全局索引、权威 `task.json` 状态、可读报告和产物；
+record clean 永远不会删除报告。请根据执行器负载与机器性能选择并发数量。
+
+## Doctor
+
+```bash
+agentbc doctor
+agentbc doctor --json
+```
+
+`doctor` 是只读的安装健康检查：package/build 身份、配置、Runner 身份与 spool、存储权限、
+已安装 Skill manifest、执行器发现和 session-cleanup receipt。退出码契约固定为：
+`0` = healthy（健康）、`1` = warning（警告，例如 Skill 漂移或 cleanup receipt 处于警告态）、
+`2` = unavailable（不可用，例如 Runner 或配置缺失）。`--json` 输出与文本视图同一来源的
+结构化诊断。
 
 ## 卸载
 

@@ -1,12 +1,12 @@
 # AgentBC 1.0.2A 需求开发清单
 
 > 制定日期：2026-08-08  
-> 最近状态快照：2026-08-12（Phase 6 Tasks 1～3 已合入；Wave 1 为 Phase 6 Task 4 与 Phase 7 Task 1）
-> 状态：开发进行中（Phase 0～Phase 5 与 Phase 6 授权核心已合入；公共视图、Skill/Doctor/文档与集中验证待完成）
+> 最近状态快照：2026-08-12（Phase 6 Tasks 1～4 与 Phase 7 Tasks 1～2 已合入；Phase 7 Task 3 代码完成、待合入）
+> 状态：开发进行中（Phase 0～Phase 6 全部已合入；Phase 7 Tasks 1～2 已合入、Task 3 待合入；CFG-002、SESSION-001、SAFE-001 真实 canary 与 REL-102 保持打开）
 > 当前开发分支：`private/integration`  
 > 固定 Agent 分支：`agent/codex`、`agent/claude`、`agent/hermes`  
 > 初始开发基线：`private/integration@cfddccba246e6d057172f6716ab4318ade9a40ad`
-> 当前集成基线：`private/integration@908df2c66ffd065d289903166e19b6ac53fed37a`
+> 当前集成基线：`private/integration@050f183565c3696d3b4d09fbd2ca4f631f79786c`
 > 对应公开稳定修订：`v1.0.1A3` / Python `1.0.1a3` / `5e74de65c9b49867ac7957969138db59e2208572`  
 > 目标版本：`v1.0.2A` / Python `1.0.2a1`
 
@@ -34,6 +34,9 @@
 | Phase 4 Task 4 / `CFG-002` UX | ✅ | 资源决策固定两按钮、approve/deny 映射、fallback 命令、公共资源视图与三份文档 | `QECT-001`、`22c8d61`、`tests/test_phase4_resource_decision_ux.py` |
 | Phase 5 / `SESSION-001` cleanup 代码闭环 | ✅ | cleanup receipt/coordinator、Claude 官方 project purge、Codex/Hermes capability、公共 cleanup 诊断 | `19b3b2c`、Phase 5 定向与相邻回归 |
 | Phase 6 Tasks 1～3 / `SAFE-001` 授权核心 | ✅ | 通用 grant v1、严格 permission input、Core 生命周期、Runner 原子消费与三 Executor 同 session continuation | `cf82e0b`、`ce74d6d`、`c1111c8`、`908df2c` |
+| Phase 6 Task 4 / 权限公共视图 | ✅ | status/preflight/report 脱敏授权投影、通知一致性与持久化一致性门禁 | `0e5b924`、`9776ae5`、`tests/test_phase6_public_views.py` |
+| Phase 7 Task 1 / `SKILL-001` | ✅ | canonical controller contract 单一来源、三平台 thin Skill、安装 manifest 与 template hash 握手 | `d21ec13`、`fe6b0ca`、`tests/test_skill_manifest.py` |
+| Phase 7 Task 2 / `DOC-002` | ✅ | doctor v2 schema、0/1/2 退出码、text/JSON 同源、Skill/cleanup/config/Runner 漂移诊断 | `580b398`、`050f183`、`tests/test_doctor.py` |
 
 Phase 4 Tasks 1～3 的集成基线 `b7ba051` 全量 discovery 为 `765` 项通过；Task 4
 分支验收新增 `17` 项 UX 测试通过。合并基线 `bd6d6a2` 的 Phase 4 定向 `56` 项和全量
@@ -51,6 +54,7 @@ package-only smoke 与 CLI/Runner identity 验证通过；正式版本尚未提�
 | Phase 6 Task 2 / Core permission 生命周期 | `P4DH-001`（Claude） | `completed`；4/4 合法 callback、RunLease closed；当前 result receipt 门禁与 recovery revoke fail-closed 已验收并合入 `ce74d6d` | 等待 Task 4 公共投影与通知收口 |
 | Phase 6 Task 3 / Runner 与三 Adapter | `PMDQ-002`（Codex） | `completed`；1/1 合法 callback、RunLease closed；unmanaged full 阻断、原子消费和同 session resume 已验收并合入 `c1111c8`，integration 为 `908df2c` | 等待 Task 4 公共投影与通知收口 |
 | Phase 6 旧 Task 1 / Git topology 与 `commit_required` 前置合同 | `SWJF-001`（Codex） | Executor 任务已完成，但架构复核后判定 Git 专属状态机和公共 CLI 性价比不足；成果未提交、未合入，Codex worktree 已回退至干净 `19b3b2c` | 任务报告只保留历史证据；不得把该 diff 或其 `--git-write`、Git snapshot、`commit_required` 方案重新带回主线 |
+| Phase 7 Task 3 / `DOCFIX-001` help、Record README 与双语/Skill 一致性 | `GE58-001`（Hermes） | 以 `050f183` 为任务基线；CLI help 与 Record README 语义修正、README/Quick Start/User Guide 双语对齐、canonical contract 与三平台 thin Skill 同步、一致性测试新增完成；变更未提交、未合入 | 合入 `private/integration` 后只保留一致性回归 |
 
 旧任务 `QDKN-001` 已因旧运行达到 `60/60` 且 final marker 无效而终态 `failed`；
 `97FK-001` 因旧 Hermes quiet review 竞争丢失官方 receipt 而 `needs_recovery`。二者均不恢复、
@@ -63,17 +67,19 @@ package-only smoke 与 CLI/Runner identity 验证通过；正式版本尚未提�
 | --- | --- | --- |
 | Phase 4 / `CFG-002` | 🟡 代码完成/待集中验证 | Tasks 1～4 已合入；真实 Claude/Hermes 耗尽、approve 翻倍同 session 继续、deny 明确 failed 的安装包 canary 延后到集中全面测试 |
 | `SESSION-001` | 🟡 代码完成/待真实 P2P | session 快照、receipt、同 ID resume、终态 cleanup/purge、capability、公共视图与 doctor warning 已完成；真实 retain/cleanup P2P 门禁尚未通过 |
-| `SAFE-001` | 🟡 授权核心已合入/待 Task 4 与 canary | grant、Core、Runner、三 Adapter 和 Hermes receipt 门禁已合入；剩余通知、status/preflight/report 公共脱敏投影及真实三 Executor canary |
-| `SKILL-001` | ⬜ | canonical controller contract 的安装身份、协议版本和 template hash 握手未实现 |
-| `DOC-002` | ⬜ | doctor 稳定 schema/退出码以及 Skill、session cleanup、safe Git、config/runtime 漂移诊断未闭环 |
-| `DOCFIX-001` | ⬜ | help、Record README、Quick Start、双语 User Guide 与三类 Skill 的最终一致性收口未完成 |
+| `SAFE-001` | 🟡 授权核心已合入/待 canary | grant、Core、Runner、三 Adapter、Hermes receipt 门禁与 Task 4 公共脱敏投影均已合入；真实三 Executor canary 未执行 |
+| `DOCFIX-001` | 🟡 代码完成/待合入 | help 与 Record README 修正、双语/平台文档对齐、一致性测试已完成（`GE58-001`），等待合入评审 |
 | `REL-102` | ⬜ | 版本提升、Python 3.10/3.11/3.14、wheel/sdist、双机和三真实 Executor 发布 Gate 未执行 |
+
+禁止回归记录：`commit_required`、`--git-write`、`--commit-sha`、`agentbc.git` 及 Phase 6 旧
+Task 1（`SWJF-001`）移除的 Git 专属公共命令不得以任何形式（CLI、help、Skill、文档或新状态）
+重新出现；`SAFE-001` 的一次性 full 授权只复用既有 permission input 与 respond 命令。
 
 ### 0.4 后续固定顺序
 
 1. Phase 5：代码已完成，进入集中验证并保留真实 retain/cleanup P2P 门禁；
-2. Phase 6：Tasks 1～3 已完成；Wave 1 完成 Task 4 通知与公共脱敏投影；
-3. Phase 7：Wave 1 同步启动 `SKILL-001`，随后完成 `DOC-002`、`DOCFIX-001`；
+2. Phase 6：Tasks 1～4 全部完成（Task 4 权限公共投影与通知已合入）；
+3. Phase 7：Task 1 `SKILL-001` 与 Task 2 `DOC-002` 已合入；Task 3 `DOCFIX-001` 代码完成、待合入；
 4. Phase 5～7 核心功能基本完成后，统一执行源码全面回归、安装包验证、真实 Executor
    点对点 canary、Python/双机矩阵和安全/恢复测试；
 5. Phase 8：根据集中测试结果修复阻断项，再执行 `REL-102` 版本与发布 Gate。
@@ -99,10 +105,17 @@ Codex safe 普通 clone/linked-worktree 双 canary、三 Executor 端到端串�
 双机、clean install/upgrade/rollback 和完整发布包测试。暂停测试不等于验收通过；对应项目
 继续保持“代码完成/待集中验证”或“部分完成”。
 
-`908df2c` 的源码全量盘点为 `923` 项、`10` 个已知失败：`7` 个 Hermes Runner 旧 fixture
+`908df2c` 时点的源码全量盘点为 `923` 项、`10` 个已知失败：`7` 个 Hermes Runner 旧 fixture
 未回显预分配 `executor_run_id`，`2` 个 Codex/Claude Skill 文案一致性失败，以及本地被忽略的
-构建产物 `_build_info.json` 导致 `1` 个 provenance 环境失败。前三类分别纳入 Phase 6 Task 4、
-Phase 7 Task 1/3 和最终干净导出树门禁；不得通过放宽 Runner ID 校验或提交 build artifact 修复。
+构建产物 `_build_info.json` 导致 `1` 个 provenance 环境失败。前三类分别由 Phase 6 Task 4、
+Phase 7 Task 1 和干净导出树门禁解决；`050f183` 时点源码全量 unittest discovery 为 `972` 项
+全部通过，不再保留已知失败。不得通过放宽 Runner ID 校验或提交 build artifact 修复。
+
+Phase 7 Task 3（`DOCFIX-001`）新增 `tests/test_phase7_doc_consistency.py` 一致性门禁：共享
+命令表与 CLI help 一致、record clean 只清理 eligible 终态运行时诊断且报告永不删除、
+Record README 的 queued/pending head close 语义、退休命令
+（`--git-write`/`--commit-sha`/`commit_required`/`agentbc.git`）缺席、中英文文档与三平台
+Skill 对齐，均在不弱化既有契约的前提下验证。
 
 当 Phase 5～7 代码路径均已合入、无已知 P0 实现缺口且接口/文档基本冻结后，集中测试按
 以下顺序执行：源码全量回归 → 构建 provenance 与 wheel/sdist → clean install/upgrade →
@@ -211,6 +224,18 @@ retry、recover、handoff 或新任务继承。
   `SESSION-001` 在后续真实 retain/cleanup P2P 通过前仍为部分完成。
 - Phase 4 合并最终证据：定向 `56` 项、全量 discovery `782` 项通过，Ruff、compileall
   与 `git diff --check` 通过，不保留 Phase 4 `expectedFailure`。
+- `2026-08-12 / Phase 6 Task 4`：完成通知与 status/preflight/report 脱敏授权投影、权限
+  持久化一致性门禁，由 `0e5b924` 经 `9776ae5` 合入（`tests/test_phase6_public_views.py`）。
+- `2026-08-12 / Phase 7 Task 1（SKILL-001）`：canonical controller contract 单一来源、三平台
+  thin Skill 与安装 manifest/template hash 握手由 `d21ec13` 经 `fe6b0ca` 合入
+  （`tests/test_skill_manifest.py`）。
+- `2026-08-12 / Phase 7 Task 2（DOC-002）`：doctor v2（schema_version=2、text/JSON 同源、
+  0/1/2 退出码、Skill/cleanup/config/Runner 漂移诊断）由 `580b398` 经 `050f183` 合入
+  （`tests/test_doctor.py`）。
+- `2026-08-12 / Phase 7 Task 3（DOCFIX-001）`：help 与 Record README 语义修正、README/
+  Quick Start/User Guide 双语对齐、canonical contract 与三平台 thin Skill 同步及
+  `tests/test_phase7_doc_consistency.py` 一致性门禁已代码完成（任务 `GE58-001`），
+  变更未提交、待合入。
 
 ## 3. 需求总表
 
@@ -218,15 +243,15 @@ retry、recover、handoff 或新任务继承。
 | --- | --- | --- | --- | --- | --- |
 | `DEL-001` | ✅ 已合入 | P0 | 安全删除终态历史链并归还 task code | Service、Store、ID、CLI、Index | 只保留回归 |
 | `SESSION-001` | 🟡 代码完成/待真实 P2P | P0 | 执行 Agent 临时会话保留策略 | Config、Setup、CLI、Adapter、Worker/Service、Doctor | 自动化与公共诊断完成；真实 retain/cleanup P2P 门禁待通过 |
-| `SKILL-001` | ⬜ 未开始 | P0 | Controller contract 单一来源与 Skill hash 握手 | Skill template、Setup、Doctor | doctor 基础实现 |
-| `DOC-002` | ⬜ 未闭环 | P0 | 完成只诊断 doctor 契约 | Doctor、Registry、Runner query、CLI | SKILL-001、SESSION-001 receipt、SAFE-001 |
+| `SKILL-001` | ✅ 已合入 | P0 | Controller contract 单一来源与 Skill hash 握手 | Skill template、Setup、Doctor | 只保留回归；`d21ec13`/`fe6b0ca` |
+| `DOC-002` | ✅ 已合入 | P0 | 完成只诊断 doctor 契约 | Doctor、Registry、Runner query、CLI | 只保留回归；`580b398`/`050f183` |
 | `REPORT-001` | ✅ 已合入 | P1 | 修正恢复任务累计执行时长 | RunLease、Service timing、Report、Task List、Notification | 只保留回归 |
 | `CFG-001` | ✅ 已合入 | P0 | Claude 预算与 Hermes 迭代上限配置及执行注入 | Config、Setup、CLI、Claude/Hermes Adapter、Preflight | doctor 最终视图待 DOC-002 |
 | `CFG-002` | 🟡 代码已合入/待集中验证 | P0 | 预算/迭代耗尽决策：弹窗翻倍继续或终止 | Adapter、Worker/Core、Notifications、Service respond | 安装包真实 canary 按 0.5 节延后 |
-| `SAFE-001` | 🟡 授权核心已合入 | P0 | 三 Executor safe 受阻后，经现有 permission input 明确批准，为下一次同官方 session continuation 一次性启用 full | Permission、三 Adapter、Runner、Input、Notification、Report | grant/Core/Runner/Adapter 已完成；Task 4 公共投影、通知及真实 canary 待完成 |
+| `SAFE-001` | 🟡 授权核心已合入 | P0 | 三 Executor safe 受阻后，经现有 permission input 明确批准，为下一次同官方 session continuation 一次性启用 full | Permission、三 Adapter、Runner、Input、Notification、Report | grant/Core/Runner/Adapter 与 Task 4 公共投影/通知均已合入；真实三 Executor canary 未执行 |
 | `PROMPT-001` | ✅ 已合入 | P1 | 三 Executor 公共 Prompt 契约去重 | 公共 builder、Codex/Claude/Hermes Adapter | 只保留回归 |
 | `OBS-001` | ✅ 已合入 | P1 | 当前 execution lease 状态单一派生视图 | RunLease query、Status、Report | 与 REPORT-001 同步完成 |
-| `DOCFIX-001` | ⬜ 未闭环 | P2 | 修正文档/help 漂移 | Record README、CLI help、双语文档、Skills | Phase 4/5/6 字段稳定后收口 |
+| `DOCFIX-001` | 🟡 代码完成/待合入 | P2 | 修正文档/help 漂移 | Record README、CLI help、双语文档、Skills | Phase 7 Task 3（`GE58-001`）代码完成；等待合入后只保留一致性回归 |
 | `REL-102` | ⬜ 未开始 | Gate | 1.0.2A 版本、双机、真实 Executor 与发布验收 | Build/CI/docs/release | 全部需求 |
 
 原始工作量估算只保留为历史规划，不再用于推断当前剩余进度。剩余工作以 0.3 和 0.4
@@ -339,6 +364,12 @@ conversation 不受影响。
 1 = warning
 2 = unavailable
 ```
+
+已合入状态：Phase 7 Task 1 `SKILL-001` 由 `d21ec13` 经 `fe6b0ca` 合入（canonical
+controller contract 单一来源、三平台 thin Skill、安装 manifest 与 template hash 握手，
+`tests/test_skill_manifest.py`）；Phase 7 Task 2 `DOC-002` 由 `580b398` 经 `050f183` 合入
+（doctor `schema_version=2`、text/JSON 同源、0/1/2 退出码、Skill/cleanup/config/Runner 漂移
+诊断，`tests/test_doctor.py`）。
 
 要求：
 
@@ -533,6 +564,15 @@ Codex/Claude/Hermes canary 纳入 0.5 节集中全面测试。
 - 增加 help/template/用户文档一致性测试；
 - 同步中英文 User Guide、Quick Start 和三类 Skill 的新增命令。
 
+Phase 7 Task 3（`GE58-001`）已完成：CLI help 改为“只清理 eligible 终态任务运行时诊断，
+报告永远不会被删除”；Record README 改为“当前排队中（pending）或活跃的 chain head 可
+close，终态与过期迭代拒绝”；README/README_ZH、Quick Start/Quick Start ZH、User
+Guide/User Guide ZH、开发手册、canonical controller contract 与三平台 thin Skill 统一到
+同一命令与行为契约（claude budget、hermes max-turns、session retention、safe/full
+permission input approve/deny、后台 executor-session cleanup、record clean、queued-head
+close、doctor 0/1/2、永不删除 dispatcher conversation）；新增
+`tests/test_phase7_doc_consistency.py` 一致性门禁。变更未提交、未合入，待合入评审。
+
 ## 5. 当前 Phase 计划与分工原则
 
 ### 5.1 已结束的开发批次
@@ -549,8 +589,8 @@ Codex/Claude/Hermes canary 纳入 0.5 节集中全面测试。
 | --- | --- | --- | --- |
 | Phase 4 | 🟡 代码完成/待集中验证 | `CFG-002` UX、公共视图、文档已合入 | 定向与受影响回归通过；真实 approve/deny canary 延后，不阻塞 Phase 5 |
 | Phase 5 | 🟡 代码完成/待集中验证 | `SESSION-001` 终态 cleanup/purge、capability/receipt、失败重试、公共视图与 doctor warning 数据已接线 | 自动化定向与相邻回归通过后进入集中验证；真实 retain/cleanup P2P 延后 |
-| Phase 6 | 🟡 Tasks 1～3 已合入 | `SAFE-001` grant/Core/Runner/三 Adapter 已完成；Task 4 收口通知和公共投影 | Task 4 定向与相邻回归通过后标记代码完成；真实 canary 延后 |
-| Phase 7 | ⬜ | `SKILL-001`、`DOC-002`、`DOCFIX-001` | Skill hash/版本握手、doctor 0/1/2、text/JSON 同源、双语文档/help/Skill 一致 |
+| Phase 6 | ✅ Tasks 1～4 已合入 | `SAFE-001` grant/Core/Runner/三 Adapter 与 Task 4 通知/公共投影完成 | Task 4 定向与相邻回归通过后标记代码完成；真实 canary 延后 |
+| Phase 7 | 🟡 Tasks 1～2 已合入、Task 3 待合入 | `SKILL-001`、`DOC-002` 已完成；`DOCFIX-001` 代码完成待合入 | Skill hash/版本握手、doctor 0/1/2、text/JSON 同源、双语文档/help/Skill 一致 |
 | 集中全面测试 | ⏸ 延后 | 源码全量、安装包、真实点对点、Python/双机、安全/恢复/回滚 | Phase 5～7 代码完成且接口基本冻结；所有打开 canary 逐项给出可追溯证据 |
 | Phase 8 | ⬜ | `REL-102` 阻断修复与发布收口 | 集中测试阻断清零；wheel/sdist、clean install、三 Executor、双机、唯一 SHA |
 

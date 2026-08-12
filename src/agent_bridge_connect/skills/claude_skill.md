@@ -19,6 +19,7 @@ The shared controller contract is authoritative. This file contains only Claude-
 - Pass `--session-id` only when this Claude controller exposes a trusted ID, such as a user-provided ID or trusted `CLAUDE_SESSION_ID`. Otherwise omit it; the report records `unavailable`. Never infer it from processes, paths, history, or an earlier task.
 - Claude Code remains an L1 executor. `bypassPermissions` is only an executor detail selected by AgentBC for an explicitly persisted `full` task; never pass native permission flags in controller commands.
 - Executor temporary-session cleanup is separate from the dispatcher runtime and never deletes the controller conversation.
+- Configuration (`claude budget`, `hermes max-turns`, `session retention`), `doctor` exit codes 0/1/2, `record clean`, and queued-head `task close` semantics all follow the shared controller contract.
 - Write the steps file as YAML with a top-level `steps:` list. Do not use `.txt`; a shell heredoc such as `cat > /tmp/agentbc-steps.yaml` is acceptable when the environment permits it.
 
 Canonical command shapes:

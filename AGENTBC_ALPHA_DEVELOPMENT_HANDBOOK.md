@@ -674,8 +674,9 @@ handoff 只允许从 `completed` 的当前 chain head 发起。活跃 `input_req
 8. 后续迭代只删除本迭代 record/task/report，保留前序、task code 和共享产物；
 9. customer project 永远不删除。
 
-注意：当前 Record README 模板仍写 pending close 会被拒绝，与 Service 实现不一致；
-这是文档漂移，应修正文案，不能为匹配旧说明回退正确行为。
+注意：Record README 曾错误地写 pending close 会被拒绝，与 Service 实现不一致；该文档漂移
+已由 Phase 7 Task 3（`DOCFIX-001`）修正为“当前排队中（pending）或活跃的 chain head 可
+close，终态与过期迭代拒绝”，不能为匹配旧说明回退正确行为。
 
 ### 6.7 v2 主调用链目标
 
@@ -934,11 +935,16 @@ Notification Event 只包含已经确定的 task/status/report 摘要；各 chan
 
 ### 9.4 已发现的文档漂移
 
-- CLI `record clean --help` 仍声称会删除 terminal-task reports；实际实现和公开文档
-  都保留 Report，只清理 eligible runtime diagnostics；
-- Record README 模板仍声称 pending 不能 close；Service 实际允许 queued pending close。
+已随 Phase 7 Task 3（`DOCFIX-001`，任务 `GE58-001`）收口：
 
-这两项应作为小修复，并补 CLI/help/README 一致性测试。
+- `record clean` 只清理 eligible 终态任务运行时诊断；CLI help、Record README 与全部用户文档
+  统一表述为“报告永远不会被 record clean 删除”；
+- Record README 明确当前排队中（pending）或活跃的 chain head 可以 close，终态与过期
+  非 head 迭代拒绝；与 `plan_task_close()` 的 Service 行为一致。
+
+一致性由 `tests/test_phase7_doc_consistency.py` 门禁：共享命令表、record 语义、退休命令
+（`--git-write`/`--commit-sha`/`commit_required`/`agentbc.git`）缺席、中英文与三平台 Skill
+对齐均不弱化既有契约。
 
 ---
 
@@ -2242,6 +2248,15 @@ delete 或三 Executor P2P，因此 `SESSION-001` 不得提前标记完全完成
 产品语义保持一致：cleanup 在后台无感运行，只管理 Executor 创建的临时会话，永不删除
 dispatcher conversation，也不要求用户管理单独的 runtime 目录。能力为 unsupported 或
 cleanup failed 时只形成有界 receipt/doctor warning，不改变 Task/report 的原终态。
+
+**2026-08-12 Phase 6 Task 4 与 Phase 7 状态**：Phase 6 Task 4（权限公共脱敏视图）已合入
+`0e5b924`/`9776ae5`；Phase 7 Task 1 `SKILL-001`（canonical controller contract 单一来源 +
+安装 hash 握手）已合入 `d21ec13`/`fe6b0ca`；Phase 7 Task 2 `DOC-002`（doctor v2）已合入
+`580b398`/`050f183`，当前集成基线为 `private/integration@050f183`。doctor v2 契约固定：
+`schema_version=2`，text/JSON 同源，退出码 `0=healthy`、`1=warning`、`2=unavailable`。
+Phase 7 Task 3 `DOCFIX-001`（help/Record README/双语用户文档/三类 Skill 一致性收口）已
+代码完成、待合入，见 9.4 节。`commit_required` 与已移除的 Git 专属公共命令
+（`--git-write`、`--commit-sha`、`agentbc.git`）不得以任何形式回归。
 
 详细规格以
 `~/hermes-team/codex/plan/20260805_plan_AgentBC对话溯源与执行会话保留.md` 为准。

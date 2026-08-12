@@ -32,12 +32,12 @@ Task briefs, reports, and default-workspace deliverables are not stored here:
 
 Deliverables for a user-selected customer path remain in that customer project.
 
-Run `agentbc record clean` to remove terminal-task runtime diagnostics while
-preserving `task.json`, `TASK_INDEX.md`, and `task_index.jsonl`. Task briefs and
-reports in `../tasks/report/` are not affected by record cleanup.
+Run `agentbc record clean` to remove eligible terminal-task runtime diagnostics
+only. `task.json`, `TASK_INDEX.md`, and `task_index.jsonl` are always preserved,
+and reports are never deleted by record cleanup.
 
-`agentbc task close <TASKCODE>` only applies to the current active chain head.
-Terminal, pending, and stale iterations are rejected. Closing an active `001`
+`agentbc task close <TASKCODE>` closes the current queued (pending) or active
+chain head; terminal and stale iterations are rejected. Closing an active `001`
 root removes its reports, AgentBC-managed artifacts, runtime record, and task-code
 claim. Closing an active later iteration requires `--confirm`; only that iteration's
 task/report files and runtime record are removed. Earlier iterations, indexes, the
