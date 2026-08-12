@@ -2051,6 +2051,18 @@ def _print_execution_policy(policy: Any) -> None:
                 f"error_code={cleanup.get('error_code') or '-'} "
                 f"retryable={'yes' if cleanup.get('retryable') else 'no'}"
             )
+    grant = policy.get("permission_grant")
+    if isinstance(grant, dict):
+        print(
+            "Permission grant: "
+            f"state={grant.get('state') or '-'} "
+            f"active={'yes' if grant.get('active') else 'no'} "
+            f"single_use={'yes' if grant.get('max_uses') == 1 else 'no'} "
+            f"transition={grant.get('from_mode') or '-'}->{grant.get('to_mode') or '-'} "
+            f"scope={grant.get('scope') or '-'} "
+            f"uses={grant.get('uses', 0)} "
+            f"reason={grant.get('reason_code') or '-'}"
+        )
 
 
 def _write_terminal_report(task_id: str, board_root: Path) -> None:

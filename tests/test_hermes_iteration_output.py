@@ -89,7 +89,15 @@ class HermesOutputExtractionTests(unittest.TestCase):
         remote_status: str = "completed",
     ):
         executor = HermesExecutor(command=sys.executable, transport="runner")
-        submit = {"run_id": "hermes-runner-1", "pid": 9999}
+        submitted_run_ids: list[str] = []
+
+        def _fake_submit(*args, **kwargs):
+            # The Runner must echo the Adapter-preallocated executor run ID so
+            # the production request/response equality check stays meaningful.
+            executor_run_id = str(kwargs.get("executor_run_id") or "")
+            submitted_run_ids.append(executor_run_id)
+            return {"run_id": executor_run_id, "pid": 9999}
+
         remote = {
             "status": remote_status,
             "stdout": output,
@@ -107,11 +115,14 @@ class HermesOutputExtractionTests(unittest.TestCase):
                 "health",
                 return_value={"executors": ["hermes"]},
             ),
-            patch.object(executor._runner_client, "submit", return_value=submit),
+            patch.object(executor._runner_client, "submit", side_effect=_fake_submit),
             patch.object(executor._runner_client, "status", return_value=remote),
         ):
             start = executor.start(self.packet)
             self.assertTrue(start.ok)
+            # Request/response equality: the ID the Adapter sent to the Runner
+            # is the ID the Runner echoed and the ID the Adapter accepted.
+            self.assertEqual(submitted_run_ids, [start.run_id])
             return executor.poll(start.run_id)
 
     # ---- final-response extraction -------------------------------------

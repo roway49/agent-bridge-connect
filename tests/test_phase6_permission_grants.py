@@ -254,6 +254,7 @@ class PermissionGrantContractTests(unittest.TestCase):
                 "max_uses": 1,
                 "state": "issued",
                 "uses": 0,
+                "reason_code": "",
                 "issued_at": ISSUED_AT,
                 "consumed_at": "",
                 "revoked_at": "",
@@ -276,6 +277,19 @@ class PermissionGrantContractTests(unittest.TestCase):
         self.assertNotIn("target_run_id", consumed_projection)
         self.assertNotIn("codex-run-1", repr(consumed_projection))
         self.assertNotIn("codex-run-2", repr(consumed_projection))
+
+        revoked = revoke_permission_grant(
+            consumed,
+            "task_terminal",
+            revoked_at=REVOKED_AT,
+        )
+        revoked_projection = permission_grant_public_projection(revoked)
+        self.assertEqual(revoked_projection["state"], "revoked")
+        self.assertFalse(revoked_projection["active"])
+        self.assertEqual(revoked_projection["reason_code"], "task_terminal")
+        self.assertEqual(revoked_projection["uses"], 1)
+        self.assertEqual(revoked_projection["consumed_at"], CONSUMED_AT)
+        self.assertEqual(revoked_projection["revoked_at"], REVOKED_AT)
 
 
 class PermissionCallbackContractTests(unittest.TestCase):
