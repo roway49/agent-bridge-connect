@@ -23,6 +23,7 @@ from agent_bridge_connect.execution_contract import (
     route_executor_terminal,
     strip_callback_line,
 )
+from agent_bridge_connect.effective_permissions import resolve_effective_permission
 from agent_bridge_connect.media import task_image_paths
 from agent_bridge_connect.permission_modes import (
     assert_executor_permission_supported,
@@ -217,7 +218,18 @@ class CodexExecutor(CLIExecutorBase):
         self._task_packets[run_id] = dict(task_packet)
         self._start_run_lease(task_packet, run_id, "codex")
         prompt = _build_prompt(task_packet)
-        permission = permission_record_from_extensions(task_packet.get("extensions"))
+        try:
+            permission = resolve_effective_permission(
+                task_packet,
+                "codex",
+                run_id,
+                trusted_runner_managed=(
+                    task_packet.get("runner_authorization_required") is True
+                ),
+            )
+        except ABCError as exc:
+            self._close_run_lease(run_id)
+            return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
         try:
             assert_executor_permission_supported(
                 "codex", permission["effective_mode"], self.agent_bin
@@ -235,7 +247,13 @@ class CodexExecutor(CLIExecutorBase):
 
         try:
             if task_packet.get("runner_authorization_required") is True:
-                RunnerClient().authorize_command("codex", command, root, task_packet)
+                RunnerClient().authorize_command(
+                    "codex",
+                    command,
+                    root,
+                    task_packet,
+                    executor_run_id=run_id,
+                )
             self._heartbeat_run(run_id)
             completed = subprocess.run(
                 command,

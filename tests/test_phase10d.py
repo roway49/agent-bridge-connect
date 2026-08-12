@@ -2935,9 +2935,9 @@ class Phase10dIntegrationTests(unittest.TestCase):
             "status": "ready",
             "executors": ["hermes"],
         }
-        client.submit.return_value = {
+        client.submit.side_effect = lambda *args, **kwargs: {
             "ok": True,
-            "run_id": "runner-hermes-test",
+            "run_id": kwargs["executor_run_id"],
             "pid": 4321,
             "status": "running",
         }
@@ -2969,6 +2969,10 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         polled = executor.poll(started.run_id)
         self.assertTrue(started.ok)
+        self.assertEqual(
+            started.run_id,
+            client.submit.call_args.kwargs["executor_run_id"],
+        )
         self.assertEqual(polled.status, "completed")
         self.assertEqual(polled.result["transport"], "runner")
         self.assertEqual(
@@ -2989,9 +2993,9 @@ class Phase10dIntegrationTests(unittest.TestCase):
             "status": "ready",
             "executors": ["hermes"],
         }
-        client.submit.return_value = {
+        client.submit.side_effect = lambda *args, **kwargs: {
             "ok": True,
-            "run_id": "runner-hermes-transient",
+            "run_id": kwargs["executor_run_id"],
             "pid": 4321,
             "status": "running",
         }
@@ -3011,6 +3015,10 @@ class Phase10dIntegrationTests(unittest.TestCase):
         polled = executor.poll(started.run_id)
 
         self.assertTrue(started.ok)
+        self.assertEqual(
+            started.run_id,
+            client.submit.call_args.kwargs["executor_run_id"],
+        )
         self.assertEqual(polled.status, "running")
         self.assertEqual(polled.progress["runner_status"], "transient_unavailable")
         self.assertEqual(polled.result["failure"]["kind"], "runner_status_transient")

@@ -177,7 +177,10 @@ class Phase3HermesTests(unittest.TestCase):
         executor = HermesExecutor(command=sys.executable, transport="runner")
         executor._runner_client.health = mock.Mock(return_value={"executors": ["hermes"]})
         executor._runner_client.submit = mock.Mock(
-            return_value={"run_id": "runner-hermes-2", "pid": 123}
+            side_effect=lambda *args, **kwargs: {
+                "run_id": kwargs["executor_run_id"],
+                "pid": 123,
+            }
         )
         executor._runner_client.status = mock.Mock(
             return_value={
