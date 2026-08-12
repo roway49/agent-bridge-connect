@@ -102,39 +102,25 @@ class HermesSkillTests(unittest.TestCase):
         self.assertTrue(second["installed"])
         self.assertFalse(second["changed"])
         text = self.skill_path.read_text(encoding="utf-8")
+        contract_path = self.skill_path.parent / "references" / "controller-contract.md"
+        contract = contract_path.read_text(encoding="utf-8")
         self.assertIn("agentbc runner status", text)
-        self.assertIn("--assignee hermes", text)
+        self.assertIn("target_executor=hermes", text)
         self.assertIn("--dispatch", text)
-        self.assertNotIn("--workspace /absolute/project/path", text)
+        self.assertNotIn("--workspace /absolute/project/path", contract)
         self.assertIn('--customer-path "default path"', text)
-        self.assertIn("--customer-path", text)
-        self.assertIn("steps[].description", text)
+        self.assertIn("--customer-path", contract)
+        self.assertIn("steps[].description", contract)
         reference = self.skill_path.parent / "references" / "agentbc-steps-yaml.md"
         self.assertTrue(reference.is_file())
+        self.assertTrue(contract_path.is_file())
         self.assertIn("Do not use `action`", reference.read_text(encoding="utf-8"))
-        self.assertIn("禁止根据任务标题", text)
-        self.assertIn("Runner 路径错误", text)
-        self.assertIn("禁止通过修改", text)
-        self.assertIn("pending", text)
-        self.assertIn("不是当前任务", text)
-        self.assertIn("--step 1", text)
-        self.assertIn("当前 chain head", text)
-        self.assertIn("stale_handoff_source", text)
-        self.assertIn("最新任务", text)
-        self.assertIn("task code", text)
-        self.assertIn("project/artifact root", text)
-        self.assertIn("用户确认", text)
         self.assertIn("默认 `target_executor=hermes`", text)
         self.assertIn("禁止根据任务类型", text)
-        self.assertIn("新开任务目录", text)
-        self.assertIn("禁止使用 `handoff`", text)
-        self.assertIn("禁止读取产物文件", text)
-        self.assertIn("路径计划", text)
-        self.assertIn("不要把这种需求改写成", text)
-        self.assertIn("既有 AgentBC 任务的产物", text)
-        self.assertIn("handoff_required", text)
-        self.assertIn("唯一产物根", text)
-        self.assertIn("--branch", text)
+        self.assertIn("stale_handoff_source", contract)
+        self.assertIn("handoff_required", contract)
+        self.assertIn("--branch", contract)
+        self.assertTrue((self.skill_path.parent / ".agentbc-skill.json").is_file())
 
     def test_alpha_installs_hermes_skill_and_command_to_all_profiles(self):
         home = self.test_dir / "profile-home"
@@ -168,29 +154,38 @@ class HermesSkillTests(unittest.TestCase):
             / "skills"
             / "codex_skill.md"
         )
-        text = skill_path.read_text(encoding="utf-8")
+        entry = skill_path.read_text(encoding="utf-8")
+        text = " ".join(
+            (
+                entry
+                + (skill_path.parent / "references" / "controller-contract.md").read_text(
+                    encoding="utf-8"
+                )
+            ).split()
+        )
 
+        self.assertIn("references/controller-contract.md", entry)
         self.assertNotIn("--workspace /absolute/project/path", text)
         self.assertIn('--customer-path "default path"', text)
         self.assertIn("Never invent a project path", text)
-        self.assertIn("Runner path error", text)
-        self.assertIn("Do not retry by changing", text)
+        self.assertIn("Runner rejects a path", text)
+        self.assertIn("Do not copy a project or file", text)
         self.assertIn("A `pending` task is queued, not current", text)
-        self.assertIn("atomically create and dispatch", text)
-        self.assertIn("Do not request elevated", text)
+        self.assertIn("After atomic dispatch", text)
+        self.assertIn("do not request elevated", text)
         self.assertIn("task dispatch <task-id>", text)
         self.assertIn("current chain head", text)
         self.assertIn("stale_handoff_source", text)
-        self.assertIn("latest task", text)
+        self.assertIn("fuzzy references", text)
         self.assertIn("task_code", text)
-        self.assertIn("provides an explicit task ID", text)
+        self.assertIn("explicit task ID", text)
         self.assertIn("new task directory", text)
-        self.assertIn("do not use `handoff`", text)
-        self.assertIn("depends on, reviews, or modifies deliverables", text)
+        self.assertIn("instead of handoff", text)
+        self.assertIn("depends on, reviews, or modifies an existing task", text)
         self.assertIn("handoff_required", text)
-        self.assertIn("only deliverable root", text)
-        self.assertIn("hard stop", text)
-        self.assertIn("`--workspace`, `--output-dir`, and manual `--customer-dir` decisions are obsolete", text)
+        self.assertIn("project/artifact root", text)
+        self.assertIn("before reading artifacts", text)
+        self.assertIn("obsolete `--workspace` or `--output-dir`", text)
         self.assertIn("--branch", text)
 
     def test_public_codex_skill_matches_packaged_template(self):
@@ -222,27 +217,33 @@ class HermesSkillTests(unittest.TestCase):
             / "skills"
             / "claude_skill.md"
         )
-        text = skill_path.read_text(encoding="utf-8")
+        entry = skill_path.read_text(encoding="utf-8")
+        text = " ".join(
+            (
+                entry
+                + (skill_path.parent / "references" / "controller-contract.md").read_text(
+                    encoding="utf-8"
+                )
+            ).split()
+        )
 
-        self.assertTrue(text.startswith("---\nname: agentbc\n"))
-        self.assertIn("description:", text.split("---", 2)[1])
+        self.assertTrue(entry.startswith("---\nname: agentbc\n"))
+        self.assertIn("description:", entry.split("---", 2)[1])
         self.assertIn("agentbc task status", text)
         self.assertIn("bypassPermissions", text)
-        self.assertIn("当前任务", text)
         self.assertIn("new root task", text)
         self.assertIn("stale_handoff_source", text)
-        self.assertIn("depends on, reviews, or modifies deliverables", text)
+        self.assertIn("depends on, reviews, or modifies an existing task", text)
         self.assertIn("handoff_required", text)
         self.assertIn("Claude is the controller, not the executor", text)
         self.assertIn(
-            "task handoff <confirmed-task-id> --to <target-executor> --source-platform claude --dispatch",
+            "task handoff <confirmed-task-id> --to <target-executor>",
             text,
         )
-        self.assertIn("Do not edit files, generate artifacts, or complete the requested work inline", text)
+        self.assertIn("Do not edit files, generate artifacts, or complete that dispatched work inline", text)
         self.assertIn("top-level `steps:` list", text)
         self.assertIn("Do not use `.txt`", text)
         self.assertIn("cat > /tmp/agentbc-steps.yaml", text)
-        self.assertIn("Claude Code auto mode", text)
         self.assertIn("do not inspect AgentBC source code or CLI help", text)
 
     def test_install_claude_skill_is_idempotent(self):
@@ -257,7 +258,8 @@ class HermesSkillTests(unittest.TestCase):
         self.assertEqual(second["status"], "already_installed")
         text = destination.read_text(encoding="utf-8")
         self.assertIn("Claude is the controller, not the executor", text)
-        self.assertIn("Shortest New-Task Recipe", text)
+        self.assertIn("references/controller-contract.md", text)
+        self.assertTrue((destination.parent / ".agentbc-skill.json").is_file())
 
     def test_uninstall_hermes_skill_removes_file(self):
         from agent_bridge_connect.setup import install_hermes_skill, uninstall_hermes_skill
@@ -301,6 +303,17 @@ class DispatcherTraceabilitySkillTests(unittest.TestCase):
         )
         return path.read_text(encoding="utf-8")
 
+    def _contract_text(self) -> str:
+        path = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "agent_bridge_connect"
+            / "skills"
+            / "references"
+            / "controller-contract.md"
+        )
+        return path.read_text(encoding="utf-8")
+
     def test_each_packaged_skill_passes_its_correct_source_platform_on_create(self):
         for platform in ("codex", "claude", "hermes"):
             with self.subTest(platform=platform):
@@ -332,31 +345,23 @@ class DispatcherTraceabilitySkillTests(unittest.TestCase):
             with self.subTest(platform=platform):
                 text = self._skill_text(platform)
                 if platform in self.EN:
-                    self.assertIn("never guess", text)
+                    self.assertIn("Never infer", text)
                 else:
                     self.assertIn("禁止", text)
 
     def test_each_packaged_skill_says_handoff_records_current_dispatcher_conversation(self):
         for platform in ("codex", "claude", "hermes"):
             with self.subTest(platform=platform):
-                text = self._skill_text(platform)
-                if platform in self.EN:
-                    self.assertIn("current dispatcher conversation", text)
-                    self.assertIn("not the source task conversation", text)
-                else:
-                    self.assertIn("当前派发者会话", text)
-                    self.assertIn("而不是源任务会话", text)
+                text = " ".join(self._contract_text().split())
+                self.assertIn("current controller", text)
+                self.assertIn("prior task", text)
 
     def test_each_packaged_skill_keeps_dispatcher_trace_separate_from_executor_sessions(self):
         for platform in ("codex", "claude", "hermes"):
             with self.subTest(platform=platform):
-                text = self._skill_text(platform)
-                if platform in self.EN:
-                    self.assertIn("dispatcher conversation", text)
-                    self.assertIn("does not delete", text)
-                else:
-                    self.assertIn("派发者会话", text)
-                    self.assertIn("不会删除", text)
+                text = self._contract_text()
+                self.assertIn("Dispatcher sessions and executor temporary sessions are", text)
+                self.assertIn("independent", text)
 
     def test_packaged_skills_have_no_hardcoded_trusted_id_examples(self):
         for platform in ("codex", "claude", "hermes"):
@@ -389,8 +394,10 @@ class IdempotentCodexSkillTests(unittest.TestCase):
         text = skill.read_text(encoding="utf-8")
         self.assertIn("--source-platform codex", text)
         self.assertIn("--session-id", text)
-        self.assertIn("Dispatcher Traceability", text)
+        self.assertIn("references/controller-contract.md", text)
         self.assertTrue((root / "agents" / "openai.yaml").is_file())
+        self.assertTrue((root / "references" / "controller-contract.md").is_file())
+        self.assertTrue((root / ".agentbc-skill.json").is_file())
 
 
 class SetupModeTests(unittest.TestCase):
