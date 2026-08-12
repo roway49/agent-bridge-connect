@@ -8,6 +8,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .permission_grants import (
+    PERMISSION_GRANT_EXTENSION_KEY,
+    permission_grant_public_projection,
+)
 from .protocol import ABCError
 
 
@@ -633,6 +637,21 @@ def build_task_execution_policy(
     return resources, session
 
 
+def permission_grant_view(value: Any) -> dict[str, Any] | None:
+    """Return the sanitized one-shot grant projection, failing closed.
+
+    Malformed, tampered or future-version grant envelopes project to ``None``
+    so public interfaces never surface binding identifiers or sensitive fields
+    and never crash the shared status/preflight/report view.
+    """
+    if value is None:
+        return None
+    try:
+        return permission_grant_public_projection(value)
+    except ABCError:
+        return None
+
+
 def execution_policy_view(extensions: Any) -> dict[str, Any]:
     """Return the stable, path-free policy projection used by public interfaces."""
     value = extensions if isinstance(extensions, dict) else {}
@@ -662,6 +681,9 @@ def execution_policy_view(extensions: Any) -> dict[str, Any]:
         "version": EXECUTION_POLICY_VERSION,
         "resources": resource_view,
         "session": session_view,
+        "permission_grant": permission_grant_view(
+            value.get(PERMISSION_GRANT_EXTENSION_KEY)
+        ),
     }
 
 
@@ -673,12 +695,24 @@ def public_workspace_view(workspace: Any) -> dict[str, Any]:
 
 
 def public_extensions_view(extensions: Any) -> dict[str, Any]:
-    """Remove internal session data while preserving the public extension record."""
+    """Remove internal session data while preserving the public extension record.
+
+    The internal ``agentbc.permission_grant`` envelope is replaced by the same
+    sanitized projection exposed through ``execution_policy_view``; malformed
+    or unsupported envelopes are removed entirely (fail closed).
+    """
     public = copy.deepcopy(extensions) if isinstance(extensions, dict) else {}
     session = public.get(SESSION_EXTENSION_KEY)
     if isinstance(session, dict):
         session.pop("project_path", None)
         session["cleanup"] = session_cleanup_view(session.get("cleanup"))
+    grant = public.get(PERMISSION_GRANT_EXTENSION_KEY)
+    if grant is not None:
+        projected = permission_grant_view(grant)
+        if projected is None:
+            public.pop(PERMISSION_GRANT_EXTENSION_KEY, None)
+        else:
+            public[PERMISSION_GRANT_EXTENSION_KEY] = projected
     return public
 
 

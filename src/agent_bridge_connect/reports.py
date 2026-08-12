@@ -638,6 +638,7 @@ def _render_report_md(report: dict[str, Any]) -> str:
     resources = policy.get("resources") or {}
     executor_session = policy.get("session") or {}
     session_cleanup = executor_session.get("cleanup") or {}
+    grant = policy.get("permission_grant") or {}
     lines.extend(
         [
             "",
@@ -660,6 +661,21 @@ def _render_report_md(report: dict[str, Any]) -> str:
             f"- Cleanup retryable: `{'yes' if session_cleanup.get('retryable') else 'no'}`",
         ]
     )
+    if grant:
+        lines.extend(
+            [
+                f"- Permission grant: `{grant.get('state') or 'none'}`",
+                f"- Permission grant active: `{'yes' if grant.get('active') else 'no'}`",
+                f"- Permission grant temporary: `{'yes' if grant.get('temporary') else 'no'}`",
+                f"- Permission grant transition: `{grant.get('from_mode') or 'safe'}` -> `{grant.get('to_mode') or 'full'}`",
+                f"- Permission grant scope: `{grant.get('scope') or 'none'}` with `{grant.get('max_uses', 1)}` use(s)",
+                f"- Permission grant uses: `{grant.get('uses', 0)}`",
+                f"- Permission grant reason: `{grant.get('reason_code') or 'none'}`",
+                f"- Permission grant issued: `{grant.get('issued_at') or 'none'}`",
+                f"- Permission grant consumed: `{grant.get('consumed_at') or 'none'}`",
+                f"- Permission grant revoked: `{grant.get('revoked_at') or 'none'}`",
+            ]
+        )
 
     image_inputs = (report.get("media") or {}).get("images") or []
     if image_inputs:

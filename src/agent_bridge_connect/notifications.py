@@ -4,6 +4,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from .execution_policy import execution_policy_view
 from .notifiers.dialog import DialogNotifier
 from .notifiers.file import FileNotifier
 from .reports import redact_secrets
@@ -200,12 +201,17 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
                 [
                     "Requested access:",
                     compact_notification_text(str(request.get("requested_permission") or ""), 180),
+                    "Approve grants the corresponding Executor its complete full permission for exactly the next continuation of this same task/session.",
+                    "The technical scope is not limited to Git or the blocked command.",
+                    "The grant is single-use.",
+                    "Deny terminates the task as failed.",
                     "Choose Approve or Deny below.",
                 ]
             )
         else:
             body_lines.append("Enter your response below to resume this same task.")
     body = "\n".join(body_lines)
+    permission_grant = execution_policy_view(task.extensions).get("permission_grant")
     return {
         "task_id": task_id,
         "event_type": "task.input_required",
@@ -222,6 +228,7 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         "input_reason": str(request.get("reason") or ""),
         "input_options": input_options,
         "input_option_descriptions": option_descriptions,
+        "permission_grant": permission_grant,
     }
 
 

@@ -337,7 +337,15 @@ def revoke_permission_grant(
 
 
 def permission_grant_public_projection(value: Any) -> dict[str, Any]:
-    """Return the single sanitized view allowed outside internal Core logic."""
+    """Return the single sanitized view allowed outside internal Core logic.
+
+    The projection intentionally mirrors the durable envelope's stable,
+    non-identifying facts: version, temporary/active flags, source, the
+    safe -> full transition, the next_executor_run scope, max_uses, state,
+    uses, the stable revocation reason code, and timestamps.  Binding
+    identifiers (grant_id, task/input/executor/session/source_run/target_run)
+    and any sensitive execution material are never projected.
+    """
     grant = validate_permission_grant(value)
     state = grant["state"]
     audit = grant["audit"]
@@ -352,6 +360,7 @@ def permission_grant_public_projection(value: Any) -> dict[str, Any]:
         "max_uses": PERMISSION_GRANT_MAX_USES,
         "state": state["status"],
         "uses": state["uses"],
+        "reason_code": audit["revocation_code"],
         "issued_at": audit["issued_at"],
         "consumed_at": audit["consumed_at"],
         "revoked_at": audit["revoked_at"],
