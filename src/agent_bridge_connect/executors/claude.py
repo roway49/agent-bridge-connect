@@ -314,6 +314,11 @@ class ClaudeExecutor(CLIExecutorBase):
                 continue
             except OSError as exc:
                 if exc.errno in {errno.ENOTEMPTY, errno.EEXIST}:
+                    # The chain root is also the managed Artifact root when the
+                    # user did not provide a customer path. Normal deliverables
+                    # (and sibling task iterations) must survive session cleanup.
+                    if field == "chain_root":
+                        continue
                     return _claude_cleanup_failed(
                         "claude_cleanup_directory_not_empty"
                     )
@@ -755,6 +760,7 @@ def _build_prompt(task_packet: dict[str, Any]) -> str:
             extra_rules=(
                 "Do not claim user acceptance. completed only means your agent turn is finished and ready for user review.",
                 "Do not create Claude-internal tasks/todos. The AgentBC task record and report are the only execution ledger.",
+                "Your process cwd may be an internal temporary Claude project, not the Project root. Never place user deliverables in cwd by relative path; use the exact absolute Project root or Artifact root printed above for every deliverable and for the working directory of commands that create deliverables.",
                 "If the step asks another agent to execute or review work, use the AgentBC CLI handoff/dispatch command instead of doing that agent's work inline.",
                 "Keep required long-running commands in the foreground with a tool timeout longer than the expected runtime.",
                 "If Claude Code moves a command to the background, use BashOutput repeatedly until it exits. Never end this turn while a required background command is still running.",

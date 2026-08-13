@@ -342,6 +342,36 @@ class PermissionCallbackContractTests(unittest.TestCase):
             },
         )
 
+    def test_permission_reason_is_safely_truncated_instead_of_losing_the_wait(self) -> None:
+        exact = "x" * 240
+        exact_validation = self._validate(
+            self._callback(
+                input_details={
+                    "type": "permission",
+                    "requested_permission": "full",
+                    "reason": exact,
+                }
+            )
+        )
+        self.assertTrue(exact_validation.valid)
+        self.assertEqual(exact_validation.callback["input"]["reason"], exact)
+
+        overlong = "x" * 240 + "never persist this tail"
+        overlong_validation = self._validate(
+            self._callback(
+                input_details={
+                    "type": "permission",
+                    "requested_permission": "full",
+                    "reason": overlong,
+                }
+            )
+        )
+        self.assertTrue(overlong_validation.valid)
+        reason = overlong_validation.callback["input"]["reason"]
+        self.assertEqual(len(reason), 240)
+        self.assertEqual(reason, "x" * 239 + "…")
+        self.assertNotIn("never persist this tail", str(overlong_validation.callback))
+
     def test_permission_marker_rejects_missing_reason_requested_safe_and_block_count(self) -> None:
         cases = {
             "missing_reason": self._callback(

@@ -52,7 +52,8 @@ MARKER_LEAD = (
 INPUT_REQUIRED_RULE = (
     "Use final_state input_required only with at least one declared step status blocked; "
     "an access, sandbox, approval, or permission blocker must use input.type permission with "
-    "requested_permission full, a concrete reason, and exactly one declared step status blocked; "
+    "requested_permission full, a concrete reason of at most 240 characters, and exactly one "
+    "declared step status blocked; "
     "keep all other steps pending or done, include no native flags, and never use message or choice. "
     "Plain permission or approval prose is not a valid stop, and free-text message responses can "
     "never grant access."

@@ -197,6 +197,30 @@ class ClaudeManagedCleanupTests(unittest.TestCase):
         )
         self.assertFalse(self.project.parent.parent.exists())
 
+    def test_managed_artifacts_survive_successful_session_cleanup(self) -> None:
+        deliverable = self.plan.artifact_root / "result.txt"
+        deliverable.write_text("keep", encoding="utf-8")
+        real_rmdir = os.rmdir
+        with (
+            mock.patch(
+                "agent_bridge_connect.executors.claude.subprocess.run",
+                side_effect=self.fake,
+            ),
+            mock.patch(
+                "agent_bridge_connect.executors.claude.os.rmdir",
+                wraps=real_rmdir,
+            ) as rmdir,
+        ):
+            result = self.executor.cleanup_session(self._request())
+
+        self.assertEqual(result.state, "succeeded")
+        self.assertEqual(
+            [item.args[0] for item in rmdir.call_args_list],
+            [self.project, self.project.parent, self.project.parent.parent],
+        )
+        self.assertFalse(self.project.parent.exists())
+        self.assertEqual(deliverable.read_text(encoding="utf-8"), "keep")
+
     def test_purge_timeout_and_nonzero_exit_stop_before_rmdir(self) -> None:
         cases = (
             (

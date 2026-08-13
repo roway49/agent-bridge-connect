@@ -71,12 +71,29 @@ package-only smoke 与 CLI/Runner identity 验证通过；正式版本尚未提�
 | --- | --- | --- |
 | Phase 4 / `CFG-002` | 🟡 代码完成/待集中验证 | Tasks 1～4 已合入；真实 Claude/Hermes 耗尽、approve 翻倍同 session 继续、deny 明确 failed 的安装包 canary 延后到集中全面测试 |
 | `SESSION-001` | 🟡 代码完成/待真实 P2P | session 快照、receipt、同 ID resume、终态 cleanup/purge、capability、公共视图与 doctor warning 已完成；真实 retain/cleanup P2P 门禁尚未通过 |
-| `SAFE-001` | 🟡 授权核心已合入/待 canary | grant、Core、Runner、三 Adapter、Hermes receipt 门禁与 Task 4 公共脱敏投影均已合入；真实三 Executor canary 未执行 |
+| `SAFE-001` | 🟡 Codex/Hermes canary 通过，Claude 待验收 | grant、Core、Runner、三 Adapter、Hermes receipt 门禁与 Task 4 公共脱敏投影均已合入；Codex `4PK9-001` 与 Hermes `C2KS-001` 已验证 safe→弹窗 Approve→同 session 单次 full→终态 cleanup，Claude 真实 canary 仍待执行 |
 | `REL-102` | 🟡 候选包自动门禁通过 | `1.0.2a1` 版本、wheel/sdist、隔离安装、只读 setup 与 shell 闭环 smoke 已通过；Python 3.10/3.14、双机和三真实 Executor 发布 Gate 未执行 |
 
 禁止回归记录：`commit_required`、`--git-write`、`--commit-sha`、`agentbc.git` 及 Phase 6 旧
 Task 1（`SWJF-001`）移除的 Git 专属公共命令不得以任何形式（CLI、help、Skill、文档或新状态）
 重新出现；`SAFE-001` 的一次性 full 授权只复用既有 permission input 与 respond 命令。
+
+Phase 8 手测修复记录（2026-08-13）：Hermes `E4S2-001` 已确定性触发原生危险命令阻塞并
+输出官方 session receipt，但 Agent 生成的 permission reason 为 374 字符，超过 v1 的 240
+字符限制，Core 因 `completion_marker_permission_reason_invalid` 将任务直接终结为 failed，
+导致用户看不到权限弹窗。当前版改为仅对非空 permission reason 做最多 240 字符的安全截断，
+其余 requested permission、唯一 blocked step、session/run 绑定和 native flag 注入继续严格
+fail closed；公共 prompt 同时明示 240 字符上限。修正版 `C2KS-001` 已完成两次 run、同一
+Hermes session、`resume_count=1`、一次性 full grant 消费、证明文件验证及 session cleanup。
+极简首屏和“查看完整原因”交互按钮已转入 `1.0.3A / PERM-103-006`，不回填本版 UI 合同。
+
+Claude canary `KXNX-001` 补充暴露两项边界：`acceptEdits` 会直接允许低风险 Bash 写入，且
+retention=false 时进程 cwd 是 `<TASK-ID>/claude` 临时工程，相对交付路径会污染临时工程并
+使安全 cleanup 因目录非空停止。当前版采用最小兼容修复：Claude 公共 Prompt 明确所有交付
+和产生交付物的命令必须使用所展示的绝对 Project/Artifact root；cleanup 在清空精确 Claude
+project 与 task root 后，允许最外层 managed Artifact/chain root 因正常产物或其他 iteration
+非空而成功保留。临时 project 或 task root 非空仍 fail closed，不递归删除、不自动搬运。
+不依赖 Prompt 的文件级最小写权限已登记为 `1.0.3A / PERM-103-007`。
 
 ### 0.4 后续固定顺序
 

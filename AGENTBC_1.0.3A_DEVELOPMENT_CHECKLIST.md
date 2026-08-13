@@ -122,6 +122,42 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 - receipt 缺失、重复、session/run 不匹配时进入 `needs_recovery`，禁止猜测 ID；
 - approval 后只允许显式 ID resume，禁止 `--last`、`--continue` 等模糊恢复。
 
+### 5.1 极简权限弹窗与完整原因展开（`PERM-103-006`）
+
+- 权限弹窗首屏只显示由 Core 生成的最短单行摘要，例如“Hermes 需要一次性完整权限继续
+  当前步骤”；默认界面不得直接铺开 Agent 生成的长 reason、完整命令、路径或原始输出；
+- 保留 Approve / Deny 作为仅有的两种决策动作；新增“查看完整原因”交互按钮只负责展开或
+  收起详情，不是第三种响应，不得发放授权、改变 input 状态、重置倒计时或绕过超时策略；
+- approval event 分离 `reason_summary` 与 `reason_detail`。摘要由 Core 基于结构化
+  Executor/operation/scope 生成；详情在持久化前统一脱敏、去控制字符并设置独立长度上限，
+  禁止包含 token、secret、私有数据库路径、session 内容、raw output 或未经处理的 argv；
+- `1.0.2A` 的兼容 marker 仍只持久化最多 240 字符的截断 reason，不承诺保留被截断尾部；
+  `1.0.3A` 的完整详情必须来自新的结构化 approval event，不能从历史日志、Executor 私有
+  session 存储或被截断的 v1 marker 反向恢复；
+- text/JSON notification、状态页和报告默认只使用短摘要；只有本机显式展开动作读取脱敏后的
+  bounded detail，公共 projection 不新增 raw reason 字段。
+
+### 5.2 Claude 临时工程文件级最小写权限（`PERM-103-007`）
+
+- 不再把“不要向临时 cwd 写交付物”仅作为 Prompt 约束；先对受支持的 Claude 版本执行
+  fresh、resume、input wait、资源耗尽和正常终态探查，冻结临时工程真正必需的相对文件、
+  目录、类型、创建时机和访问模式 fixture；探查只使用隔离目录和测试 session，不扫描用户
+  原生 Claude 工程或私有 session 数据库；
+- permission registry 为每个已探测版本登记临时工程写入 capability。Runner 只允许匹配
+  fixture 的必要路径写入，其他位于 `<TASK-ID>/claude` 下的新建、覆盖、重命名和删除默认
+  fail closed；未知 Claude 版本或未识别必要路径不得回退为整个临时目录可写；
+- Artifact root / customer project 作为独立 deliverable capability 授权。无 customer path 时
+  Core 自动创建 managed Artifact root，Claude 对产物的读写必须落在该根；临时工程与产物
+  根即使物理上同属 task artifact tree，也不得共享同一宽泛写权限；
+- 优先采用 OS/Executor 能实际阻止写入的路径策略；事后 diff/扫描只作为审计和 recovery
+  证据，不能冒充权限阻断。无法表达文件级 allowlist 的平台必须明确 capability unsupported，
+  不得继续仅靠模型遵守提示词；
+- matcher 必须使用 canonical containment、拒绝 symlink/hardlink/path traversal/case alias，
+  并由 Runner 对 task snapshot、Claude 版本和真实 cwd 再校验；不得授权 AgentBC record、
+  report、其他 Task、用户配置或 Claude 私有全局目录；
+- cleanup 只 purge 精确绑定的 Claude project；临时工程出现非必要文件时停止删除并进入
+  `needs_recovery`，正常 Artifact root 非空必须保留且不算 cleanup failure。
+
 ## 6. 兼容与迁移（`PERM-103-005`）
 
 - 历史任务继续按持久化 `agentbc.permission` 运行，不做原地提权或批量改写；

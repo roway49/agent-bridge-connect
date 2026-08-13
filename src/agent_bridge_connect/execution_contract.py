@@ -233,9 +233,8 @@ def validate_callback_payload(
                 )
             clean_reason = reason.strip()
             if len(clean_reason) > MAX_PERMISSION_REASON_LENGTH:
-                return _invalid(
-                    "completion_marker_permission_reason_invalid",
-                    f"permission input reason must be at most {MAX_PERMISSION_REASON_LENGTH} characters",
+                clean_reason = (
+                    clean_reason[: MAX_PERMISSION_REASON_LENGTH - 1].rstrip() + "…"
                 )
             requested_permission = input_details.get("requested_permission")
             if (
