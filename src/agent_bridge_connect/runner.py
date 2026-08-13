@@ -700,6 +700,15 @@ class RunnerClient:
     def health(self) -> dict[str, Any]:
         return self._request({"op": "health"})
 
+    def storage_status(self, paths: list[str | Path]) -> dict[str, Any]:
+        """Ask the Runner to inspect storage access from its own process."""
+        return self._request(
+            {
+                "op": "storage_status",
+                "paths": [str(Path(path).expanduser()) for path in paths],
+            }
+        )
+
     def submit(
         self,
         executor: str,
@@ -984,6 +993,48 @@ class RunnerState:
 
         self.known_boards: set[Path] = {DEFAULT_BOARD_ROOT.expanduser().resolve()}
         (self.state_root / "runs").mkdir(parents=True, exist_ok=True)
+
+    def storage_status(self, paths: Any) -> dict[str, Any]:
+        """Return read-only path diagnostics from the authoritative Runner.
+
+        The operation is deliberately limited to configured Runner roots and
+        never creates a path.  Doctor can therefore distinguish a sandboxed
+        controller's permissions from the process that actually performs task
+        and report writes without exposing the Runner's root policy.
+        """
+        if not isinstance(paths, list) or not 1 <= len(paths) <= 8:
+            raise RunnerError("runner storage probe requires between 1 and 8 paths")
+        resolved: list[Path] = []
+        seen: set[str] = set()
+        for raw in paths:
+            if not isinstance(raw, str) or not raw.strip():
+                raise RunnerError("runner storage probe paths must be non-empty strings")
+            path = Path(raw).expanduser().resolve()
+            if not any(_is_within(path, root) for root in self.allowed_roots):
+                raise RunnerError("runner storage probe path is outside allowed roots")
+            key = str(path)
+            if key in seen:
+                raise RunnerError("runner storage probe paths must be unique")
+            seen.add(key)
+            resolved.append(path)
+
+        status: list[dict[str, Any]] = []
+        for path in resolved:
+            exists = path.exists()
+            status.append(
+                {
+                    "path": str(path),
+                    "exists": exists,
+                    "is_dir": path.is_dir() if exists else False,
+                    "readable": os.access(path, os.R_OK) if exists else False,
+                    "writable": (
+                        os.access(path, os.W_OK)
+                        if exists
+                        else _write_capable_from_process(path)
+                    ),
+                }
+            )
+        return {"ok": True, "status": "ready", "paths": status}
 
     def submit(
         self,
@@ -2788,6 +2839,8 @@ def _dispatch_request(state: RunnerState, request: dict[str, Any]) -> dict[str, 
             },
             "atomic_dispatch": True,
         }
+    if operation == "storage_status":
+        return state.storage_status(request.get("paths"))
     if operation == "submit":
         task = request.get("task")
         return state.submit(
@@ -2953,6 +3006,14 @@ def _is_within(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _write_capable_from_process(path: Path) -> bool:
+    """Return whether this process can create a missing descendant path."""
+    current = path
+    while not current.exists() and current.parent != current:
+        current = current.parent
+    return current.is_dir() and os.access(current, os.W_OK)
 
 
 def _utc_now() -> str:

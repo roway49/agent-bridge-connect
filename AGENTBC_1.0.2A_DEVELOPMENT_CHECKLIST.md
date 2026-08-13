@@ -1,7 +1,7 @@
 # AgentBC 1.0.2A 需求开发清单
 
 > 制定日期：2026-08-08  
-> 最近状态快照：2026-08-13（Phase 0～Phase 7 代码完成；`1.0.2a1` 手工测试候选包自动门禁通过）
+> 最近状态快照：2026-08-14（Phase 0～Phase 7 代码完成；`1.0.2a1` 集中手工测试缺陷修复中）
 > 状态：集中手工验收中（CFG-002、SESSION-001、SAFE-001 真实 canary 与 Python/双机发布门禁保持打开）
 > 当前开发分支：`private/integration`  
 > 固定 Agent 分支：`agent/codex`、`agent/claude`、`agent/hermes`  
@@ -69,7 +69,7 @@ package-only smoke 与 CLI/Runner identity 验证通过；正式版本尚未提�
 
 | 工作项 | 状态 | 剩余闭环 |
 | --- | --- | --- |
-| Phase 4 / `CFG-002` | 🟡 代码完成/待集中验证 | Tasks 1～4 已合入；真实 Claude/Hermes 耗尽、approve 翻倍同 session 继续、deny 明确 failed 的安装包 canary 延后到集中全面测试 |
+| Phase 4 / `CFG-002` | 🟡 Claude canary 通过/Hermes 待复测 | Claude `P5F7-001` 已验证两次 approve 翻倍、同 session resume 与第三次 deny 明确 failed；Hermes `2WXY-001` 暴露原生耗尽被普通 choice 抢占问题，源码已修复，待新包复测 |
 | `SESSION-001` | 🟡 cleanup P2P 通过/retain-on 待测 | session 快照、receipt、同 ID resume、终态 cleanup/purge、capability、公共视图与 doctor warning 已完成；Codex `4PK9-001`、Hermes `C2KS-001`、Claude `FXCQ-001` 均已验证 retain=false 终态 cleanup，retain=true 保留门禁尚未执行 |
 | `SAFE-001` | 🟡 三 Executor canary 通过/细粒度权限待 1.0.3A | Codex `4PK9-001`、Hermes `C2KS-001`、Claude `FXCQ-001` 均已验证 safe→弹窗 Approve→同 session 单次 full→终态 cleanup；Claude 当前确定性 canary 仍依赖任务合同触发 permission input，文件级最小权限见 `PERM-103-007` |
 | `REL-102` | 🟡 候选包自动门禁通过 | `1.0.2a1` 版本、wheel/sdist、隔离安装、只读 setup 与 shell 闭环 smoke 已通过；Python 3.10/3.14、双机和三真实 Executor 发布 Gate 未执行 |
@@ -102,6 +102,21 @@ root 因保留正式产物而正确存在。本轮同时冻结三项 setup/CLI �
 为 `inherit`，旧任务缺少权限快照仍回落 `safe`；首次 retention 明确以 `[y/N]` 默认不保留；
 `task delete <TASKCODE>` 改为先展示将删除的 record、brief/report、index 与默认 Artifact，
 再内置 `y/N` 确认，移除多余的公开 `--confirm`，`--dry-run` 继续零写入且不提示。
+
+2026-08-14 集中测试又确认两个实现缺陷。第一，Doctor 原先在 CLI/Controller 进程内用
+`os.access()` 判断 workspace/report/record 可写性，Codex safe 沙箱会因此误报
+`unavailable`，即使沙箱外 Runner 已能正常派发和写报告。修复后 Doctor 通过受限的只读
+Runner IPC 探测这三个精确路径，Runner 只接受自身 allowed roots 内的最多八个路径，不返回
+allowed roots 或原始异常；Runner 不可用、身份漂移、旧协议或回执畸形时仍 fail closed。
+Doctor v2 的公共字段和 `0/1/2` 退出码合同保持不变。
+
+第二，Hermes `2WXY-001` 在 `max_turns=10` 时确实输出官方
+`Reached maximum iterations (10)`，但紧随其后的 Agent 普通 `input_required(type=choice)`
+抢占了终态优先级，导致 Core 没有创建 `resource_limit` approve/deny input，任务快照也未
+翻倍。修复后 Hermes 原生迭代耗尽对普通/choice wait 具有权威优先级；合法 completed、严格
+permission wait 与 retryable transport recovery 仍保持原优先级。Claude `P5F7-001` 已验证
+`0.05 -> 0.1 -> 0.2`、同一 session 两次 resume、第三次耗尽 deny 后以
+`budget_exhausted_user_terminated` failed，Hermes 必须在新候选包上重新执行同等 canary。
 
 ### 0.4 后续固定顺序
 
@@ -487,10 +502,12 @@ Claude 预算耗尽（`Exceeded USD budget`）或 Hermes 迭代耗尽
 （`max_iterations_reached(N/M)` 等）不再直接进入 failed，而是转为
 `input_required`（`type=choice`）等待用户决策：
 
-- Adapter 在无有效 final callback 且优先级允许时识别锚定资源耗尽信号，输出结构化
+- Adapter 在优先级允许时识别锚定资源耗尽信号，输出结构化
   `resource_exhaustion` / `failure.kind=resource_limit_exhausted`；Claude 优先结构化
   `error_max_budget_usd`，文本 fallback 只接受 CLI error 位置的精确形式；Hermes 只接受
-  既定锚定信号，缺少数字上限时使用任务冻结快照，禁止从普通 prompt/output 回声误判；
+  既定原生锚定信号，缺少数字上限时使用任务冻结快照，禁止从普通 prompt/output 回声误判；
+  Hermes 原生耗尽覆盖同一输出中 Agent 生成的普通/choice input_required，避免总结回调
+  绕过资源状态机，但不覆盖合法 completed、严格 permission wait 或 retryable transport failure；
 - Core 校验 task/run、resource 快照与 execution session receipt 后进入
   `input_required`：保留 done step，阻塞第一个未完成 step，reason 只显示资源使用/上限，
   不含密钥、正文或内部路径；
@@ -510,9 +527,10 @@ Phase 4 当前状态（对照集成基线 `b7ba051`，Tasks 1～3 已合入）�
 - [x] Task 3：approve 按任务快照翻倍并恢复同 session，deny 以明确原因 failed，
   Runner 原子 respond-and-dispatch；
 - [x] Task 4（本切片）：通知/dialog 两按钮、fallback 命令、公共视图字段和三份文档；
-- [ ] 集中全面测试中的安装包真实 canary：Claude 与 Hermes 各覆盖耗尽→approve→同
-  session 继续，以及耗尽→deny→明确 failed；验证前不得关闭 `CFG-002`，但不阻塞
-  Phase 5～7 继续开发。
+- [x] Claude 安装包真实 canary `P5F7-001`：两轮耗尽→approve→同 session 继续，第三轮
+  耗尽→deny→明确 failed；任务资源快照与 cleanup receipt 均已核对；
+- [ ] Hermes 安装包真实 canary：使用本轮终态优先级修复后的候选包覆盖耗尽→approve→同
+  session 继续，以及耗尽→deny→明确 failed；验证前不得关闭 `CFG-002`。
 
 Task 4 已落地子项（弹窗/视图/文档切片）：
 

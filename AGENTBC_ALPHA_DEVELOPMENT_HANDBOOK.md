@@ -512,6 +512,9 @@ Report 与产物质量继续由用户或下一 Agent 验收。
   `--resume` 继续，deny 以 `failed` 终态并携带明确原因
   （`budget_exhausted_user_terminated`/`iteration_exhausted_user_terminated`，
   `retryable=false`）；未启用决策或用户终止时才进入终态；
+- Hermes 的原生迭代耗尽 receipt 对同一输出中 Agent 生成的普通/choice
+  `input_required` 具有权威优先级，防止达到上限后的总结回调绕过资源翻倍状态机；合法
+  `completed`、严格 permission wait 和 retryable transport failure 仍保持更高优先级；
 - Hermes 迭代耗尽在进入终态时统一分类为 `iteration_budget_exhausted`
   （`retryable=false`）；Adapter 同时在结果与 `extensions.executor.hermes` 记录
   `iteration_used/iteration_limit/iteration_exhausted/iteration_source`（不含密钥或正文）；
@@ -710,6 +713,11 @@ sequenceDiagram
 
 Runner 解决 IDE/Agent 父沙箱无法直接访问用户 CLI、profile、日志目录和 customer
 path 的问题。它不是第二套任务系统，也不是通用 shell server。
+
+Doctor 的 workspace/report/record 权限判断同样必须以 Runner 进程为权威，不能使用受
+IDE/Agent safe 沙箱影响的 Controller `os.access()` 结果。`storage_status` 是只读 IPC：只
+接受 Runner allowed roots 内的精确路径、限制数量、不创建文件、不公开 allowed roots；
+Runner 不可用、身份不一致、旧协议或回执无效时 Doctor fail closed 并提示重启 Runner。
 
 IPC 使用同一用户下的原子文件邮箱：
 
@@ -2254,6 +2262,8 @@ cleanup failed 时只形成有界 receipt/doctor warning，不改变 Task/report
 安装 hash 握手）已合入 `d21ec13`/`fe6b0ca`；Phase 7 Task 2 `DOC-002`（doctor v2）已合入
 `580b398`/`050f183`，当前集成基线为 `private/integration@050f183`。doctor v2 契约固定：
 `schema_version=2`，text/JSON 同源，退出码 `0=healthy`、`1=warning`、`2=unavailable`。
+2026-08-14 的沙箱误报修复只把 storage 权限探测移到同身份 Runner，公共 JSON 字段和退出码
+不变；探测严格限制在 Runner allowed roots，异常只形成脱敏 unavailable 诊断。
 Phase 7 Task 3 `DOCFIX-001`（help/Record README/双语用户文档/三类 Skill 一致性收口）已
 代码完成、待合入，见 9.4 节。`commit_required` 与已移除的 Git 专属公共命令
 （`--git-write`、`--commit-sha`、`agentbc.git`）不得以任何形式回归。

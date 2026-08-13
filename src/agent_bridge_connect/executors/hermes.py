@@ -1060,21 +1060,44 @@ def _route_hermes_terminal(
 ) -> ExecutorTerminalResult:
     """Route the Hermes terminal with iteration-budget classification.
 
-    A valid completed/input_required marker routes to its declared state
-    normally and a retryable transport/runtime failure keeps ``needs_recovery``.
-    Confirmed budget exhaustion without a valid callback is classified through
-    the shared resource-exhaustion contract: it becomes a system
-    ``input_required`` wait with ``failure.kind=resource_limit_exhausted``, and
-    a receipt limit that conflicts with the task snapshot fails closed to
-    ``needs_recovery``.
+    A valid completed marker and a strict permission wait keep their declared
+    meaning.  A native Hermes max-iteration receipt overrides an agent-authored
+    ordinary/choice wait so a summary generated at the limit cannot bypass the
+    resource decision state machine.  Retryable transport/runtime failures
+    still keep ``needs_recovery``.  Confirmed exhaustion is classified through
+    the shared resource contract, and a receipt limit that conflicts with the
+    task snapshot fails closed to ``needs_recovery``.
     """
+    exhaustion = _hermes_resource_exhaustion(iteration, task_packet)
+    routed_validation = validation
+    callback = validation.callback if validation.valid else None
+    input_details = callback.get("input") if isinstance(callback, dict) else None
+    input_type = (
+        str(input_details.get("type") or "").strip().lower()
+        if isinstance(input_details, dict)
+        else ""
+    )
+    if (
+        isinstance(exhaustion, dict)
+        and exhaustion.get("detected") is True
+        and isinstance(callback, dict)
+        and callback.get("final_state") == "input_required"
+        and input_type != "permission"
+    ):
+        routed_validation = CallbackValidation(
+            marker_seen=validation.marker_seen,
+            valid=False,
+            callback=None,
+            code="hermes_resource_exhaustion_authoritative",
+            message="Hermes reported native max-turn exhaustion",
+        )
     return route_executor_terminal(
-        validation,
+        routed_validation,
         returncode,
         executor_name="hermes",
         stderr=stderr,
         runtime_failure=failure,
-        resource_exhaustion=_hermes_resource_exhaustion(iteration, task_packet),
+        resource_exhaustion=exhaustion,
     )
 
 

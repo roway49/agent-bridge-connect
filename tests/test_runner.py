@@ -810,6 +810,12 @@ class RunnerStateTests(unittest.TestCase):
             self.assertEqual(health["status"], "ready")
             self.assertNotIn("allowed_roots", health)
             self.assertEqual(health["path_policy"]["agent_input"], "customer_path")
+            storage = client.storage_status(
+                [self.root, self.root / "tasks" / "report"]
+            )
+            self.assertEqual(storage["status"], "ready")
+            self.assertEqual(len(storage["paths"]), 2)
+            self.assertTrue(all(item["writable"] for item in storage["paths"]))
             submitted = client.submit(
                 "hermes",
                 [

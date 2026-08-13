@@ -815,6 +815,53 @@ class DoctorCollectorIsolationTests(unittest.TestCase):
         self.assertEqual(report["status"], "unavailable")
         self.assertEqual(report["exit_code"], 2)
 
+    def test_runner_storage_probe_overrides_controller_sandbox_access(self) -> None:
+        real_access = os.access
+
+        def deny_controller_write(path: str, mode: int) -> bool:
+            if mode == os.W_OK:
+                return False
+            return real_access(path, mode)
+
+        def runner_storage(paths: list[str]) -> dict:
+            return {
+                "ok": True,
+                "status": "ready",
+                "paths": [
+                    {
+                        "path": path,
+                        "exists": True,
+                        "is_dir": True,
+                        "readable": True,
+                        "writable": True,
+                    }
+                    for path in paths
+                ],
+            }
+
+        with mock.patch(
+            "agent_bridge_connect.doctor.os.access",
+            side_effect=deny_controller_write,
+        ):
+            report = self._base(runner_storage=runner_storage)
+
+        for name in ("workspace", "report", "record"):
+            self.assertTrue(report["storage"][name]["writable"])
+            self.assertEqual(report["storage"][name]["status"], "healthy")
+
+    def test_invalid_runner_storage_probe_fails_closed_without_raw_error(self) -> None:
+        secret = "runner-storage-secret"
+
+        def invalid_probe(paths: list[str]) -> dict:
+            return {"ok": False, "error": secret, "paths": paths}
+
+        report = self._base(runner_storage=invalid_probe)
+
+        self.assertEqual(report["storage"]["status"], "unavailable")
+        self.assertEqual(report["storage"]["workspace"]["writable"], False)
+        rendered = json.dumps(report) + render_doctor_text(report)
+        self.assertNotIn(secret, rendered)
+
     def test_runner_token_metadata_and_spool_are_reported_without_content(self) -> None:
         spool = self.root / "spool"
         token = spool / "token"
@@ -1492,6 +1539,24 @@ class RunnerHealthIdentityTests(unittest.TestCase):
         self.assertTrue(Path(health["python_executable"]).is_absolute())
         self.assertEqual(Path(health["module_path"]).name, "__init__.py")
         self.assertIn("agent_bridge_connect", Path(health["module_path"]).parts)
+
+    def test_storage_status_is_scoped_to_runner_allowed_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = RunnerState(root / "state", [root], {"codex": Path(sys.executable)})
+            response = _dispatch_request(
+                state,
+                {"op": "storage_status", "paths": [str(root), str(root / "missing")]},
+            )
+            self.assertEqual(response["status"], "ready")
+            self.assertEqual(len(response["paths"]), 2)
+            self.assertTrue(response["paths"][0]["writable"])
+            self.assertTrue(response["paths"][1]["writable"])
+            with self.assertRaisesRegex(RunnerError, "outside allowed roots"):
+                _dispatch_request(
+                    state,
+                    {"op": "storage_status", "paths": [str(root.parent)]},
+                )
 
 
 if __name__ == "__main__":

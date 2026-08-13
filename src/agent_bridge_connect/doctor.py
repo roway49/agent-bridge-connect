@@ -79,6 +79,7 @@ def build_doctor_report(
     *,
     config_path: str | Path | None = None,
     runner_health: Callable[[], dict[str, Any]] | None = None,
+    runner_storage: Callable[[list[str]], dict[str, Any]] | None = None,
     module_path: str | Path | None = None,
     executable_path: str | Path | None = None,
     python_executable: str | Path | None = None,
@@ -95,6 +96,17 @@ def build_doctor_report(
     runner_token_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Collect the stable public doctor contract without changing local state."""
+    runner_storage_required = runner_storage is not None
+    if runner_health is None:
+        from .runner import RunnerClient
+
+        spool = Path(runner_spool_root or _default_runner_spool()).expanduser()
+        token = Path(runner_token_path or (spool / "token")).expanduser()
+        runner_client = RunnerClient(spool_root=spool, token_path=token)
+        runner_health = runner_client.health
+        if runner_storage is None:
+            runner_storage = runner_client.storage_status
+            runner_storage_required = True
     current_module = _resolved_path(module_path or _package_module_path())
     current_executable = _resolved_path(executable_path or _cli_executable_path())
     current_python = _resolved_path(python_executable or sys.executable)
@@ -159,6 +171,11 @@ def build_doctor_report(
             token_path=runner_token_path,
         ),
     )
+    authoritative_storage = (
+        runner_storage
+        if runner.get("status") == "ready" and runner.get("identity") == "match"
+        else None
+    )
     cleanup = (
         build_session_cleanup_diagnostics(cleanup_tasks, now=now)
         if cleanup_tasks is not None
@@ -170,7 +187,12 @@ def build_doctor_report(
     effective_board_root = board_root or _doctor_board_root(loaded_config)
     storage, storage_checks = _safe_collect(
         "storage",
-        lambda: _collect_storage(loaded_config, board_root=effective_board_root),
+        lambda: _collect_storage(
+            loaded_config,
+            board_root=effective_board_root,
+            runner_storage=authoritative_storage,
+            runner_storage_required=runner_storage_required,
+        ),
     )
     skills, skills_checks = _safe_collect(
         "skills",
@@ -824,17 +846,34 @@ def _collect_storage(
     config: dict[str, Any],
     *,
     board_root: str | Path,
+    runner_storage: Callable[[list[str]], dict[str, Any]] | None = None,
+    runner_storage_required: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     workspace_root = _resolved_path(resolve_workspace_root(config))
     record_root = _resolved_path(board_root)
     report_root = workspace_root / "tasks" / "report"
-    workspace = _path_permissions(workspace_root)
-    report = _path_permissions(report_root)
-    record = _path_permissions(record_root)
-
-    _apply_storage_severity(workspace, required_write=True, required_read=False)
-    _apply_storage_severity(report, required_write=True, required_read=False)
-    _apply_storage_severity(record, required_write=True, required_read=True)
+    paths = [workspace_root, report_root, record_root]
+    verified = (
+        _runner_storage_permissions(paths, runner_storage)
+        if runner_storage is not None
+        else None
+    )
+    if verified is not None:
+        workspace, report, record = verified
+        _apply_storage_severity(workspace, required_write=True, required_read=False)
+        _apply_storage_severity(report, required_write=True, required_read=False)
+        _apply_storage_severity(record, required_write=True, required_read=True)
+    elif runner_storage_required:
+        workspace, report, record = [
+            _unverified_storage_permissions(path) for path in paths
+        ]
+    else:
+        workspace = _path_permissions(workspace_root)
+        report = _path_permissions(report_root)
+        record = _path_permissions(record_root)
+        _apply_storage_severity(workspace, required_write=True, required_read=False)
+        _apply_storage_severity(report, required_write=True, required_read=False)
+        _apply_storage_severity(record, required_write=True, required_read=True)
 
     statuses = (workspace["status"], report["status"], record["status"])
     if "unavailable" in statuses:
@@ -1302,6 +1341,64 @@ def _path_permissions(path: Path) -> dict[str, Any]:
         "is_dir": is_dir,
         "readable": readable,
         "writable": writable,
+    }
+
+
+def _runner_storage_permissions(
+    paths: list[Path],
+    probe: Callable[[list[str]], dict[str, Any]],
+) -> list[dict[str, Any]] | None:
+    """Validate the Runner's storage reply without exposing probe failures."""
+    expected = [str(path) for path in paths]
+    requested = list(dict.fromkeys(expected))
+    try:
+        response = probe(requested)
+    except Exception:  # noqa: BLE001 - doctor emits a stable sanitized failure.
+        return None
+    if (
+        not isinstance(response, dict)
+        or response.get("ok") is not True
+        or response.get("status") != "ready"
+        or not isinstance(response.get("paths"), list)
+    ):
+        return None
+    rows = response["paths"]
+    if len(rows) != len(requested):
+        return None
+    by_path: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {
+            "path",
+            "exists",
+            "is_dir",
+            "readable",
+            "writable",
+        }:
+            return None
+        path = row.get("path")
+        if not isinstance(path, str) or path not in requested or path in by_path:
+            return None
+        if any(
+            not isinstance(row.get(field), bool)
+            for field in ("exists", "is_dir", "readable", "writable")
+        ):
+            return None
+        by_path[path] = dict(row)
+    if set(by_path) != set(requested):
+        return None
+    return [by_path[path] for path in expected]
+
+
+def _unverified_storage_permissions(path: Path) -> dict[str, Any]:
+    return {
+        "path": str(path),
+        "exists": False,
+        "is_dir": False,
+        "readable": False,
+        "writable": False,
+        "status": "unavailable",
+        "reason": "Runner could not verify storage access.",
+        "remediation": "Restart the AgentBC Runner and re-run doctor.",
     }
 
 
