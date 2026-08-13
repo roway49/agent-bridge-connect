@@ -13,7 +13,11 @@ from unittest import mock
 from agent_bridge_connect.adapters import DeliveryResult
 from agent_bridge_connect.cli import build_parser
 from agent_bridge_connect.executors.codex import _build_prompt as build_codex_prompt
-from agent_bridge_connect.notifications import build_input_required_notification, notify_input_required
+from agent_bridge_connect.notifications import (
+    PERMISSION_DIALOG_TIMEOUT_RESPONSE,
+    build_input_required_notification,
+    notify_input_required,
+)
 from agent_bridge_connect.protocol import ABCError
 from agent_bridge_connect.reports import generate_report, generate_report_md, generate_task_brief
 from agent_bridge_connect.run_lease import (
@@ -238,6 +242,32 @@ class InputResponseLifecycleTests(unittest.TestCase):
         responder.assert_not_called()
         self.assertEqual(self.service.get_task(self.task.id).status, "input_required")
         self.assertEqual(load_lease(self.task.id, self.board).state, RunLeaseState.SUSPENDED)
+
+    def test_permission_dialog_timeout_is_forwarded_as_deny_not_text(self) -> None:
+        request = self._input()
+        task = self.service.get_task(self.task.id)
+        task.extensions["agentbc.input"]["type"] = "permission"
+        task.extensions["agentbc.input"]["requested_permission"] = "full"
+        self.service.store.write_task(task.id, task.to_dict())
+        responder = mock.Mock(return_value={"task_id": task.id, "status": "failed"})
+        with mock.patch(
+            "agent_bridge_connect.notifications.DialogNotifier.send",
+            return_value=DeliveryResult(
+                True,
+                "timed out",
+                details={"action": "deny", "decision_source": "timeout"},
+            ),
+        ):
+            notify_input_required(self.service, task.id, responder=responder)
+
+        responder.assert_called_once_with(
+            request["input_id"],
+            "deny",
+            PERMISSION_DIALOG_TIMEOUT_RESPONSE,
+        )
+        delivery = self.service.store.read_events(task.id)[-2]
+        self.assertEqual(delivery["dialog_action"], "deny")
+        self.assertEqual(delivery["dialog_decision_source"], "timeout")
 
     def test_worker_notification_wires_dialog_response_to_runner(self) -> None:
         from agent_bridge_connect.cli import _notify_input_required

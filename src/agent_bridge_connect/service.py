@@ -73,6 +73,7 @@ PUBLIC_TASK_STATUSES = {
 HANDOFF_SOURCE_STATUSES = {"completed"}
 DELETE_ELIGIBLE_STATUSES = {"completed", "failed", "cancelled", "rejected"}
 DEFAULT_INPUT_WAIT_SECONDS = 24 * 60 * 60
+PERMISSION_DIALOG_TIMEOUT_RESPONSE = "agentbc_permission_dialog_timeout"
 
 
 @dataclass(frozen=True)
@@ -1484,7 +1485,22 @@ class TaskService:
         answered = dict(request)
         answered["status"] = "answered"
         answered["responded_at"] = now
-        answered["response"] = {"type": response_type, "summary": clean_message}
+        permission_denial_source = (
+            "timeout"
+            if is_permission_request
+            and response_type == "deny"
+            and message == PERMISSION_DIALOG_TIMEOUT_RESPONSE
+            else "user"
+        )
+        answered["response"] = {
+            "type": response_type,
+            "summary": clean_message,
+            **(
+                {"source": permission_denial_source}
+                if is_permission_request and response_type == "deny"
+                else {}
+            ),
+        }
         extensions = dict(task.extensions or {})
         extensions["agentbc.input"] = answered
         if updated_resources is not None:
@@ -1547,8 +1563,17 @@ class TaskService:
             }
 
         if is_permission_request and response_type == "deny":
-            failure_message = "User denied the requested full permission"
-            failure_code = "permission_denied_by_user"
+            timed_out = permission_denial_source == "timeout"
+            failure_message = (
+                "Permission request timed out and was automatically denied"
+                if timed_out
+                else "User denied the requested full permission"
+            )
+            failure_code = (
+                "permission_denied_by_timeout"
+                if timed_out
+                else "permission_denied_by_user"
+            )
             task.extensions = extensions
             task.updated_at = now
             self._mark_task_failed_model(
@@ -1574,6 +1599,7 @@ class TaskService:
                     "task_id": task.id,
                     "input_id": current_input_id,
                     "response_type": response_type,
+                    "response_source": permission_denial_source,
                     "created_at": now,
                 },
             )
@@ -1712,6 +1738,56 @@ class TaskService:
             deadline_at = _parse_timestamp(str(request.get("deadline_at") or ""))
             if deadline_at > current_at:
                 continue
+            if request.get("type") == "permission":
+                expired_at = now or _utc_now()
+                answered_request = dict(request)
+                answered_request["status"] = "answered"
+                answered_request["responded_at"] = expired_at
+                answered_request["response"] = {
+                    "type": "deny",
+                    "summary": "deny",
+                    "source": "timeout",
+                }
+                task.extensions = dict(task.extensions or {})
+                task.extensions["agentbc.input"] = answered_request
+                task.updated_at = expired_at
+                failure_code = "permission_denied_by_timeout"
+                failure_message = "Permission request timed out and was automatically denied"
+                self._mark_task_failed_model(
+                    task,
+                    failure_code,
+                    failure_message,
+                    {
+                        "failure": {
+                            "kind": failure_code,
+                            "layer": "permission",
+                            "message": failure_message,
+                            "retryable": False,
+                        },
+                        "input_id": request.get("input_id", ""),
+                        "executor": task.assignee,
+                        "requested_permission": request.get("requested_permission", ""),
+                        "response_source": "timeout",
+                    },
+                )
+                self.store.append_event(
+                    task.id,
+                    {
+                        "event_type": "task.input_answered",
+                        "task_id": task.id,
+                        "input_id": request.get("input_id", ""),
+                        "response_type": "deny",
+                        "response_source": "timeout",
+                        "created_at": expired_at,
+                    },
+                )
+                expired.append(
+                    {
+                        "task_id": task.id,
+                        "input_id": request.get("input_id", ""),
+                    }
+                )
+                continue
             expired_request = dict(request)
             expired_request["status"] = "expired"
             expired_request["expired_at"] = now or _utc_now()
@@ -1730,7 +1806,12 @@ class TaskService:
                 },
             )
             if changed:
-                expired.append({"task_id": task.id, "input_id": request.get("input_id", "")})
+                expired.append(
+                    {
+                        "task_id": task.id,
+                        "input_id": request.get("input_id", ""),
+                    }
+                )
         return expired
 
     def mark_task_failed(
@@ -1968,7 +2049,8 @@ class TaskService:
         self._append_intervention(task_id, "resume", task.updated_at)
 
     def cancel_task(self, task_id: str) -> None:
-        from .task_health import cleanup_cancelled_task_files
+        from .run_lease import RunLeaseState, close_lease, load_lease
+        from .task_health import cleanup_cancelled_task_files, clear_task_progress
 
         task = self.get_task(task_id)
         task_id = task.id
@@ -1977,14 +2059,32 @@ class TaskService:
         validate_transition(task.status, "cancelled")
         task.status = "cancelled"
         task.updated_at = _utc_now()
-        task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
+        extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
+        request = extensions.get("agentbc.input")
+        if isinstance(request, dict) and request.get("status") == "waiting":
+            cancelled_request = dict(request)
+            cancelled_request["status"] = "cancelled"
+            cancelled_request["cancelled_at"] = task.updated_at
+            extensions["agentbc.input"] = cancelled_request
+        task.extensions = extensions
+        self._set_known_executor_session_state(task, "terminal")
+        execution_updates = {
+            "internal_status": "cancelled",
+            "lease_state": RunLeaseState.CLOSED,
+        }
+        lease = load_lease(task_id, self.board_root)
+        if lease is not None and lease.state != RunLeaseState.CLOSED:
+            close_lease(lease, self.board_root)
+        task.extensions = _merge_execution(task.extensions, execution_updates)
         self.revoke_permission_grant(task.id, "task_cancelled", model=task)
         self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
         cleanup_cancelled_task_files(task)
+        clear_task_progress(task, remove_log=True)
         self.store.append_event(task_id, {"event_type": "cancelled", "task_id": task_id, "created_at": task.updated_at})
         self._append_intervention(task_id, "cancel", task.updated_at)
         self._refresh_task_index()
+        self._sync_terminal_report(task_id)
 
     def plan_task_delete(self, task_code: str) -> dict[str, Any]:
         """Build a zero-write ownership plan for deleting one terminal chain."""

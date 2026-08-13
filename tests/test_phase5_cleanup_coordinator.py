@@ -17,7 +17,7 @@ from unittest import mock
 
 from agent_bridge_connect.adapters import SessionCleanupResult
 from agent_bridge_connect.execution_policy import SESSION_EXTENSION_KEY
-from agent_bridge_connect.run_lease import create_lease, save_lease
+from agent_bridge_connect.run_lease import RunLeaseState, create_lease, load_lease, save_lease
 from agent_bridge_connect.service import TaskService
 
 T0 = "2026-08-11T00:00:00Z"
@@ -170,6 +170,85 @@ class CleanupCoordinatorTestCase(unittest.TestCase):
             for line in path.read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
+
+    def test_cancel_closes_wait_session_and_lease_before_cleanup(self) -> None:
+        task = self.service.create_task(
+            "cancel waiting Claude session",
+            "claude",
+            [{"id": 1, "description": "blocked work"}],
+            customer_dir=False,
+        )
+        raw = self.service.store.read_task(task.id)
+        session = raw["extensions"][SESSION_EXTENSION_KEY]
+        session["session_state"] = "input_required"
+        session["run_ids"] = ["claude-run-1"]
+        raw["extensions"][SESSION_EXTENSION_KEY] = session
+        raw["extensions"]["agentbc.input"] = {
+            "input_id": "input-cancel-test",
+            "executor_run_id": "claude-run-1",
+            "blocked_step_id": 1,
+            "type": "permission",
+            "requested_permission": "full",
+            "summary": "needs permission",
+            "created_at": T0,
+            "deadline_at": _add_seconds(T0, 3600),
+            "status": "waiting",
+        }
+        raw["status"] = "input_required"
+        self.service.store.write_task(task.id, raw)
+        lease = create_lease(task.id, "claude", 0, str(self.root))
+        lease.run_id = "claude-run-1"
+        lease.state = RunLeaseState.SUSPENDED
+        save_lease(lease, self.board)
+        project_path = Path(session["project_path"])
+        project_path.mkdir(parents=True, exist_ok=True)
+        (project_path / "owned.txt").write_text("preserve until purge", encoding="utf-8")
+
+        self.service.cancel_task(task.id)
+
+        cancelled = self.service.get_task(task.id)
+        self.assertEqual(cancelled.status, "cancelled")
+        self.assertEqual(
+            cancelled.extensions["agentbc.input"]["status"],
+            "cancelled",
+        )
+        self.assertEqual(
+            cancelled.extensions[SESSION_EXTENSION_KEY]["session_state"],
+            "terminal",
+        )
+        self.assertEqual(load_lease(task.id, self.board).state, RunLeaseState.CLOSED)
+        self.assertEqual(
+            cancelled.extensions["agentbc.execution"]["lease_state"],
+            RunLeaseState.CLOSED,
+        )
+        self.assertTrue(Path(cancelled.workspace["report_file"]).is_file())
+        self.assertTrue(project_path.is_dir())
+        self.assertTrue((project_path / "owned.txt").is_file())
+
+        self.service.store.append_event(
+            task.id,
+            {
+                "event_type": "notification_delivery",
+                "task_id": task.id,
+                "notification_event": "task.cancelled",
+                "file_ok": True,
+                "dialog_ok": True,
+                "created_at": T0,
+            },
+        )
+        fake = FakeCleanupExecutor(
+            SessionCleanupResult(
+                state="unsupported",
+                capability="unsupported",
+                strategy="none",
+                error_code="claude_project_purge_unsupported",
+                retryable=False,
+            )
+        )
+        result = self._coordinator(fake).request_cleanup(task.id, now=T0)
+        self.assertEqual(result["status"], "unsupported")
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(self._session(task.id)["cleanup"]["state"], "unsupported")
 
     # ------------------------------------------------------------- gate order
     def test_gate_order_and_zero_side_effects(self) -> None:

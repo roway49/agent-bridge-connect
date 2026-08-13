@@ -998,6 +998,22 @@ def command_task_intervention(args: argparse.Namespace) -> int:
             service.cancel_task(task.id)
             cancellation_errors = _cancel_task_runner_runs(task)
             _finish_task_close_cleanup(task, service.board_root)
+            _write_terminal_report(task.id, service.board_root)
+            _notify_terminal(
+                service,
+                task.id,
+                "task.cancelled",
+                "info",
+                "Task cancelled by user",
+            )
+            try:
+                from .session_cleanup import SessionCleanupCoordinator
+
+                SessionCleanupCoordinator(service.board_root).request_cleanup(task.id)
+            except (ABCError, OSError, ValueError):
+                # Cleanup is background maintenance and must never change the
+                # already-recorded cancellation result.
+                pass
         elif args.task_command == "close":
             plan = service.plan_task_close(args.id)
             if plan["is_chain_iteration"] and not args.confirm:

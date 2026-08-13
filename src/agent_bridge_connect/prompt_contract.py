@@ -51,14 +51,17 @@ MARKER_LEAD = (
 )
 INPUT_REQUIRED_RULE = (
     "Use final_state input_required only with at least one declared step status blocked; "
-    "plain permission or approval prose is not a valid stop."
+    "an access, sandbox, approval, or permission blocker must use input.type permission with "
+    "requested_permission full and must never use message or choice. Plain permission or approval "
+    "prose is not a valid stop, and free-text message responses can never grant access."
 )
 CHOICE_SPEC = (
     'For a two-option user decision, include "input":{"type":"choice","reason":"why the user must decide",'
     '"options":[{"label":"Option A","description":"what A does or changes"},{"label":"Option B",'
     '"description":"what B does or changes"}]}; give a concrete reason and a concrete description for '
     "each option. Labels must be distinct and at most 48 characters; descriptions must be at most 160 "
-    "characters. Use type message for free text and type permission only for approve/deny."
+    "characters. Use type message only for non-permission free text and type permission only for "
+    "approve/deny access confirmation."
 )
 ZERO_EXIT_RULE = (
     "A zero CLI exit without a valid marker fails the task. completed means flow execution "

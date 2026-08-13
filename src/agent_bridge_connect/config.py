@@ -279,6 +279,10 @@ def _load_toml_compat(text: str) -> dict[str, Any]:
 def _parse_toml_value(value: str) -> Any:
     if value.lower() in {"true", "false"}:
         return value.lower() == "true"
+    if len(value) >= 2 and value.startswith("'") and value.endswith("'"):
+        # TOML literal strings use single quotes and do not process escapes.
+        # Python 3.10 uses this compatibility parser because tomllib is absent.
+        return value[1:-1]
     try:
         return json.loads(value)
     except json.JSONDecodeError:
@@ -290,6 +294,8 @@ def _parse_toml_value(value: str) -> Any:
 
 def _parse_toml_key(value: str) -> str:
     token = value.strip()
+    if len(token) >= 2 and token.startswith("'") and token.endswith("'"):
+        return token[1:-1]
     if token.startswith('"') and token.endswith('"'):
         parsed = json.loads(token)
         if isinstance(parsed, str):

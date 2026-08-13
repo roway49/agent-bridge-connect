@@ -1457,13 +1457,27 @@ class RunnerState:
             service = TaskService(board, config=load_config(config))
             expired = service.expire_waiting_inputs()
             if any(item.get("task_id") == task_id for item in expired):
+                expired_task = service.get_task(task_id)
+                timed_out_permission = (
+                    expired_task.status == "failed"
+                    and bool(expired_task.errors)
+                    and expired_task.errors[-1].get("code")
+                    == "permission_denied_by_timeout"
+                )
+                event_type = "task.failed" if timed_out_permission else "task.recovery_required"
+                level = "error" if timed_out_permission else "warning"
+                message = (
+                    "Permission request timed out and was automatically denied"
+                    if timed_out_permission
+                    else "Input response deadline expired"
+                )
                 write_report_files(task_id, board)
                 notify_terminal(
                     service,
                     task_id,
-                    "task.recovery_required",
-                    "warning",
-                    "Input response deadline expired",
+                    event_type,
+                    level,
+                    message,
                 )
                 self._refresh_task_list_dashboard(board)
                 raise RunnerError(f"input deadline expired for task {task_id}")
@@ -1565,13 +1579,24 @@ class RunnerState:
                 for item in items:
                     task_id = str(item.get("task_id") or "")
                     try:
+                        expired_task = service.get_task(task_id)
+                        timed_out_permission = (
+                            expired_task.status == "failed"
+                            and bool(expired_task.errors)
+                            and expired_task.errors[-1].get("code")
+                            == "permission_denied_by_timeout"
+                        )
                         write_report_files(task_id, board)
                         notify_terminal(
                             service,
                             task_id,
-                            "task.recovery_required",
-                            "warning",
-                            "Input response deadline expired",
+                            "task.failed" if timed_out_permission else "task.recovery_required",
+                            "error" if timed_out_permission else "warning",
+                            (
+                                "Permission request timed out and was automatically denied"
+                                if timed_out_permission
+                                else "Input response deadline expired"
+                            ),
                         )
                         self._refresh_task_list_dashboard(board)
                     except (ABCError, OSError, ValueError):

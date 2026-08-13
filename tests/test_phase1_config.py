@@ -72,6 +72,19 @@ class ConfigTransactionTests(unittest.TestCase):
         self.assertEqual(load_config(self.path), original)
         self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
 
+    def test_python310_compat_parser_accepts_toml_literal_strings(self) -> None:
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text(
+            "[executors.codex]\ncommand = '/usr/bin/env codex'\n",
+            encoding="utf-8",
+        )
+        with mock.patch.object(config_module, "tomllib", None):
+            loaded = load_config(self.path)
+        self.assertEqual(
+            loaded,
+            {"executors": {"codex": {"command": "/usr/bin/env codex"}}},
+        )
+
     def test_idempotent_update_does_not_replace_file(self) -> None:
         write_config_atomic({"sessions": {"retain_executor_sessions": False}}, self.path)
         inode = self.path.stat().st_ino

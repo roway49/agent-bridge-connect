@@ -50,12 +50,28 @@ class DialogNotifier:
                 check=False,
                 timeout=dialog_timeout_s + 5,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except subprocess.TimeoutExpired:
+            if event_type == _INPUT_EVENT and input_type == "permission":
+                return DeliveryResult(
+                    True,
+                    "permission dialog timed out; request denied",
+                    f"dialog:{event_type}",
+                    {"action": "deny", "decision_source": "timeout"},
+                )
+            return DeliveryResult(False, "dialog notification timed out")
+        except OSError as exc:
             return DeliveryResult(False, f"dialog notification failed: {exc}")
         if result.returncode != 0:
             if event_type == _INPUT_EVENT and (
                 "User canceled" in result.stderr or "(-128)" in result.stderr
             ):
+                if input_type == "permission":
+                    return DeliveryResult(
+                        True,
+                        "permission dialog closed; request denied",
+                        f"dialog:{event_type}",
+                        {"action": "deny", "decision_source": "dialog_closed"},
+                    )
                 return DeliveryResult(
                     True,
                     "input dialog dismissed; task remains waiting",
@@ -85,6 +101,14 @@ class DialogNotifier:
                 response_protocol=response_protocol,
             )
             details = {"action": action}
+            if input_type == "permission":
+                details["decision_source"] = (
+                    "timeout"
+                    if gave_up
+                    else "user"
+                    if button in {"Approve", "Deny"}
+                    else "fail_closed"
+                )
             if action == "message":
                 if input_type == "choice":
                     response = button if button in input_options else ""
@@ -121,7 +145,7 @@ class DialogNotifier:
     def _dialog_script(self, event_type: str, input_type: str, timeout_s: int) -> str:
         if event_type == _INPUT_EVENT and input_type == "permission":
             dialog = (
-                'buttons {"Later", "Deny", "Approve"} default button "Later" '
+                'buttons {"Deny", "Approve"} default button "Deny" '
                 f'giving up after {timeout_s} with icon caution'
             )
             return (
@@ -180,10 +204,12 @@ class DialogNotifier:
         input_kind: str = "",
         response_protocol: str = "",
     ) -> str:
+        if input_type == "permission":
+            if gave_up:
+                return "deny"
+            return "approve" if button == "Approve" else "deny"
         if gave_up or button in {"Later", "unknown"}:
             return "dismissed"
-        if input_type == "permission":
-            return "approve" if button == "Approve" else "deny" if button == "Deny" else "dismissed"
         if input_type == "choice":
             if input_kind == "resource_limit" and response_protocol == "approve_deny":
                 if len(input_options) >= 2:

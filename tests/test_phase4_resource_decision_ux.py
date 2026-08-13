@@ -135,6 +135,54 @@ class ResourceDecisionDialogTests(unittest.TestCase):
             DialogNotifier._input_action("Deny", "permission", False),
             "deny",
         )
+        self.assertEqual(
+            DialogNotifier._input_action("Deny", "permission", True),
+            "deny",
+        )
+        self.assertEqual(
+            DialogNotifier._input_action("unknown", "permission", False),
+            "deny",
+        )
+
+    def test_permission_dialog_timeout_and_close_fail_closed_to_deny(self) -> None:
+        notifier = DialogNotifier()
+        with mock.patch("agent_bridge_connect.notifiers.dialog.subprocess.run") as run:
+            run.return_value = mock.Mock(
+                returncode=0,
+                stdout="button returned:Deny\ngave up:true",
+                stderr="",
+            )
+            timed_out = notifier.send(
+                {
+                    "event_type": "task.input_required",
+                    "message": "Allow access?",
+                    "input_type": "permission",
+                }
+            )
+        self.assertEqual(
+            timed_out.details,
+            {"action": "deny", "decision_source": "timeout"},
+        )
+        self.assertIn('buttons {"Deny", "Approve"}', run.call_args.kwargs["input"])
+        self.assertNotIn('"Later"', run.call_args.kwargs["input"])
+
+        with mock.patch("agent_bridge_connect.notifiers.dialog.subprocess.run") as run:
+            run.return_value = mock.Mock(
+                returncode=1,
+                stdout="",
+                stderr="execution error: User canceled. (-128)",
+            )
+            closed = notifier.send(
+                {
+                    "event_type": "task.input_required",
+                    "message": "Allow access?",
+                    "input_type": "permission",
+                }
+            )
+        self.assertEqual(
+            closed.details,
+            {"action": "deny", "decision_source": "dialog_closed"},
+        )
 
     def test_send_renders_resource_decision_buttons_and_maps_approve(self) -> None:
         notifier = DialogNotifier()

@@ -455,12 +455,16 @@ class NotificationTests(unittest.TestCase):
             )
 
         self.assertTrue(result.ok)
-        self.assertEqual(result.details, {"action": "deny"})
+        self.assertEqual(
+            result.details,
+            {"action": "deny", "decision_source": "user"},
+        )
         self.assertIn(
-            'buttons {"Later", "Deny", "Approve"}',
+            'buttons {"Deny", "Approve"}',
             run.call_args.kwargs["input"],
         )
-        self.assertIn('default button "Later"', run.call_args.kwargs["input"])
+        self.assertIn('default button "Deny"', run.call_args.kwargs["input"])
+        self.assertNotIn('"Later"', run.call_args.kwargs["input"])
 
     def test_dialog_notifier_reports_osascript_failure(self):
         from agent_bridge_connect.notifiers.dialog import DialogNotifier

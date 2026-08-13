@@ -1871,7 +1871,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
 
         self.assertFalse(task_run_temp_path(running).exists())
         self.assertFalse(Path(running.workspace["task_file"]).exists())
-        self.assertFalse(Path(running.workspace["report_file"]).exists())
+        self.assertTrue(Path(running.workspace["report_file"]).exists())
         self.assertTrue((Path(running.workspace["internal_task_dir"]) / "task.json").exists())
         self.assertFalse(artifact_root.exists())
 
@@ -1916,7 +1916,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         self.assertTrue(Path(source.workspace["task_file"]).exists())
         self.assertTrue(Path(source.workspace["report_file"]).exists())
         self.assertFalse(Path(handoff.workspace["task_file"]).exists())
-        self.assertFalse(Path(handoff.workspace["report_file"]).exists())
+        self.assertTrue(Path(handoff.workspace["report_file"]).exists())
         self.assertTrue(Path(source.workspace["report_root"]).exists())
 
     def test_task_list_current_excludes_pending_tasks(self):

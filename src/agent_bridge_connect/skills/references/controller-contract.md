@@ -55,8 +55,9 @@ declared. The user approves or denies through the existing dialog or
 `agentbc task respond <task-id> --input <input-id> --approve|--deny`; a one-time `full` grant is
 issued for the next same-session continuation only. It is consumed when that run is authorized;
 an unused grant is revoked on terminal, recovery, reassignment, or other invalidating paths. A
-`full` task does not ask; plain message/choice text and native executor flags never escalate
-permissions. AgentBC never treats approval prose as a valid completion marker.
+permission dialog has exactly Approve and Deny, collects no text, defaults to Deny, and automatically
+denies on timeout or close. A `full` task does not ask; plain message/choice text and native executor
+flags never escalate permissions. AgentBC never treats approval prose as a valid completion marker.
 
 ## Steps Contract
 

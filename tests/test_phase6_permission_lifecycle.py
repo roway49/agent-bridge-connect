@@ -18,7 +18,10 @@ from agent_bridge_connect.run_lease import (
     recover_task,
     save_lease,
 )
-from agent_bridge_connect.service import TaskService
+from agent_bridge_connect.service import (
+    PERMISSION_DIALOG_TIMEOUT_RESPONSE,
+    TaskService,
+)
 
 
 RECEIPT_SOURCE = {
@@ -322,6 +325,30 @@ class PermissionResponseTests(unittest.TestCase):
         self.assertNotIn(PERMISSION_GRANT_EXTENSION_KEY, after.extensions)
         self.assertEqual(after.extensions["agentbc.input"]["status"], "answered")
 
+    def test_dialog_timeout_auto_denies_permission_without_dispatch(self) -> None:
+        harness = PermissionLifecycleHarness("codex")
+        self.addCleanup(harness.close)
+        service = harness.service
+        task_id, _, _ = harness.prepare_wait()
+        request = self._waiting_input(service, task_id)
+
+        result = service.respond_to_input(
+            task_id,
+            request["input_id"],
+            response_type="deny",
+            message=PERMISSION_DIALOG_TIMEOUT_RESPONSE,
+        )
+
+        self.assertFalse(result["dispatch_required"])
+        self.assertEqual(result["failure"]["kind"], "permission_denied_by_timeout")
+        task = service.get_task(task_id)
+        self.assertEqual(task.status, "failed")
+        self.assertEqual(task.errors[-1]["code"], "permission_denied_by_timeout")
+        self.assertEqual(
+            task.extensions["agentbc.input"]["response"],
+            {"type": "deny", "summary": "deny", "source": "timeout"},
+        )
+
     def test_permission_input_only_accepts_approve_or_deny(self) -> None:
         harness = PermissionLifecycleHarness("codex")
         self.addCleanup(harness.close)
@@ -603,7 +630,10 @@ class PermissionGrantRevocationTests(unittest.TestCase):
         self.assertEqual([item["task_id"] for item in expired], [task_id])
         grant = service.get_task(task_id).extensions[PERMISSION_GRANT_EXTENSION_KEY]
         self.assertEqual(grant["state"]["status"], "revoked")
-        self.assertEqual(grant["audit"]["revocation_code"], "input_expired")
+        self.assertEqual(grant["audit"]["revocation_code"], "permission_denied_by_timeout")
+        expired_task = service.get_task(task_id)
+        self.assertEqual(expired_task.status, "failed")
+        self.assertEqual(expired_task.errors[-1]["code"], "permission_denied_by_timeout")
 
         # A second input_required supersedes and revokes any earlier grant.
         harness2 = PermissionLifecycleHarness("codex")

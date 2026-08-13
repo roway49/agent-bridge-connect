@@ -141,7 +141,9 @@ agentbc task respond 4XMC-001 --input INPUT_ID --deny
 批准只为该任务下一次同 session continuation 发放一次性 `full` 授权；授权随后被消费或撤销，
 绝不被 retry、recover、reassign、handoff 或新任务继承。拒绝以稳定原因
 `permission_denied_by_user` 将任务终态置为 `failed`。普通消息文本或“允许”字样既不是授权，
-也永远不能充当完成标记。
+也永远不能充当完成标记。权限弹窗严格只有“允许”和“拒绝”两个动作，不提供 Later 或文本框；
+默认动作是拒绝，超时或关闭弹窗也会自动拒绝。超时拒绝记录稳定原因
+`permission_denied_by_timeout`。
 
 ## Create 与 Handoff
 
@@ -269,7 +271,8 @@ agentbc task respond 4XMC-001 --input INPUT_ID --deny
 
 普通 choice 以 `--message` 提交所选选项；资源耗尽类决策（`kind=resource_limit`、
 `response_protocol=approve_deny`）使用 `--approve`（「提高预算并继续」）或 `--deny`
-（「终止任务」）。弹窗中的「Later」、关闭弹窗或超时不提交响应，任务保持等待。
+（「终止任务」）。普通 choice 与资源决策中的「Later」、关闭弹窗或超时不提交响应，任务保持等待；
+权限确认例外：它只有允许/拒绝，且超时或关闭自动按拒绝终结任务。
 
 ## Record 与进程压力
 

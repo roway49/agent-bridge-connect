@@ -140,9 +140,10 @@ approves or denies; a `full` task runs with its strongest documented noninteract
 access and does not ask. Plain approval prose never grants permissions or completes
 a task. The desktop dialog explains the reason and both outcomes, then renders the two
 labels as direct buttons. Operational deadline and CLI fallback fields remain in
-the task record/report but are not shown in the desktop dialog. Input dialogs
-remain visible for up to five minutes; dismissing or timing out leaves the task
-waiting for a CLI response.
+the task record/report but are not shown in the desktop dialog. Ordinary message/choice dialogs
+remain visible for up to five minutes; dismissing or timing out leaves the task waiting for a CLI
+response. Permission dialogs are strict two-action confirmations with no text input: Deny is the
+default, and closing or timing out automatically denies.
 
 1. Runner confirms that execution started.
 2. The executor emits and exits with its final marker.

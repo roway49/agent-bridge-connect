@@ -539,6 +539,9 @@ permission 类型、三 Executor 既有 `full` 映射和 SESSION-001 同 session
 - deny 直接终结任务为带稳定原因 `permission_denied_by_user` 的 failed；expired、stale、
   task/input/session 不匹配、重复 approve、授权篡改或 Runner 无法验证 full argv 均 fail
   closed，不自动重派 full；
+- 权限弹窗严格只有允许/拒绝两个动作，不提供 Later 或文本输入；默认拒绝，关闭或超时自动
+  拒绝，超时稳定原因为 `permission_denied_by_timeout`。普通 message/choice 文本永远不得被
+  解释为权限批准；
 - 一次性授权必须留下脱敏审计：原权限、临时权限、input ID、目标 run、issued/consumed/
   revoked 状态和时间。不得保存 prompt、raw command/output、token、secret 或私有会话内容；
   status/report 只显示是否存在当前临时授权、来源和消费结果，不引入新的任务状态。
@@ -548,6 +551,13 @@ input；有官方 receipt 时 approve 后同 Task/同 session 的下一次 run �
 receipt 时严格进入 recovery；deny 明确 failed；grant 一次消费、超时、重复响应、resume
 dispatch 失败、needs_recovery、retry、recover、reassign、handoff 和新任务均不能泄漏 full；
 通知、status/report 与 permission audit 同源，且用户流程不出现新的任务状态或 Git 权限概念。
+
+2026-08-13 手工 canary 修正：`Y6NX-001` 暴露 permission blocker 被误报为 message、权限弹窗
+存在 Later/文本歧义，以及 cancel 后遗留 waiting input、suspended RunLease、input_required
+session，令 cleanup 门禁长期停在 `not_requested`。修复要求已纳入自动化：权限 blocker 必须
+使用 strict permission marker；取消必须原子关闭 input/RunLease/session、生成终态 Report 与
+notification，再进入后台 cleanup。Claude ephemeral project 在官方 purge 前不得被通用取消清理
+递归删除。该项在新安装包真实 permission/cancel/cleanup canary 通过前仍保持 P0 验收打开。
 
 ### 4.7 `REPORT-001` + `OBS-001`：真实执行时长与 lease 当前视图
 

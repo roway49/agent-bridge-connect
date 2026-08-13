@@ -15,6 +15,7 @@ RESOURCE_DECISION_APPROVE_LABEL = "提高预算并继续"
 RESOURCE_DECISION_DENY_LABEL = "终止任务"
 RESOURCE_DECISION_KIND = "resource_limit"
 RESOURCE_DECISION_PROTOCOL = "approve_deny"
+PERMISSION_DIALOG_TIMEOUT_RESPONSE = "agentbc_permission_dialog_timeout"
 
 
 def notify_terminal(
@@ -62,6 +63,7 @@ def notify_input_required(
     file_result = FileNotifier(service.board_root / "notifications.jsonl").send(payload)
     dialog_result = DialogNotifier().send(payload)
     action = str(dialog_result.details.get("action") or "dismissed")
+    decision_source = str(dialog_result.details.get("decision_source") or "")
     service.store.append_event(
         task_id,
         {
@@ -73,6 +75,7 @@ def notify_input_required(
             "dialog_ok": dialog_result.ok,
             "dialog_message": dialog_result.message,
             "dialog_action": action,
+            "dialog_decision_source": decision_source,
             "dialog_delay_s": 0,
             "created_at": utc_now(),
         },
@@ -84,7 +87,15 @@ def notify_input_required(
             response_result = responder(
                 str(payload["input_id"]),
                 action,
-                str(dialog_result.details.get("message") or ""),
+                (
+                    PERMISSION_DIALOG_TIMEOUT_RESPONSE
+                    if payload.get("input_type") == "permission"
+                    and action == "deny"
+                    and decision_source == "timeout"
+                    else ""
+                    if payload.get("input_type") == "permission"
+                    else str(dialog_result.details.get("message") or "")
+                ),
             )
         except Exception as exc:
             response_error = compact_notification_text(str(redact_secrets(str(exc))), 240)

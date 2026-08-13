@@ -138,7 +138,10 @@ agentbc task respond 4XMC-001 --input INPUT_ID --deny
 Approving issues a one-time `full` grant for the next same-session continuation of that task only;
 it is consumed or revoked afterward and is never inherited by retry, recover, reassign, handoff, or
 a new task. Denying ends the task `failed` with the stable reason `permission_denied_by_user`.
-Plain message text or approval prose is not a permission grant and never a completion marker.
+The permission dialog has exactly Approve and Deny, no Later action or text field, defaults to
+Deny, and automatically denies on timeout or close; timeout uses the stable reason
+`permission_denied_by_timeout`. Plain message text or approval prose is not a permission grant and
+never a completion marker.
 
 ## Create Versus Handoff
 
