@@ -9,7 +9,8 @@ from .protocol import ABCError
 
 PERMISSION_EXTENSION_KEY = "agentbc.permission"
 CANONICAL_PERMISSION_MODES = ("inherit", "safe", "full")
-DEFAULT_PERMISSION_MODE = "safe"
+DEFAULT_PERMISSION_MODE = "inherit"
+LEGACY_PERMISSION_MODE = "safe"
 
 _FULL_PERMISSION_FLAGS = {
     "codex": "--dangerously-bypass-approvals-and-sandbox",
@@ -117,7 +118,7 @@ def normalize_permission_mode(value: Any, *, code: str = "invalid_permission_mod
 def configured_permission_mode(config: dict[str, Any] | None) -> tuple[str, str]:
     loaded = config if isinstance(config, dict) else {}
     if "permission_mode" not in loaded:
-        return DEFAULT_PERMISSION_MODE, "safe_default"
+        return DEFAULT_PERMISSION_MODE, "inherit_default"
     return normalize_permission_mode(loaded.get("permission_mode")), "configured_default"
 
 
@@ -145,8 +146,8 @@ def build_permission_record(
 
 def legacy_permission_record() -> dict[str, str]:
     return {
-        "requested_mode": DEFAULT_PERMISSION_MODE,
-        "effective_mode": DEFAULT_PERMISSION_MODE,
+        "requested_mode": LEGACY_PERMISSION_MODE,
+        "effective_mode": LEGACY_PERMISSION_MODE,
         "selection_source": "legacy_task",
     }
 

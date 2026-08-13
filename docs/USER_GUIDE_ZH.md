@@ -63,6 +63,7 @@ Hermes 必须先由 `agentbc setup` 配置，否则对应命令以退出码 2 �
 交互式 setup 提供“使用默认 / 自定义”，已有值时按 Enter 保留；非交互 setup 同样
 保留已有值。首次缺失时使用：
 
+- AgentBC 任务权限：`inherit`（保持执行器现有用户/全局设置）；
 - Claude 预算：`$10`；
 - Hermes turns：先读取 `hermes config path` 返回文件中的 `agent.max_turns`，再尝试
   兼容的顶层 `max_turns`，最后回退 `90`；
@@ -122,8 +123,11 @@ active、`input_required` 或 recovery 任务的既有语义。
 每个任务都带三种规范权限模式之一：`inherit`、`safe` 或 `full`：
 
 - `inherit` 不注入任何 AgentBC 权限、审批、sandbox 或 yolo 覆盖，保持执行器既有的用户/全局设置；
-- `safe` 是保守默认，保持执行器既有审批行为；
+- `safe` 是保守的任务级覆盖，保持执行器既有审批行为；
 - `full` 是显式、可审计的选择，使用已安装执行器文档中支持的最强非交互访问。
+
+首次 setup 按 Enter 选择 `inherit`；已有配置按 Enter 保留当前值。旧版本任务缺少权限快照时
+仍按 `safe` 回落，新安装默认值变化不会放宽历史任务。
 
 只有用户明确选择任务级覆盖时才在 `task create` 或 `task handoff` 上传递
 `--permission-mode <inherit|safe|full>`；否则新任务使用配置默认值，handoff 继承源任务。
@@ -243,7 +247,7 @@ agentbc task pause 4XMC
 agentbc task resume 4XMC
 agentbc task close 4XMC
 agentbc task delete 4XMC --dry-run
-agentbc task delete 4XMC --confirm
+agentbc task delete 4XMC
 agentbc task recover 4XMC
 ```
 
@@ -255,8 +259,9 @@ cancelled、rejected）与过期非 head 迭代都会被拒绝。关闭根任务
 delete 只接受任务码，不接受 iteration ID。整条链的每次迭代都必须处于
 `completed`、`failed`、`cancelled` 或 `rejected`；存在排队中、活跃、等待输入或
 等待恢复的迭代时会拒绝整条链。`--dry-run` 零写入，并列出将删除与保留的对象；
-`--confirm` 只删除 AgentBC 自有 record、report、index entry 和 managed artifact，
-成功后释放任务码。用户工程始终保留。
+普通 `task delete` 会先列出将删除的任务记录、任务说明/报告、索引项和默认 AgentBC Artifact，
+随后询问 `Continue? [y/N]`；只有明确输入 `y`/`yes` 才执行。Enter、`n`、EOF 或 Ctrl-C
+均取消且零写入。用户工程始终保留。
 
 ## 等待输入与决策
 

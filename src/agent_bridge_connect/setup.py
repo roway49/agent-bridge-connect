@@ -1361,11 +1361,12 @@ def _select_session_retention(
     current, source = configured_session_retention(config)
     if not interactive:
         return current, not has_current, source
-    default_label = "enabled" if current else "disabled"
-    answer = _prompt(
-        f"Retain executor temporary sessions? [y/n, Enter={default_label}]: ",
-        default="",
-    ).strip().lower()
+    if has_current:
+        default_label = "enabled" if current else "disabled"
+        prompt = f"Retain executor temporary sessions? [y/n, Enter={default_label}]: "
+    else:
+        prompt = "Retain executor temporary sessions? [y/N]: "
+    answer = _prompt(prompt, default="").strip().lower()
     if not answer:
         return current, not has_current, source
     if answer in {"y", "yes", "enable", "enabled"}:

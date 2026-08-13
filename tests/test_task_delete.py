@@ -49,6 +49,15 @@ class TaskDeleteTests(unittest.TestCase):
             snapshot[relative] = path.read_bytes() if path.is_file() else None
         return snapshot
 
+    @staticmethod
+    def _last_json(output: str) -> dict:
+        start = output.rfind("\n{")
+        if start >= 0:
+            return json.loads(output[start + 1 :])
+        if output.startswith("{"):
+            return json.loads(output)
+        raise AssertionError(f"JSON output missing: {output!r}")
+
     def test_dry_run_lists_owned_and_preserved_objects_without_writes(self) -> None:
         customer = self.workspace / "customer-project"
         customer.mkdir()
@@ -70,18 +79,22 @@ class TaskDeleteTests(unittest.TestCase):
         self.assertEqual(before, self._snapshot())
         self.assertTrue(keep.is_file())
 
-    def test_confirmed_managed_delete_removes_chain_refreshes_index_and_releases_code(self) -> None:
+    def test_interactive_managed_delete_removes_chain_refreshes_index_and_releases_code(self) -> None:
         from agent_bridge_connect.cli import main
 
         task = self._create()
         self._terminal(task)
         code = task.workspace["task_code"]
         output = io.StringIO()
-        with contextlib.redirect_stdout(output):
-            exit_code = main(["task", "delete", code.lower(), "--root", str(self.board), "--confirm"])
+        with mock.patch("builtins.input", return_value="y"), contextlib.redirect_stdout(output):
+            exit_code = main(["task", "delete", code.lower(), "--root", str(self.board)])
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(json.loads(output.getvalue())["status"], "deleted")
+        text = output.getvalue()
+        self.assertIn("task records:", text)
+        self.assertIn("task briefs and reports:", text)
+        self.assertIn("default AgentBC artifacts:", text)
+        self.assertEqual(self._last_json(text)["status"], "deleted")
         self.assertFalse((self.board / code).exists())
         self.assertFalse(Path(task.workspace["report_root"]).exists())
         self.assertFalse(Path(task.workspace["artifact_root"]).exists())
@@ -144,7 +157,7 @@ class TaskDeleteTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "task_delete_requires_chain_code")
         self.assertTrue((self.board / task.workspace["task_code"]).exists())
 
-    def test_exactly_one_explicit_mode_is_required(self) -> None:
+    def test_internal_delete_requires_one_explicit_mode_and_cli_prompts_by_default(self) -> None:
         from agent_bridge_connect.cli import build_parser
 
         task = self._create()
@@ -154,10 +167,63 @@ class TaskDeleteTests(unittest.TestCase):
             with self.subTest(kwargs=kwargs), self.assertRaises(ABCError) as raised:
                 self.service.delete_task_chain(code, **kwargs)
             self.assertEqual(raised.exception.code, "task_delete_confirmation_required")
+        parsed = build_parser().parse_args(["task", "delete", code])
+        self.assertFalse(parsed.dry_run)
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            build_parser().parse_args(["task", "delete", code])
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            build_parser().parse_args(["task", "delete", code, "--dry-run", "--confirm"])
+            build_parser().parse_args(["task", "delete", code, "--confirm"])
+
+    def test_interactive_no_and_eof_cancel_without_writes(self) -> None:
+        from agent_bridge_connect.cli import main
+
+        for response in ("n", EOFError()):
+            with self.subTest(response=response):
+                task = self._create()
+                self._terminal(task)
+                code = task.workspace["task_code"]
+                before = self._snapshot()
+                output = io.StringIO()
+                side_effect = response if isinstance(response, BaseException) else None
+                with mock.patch(
+                    "builtins.input",
+                    return_value=None if side_effect else response,
+                    side_effect=side_effect,
+                ), contextlib.redirect_stdout(output):
+                    exit_code = main(["task", "delete", code, "--root", str(self.board)])
+                self.assertEqual(exit_code, 0)
+                self.assertEqual(self._last_json(output.getvalue())["status"], "cancelled")
+                self.assertEqual(before, self._snapshot())
+
+    def test_dry_run_never_prompts(self) -> None:
+        from agent_bridge_connect.cli import main
+
+        task = self._create()
+        self._terminal(task)
+        output = io.StringIO()
+        with mock.patch("builtins.input") as prompt, contextlib.redirect_stdout(output):
+            exit_code = main(
+                ["task", "delete", task.workspace["task_code"], "--root", str(self.board), "--dry-run"]
+            )
+        self.assertEqual(exit_code, 0)
+        prompt.assert_not_called()
+        self.assertEqual(json.loads(output.getvalue())["status"], "dry_run")
+
+    def test_confirmation_discloses_customer_preservation_and_no_managed_artifacts(self) -> None:
+        from agent_bridge_connect.cli import main
+
+        customer = self.workspace / "customer-project"
+        customer.mkdir()
+        task = self._create(customer=customer)
+        self._terminal(task)
+        output = io.StringIO()
+        with mock.patch("builtins.input", return_value="n"), contextlib.redirect_stdout(output):
+            exit_code = main(
+                ["task", "delete", task.workspace["task_code"], "--root", str(self.board)]
+            )
+        self.assertEqual(exit_code, 0)
+        text = output.getvalue()
+        self.assertIn("default AgentBC artifacts: none", text)
+        self.assertIn(f"Preserved customer project: {customer}", text)
+        self.assertTrue(customer.is_dir())
 
     def test_partial_staging_failure_rolls_back_without_releasing_code(self) -> None:
         task = self._create()
@@ -239,7 +305,7 @@ class TaskDeleteTests(unittest.TestCase):
         self.assertEqual(dry_run["status"], "already_deleted")
         self.assertEqual(second["receipt"]["deletion_id"], first["deletion_id"])
 
-    def test_help_describes_chain_code_and_both_modes(self) -> None:
+    def test_help_describes_chain_code_dry_run_and_interactive_confirmation(self) -> None:
         from agent_bridge_connect.cli import build_parser
 
         parser = build_parser()
@@ -251,7 +317,8 @@ class TaskDeleteTests(unittest.TestCase):
         help_text = output.getvalue()
         self.assertIn("fully terminal task chain", help_text)
         self.assertIn("--dry-run", help_text)
-        self.assertIn("--confirm", help_text)
+        self.assertNotIn("--confirm", help_text)
+        self.assertIn("asks for y/N confirmation", help_text)
         self.assertIn("not an iteration id", help_text)
 
 

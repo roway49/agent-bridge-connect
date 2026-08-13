@@ -116,7 +116,7 @@ class PermissionPublicViewTests(unittest.TestCase):
         self.assertIn(PERMISSION_EXTENSION_KEY, status["extensions"])
         self.assertEqual(
             status["extensions"][PERMISSION_EXTENSION_KEY]["effective_mode"],
-            "safe",
+            "inherit",
         )
 
         preflight = self.service.preflight(self.task.id)

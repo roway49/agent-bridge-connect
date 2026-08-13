@@ -270,13 +270,18 @@ def build_parser() -> argparse.ArgumentParser:
     task_delete = task_sub.add_parser(
         "delete",
         help="Delete one fully terminal task chain by task code.",
-        description="Delete one fully terminal task chain by task code.",
+        description=(
+            "Delete one fully terminal task chain by task code. "
+            "Plain deletion shows the owned targets and asks for y/N confirmation."
+        ),
     )
     add_task_root(task_delete)
     task_delete.add_argument("task_code", help="Chain task code, not an iteration id.")
-    task_delete_mode = task_delete.add_mutually_exclusive_group(required=True)
-    task_delete_mode.add_argument("--dry-run", action="store_true", help="Show deleted and preserved objects without writing.")
-    task_delete_mode.add_argument("--confirm", action="store_true", help="Commit deletion of the eligible terminal chain.")
+    task_delete.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show deleted and preserved objects without writing or prompting.",
+    )
 
     task_correct = task_sub.add_parser("correct", help="Add a correction for a task step.")
     add_task_root(task_correct)
@@ -1078,11 +1083,22 @@ def command_task_intervention(args: argparse.Namespace) -> int:
 def command_task_delete(args: argparse.Namespace) -> int:
     service = _task_service(args.root)
     try:
-        result = service.delete_task_chain(
-            args.task_code,
-            dry_run=bool(args.dry_run),
-            confirmed=bool(args.confirm),
-        )
+        if args.dry_run:
+            result = service.delete_task_chain(args.task_code, dry_run=True)
+        else:
+            plan = service.plan_task_delete(args.task_code)
+            if plan.get("status") == "already_deleted":
+                result = plan
+            elif not _confirm_task_delete(plan):
+                result = {
+                    "ok": True,
+                    "status": "cancelled",
+                    "task_code": plan.get("task_code", str(args.task_code).upper()),
+                    "task_ids": list(plan.get("task_ids") or []),
+                    "deleted": False,
+                }
+            else:
+                result = service.delete_task_chain(args.task_code, confirmed=True)
     except ABCError as exc:
         print(f"{exc.code}: {exc}")
         return 1
@@ -1120,6 +1136,37 @@ def _cancel_task_runner_runs(task: Any) -> list[str]:
 def _confirm_chain_close(plan: dict[str, Any]) -> bool:
     print(f"This will delete {plan['task_id']} record and report.")
     print("Original project files may already have changed and cannot be restored.")
+    try:
+        answer = input("Continue? [y/N]: ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer.strip().lower() in {"y", "yes"}
+
+
+def _confirm_task_delete(plan: dict[str, Any]) -> bool:
+    task_code = str(plan.get("task_code") or "")
+    task_ids = list(plan.get("task_ids") or [])
+    targets = {
+        str(item.get("kind") or ""): str(item.get("path") or "")
+        for item in list(plan.get("targets") or [])
+        if isinstance(item, dict)
+    }
+    print(f"This will permanently delete task chain {task_code} ({len(task_ids)} iteration(s)):")
+    print(f"  - task records: {targets.get('records', 'AgentBC task records')}")
+    print(f"  - task briefs and reports: {targets.get('reports', 'AgentBC reports')}")
+    if targets.get("artifacts"):
+        print(f"  - default AgentBC artifacts: {targets['artifacts']}")
+    else:
+        print("  - default AgentBC artifacts: none")
+    print("  - task index entries and the task-code claim")
+    customer_projects = [
+        str(item.get("path") or "")
+        for item in list(plan.get("preserve_objects") or [])
+        if isinstance(item, dict) and item.get("kind") == "customer_project"
+    ]
+    for path in customer_projects:
+        print(f"Preserved customer project: {path}")
     try:
         answer = input("Continue? [y/N]: ")
     except (EOFError, KeyboardInterrupt):

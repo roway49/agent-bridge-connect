@@ -24,7 +24,7 @@
 
 | 工作项 | 状态 | 已具备能力 | 主要证据 |
 | --- | --- | --- | --- |
-| `DEL-001` | ✅ | 终态任务链 dry-run/confirm、安全 staging、task code 归还与 customer path 保护 | `48de7dc`、`tests/test_task_delete.py` |
+| `DEL-001` | ✅ | 终态任务链 dry-run/内置 y/N 确认、安全 staging、task code 归还与 customer path 保护 | `48de7dc`、`tests/test_task_delete.py` |
 | `REPORT-001` + `OBS-001` | ✅ | 按真实 run interval 累计 execution duration，当前 lease 使用权威派生视图 | `795e2db`、`tests/test_timing_view.py` |
 | `PROMPT-001` | ✅ | 三 Executor 公共 Prompt contract 单一 builder、golden 与长度门禁 | `0b51af5`、`b3da287`、`fe48ba3` |
 | Phase 0 | ✅ | 冻结资源、session、耗尽路由、Claude Project 和真实 CLI fixture 契约 | Phase 0 contract tests |
@@ -70,8 +70,8 @@ package-only smoke 与 CLI/Runner identity 验证通过；正式版本尚未提�
 | 工作项 | 状态 | 剩余闭环 |
 | --- | --- | --- |
 | Phase 4 / `CFG-002` | 🟡 代码完成/待集中验证 | Tasks 1～4 已合入；真实 Claude/Hermes 耗尽、approve 翻倍同 session 继续、deny 明确 failed 的安装包 canary 延后到集中全面测试 |
-| `SESSION-001` | 🟡 代码完成/待真实 P2P | session 快照、receipt、同 ID resume、终态 cleanup/purge、capability、公共视图与 doctor warning 已完成；真实 retain/cleanup P2P 门禁尚未通过 |
-| `SAFE-001` | 🟡 Codex/Hermes canary 通过，Claude 待验收 | grant、Core、Runner、三 Adapter、Hermes receipt 门禁与 Task 4 公共脱敏投影均已合入；Codex `4PK9-001` 与 Hermes `C2KS-001` 已验证 safe→弹窗 Approve→同 session 单次 full→终态 cleanup，Claude 真实 canary 仍待执行 |
+| `SESSION-001` | 🟡 cleanup P2P 通过/retain-on 待测 | session 快照、receipt、同 ID resume、终态 cleanup/purge、capability、公共视图与 doctor warning 已完成；Codex `4PK9-001`、Hermes `C2KS-001`、Claude `FXCQ-001` 均已验证 retain=false 终态 cleanup，retain=true 保留门禁尚未执行 |
+| `SAFE-001` | 🟡 三 Executor canary 通过/细粒度权限待 1.0.3A | Codex `4PK9-001`、Hermes `C2KS-001`、Claude `FXCQ-001` 均已验证 safe→弹窗 Approve→同 session 单次 full→终态 cleanup；Claude 当前确定性 canary 仍依赖任务合同触发 permission input，文件级最小权限见 `PERM-103-007` |
 | `REL-102` | 🟡 候选包自动门禁通过 | `1.0.2a1` 版本、wheel/sdist、隔离安装、只读 setup 与 shell 闭环 smoke 已通过；Python 3.10/3.14、双机和三真实 Executor 发布 Gate 未执行 |
 
 禁止回归记录：`commit_required`、`--git-write`、`--commit-sha`、`agentbc.git` 及 Phase 6 旧
@@ -94,6 +94,14 @@ retention=false 时进程 cwd 是 `<TASK-ID>/claude` 临时工程，相对交付
 project 与 task root 后，允许最外层 managed Artifact/chain root 因正常产物或其他 iteration
 非空而成功保留。临时 project 或 task root 非空仍 fail closed，不递归删除、不自动搬运。
 不依赖 Prompt 的文件级最小写权限已登记为 `1.0.3A / PERM-103-007`。
+
+Claude 修正版真实 canary `FXCQ-001` 使用 `customer-path="default path"` 完成两次 run、
+`resume_count=1`、一次性 `safe -> full` 授权消费、绝对 Artifact Root 写入和字节校验；终态
+`claude_project_purge` 首次成功，`<TASK-ID>/claude` 与空 task root 均已移除，外层 Artifact
+root 因保留正式产物而正确存在。本轮同时冻结三项 setup/CLI 体验修正：首次 setup 权限默认
+为 `inherit`，旧任务缺少权限快照仍回落 `safe`；首次 retention 明确以 `[y/N]` 默认不保留；
+`task delete <TASKCODE>` 改为先展示将删除的 record、brief/report、index 与默认 Artifact，
+再内置 `y/N` 确认，移除多余的公开 `--confirm`，`--dry-run` 继续零写入且不提示。
 
 ### 0.4 后续固定顺序
 
@@ -304,7 +312,7 @@ retry、recover、handoff 或新任务继承。
 
 ```text
 agentbc task delete <TASKCODE> --dry-run
-agentbc task delete <TASKCODE> --confirm
+agentbc task delete <TASKCODE>
 ```
 
 要求：
@@ -313,6 +321,9 @@ agentbc task delete <TASKCODE> --confirm
 - 只有整条链均为 `completed/failed/cancelled/rejected` 才允许删除；
 - `pending/running/input_required/needs_recovery` 任一存在时整链拒绝；
 - `--dry-run` 只输出所有将删除和保留的对象，零磁盘写入；
+- 普通 delete 必须先展示将删除的任务记录、任务说明/报告、索引项和默认 managed artifact，
+  再以 `y/N` 询问；只有 `y/yes` 提交，Enter、`n`、EOF、Ctrl-C 全部取消且零写入；
+- 不提供公开 `task delete --confirm`，避免用户先记忆额外危险开关再获得真正风险说明；
 - 删除范围只包括 AgentBC 拥有的 task/report/record/index entry 和 managed artifact；
 - customer project 永不删除，即使路径名称与 managed artifact 相似；
 - 删除需要 reservation/commit 或等价事务边界，异常中断不得产生半删除后释放 ID；

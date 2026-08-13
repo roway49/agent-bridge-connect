@@ -29,6 +29,7 @@ from agent_bridge_connect.setup import (
     _merge_executor_config,
     _select_claude_budget,
     _select_hermes_max_turns,
+    _select_session_retention,
     resolve_hermes_default_max_turns,
 )
 
@@ -303,9 +304,23 @@ class SetupResourceTests(unittest.TestCase):
             result = self._run_noninteractive_setup()
         config = load_config(self.config_path)
         self.assertTrue(result["config_written"])
+        self.assertEqual(config["permission_mode"], "inherit")
         self.assertEqual(config["executors"]["claude"]["max_budget_usd"], 10.0)
         self.assertEqual(config["executors"]["hermes"]["max_turns"], 60)
         self.assertFalse(config["sessions"]["retain_executor_sessions"])
+
+    def test_first_interactive_retention_defaults_to_no(self) -> None:
+        with mock.patch("builtins.input", return_value="") as prompt:
+            selected = _select_session_retention({}, interactive=True)
+        self.assertEqual(selected, (False, True, "session_default_false"))
+        self.assertIn("[y/N]", prompt.call_args.args[0])
+
+    def test_existing_interactive_retention_keeps_current_value(self) -> None:
+        config = {"sessions": {"retain_executor_sessions": True}}
+        with mock.patch("builtins.input", return_value="") as prompt:
+            selected = _select_session_retention(config, interactive=True)
+        self.assertEqual(selected, (True, False, "configured"))
+        self.assertIn("Enter=enabled", prompt.call_args.args[0])
 
     def test_noninteractive_setup_preserves_existing_resources_and_unknown_keys(self) -> None:
         write_config_atomic(

@@ -25,9 +25,9 @@ from agent_bridge_connect.service import TaskService, task_to_status
 
 
 class PermissionContractTests(unittest.TestCase):
-    def test_contract_has_exactly_three_modes_and_safe_legacy_fallback(self) -> None:
+    def test_contract_has_inherit_setup_default_and_safe_legacy_fallback(self) -> None:
         self.assertEqual(CANONICAL_PERMISSION_MODES, ("inherit", "safe", "full"))
-        self.assertEqual(configured_permission_mode({}), ("safe", "safe_default"))
+        self.assertEqual(configured_permission_mode({}), ("inherit", "inherit_default"))
         self.assertEqual(legacy_permission_record()["effective_mode"], "safe")
 
     def test_explicit_mode_overrides_configured_default(self) -> None:
@@ -72,17 +72,27 @@ class PermissionContractTests(unittest.TestCase):
         self.assertEqual(handoff.permission_mode, "full")
         self.assertEqual(setup.permission_mode, "safe")
 
-    def test_setup_selection_explains_modes_and_never_defaults_to_full(self) -> None:
+    def test_setup_selection_explains_modes_and_defaults_to_inherit(self) -> None:
         from agent_bridge_connect.setup import _select_permission_mode
 
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             selected = _select_permission_mode({}, explicit_mode=None, interactive=False)
-        self.assertEqual(selected, "safe")
+        self.assertEqual(selected, "inherit")
         text = output.getvalue()
         self.assertIn("existing user/global", text)
         self.assertIn("maximum documented noninteractive access", text)
         self.assertIn("WARNING: full", text)
+
+    def test_setup_preserves_an_existing_safe_default(self) -> None:
+        from agent_bridge_connect.setup import _select_permission_mode
+
+        self.assertEqual(
+            _select_permission_mode(
+                {"permission_mode": "safe"}, explicit_mode=None, interactive=False
+            ),
+            "safe",
+        )
 
     def test_atomic_create_and_handoff_requests_carry_permission_mode(self) -> None:
         from agent_bridge_connect.runner import RunnerClient

@@ -40,8 +40,11 @@ resolved executor, and final `--assignee` or `--to` value match.
 AgentBC has exactly `inherit`, `safe`, and `full` task permission modes:
 
 - `inherit` adds no AgentBC permission, approval, sandbox, safe-mode, or yolo override and preserves the executor's existing user/global settings.
-- `safe` is the conservative default and preserves established executor approval behavior.
+- `safe` is the conservative task override and preserves established executor approval behavior.
 - `full` is an explicit audited choice for the installed executor's strongest documented noninteractive access. Warn before selecting it.
+
+First-time setup defaults to `inherit`; an existing configured default is preserved. Legacy tasks
+that have no persisted permission extension still fail closed to `safe`.
 
 Use only `--permission-mode <inherit|safe|full>` on `task create` or `task handoff`, and only when
 the user chose a task override. Otherwise omit it so a new task uses the configured default and a
@@ -151,6 +154,12 @@ directory to `task create`; a `handoff_required` response must be followed throu
 `agentbc task close` accepts only the current queued (pending) or active chain head. Terminal
 iterations and stale (non-head) iterations are rejected. Run an interactive close once and let
 AgentBC obtain its own confirmation. Use `--confirm` only after explicit authorization.
+
+`agentbc task delete <TASKCODE> --dry-run` is read-only and never prompts. Plain
+`agentbc task delete <TASKCODE>` lists the AgentBC-owned task records, briefs/reports, index entries,
+and default artifacts that will be removed, then asks `Continue? [y/N]`. Only explicit `y`/`yes`
+deletes; Enter, `n`, EOF, or interrupt cancels without writes. Customer projects are always
+preserved. There is no public `task delete --confirm` mode.
 
 ## Configuration And Health
 

@@ -69,6 +69,7 @@ Interactive setup offers default or custom values and preserves an existing
 value when Enter is pressed. Non-interactive setup also preserves existing
 values. New settings use these defaults:
 
+- AgentBC task permission: `inherit` (preserve the executor's user/global settings);
 - Claude budget: `$10`;
 - Hermes turns: `agent.max_turns` from the path returned by
   `hermes config path`, then legacy top-level `max_turns`, then `90`;
@@ -118,8 +119,12 @@ an unsupported capability does not change the terminal task/report result.
 Every task carries one of three canonical permission modes — `inherit`, `safe`, or `full`:
 
 - `inherit` adds no AgentBC permission, approval, sandbox, or yolo override and keeps the executor's existing user/global settings;
-- `safe` is the conservative default and preserves established executor approval behavior;
+- `safe` is the conservative task override and preserves established executor approval behavior;
 - `full` is an explicit audited choice for the installed executor's strongest documented noninteractive access.
+
+On first setup, Enter selects `inherit`. Existing configured values are preserved when Enter is
+pressed. Tasks missing a permission snapshot from an older AgentBC version still fall back to
+`safe`; changing the new-install default never broadens legacy tasks.
 
 Pass `--permission-mode <inherit|safe|full>` on `task create` or `task handoff` only when the user
 chose a task override; otherwise a new task uses the configured default and a handoff inherits its
@@ -257,7 +262,7 @@ agentbc task pause 4XMC
 agentbc task resume 4XMC
 agentbc task close 4XMC
 agentbc task delete 4XMC --dry-run
-agentbc task delete 4XMC --confirm
+agentbc task delete 4XMC
 agentbc task recover 4XMC
 ```
 
@@ -269,9 +274,11 @@ and warn that project changes cannot be rolled back. Customer-project files are 
 Delete accepts a task code, never an iteration ID. It requires every iteration in
 the chain to be `completed`, `failed`, `cancelled`, or `rejected`; queued, active,
 input-required, and recovery-required chains are rejected as a whole. `--dry-run`
-makes no writes and lists both deleted and preserved objects. `--confirm` removes
-only AgentBC-owned records, reports, index entries, and managed artifacts, then
-releases the task code. Customer projects are always preserved.
+makes no writes, never prompts, and lists both deleted and preserved objects. Plain
+`task delete` first lists the task records, briefs/reports, task index entries, and
+default AgentBC artifacts that will be removed, then asks `Continue? [y/N]`. Only an
+explicit `y`/`yes` commits deletion. EOF, Ctrl-C, Enter, or `n` cancels without writes.
+Customer projects are always preserved.
 
 ## Records And Cache
 

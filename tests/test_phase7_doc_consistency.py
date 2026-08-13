@@ -170,6 +170,42 @@ class SharedCommandTableTests(unittest.TestCase):
                 self.assertIn(command, guide_en)
                 self.assertIn(command, guide_zh)
 
+    def test_delete_uses_interactive_confirmation_not_confirm_flag(self) -> None:
+        paths = (
+            REPOSITORY_ROOT / "docs" / "USER_GUIDE.md",
+            REPOSITORY_ROOT / "docs" / "USER_GUIDE_ZH.md",
+            REPOSITORY_ROOT
+            / "src"
+            / "agent_bridge_connect"
+            / "skills"
+            / "references"
+            / "controller-contract.md",
+        )
+        for path in paths:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path.name):
+                self.assertIn("task delete", text)
+                self.assertIn("y/N", text)
+                self.assertNotIn("task delete 4XMC --confirm", text)
+                self.assertNotIn("task delete <TASKCODE> --confirm", text)
+
+    def test_setup_defaults_are_inherit_and_no_session_retention(self) -> None:
+        guide_en = (REPOSITORY_ROOT / "docs" / "USER_GUIDE.md").read_text(encoding="utf-8")
+        guide_zh = (REPOSITORY_ROOT / "docs" / "USER_GUIDE_ZH.md").read_text(encoding="utf-8")
+        contract = (
+            REPOSITORY_ROOT
+            / "src"
+            / "agent_bridge_connect"
+            / "skills"
+            / "references"
+            / "controller-contract.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("task permission: `inherit`", guide_en)
+        self.assertIn("session retention: `false`", guide_en)
+        self.assertIn("任务权限：`inherit`", guide_zh)
+        self.assertIn("临时会话保留：`false`", guide_zh)
+        self.assertIn("First-time setup defaults to `inherit`", contract)
+
     def test_quick_starts_and_readmes_cover_the_shared_contract_topics(self) -> None:
         files = {
             "README.md",
