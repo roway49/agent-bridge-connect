@@ -2138,23 +2138,31 @@ delete/update 等运维入口，均不再作为 1.0.1A 改动处理。
 
 ### 20.1 `1.0.2A`：运行资源、safe 权限与执行会话治理
 
-**产品目标**：解决真实开发流程中三类 P0 阻断：Claude 预算和 Hermes 迭代上限不可控、
-资源耗尽直接失败、Codex safe 在 linked worktree 中无法安全完成 Git 提交；同时让用户
-决定 AgentBC 任务结束后是否保留 Executor 创建的临时会话。
+**开发截止状态**：2026-08-14 完成开发截止。运行代码固定为
+`private/integration@b8af2f3a0a1f56814854e3f46056dd8ab9cf55d7`；随后只允许文档状态
+收口，不改变该运行基线。手工候选为 Python `1.0.2a1`，wheel SHA-256
+`af588a16e50dc435557bf2c14946ec005753f10380c3f5c59c2146b3728aeec4`。新功能、常规缺陷、
+协议调整和结构重构从此进入 `1.0.3A`；retain=true、Python 3.10/3.14、MacBook 双机及最终
+不可变发布资产仍是发布门禁，但不再构成继续开发 1.0.2A 的入口。
 
-**范围冻结**：权限统一设置、权限继承收口和权限阻塞桌面弹窗已整体转入 `1.0.3A`。
-本版不再新增权限协议需求；剩余任务派发按 6.5.1 的人工确认与显式 permission mode 门禁
-执行。Hermes quiet 长任务最终 receipt 稳定性属于既有 `SESSION-001` 承诺，仍须在本版
-修复；首次审批前的早期 session handshake 则保留在 `1.0.3A`。
+**产品目标**：解决真实开发流程中的资源、权限和执行会话阻断：Claude 预算与 Hermes
+迭代上限可配置；资源耗尽可 approve 翻倍并恢复同一 session 或 deny 明确失败；三 Executor
+safe 受阻可通过现有 permission input 获得一次性 full continuation；用户可选择终态是否
+保留 Executor 临时会话，并在默认不保留时执行官方定向 cleanup。
+
+**范围冻结**：本版只保留 `inherit|safe|full`、既有 permission input 和同 session 下一次
+run 的一次性 `safe→full` 窄合同。统一权限 registry、原生结构化 approval event、精确动作
+授权、首次审批前 session handshake、极简原因展开和文件级最小权限全部进入 `1.0.3A`。
 
 **资源配置**：setup 可自定义 Claude `max_budget_usd` 与 Hermes `max_turns`；默认分别为
 `$10` 和 Hermes 配置中的 `agent.max_turns`（读取失败回退 CLI 默认 `90`）。提供
 `agentbc claude budget <usd>` 与 `agentbc hermes max-turns <turns>`。资源耗尽转为可决策
 `input_required`：翻倍本任务资源并恢复同一会话，或终止为带明确原因的 failed。
 
-**Codex safe**：普通 clone 保持现有 safe 提交能力；linked worktree 在 Git 元数据越界时
-派发前/首次提交前给出 `codex_safe_git_metadata_blocked`，默认由控制端审查并提交后恢复
-同一任务。不得放开整个共享 `.git`、不得用自由文本伪提权、不得自动转 full。
+**三 Executor safe**：受阻时复用 `input_required(type=permission)` 和 Approve/Deny；Approve
+只让同一 Task、同一官方 session 的下一次 continuation 使用一次 full，基础权限快照不变，
+terminal/recovery/retry/handoff 不继承。linked-worktree 不扩大外部 `.git` writable roots；
+确需提交时通过同一一次性 full continuation 完成，不增加 Git 专属任务状态或公共命令。
 
 **会话入口**：交互式 setup 询问是否保留，默认不保留；独立命令为
 `agentbc session retention status|enable|disable`；配置为
@@ -2250,8 +2258,9 @@ terminal task 在 RunLease 关闭、最终报告落盘和通知入队后才能�
 retryable；coordinator 的 strategy、时间戳、原生命令/help/output、Executor 私有数据库路径、
 customer path 与 secret 不进入该投影。doctor 的 text/JSON 由同一结构化诊断数据生成：
 unsupported、failed 和超过五分钟的 stale pending 为 warning，retained 与 succeeded 健康。
-当前 Phase 5 为代码完成/待集中验证；本阶段未执行真实 Claude purge、Codex/Hermes session
-delete 或三 Executor P2P，因此 `SESSION-001` 不得提前标记完全完成。
+开发截止时 Codex `4PK9-001`、Hermes `C2KS-001`、Claude `FXCQ-001` 已完成 retain=false
+终态 cleanup P2P；Hermes `BTCN-001` 另验证官方定向 session delete 首次成功。retain=true
+保留路径仍作为发布验收门禁，但不再触发本版常规开发。
 
 产品语义保持一致：cleanup 在后台无感运行，只管理 Executor 创建的临时会话，永不删除
 dispatcher conversation，也不要求用户管理单独的 runtime 目录。能力为 unsupported 或
@@ -2267,6 +2276,19 @@ cleanup failed 时只形成有界 receipt/doctor warning，不改变 Task/report
 Phase 7 Task 3 `DOCFIX-001`（help/Record README/双语用户文档/三类 Skill 一致性收口）已
 代码完成、待合入，见 9.4 节。`commit_required` 与已移除的 Git 专属公共命令
 （`--git-write`、`--commit-sha`、`agentbc.git`）不得以任何形式回归。
+
+**2026-08-14 开发截止证据**：源码全量 unittest discovery `1007` 项通过；最终相关回归
+`172` 项、Ruff、compileall 与 `git diff --check` 通过。Claude `P5F7-001` 验证预算
+`0.05→0.1→0.2`、同 session 两次 resume 及第三次 deny；Hermes `BTCN-001` 验证
+`max_turns 10→20`、明确 `--resume 20260814_004550_6f27c1`、第二次耗尽 deny、RunLease
+closed 和 cleanup succeeded。安装截止候选并重启 Runner 后，Codex safe 沙箱内 Doctor 为
+`healthy/0`，package commit 与 Runner identity 一致，三项 storage 均由 Runner 权威探测为
+writable。
+
+`BTCN-001` 的系统资源路由工作正确，但暴露了 callback 进度低估：原生耗尽覆盖普通/choice
+callback 时，其中可信的已完成 step 也被整体丢弃，报告显示 `0/4`。1.0.2A 不以恢复 Agent
+choice 优先级修复该问题；它已转入 `1.0.3A / FLOW-103-001`，要求 Runner/Core 结构化、可
+合并的 progress receipt，不得从自然语言或被覆盖 callback 猜测进度。
 
 详细规格以
 `~/hermes-team/codex/plan/20260805_plan_AgentBC对话溯源与执行会话保留.md` 为准。
@@ -2286,7 +2308,7 @@ Phase 7 Task 3 `DOCFIX-001`（help/Record README/双语用户文档/三类 Skill
 - 新根任务与新协议 handoff iteration 创建时读取当前统一设置，同 Task resume 保持冻结；
 - 三 Executor 在工具审批前完成官方 session handshake；
 - Adapter 上报结构化 approval event，Core 系统生成 `input_required(type=permission)`，
-  approve 只授权精确动作，deny/Later/关闭/超时保持明确语义；
+  approve 只授权精确动作；权限弹窗只有 Approve/Deny，关闭和超时自动 Deny 并记录来源；
 - Hermes safe 无法提供受限 headless approval 时派发前失败，不以 `--yolo` 或长时间审批超时
   冒充 safe；
 - 同期完成 update/Homebrew、协议 fixtures 和模块机械拆分第一阶段。

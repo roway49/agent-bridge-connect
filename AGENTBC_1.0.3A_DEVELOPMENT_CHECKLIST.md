@@ -1,9 +1,11 @@
 # AgentBC 1.0.3A 需求开发清单
 
 > 制定日期：2026-08-11  
-> 状态：需求冻结中，尚未开始实现  
+> 最近整理：2026-08-14
+> 状态：范围已整理、尚未开始实现
 > 目标版本：`v1.0.3A`  
-> 前置条件：`1.0.2A` 发布 Gate 完成  
+> 来源基线：`1.0.2A` 开发截止代码 `b8af2f3a0a1f56814854e3f46056dd8ab9cf55d7`
+> 前置条件：`1.0.2A` 最终发布身份与双机 Gate 完成；Phase 0 只读契约盘点可提前进行
 > 架构依据：`AGENTBC_ALPHA_DEVELOPMENT_HANDBOOK.md`
 
 ## 0. 产品目标
@@ -17,9 +19,10 @@
 事件；不能继续依赖 Agent 在最终自然语言中主动填写 marker，也不能因为 Executor 没有
 TTY 而等待 60/120 秒后静默拒绝。
 
-版本边界已冻结：统一权限继承、权限审批弹窗及其 Adapter/Core/Runner 协议全部由
-`1.0.3A` 承担，不再回填 `1.0.2A`。`1.0.2A` 只修复已承诺的 Hermes 最终 session receipt
-稳定性；“在首次工具审批前交付 session receipt”的早期 handshake 仍属于本版。
+版本边界已冻结：统一权限继承、权限审批弹窗及其 Adapter/Core/Runner 协议、资源耗尽时
+权威 step progress、update/Homebrew、协议 fixtures 和模块机械拆分全部由 `1.0.3A` 承担，
+不再回填已截止的 `1.0.2A`。“在首次工具审批前交付 session receipt”的早期 handshake
+仍属于本版。
 
 ## 1. 当前问题与责任边界
 
@@ -45,6 +48,19 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 | Codex | `--sandbox workspace-write`，JSONL 事件流 | 唯一 `thread.started.thread_id` | CLI 仍能结束 turn 并输出结构化 marker；已知 linked-worktree Git 元数据阻塞另由 `SAFE-001` 预检治理 |
 | Claude | `--safe-mode --permission-mode acceptEdits`，print/JSON 输出 | fresh 由 AgentBC 预分配 UUID | 常规编辑无需交互；需要输入时仍能输出最终 marker，预算耗尽已有系统路由 |
 | Hermes | safe 当前不加参数，沿用 Hermes 内部审批 | 只在 `-Q` 正常结束时从 stderr 读取 | terminal tool 在无 TTY 后台等待并超时拒绝；AgentBC 收不到结构化 approval event，且 receipt 可能在结束路径丢失，因此无法进入共用弹窗入口 |
+
+### 1.3 从 1.0.2A 截止转入的权威待办
+
+| ID | 优先级 | 问题 | 1.0.2A 证据 | 本版处理边界 |
+| --- | --- | --- | --- | --- |
+| `PERM-103-001`～`005` | P0 | 权限来源、映射、审批事件、早期 session 与迁移不统一 | 三 Executor 一次性 full canary 已通过，但依赖 Agent marker | 建立统一 registry 与原生控制平面 |
+| `PERM-103-006` | P0 | 权限弹窗 reason 过长 | `E4S2-001` 超长 reason 曾阻断弹窗 | 极简首屏，详情独立展开 |
+| `PERM-103-007` | P0 | Claude 临时工程写权限仍依赖 Prompt 约束 | `KXNX-001` 曾把交付物写入临时 cwd | 文件级 capability 与 Artifact root 分权 |
+| `FLOW-103-001` | P0 | 系统资源耗尽覆盖 callback 时低估已完成 step | `BTCN-001` 实际完成 2 个 step，终态报告显示 `0/4` | Runner/Core 权威 progress receipt 与单调合并 |
+| `UPD-103-001` | P1 | 缺少稳定自更新与回退事务 | 1.0.2A 依赖手工 bundle 替换 | update/rollback/identity 同源 |
+| `PKG-103-001` | P1 | Homebrew 尚无正式 formula/cask Gate | 1.0.2A 只有 wheel/sdist/local bundle | 可验证安装、升级、卸载与回退 |
+| `PROTO-103-001` | P1 | Executor argv/help/output fixture 更新仍分散 | 1.0.2A 多次因真实 CLI 输出漂移补丁修复 | 版本化 fixture matrix 与 fail-closed probe |
+| `ARCH-103-001` | P1 | Service/Runner/CLI/Setup 继续过度集中 | 1.0.2A 收口时共享文件修改风险高 | 只做有回归保护的机械拆分 |
 
 ## 2. P0：统一 Agent 权限设置（`PERM-103-001`）
 
@@ -109,7 +125,8 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
   或明确的一次性作用域；Deny 返回同一 session 并让 Agent 处理拒绝结果；
 - Approve 不得把 safe 永久改成 full。确需升级任务权限时，必须使用独立、明确标注风险的
   task permission override 流程并重新校验 Runner argv；
-- Later、关闭和超时保持 waiting，不得伪造 deny，也不得丢失 session；
+- 权限弹窗只提供 Approve / Deny 两种决策，不提供 Later 或文本输入；关闭和超时自动按
+  Deny 处理，同时保留可审计的 decision source，不得静默丢失 session；
 - Hermes 不再在无 TTY 后台自行等待 60/120 秒；Codex/Claude 也接入同一事件模型，避免
   继续依赖“模型通常会正确输出 marker”的偶然性。
 
@@ -167,19 +184,71 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
   来源任务快照，避免升级后重解释历史任务；
 - User Guide、三 Executor skills、setup/help/doctor/status/report 同步统一术语。
 
-## 7. 实施阶段
+## 7. P0：资源耗尽与终态进度权威化（`FLOW-103-001`）
 
-1. **Phase 0：契约冻结**——permission registry、配置/任务快照、approval event、早期
-   session receipt、legacy 双读与预期失败测试；
-2. **Phase 1：统一设置入口**——配置事务、setup、`agentbc permissions`、公共视图和迁移；
-3. **Phase 2：三 Executor 映射**——capability probe、canonical argv、Runner 校验与 Hermes
-   safe unsupported 的显式预检；
-4. **Phase 3：审批控制平面**——Adapter approval event、Core input wait、弹窗响应、精确动作
-   授权和同 session resume；
-5. **Phase 4：真实 canary 与发布**——三 Executor safe/full、权限阻塞、approve/deny/Later、
-   direct/Runner receipt、handoff/retry/resume 和旧任务兼容。
+`BTCN-001` 证明原生 Hermes 耗尽必须高于 Agent 普通/choice callback，否则会绕过资源状态
+机；同时也证明“整体丢弃 callback”会把真实完成进度降为 `0/4`。本版不能通过恢复 choice
+优先级解决，而应增加 Executor 无关的 progress receipt：
 
-### 7.1 `1.0.3A` 开始前的人工过渡规则
+- progress receipt 至少绑定 `task_id`、`executor_run_id`、官方 `session_id`、step ID、
+  单调状态、证据来源和序号；由 Runner/Core 补齐已知身份，Agent 不重抄内部路径；
+- `done` 只能由运行期间已经落盘且校验通过的 receipt 单调推进；资源耗尽、permission wait、
+  transport recovery 和 terminal callback 只合并，不得把 `done` 回退为 pending/blocked；
+- receipt 不能仅由自然语言、summary、choice label 或耗尽后的 final callback 推断；缺失证据
+  时保持旧状态，不伪造完成；
+- 当前 run 的 terminal callback 仍负责最终 flow 状态；progress receipt 只保存已完成事实，
+  不能单独把任务标记 completed；
+- status/report/notification 使用同一公共 projection，显示“已确认进度”和证据质量，不公开
+  raw output、prompt、session 内容或私有路径；
+- Codex、Claude、Hermes 和 fake Executor 覆盖耗尽前部分完成、两次耗尽、权限等待、恢复、
+  重放、乱序、重复 receipt、旧任务无 receipt 和任务/session 漂移。
+
+## 8. P1：更新、分发、fixtures 与机械拆分
+
+### 8.1 自更新与回退（`UPD-103-001`）
+
+- `agentbc update check|apply|rollback` 只消费签名或哈希可验证的版本清单；apply 前验证当前
+  package/Runner identity，更新 CLI、Runner 和三平台 Skill 后再原子切换；
+- 更新保留配置、任务、报告和 customer project；失败自动回退上一份可启动包，不运行 setup
+  覆盖用户选择；Runner 必须在新旧 identity 间明确停止/启动，不允许混装；
+- update、doctor 和安装器共用 build identity、版本和修复建议，不新增第二套版本判断。
+
+### 8.2 Homebrew（`PKG-103-001`）
+
+- 产出可审阅 formula/cask，固定 Python、wheel/sdist SHA-256、Runner service 和卸载边界；
+- 覆盖 clean install、upgrade、rollback、uninstall、PATH 冲突和已有 PyPI/local-alpha 迁移；
+- 不覆盖用户配置、record、report、artifact 或 Executor Skill 修改；受管 Skill 漂移先报告，
+  不静默覆盖。
+
+### 8.3 协议 fixtures（`PROTO-103-001`）
+
+- 为三 Executor 冻结 version/help/argv/output/session/approval/resource fixture matrix；
+- probe 只接受已知能力组合，未知版本 fail closed 并给出可行动诊断；
+- fixture 更新必须附真实 CLI 版本、脱敏采样、解析单测和相邻 Runner 回归，禁止只改 regex。
+
+### 8.4 模块机械拆分（`ARCH-103-001`）
+
+- 优先拆出 permission registry、approval transport、Doctor collectors、Runner IPC handlers 和
+  update service；保留现有公共入口与 import compatibility；
+- 一次只移动一个职责，先加 characterization test，再移动实现，最后删除旧入口；
+- 不在机械拆分提交中改变状态机、schema、CLI 文案或权限语义。
+
+## 9. 实施阶段与依赖
+
+1. **Phase 0：现状审计与契约冻结**——从 `b8af2f3` 建基线；冻结 permission registry、
+   approval event、early session、progress receipt、legacy 双读和预期失败测试；
+2. **Phase 1：统一设置与 registry**——配置事务、setup、`agentbc permissions`、三 Executor
+   capability mapping、公共视图与迁移；
+3. **Phase 2：Runner/Adapter 控制平面**——早期 session handshake、approval transport、
+   canonical argv、Runner fail-closed 校验；
+4. **Phase 3：Core input 与 progress**——精确动作 Approve/Deny、关闭/超时自动 Deny、同 session resume、
+   `FLOW-103-001` 单调进度合并、极简弹窗和报告投影；
+5. **Phase 4：权限细分与 Claude 临时工程**——`PERM-103-007`、路径攻击矩阵、三 Executor
+   safe/full 和旧任务兼容 canary；
+6. **Phase 5：update/Homebrew/fixtures/机械拆分**——严格按 8 节独立提交与独立门禁；
+7. **Phase 6：集成与发布**——安装升级回退、Python/双机、三 Executor、失败注入、发布身份。
+
+### 9.1 `1.0.3A` 开始前的人工过渡规则
 
 - 每次创建新的根任务或 handoff iteration 前，控制端先向用户确认目标 Agent 完成任务
   所需权限是 `safe` 还是 `full`；
@@ -189,20 +258,26 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 - 该规则是操作门禁，不要求 `1.0.2A` 新增命令、弹窗或协议字段；统一设置与自动弹窗在
   `1.0.3A` Phase 1～3 替代人工流程。
 
-## 8. 验收门禁
+## 10. 验收门禁
 
 - 改一次统一全局权限后，后续 Codex/Claude/Hermes 新任务均展示并执行正确映射；
 - 同 Task resume 不因全局设置变化而漂移，新 handoff iteration 按新协议读取当前统一设置；
 - Hermes safe 无可用 headless approval 能力时在派发前明确拒绝，不再运行二十分钟后超时；
 - 三 Executor 权限受阻均进入同一 `input_required` 弹窗，任务保留官方 session ID；
-- approve 只执行精确授权动作，deny 有明确结果，Later/关闭/超时保持等待；
+- approve 只执行精确授权动作，deny 有明确结果；权限弹窗无 Later/文本输入，关闭和超时
+  自动 Deny 并记录来源；
 - 缺失 receipt、伪造 permission argv、native dangerous config、safe→full 注入全部 fail closed；
+- 资源/权限等待前已经确认的 step progress 不回退、不重复计数，旧任务无 receipt 时不伪造；
+- update/rollback 后 CLI、Runner 与三平台 Skill identity 一致，配置、record、report、artifact
+  和 customer project 均保持；Homebrew 与 PyPI/local bundle 迁移有可复现证据；
 - 单测、Runner 集成、真实 CLI canary、Ruff、compileall、`git diff --check` 和发布身份检查通过。
 
-## 9. 明确不做
+## 11. 明确不做
 
 - 不让 Agent 自行决定或填写最终权限；
 - 不通过扫描私有 session 数据补 receipt；
 - 不把 Hermes `--yolo` 当作 safe 的临时修复；
 - 不允许普通 input 文本修改权限快照；
+- 不从自然语言或被系统覆盖的 callback 猜测已完成 step；
+- 不在机械拆分中顺带改状态机，不用 update 静默覆盖用户 Skill 或配置；
 - 不在 `1.0.2A` 临时回填这一协议级改造。
