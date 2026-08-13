@@ -14,6 +14,7 @@ from agent_bridge_connect.record_management import (
     enforce_task_record_budget,
     task_record_size,
 )
+from agent_bridge_connect.permission_modes import PERMISSION_EXTENSION_KEY
 from agent_bridge_connect.service import TaskService
 
 
@@ -39,6 +40,7 @@ class Phase2RecordCompactionTests(unittest.TestCase):
             raw = service.store.read_task(task.id)
             resources = raw["extensions"][RESOURCE_EXTENSION_KEY]
             session = raw["extensions"][SESSION_EXTENSION_KEY]
+            permission = raw["extensions"][PERMISSION_EXTENSION_KEY]
             raw["status"] = "completed"
             raw["extensions"]["agentbc.test.large"] = {"payload": "x" * 20000}
             service.store.write_task(task.id, raw)
@@ -51,6 +53,7 @@ class Phase2RecordCompactionTests(unittest.TestCase):
             self.assertLessEqual(task_record_size(task_dir), MAX_TASK_RECORD_BYTES)
             self.assertEqual(compact["extensions"][RESOURCE_EXTENSION_KEY], resources)
             self.assertEqual(compact["extensions"][SESSION_EXTENSION_KEY], session)
+            self.assertEqual(compact["extensions"][PERMISSION_EXTENSION_KEY], permission)
             self.assertNotIn("agentbc.test.large", compact["extensions"])
 
 

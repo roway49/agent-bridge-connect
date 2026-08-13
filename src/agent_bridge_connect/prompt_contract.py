@@ -52,8 +52,10 @@ MARKER_LEAD = (
 INPUT_REQUIRED_RULE = (
     "Use final_state input_required only with at least one declared step status blocked; "
     "an access, sandbox, approval, or permission blocker must use input.type permission with "
-    "requested_permission full and must never use message or choice. Plain permission or approval "
-    "prose is not a valid stop, and free-text message responses can never grant access."
+    "requested_permission full, a concrete reason, and exactly one declared step status blocked; "
+    "keep all other steps pending or done, include no native flags, and never use message or choice. "
+    "Plain permission or approval prose is not a valid stop, and free-text message responses can "
+    "never grant access."
 )
 CHOICE_SPEC = (
     'For a two-option user decision, include "input":{"type":"choice","reason":"why the user must decide",'

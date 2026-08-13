@@ -63,6 +63,23 @@ def compact_diagnostic_details(value: Any) -> Any:
         compact: dict[str, Any] = {}
         for key, item in value.items():
             name = str(key)
+            if name == "events" and isinstance(item, list):
+                compact["events_seen"] = len(item)
+                event_types: list[str] = []
+                for event in item:
+                    if not isinstance(event, dict):
+                        continue
+                    event_type = str(event.get("event_type") or "").strip()
+                    if event_type and event_type not in event_types:
+                        event_types.append(event_type)
+                    if len(event_types) >= 8:
+                        break
+                if event_types:
+                    compact["event_types"] = event_types
+                continue
+            if name in {"command", "aggregated_output", "prompt", "raw_output"}:
+                compact[f"{name}_bytes"] = len(str(item or "").encode("utf-8"))
+                continue
             if name in {"stdout", "stderr"}:
                 text = str(item or "")
                 compact[f"{name}_bytes"] = len(text.encode("utf-8"))
@@ -196,7 +213,7 @@ def _compact_terminal_extensions(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
     compact: dict[str, Any] = {}
-    for key in ("agentbc.resources", "agentbc.session"):
+    for key in ("agentbc.resources", "agentbc.session", "agentbc.permission"):
         item = value.get(key)
         if item not in (None, "", [], {}):
             # These v1 policy receipts are already bounded and must remain exact.

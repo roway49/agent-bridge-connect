@@ -15,10 +15,10 @@ must stay stable across the PROMPT-001 shared-builder refactor:
 
 AFTER sizes recorded from the shared-builder implementation (10-step task,
 common rules emitted exactly once for every executor):
-- Codex:   3,440 chars total (was 12,892 with the rules repeated 10x)
-- Hermes:  3,451 chars total (was 12,930 with the rules repeated 10x)
-- Claude:  3,924 chars total (rules are still emitted once)
-- Shared builder default extras: 3,252 chars total, 2,852 chars of common
+- Codex:   3,564 chars total (was 12,892 with the rules repeated 10x)
+- Hermes:  3,575 chars total (was 12,930 with the rules repeated 10x)
+- Claude:  4,048 chars total (rules are still emitted once)
+- Shared builder default extras: 3,376 chars total, 2,976 chars of common
   contract text after removing the ten variable step lines.
 PROMPT-001 keeps the common contract text for a ten-step task at or below the
 approximately 3,000-character budget and forbids per-step repetition.
@@ -75,8 +75,10 @@ MARKER_LEAD = "Your final response must end with exactly one single-line termina
 INPUT_REQUIRED_RULE = (
     "Use final_state input_required only with at least one declared step status blocked; "
     "an access, sandbox, approval, or permission blocker must use input.type permission with "
-    "requested_permission full and must never use message or choice. Plain permission or approval "
-    "prose is not a valid stop, and free-text message responses can never grant access."
+    "requested_permission full, a concrete reason, and exactly one declared step status blocked; "
+    "keep all other steps pending or done, include no native flags, and never use message or choice. "
+    "Plain permission or approval prose is not a valid stop, and free-text message responses can "
+    "never grant access."
 )
 CHOICE_SPEC = (
     'For a two-option user decision, include "input":{"type":"choice","reason":"why the user must decide",'
@@ -136,7 +138,7 @@ agentbc task progress TEST-001 --root /tmp/abc-record --summary "describe curren
 
 Your final response must end with exactly one single-line terminal marker and no text after it:
 AGENTBC_FINAL_CALLBACK: {"version":1,"task_id":"TEST-001","final_state":"completed","summary":"concise summary","step_results":[{"id":1,"status":"done"},{"id":2,"status":"done"}]}
-Use final_state input_required only with at least one declared step status blocked; an access, sandbox, approval, or permission blocker must use input.type permission with requested_permission full and must never use message or choice. Plain permission or approval prose is not a valid stop, and free-text message responses can never grant access.
+Use final_state input_required only with at least one declared step status blocked; an access, sandbox, approval, or permission blocker must use input.type permission with requested_permission full, a concrete reason, and exactly one declared step status blocked; keep all other steps pending or done, include no native flags, and never use message or choice. Plain permission or approval prose is not a valid stop, and free-text message responses can never grant access.
 For a two-option user decision, include "input":{"type":"choice","reason":"why the user must decide","options":[{"label":"Option A","description":"what A does or changes"},{"label":"Option B","description":"what B does or changes"}]}; give a concrete reason and a concrete description for each option. Labels must be distinct and at most 48 characters; descriptions must be at most 160 characters. Use type message only for non-permission free text and type permission only for approve/deny access confirmation.
 A zero CLI exit without a valid marker fails the task. completed means flow execution ended, not user acceptance or quality approval."""
 
@@ -178,7 +180,7 @@ agentbc task progress TEST-001 --root /tmp/abc-record --summary "describe curren
 
 Your final response must end with exactly one single-line terminal marker and no text after it:
 AGENTBC_FINAL_CALLBACK: {"version":1,"task_id":"TEST-001","final_state":"completed","summary":"concise summary","step_results":[{"id":1,"status":"done"},{"id":2,"status":"done"}]}
-Use final_state input_required only with at least one declared step status blocked; an access, sandbox, approval, or permission blocker must use input.type permission with requested_permission full and must never use message or choice. Plain permission or approval prose is not a valid stop, and free-text message responses can never grant access.
+Use final_state input_required only with at least one declared step status blocked; an access, sandbox, approval, or permission blocker must use input.type permission with requested_permission full, a concrete reason, and exactly one declared step status blocked; keep all other steps pending or done, include no native flags, and never use message or choice. Plain permission or approval prose is not a valid stop, and free-text message responses can never grant access.
 For a two-option user decision, include "input":{"type":"choice","reason":"why the user must decide","options":[{"label":"Option A","description":"what A does or changes"},{"label":"Option B","description":"what B does or changes"}]}; give a concrete reason and a concrete description for each option. Labels must be distinct and at most 48 characters; descriptions must be at most 160 characters. Use type message only for non-permission free text and type permission only for approve/deny access confirmation.
 A zero CLI exit without a valid marker fails the task. completed means flow execution ended, not user acceptance or quality approval."""
 
@@ -215,7 +217,7 @@ agentbc task progress TEST-001 --root /tmp/abc-record --summary "describe curren
 
 Your final response must end with exactly one single-line terminal marker and no text after it:
 AGENTBC_FINAL_CALLBACK: {"version":1,"task_id":"TEST-001","final_state":"completed","summary":"concise summary","step_results":[{"id":1,"status":"done"},{"id":2,"status":"done"}]}
-Use final_state input_required only with at least one declared step status blocked; an access, sandbox, approval, or permission blocker must use input.type permission with requested_permission full and must never use message or choice. Plain permission or approval prose is not a valid stop, and free-text message responses can never grant access.
+Use final_state input_required only with at least one declared step status blocked; an access, sandbox, approval, or permission blocker must use input.type permission with requested_permission full, a concrete reason, and exactly one declared step status blocked; keep all other steps pending or done, include no native flags, and never use message or choice. Plain permission or approval prose is not a valid stop, and free-text message responses can never grant access.
 For a two-option user decision, include "input":{"type":"choice","reason":"why the user must decide","options":[{"label":"Option A","description":"what A does or changes"},{"label":"Option B","description":"what B does or changes"}]}; give a concrete reason and a concrete description for each option. Labels must be distinct and at most 48 characters; descriptions must be at most 160 characters. Use type message only for non-permission free text and type permission only for approve/deny access confirmation.
 A zero CLI exit without a valid marker fails the task. completed means flow execution ended, not user acceptance or quality approval."""
 
@@ -346,7 +348,7 @@ class CodexPromptContractTests(unittest.TestCase):
         prompt = codex_prompt(managed_packet(step_count=10))
         self.assertEqual(prompt.count(DELIVERABLES_RULE), 1)
         self.assertEqual(prompt.count("agentbc task progress"), 1)
-        self.assertEqual(len(prompt), 3440)
+        self.assertEqual(len(prompt), 3564)
 
     def test_resumed_input_context(self):
         prompt = codex_prompt(with_resume(managed_packet()))
@@ -405,7 +407,7 @@ class ClaudePromptContractTests(unittest.TestCase):
         prompt = claude_prompt(managed_packet(step_count=10))
         self.assertEqual(prompt.count(DELIVERABLES_RULE), 1)
         self.assertEqual(prompt.count("agentbc task progress"), 1)
-        self.assertEqual(len(prompt), 3924)
+        self.assertEqual(len(prompt), 4048)
 
     def test_resumed_input_context(self):
         prompt = claude_prompt(with_resume(managed_packet()))
@@ -465,7 +467,7 @@ class HermesPromptContractTests(unittest.TestCase):
         prompt = hermes_prompt(managed_packet(step_count=10))
         self.assertEqual(prompt.count(DELIVERABLES_RULE), 1)
         self.assertEqual(prompt.count("agentbc task progress"), 1)
-        self.assertEqual(len(prompt), 3451)
+        self.assertEqual(len(prompt), 3575)
 
     def test_resumed_input_context(self):
         prompt = hermes_prompt(with_resume(managed_packet()))
