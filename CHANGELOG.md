@@ -58,8 +58,10 @@
 
 - Development cutoff: `1007` source tests and `172` final affected regressions
   passed with Ruff, compileall, and `git diff --check`.
-- Release candidate: `1010` source tests pass on Python 3.11 and 3.14; the
-  Python 3.10 result is produced independently by the Intel MacBook gate.
+- Release candidate: `1010` source tests pass on Python 3.10, 3.11, and 3.14.
+  The Intel MacBook gate also passes Ruff, compileall, shell syntax, Twine,
+  wheel/sdist manifest validation, clean installation, upgrade from `1.0.1a3`,
+  rollback to `1.0.1a3`, and package smoke.
 - Real Codex, Claude, and Hermes canaries verified one-time permission
   continuation, exact-session resume, and terminal cleanup with retention off.
 - Real Codex, Claude, and Hermes canaries verified `retain=true` terminal

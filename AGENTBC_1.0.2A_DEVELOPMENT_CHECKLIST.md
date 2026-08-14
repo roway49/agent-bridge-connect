@@ -75,7 +75,7 @@ package-only smoke 与 CLI/Runner identity 验证通过；正式版本尚未提�
 | Phase 4 / `CFG-002` | ✅ 开发与真实 canary 完成 | Claude `P5F7-001` 验证 `0.05→0.1→0.2`、同 session 两次恢复及 deny；Hermes `BTCN-001` 验证 `10→20`、同 session 恢复、再次耗尽及 deny 明确 failed |
 | `SESSION-001` | ✅ retain/cleanup P2P 完成 | session 快照、receipt、同 ID resume、终态 cleanup/purge、capability、公共视图与 doctor warning 已完成；retain=false 由 Codex `4PK9-001`、Hermes `C2KS-001`、Claude `FXCQ-001` 验证，retain=true 由 Codex `XHNJ-001`、Claude `2Y86-001`、Hermes `J7WQ-001` 验证 |
 | `SAFE-001` | ✅ 1.0.2A 窄合同完成 | Codex `4PK9-001`、Hermes `C2KS-001`、Claude `FXCQ-001` 均已验证 safe→弹窗 Approve→同 session 单次 full→终态 cleanup；细粒度权限与结构化原生审批属于 1.0.3A |
-| `REL-102` | 🟡 候选包与 ARM64/Python 3.14 门禁通过 | `1.0.2a1` 版本、wheel/sdist、隔离安装、只读 setup、shell smoke、三 Executor retain=true 与 Python 3.14 全量已通过；只剩 Python 3.10/MacBook x86_64 和最终不可变资产 Gate |
+| `REL-102` | 🟡 双架构/三 Python 门禁通过 | `1.0.2a1` 版本、wheel/sdist、隔离安装、只读 setup、shell smoke、三 Executor retain=true，以及 Python 3.10/3.11/3.14 全量均已通过；只剩从公开 main 生成最终不可变资产 Gate |
 
 禁止回归记录：`commit_required`、`--git-write`、`--commit-sha`、`agentbc.git` 及 Phase 6 旧
 Task 1（`SWJF-001`）移除的 Git 专属公共命令不得以任何形式（CLI、help、Skill、文档或新状态）
@@ -138,8 +138,8 @@ Agent choice 抢占资源信号；该问题转入 `1.0.3A / FLOW-103-001`，由 
 ### 0.4 截止后固定顺序
 
 1. 冻结 `b8af2f3` 为 1.0.2A 开发截止代码；后续文档收口提交不得改变该运行代码；
-2. 只执行 `REL-102` 剩余发布验收：Python 3.10/MacBook x86_64、安装/回退和最终发布身份；
-   发布验收失败不自动等于重开开发；
+2. 只执行 `REL-102` 剩余发布验收：从公开 main 生成最终不可变资产并校验发布身份；发布
+   验收失败不自动等于重开开发；
 3. 新功能、常规缺陷、协议优化和 `BTCN-001` 进度低估统一进入 1.0.3A；
 4. 正式发布必须从唯一最终发布提交生成不可变版本、manifest、wheel/sdist 与 checksum，
    不覆盖既有同名公开资产。
@@ -338,7 +338,7 @@ retry、recover、handoff 或新任务继承。
 | `PROMPT-001` | ✅ 已合入 | P1 | 三 Executor 公共 Prompt 契约去重 | 公共 builder、Codex/Claude/Hermes Adapter | 只保留回归 |
 | `OBS-001` | ✅ 已合入 | P1 | 当前 execution lease 状态单一派生视图 | RunLease query、Status、Report | 与 REPORT-001 同步完成 |
 | `DOCFIX-001` | ✅ 已合入 | P2 | 修正文档/help 漂移 | Record README、CLI help、双语文档、Skills | `GE58-001` 完成，由 `801e7ea` 经 `2989410` 合入；只保留一致性回归 |
-| `REL-102` | 🟡 候选包与 ARM64/Python 3.14 门禁通过 | Gate | 1.0.2A 版本、双机、真实 Executor 与发布验收 | Build/CI/docs/release | `1.0.2a1` wheel/sdist、隔离安装、shell smoke、retain=true 与 Python 3.14 已通过；只剩 Python 3.10/MacBook x86_64 和最终资产 |
+| `REL-102` | 🟡 双架构/三 Python 门禁通过 | Gate | 1.0.2A 版本、双机、真实 Executor 与发布验收 | Build/CI/docs/release | Python 3.10/3.11/3.14、ARM64/x86_64、wheel/sdist、安装/升级/回退、shell smoke 与 retain=true 已通过；只剩公开 main 最终资产 |
 
 原始工作量估算只保留为历史规划，不再用于推断当前剩余进度。剩余工作以 0.3 和 0.4
 为准；任何真实 Executor 能力缺失应按 `unsupported` 交付，不得用危险文件扫描缩短排期。
@@ -701,7 +701,7 @@ Phase 7 代码完成、接口冻结。
 | Phase 5 | ✅ 开发与 retain/cleanup P2P 完成 | `SESSION-001` 终态 cleanup/purge、capability/receipt、失败重试、公共视图与 doctor warning 数据已接线 | retain=false 与 retain=true 三 Executor P2P 均通过 |
 | Phase 6 | ✅ 开发与真实 canary 完成 | `SAFE-001` grant/Core/Runner/三 Adapter、Task 4 通知/公共投影及三 Executor canary 完成 | 只保留发布候选回归；1.0.3A 承担统一 registry 与细粒度权限 |
 | Phase 7 | ✅ 代码完成、接口冻结 | `SKILL-001`、`DOC-002`、`DOCFIX-001` 已合入，Task 4 精确 SHA 集成门禁通过 | Skill hash/版本握手、doctor 0/1/2、text/JSON 同源、双语文档/help/Skill 一致 |
-| 集中全面测试 | ✅ 核心开发 canary 收口 | 源码全量、`1.0.2a1` 包、Doctor、三 Executor 权限/retain/cleanup 与 Claude/Hermes 资源链已有证据 | 剩余 Python 3.10/MacBook x86_64 与最终资产属于发布门禁 |
+| 集中全面测试 | ✅ 双架构/三 Python 收口 | 源码全量、`1.0.2a1` 包、Doctor、三 Executor 权限/retain/cleanup、Claude/Hermes 资源链，以及 Python 3.10/3.11/3.14 均有证据 | 只剩公开 main 最终不可变资产属于发布门禁 |
 | Phase 8 | ✅ 开发截止 | Doctor sandbox 与 Hermes 原生耗尽优先级修复合入 `b8af2f3` | 不再接收常规实现；只继续 `REL-102` 发布验收 |
 
 ### 5.3 Phase 5 开发任务规划
