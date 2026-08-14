@@ -161,11 +161,17 @@ class ReleaseDocumentationTests(unittest.TestCase):
                 self.assertIn(package_version, text)
                 self.assertIn(product_version, text)
 
-    def test_changelog_has_current_unreleased_section(self) -> None:
+    def test_changelog_has_current_dated_release_section(self) -> None:
         package_version = bp.get_package_version(_REPO)
         product_version = bp.python_to_tag_version(package_version).removeprefix("v")
         changelog = (_REPO / "CHANGELOG.md").read_text(encoding="utf-8")
-        self.assertIn(f"## {product_version} - Unreleased", changelog)
+        heading = next(
+            line for line in changelog.splitlines()
+            if line.startswith(f"## {product_version} - ")
+        )
+        release_date = heading.removeprefix(f"## {product_version} - ")
+        self.assertRegex(release_date, r"^\d{4}-\d{2}-\d{2}$")
+        self.assertNotEqual(release_date, "Unreleased")
 
     def test_publish_and_release_check_pin_the_same_build_tools(self) -> None:
         publish = (

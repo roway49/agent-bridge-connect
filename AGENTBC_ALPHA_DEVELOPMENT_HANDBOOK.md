@@ -2142,8 +2142,9 @@ delete/update 等运维入口，均不再作为 1.0.1A 改动处理。
 `private/integration@b8af2f3a0a1f56814854e3f46056dd8ab9cf55d7`；随后只允许文档状态
 收口，不改变该运行基线。手工候选为 Python `1.0.2a1`，wheel SHA-256
 `af588a16e50dc435557bf2c14946ec005753f10380c3f5c59c2146b3728aeec4`。新功能、常规缺陷、
-协议调整和结构重构从此进入 `1.0.3A`；retain=true、Python 3.10/3.14、MacBook 双机及最终
-不可变发布资产仍是发布门禁，但不再构成继续开发 1.0.2A 的入口。
+协议调整和结构重构从此进入 `1.0.3A`；retain=true 与 Python 3.14 已于 2026-08-14 通过，
+Python 3.10/MacBook x86_64 及最终不可变发布资产仍是发布门禁，但不再构成继续开发
+1.0.2A 的入口。
 
 **产品目标**：解决真实开发流程中的资源、权限和执行会话阻断：Claude 预算与 Hermes
 迭代上限可配置；资源耗尽可 approve 翻倍并恢复同一 session 或 deny 明确失败；三 Executor
@@ -2259,8 +2260,10 @@ retryable；coordinator 的 strategy、时间戳、原生命令/help/output、Ex
 customer path 与 secret 不进入该投影。doctor 的 text/JSON 由同一结构化诊断数据生成：
 unsupported、failed 和超过五分钟的 stale pending 为 warning，retained 与 succeeded 健康。
 开发截止时 Codex `4PK9-001`、Hermes `C2KS-001`、Claude `FXCQ-001` 已完成 retain=false
-终态 cleanup P2P；Hermes `BTCN-001` 另验证官方定向 session delete 首次成功。retain=true
-保留路径仍作为发布验收门禁，但不再触发本版常规开发。
+终态 cleanup P2P；Hermes `BTCN-001` 另验证官方定向 session delete 首次成功。2026-08-14
+的 Codex `XHNJ-001`、Claude `2Y86-001`、Hermes `J7WQ-001` 进一步完成 retain=true 发布
+验收：三项均有合法 callback、关闭 RunLease、官方 session receipt，cleanup 稳定为
+`retained/attempts=0`，Doctor `healthy/0`；随后全局 retention 恢复为 `false`。
 
 产品语义保持一致：cleanup 在后台无感运行，只管理 Executor 创建的临时会话，永不删除
 dispatcher conversation，也不要求用户管理单独的 runtime 目录。能力为 unsupported 或

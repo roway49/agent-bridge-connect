@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.2A - Unreleased
+## 1.0.2A - 2026-08-14
 
 > Development is closed for Python package `1.0.2a1`. Publication remains
 > gated on the immutable `v1.0.2A` tag, release-matrix validation, and final
@@ -58,8 +58,13 @@
 
 - Development cutoff: `1007` source tests and `172` final affected regressions
   passed with Ruff, compileall, and `git diff --check`.
+- Release candidate: `1010` source tests pass on Python 3.11 and 3.14; the
+  Python 3.10 result is produced independently by the Intel MacBook gate.
 - Real Codex, Claude, and Hermes canaries verified one-time permission
   continuation, exact-session resume, and terminal cleanup with retention off.
+- Real Codex, Claude, and Hermes canaries verified `retain=true` terminal
+  receipts: official session IDs remained recorded, cleanup resolved as
+  `retained` with zero attempts, and Doctor remained healthy.
 - Real Claude and Hermes canaries verified repeated resource exhaustion,
   task-local doubling, same-session continuation, and explicit user denial.
 
