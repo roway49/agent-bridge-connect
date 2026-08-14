@@ -9,7 +9,7 @@ AgentBC 是一个本地优先的任务控制系统，用于协调本机 Agent �
 > Public Alpha：请在启用版本控制的开发项目中使用 AgentBC，并在接受改动前
 > 审查 Agent 的输出。
 
-当前版本：**1.0.1A3**（Python 包版本为 `1.0.1a3`）。
+当前版本：**1.0.2A**（Python 包版本为 `1.0.2a1`）。
 
 - 仓库与版本发布：[GitHub](https://github.com/roway49/agent-bridge-connect)
 - Python 包：[agentbc](https://pypi.org/project/agentbc/)
@@ -48,15 +48,15 @@ AgentBC 是一个本地优先的任务控制系统，用于协调本机 Agent �
 一行命令即可完成下载、校验、安装和配置：
 ```bash
 curl -fsSL \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A3/install-agentbc-alpha.sh \
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.2A/install-agentbc-alpha.sh \
   | sh -s -- \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A3
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.2A
 ```
 
 也可以通过 PyPI 进行包管理安装：
 
 ```bash
-python3 -m pip install agentbc==1.0.1a3
+python3 -m pip install agentbc==1.0.2a1
 agentbc setup
 ```
 
@@ -214,6 +214,7 @@ AgentBC 不是容器沙箱。请结合版本控制、操作系统权限和执行
 
 - [快速开始](docs/QUICK_START_ZH.md) / [Quick Start](docs/QUICK_START.md)
 - [用户指南](docs/USER_GUIDE_ZH.md) / [User Guide](docs/USER_GUIDE.md)
+- [发布流程](docs/RELEASE_PROCESS_ZH.md) / [Release Process](docs/RELEASE_PROCESS.md)
 - [功能展示](docs/FEATURE_SHOW_ZH.md) / [Feature Show](docs/FEATURE_SHOW.md)
 - [演示示例](docs/Example_ZH.md) / [Examples](docs/Example.md)
 - [后续功能预告](docs/PREVIEW_ZH.md) / [Feature Preview](docs/PREVIEW.md)

@@ -2,6 +2,8 @@
 
 [中文](USER_GUIDE_ZH.md) | English
 
+Applies to AgentBC **1.0.2A** (Python package `1.0.2a1`).
+
 ## Command Surface
 
 Use `agentbc <group> <command> --help` for the exact options installed by your
@@ -21,6 +23,26 @@ version.
 
 Setup starts Runner in the background. Use `runner start` for recovery,
 `runner stop` for shutdown, and foreground `runner serve` only for debugging.
+
+### Commands Added Or Changed In 1.0.2A
+
+| Command | Purpose and boundary |
+| --- | --- |
+| `agentbc setup --show` | Read-only discovery and effective-setting view. It never refreshes files or starts a migration. |
+| `agentbc claude budget <usd>` | Set a positive finite USD limit for future Claude task snapshots. Existing tasks keep their frozen value. |
+| `agentbc hermes max-turns <turns>` | Set a positive integer turn limit for future Hermes task snapshots. Existing tasks keep their frozen value. |
+| `agentbc session retention status` | Read the effective executor temporary-session retention setting. |
+| `agentbc session retention enable` | Keep executor temporary sessions after terminal tasks. It never affects dispatcher conversations. |
+| `agentbc session retention disable` | Request background official session cleanup after eligible terminal tasks; active, waiting, and recovery tasks retain their session. |
+| `agentbc task respond <TASK-ID> --input <INPUT-ID> --approve` | Approve the current resource or permission decision and resume the same task/session under its validated one-time policy. |
+| `agentbc task respond <TASK-ID> --input <INPUT-ID> --deny` | Deny the current resource or permission decision; the resulting stable failure reason depends on the input type. |
+| `agentbc task delete <TASKCODE> --dry-run` | List AgentBC-owned records, reports, index entries, and default artifacts without prompting or writing. |
+| `agentbc task delete <TASKCODE>` | Show the same deletion plan and require interactive `y/N`; customer projects are always preserved. |
+| `agentbc doctor [--json]` | Run the read-only Doctor v2 checks. Exit codes are `0` healthy, `1` warning, and `2` unavailable. |
+
+These commands modify configuration or task state only through AgentBC's
+validated contracts. Do not substitute executor-native budget, permission,
+session, or deletion flags in an AgentBC task command.
 
 ## Executors
 

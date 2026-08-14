@@ -2,6 +2,8 @@
 
 中文 | [English](USER_GUIDE.md)
 
+适用于 AgentBC **1.0.2A**（Python 包 `1.0.2a1`）。
+
 ## 命令结构
 
 使用 `agentbc <group> <command> --help` 查看当前安装版本的准确选项。
@@ -20,6 +22,25 @@
 
 setup 会在后台启动 Runner。恢复时使用 `runner start`，停止时使用
 `runner stop`；前台 `runner serve` 仅用于调试。
+
+### 1.0.2A 新增或调整的命令
+
+| 命令 | 用途与边界 |
+| --- | --- |
+| `agentbc setup --show` | 只读显示执行器发现和生效设置，不刷新文件，也不启动迁移。 |
+| `agentbc claude budget <usd>` | 为后续 Claude 任务快照设置大于零的有限 USD 预算；已有任务继续使用冻结值。 |
+| `agentbc hermes max-turns <turns>` | 为后续 Hermes 任务快照设置正整数迭代上限；已有任务继续使用冻结值。 |
+| `agentbc session retention status` | 只读查看执行器临时会话保留设置。 |
+| `agentbc session retention enable` | 终态后保留执行器临时会话；永远不影响 dispatcher conversation。 |
+| `agentbc session retention disable` | 在符合条件的终态任务后请求后台官方会话清理；活跃、等待输入和恢复任务继续保留会话。 |
+| `agentbc task respond <TASK-ID> --input <INPUT-ID> --approve` | 批准当前资源或权限决策，按经校验的一次性策略恢复同一任务和 session。 |
+| `agentbc task respond <TASK-ID> --input <INPUT-ID> --deny` | 拒绝当前资源或权限决策；稳定失败原因由输入类型决定。 |
+| `agentbc task delete <TASKCODE> --dry-run` | 列出 AgentBC 自有记录、报告、索引项和默认产物，不提示、不写入。 |
+| `agentbc task delete <TASKCODE>` | 展示同一删除计划并要求交互式 `y/N`；用户工程始终保留。 |
+| `agentbc doctor [--json]` | 执行只读 Doctor v2 检查；退出码固定为 `0` 健康、`1` 警告、`2` 不可用。 |
+
+这些命令只通过 AgentBC 的校验合同修改配置或任务状态。不得在 AgentBC 任务命令中
+自行替换为执行器原生的预算、权限、session 或删除参数。
 
 ## 执行器
 

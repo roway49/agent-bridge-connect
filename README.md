@@ -10,7 +10,7 @@ gateway, one report contract, and one recovery model.
 > Public Alpha. Use AgentBC on development projects with version control and
 > review agent output before accepting changes.
 
-Current release: **1.0.1A3** (Python package version `1.0.1a3`).
+Current release: **1.0.2A** (Python package version `1.0.2a1`).
 
 - Repository and releases: [GitHub](https://github.com/roway49/agent-bridge-connect)
 - Python package: [agentbc](https://pypi.org/project/agentbc/)
@@ -51,15 +51,15 @@ One command downloads, verifies, installs, and configures AgentBC:
 
 ```bash
 curl -fsSL \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A3/install-agentbc-alpha.sh \
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.2A/install-agentbc-alpha.sh \
   | sh -s -- \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A3
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.2A
 ```
 
 For a package-managed installation from PyPI:
 
 ```bash
-python3 -m pip install agentbc==1.0.1a3
+python3 -m pip install agentbc==1.0.2a1
 agentbc setup
 ```
 
@@ -243,6 +243,7 @@ and executor-native approval controls for defense in depth.
 
 - [Quick Start](docs/QUICK_START.md) / [快速开始](docs/QUICK_START_ZH.md)
 - [User Guide](docs/USER_GUIDE.md) / [用户指南](docs/USER_GUIDE_ZH.md)
+- [Release Process](docs/RELEASE_PROCESS.md) / [发布流程](docs/RELEASE_PROCESS_ZH.md)
 - [Feature Show](docs/FEATURE_SHOW.md) / [功能展示](docs/FEATURE_SHOW_ZH.md)
 - [Examples](docs/Example.md) / [演示示例](docs/Example_ZH.md)
 - [Feature Preview](docs/PREVIEW.md) / [后续功能预告](docs/PREVIEW_ZH.md)
