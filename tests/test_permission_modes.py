@@ -25,9 +25,9 @@ from agent_bridge_connect.service import TaskService, task_to_status
 
 
 class PermissionContractTests(unittest.TestCase):
-    def test_contract_has_exactly_three_modes_and_safe_legacy_fallback(self) -> None:
+    def test_contract_has_inherit_setup_default_and_safe_legacy_fallback(self) -> None:
         self.assertEqual(CANONICAL_PERMISSION_MODES, ("inherit", "safe", "full"))
-        self.assertEqual(configured_permission_mode({}), ("safe", "safe_default"))
+        self.assertEqual(configured_permission_mode({}), ("inherit", "inherit_default"))
         self.assertEqual(legacy_permission_record()["effective_mode"], "safe")
 
     def test_explicit_mode_overrides_configured_default(self) -> None:
@@ -72,17 +72,27 @@ class PermissionContractTests(unittest.TestCase):
         self.assertEqual(handoff.permission_mode, "full")
         self.assertEqual(setup.permission_mode, "safe")
 
-    def test_setup_selection_explains_modes_and_never_defaults_to_full(self) -> None:
+    def test_setup_selection_explains_modes_and_defaults_to_inherit(self) -> None:
         from agent_bridge_connect.setup import _select_permission_mode
 
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             selected = _select_permission_mode({}, explicit_mode=None, interactive=False)
-        self.assertEqual(selected, "safe")
+        self.assertEqual(selected, "inherit")
         text = output.getvalue()
         self.assertIn("existing user/global", text)
         self.assertIn("maximum documented noninteractive access", text)
         self.assertIn("WARNING: full", text)
+
+    def test_setup_preserves_an_existing_safe_default(self) -> None:
+        from agent_bridge_connect.setup import _select_permission_mode
+
+        self.assertEqual(
+            _select_permission_mode(
+                {"permission_mode": "safe"}, explicit_mode=None, interactive=False
+            ),
+            "safe",
+        )
 
     def test_atomic_create_and_handoff_requests_carry_permission_mode(self) -> None:
         from agent_bridge_connect.runner import RunnerClient
@@ -216,6 +226,9 @@ class TaskPermissionPersistenceTests(unittest.TestCase):
         )
 
     def test_input_required_response_preserves_permission(self) -> None:
+        from agent_bridge_connect.execution_policy import SESSION_EXTENSION_KEY
+        from agent_bridge_connect.run_lease import RunLeaseState, create_lease, save_lease
+
         service = self._service("safe")
         task = service.create_task(
             "input permission preservation",
@@ -223,39 +236,67 @@ class TaskPermissionPersistenceTests(unittest.TestCase):
             [{"id": 1, "description": "blocked"}],
             customer_dir=True,
             customer_path=self.project,
-            permission_mode="inherit",
+            permission_mode="safe",
         )
         service.start_task_run(task.id, "codex")
-        current = service.get_task(task.id)
-        execution = current.extensions["agentbc.execution"]
-        run_id = str(execution.get("executor_run_id") or "codex-input-test")
+        run_id = "codex-permission-run-1"
+        service.record_executor_run_started(task.id, run_id)
+        lease = create_lease(task.id, "codex", 0, str(self.project))
+        lease.run_id = run_id
+        lease.state = RunLeaseState.CLOSED
+        save_lease(lease, service.board_root)
+        session_id = "019feed0-0000-7000-8000-0000000000aa"
+        receipt = {
+            "version": 1,
+            "executor": "codex",
+            "session_id": session_id,
+            "resumed": False,
+            "persistence": "persistent",
+            "source": "jsonl_thread_started",
+        }
         callback = {
             "version": 1,
             "task_id": task.id,
             "final_state": "input_required",
             "summary": "need approval",
             "executor_run_id": run_id,
-            "input": {"type": "permission", "requested_permission": "continue"},
+            "input": {
+                "type": "permission",
+                "requested_permission": "full",
+                "reason": "The next continuation requires temporary full permission.",
+            },
             "step_results": [{"id": 1, "status": "blocked"}],
         }
-        service.update_execution_metadata(task.id, {"executor_run_id": run_id})
         self.assertTrue(
             service.finalize_task_from_executor_exit(
-                task.id, executor_run_id=run_id, callback=callback
+                task.id,
+                executor_run_id=run_id,
+                callback=callback,
+                execution_session=receipt,
             )
         )
         waiting = service.get_task(task.id)
         expected = dict(waiting.extensions[PERMISSION_EXTENSION_KEY])
+        self.assertEqual(
+            waiting.extensions[SESSION_EXTENSION_KEY]["session_id"],
+            session_id,
+        )
         request = waiting.extensions["agentbc.input"]
-        service.respond_to_input(
+        result = service.respond_to_input(
             task.id,
             request["input_id"],
             response_type="approve",
             message="",
         )
-        self.assertEqual(
-            service.get_task(task.id).extensions[PERMISSION_EXTENSION_KEY], expected
-        )
+        self.assertTrue(result["dispatch_required"])
+        after = service.get_task(task.id)
+        self.assertEqual(after.extensions[PERMISSION_EXTENSION_KEY], expected)
+        grant = after.extensions["agentbc.permission_grant"]
+        self.assertEqual(grant["state"]["status"], "issued")
+        self.assertEqual(grant["binding"]["task_id"], task.id)
+        self.assertEqual(grant["binding"]["input_id"], request["input_id"])
+        self.assertEqual(grant["binding"]["session_id"], session_id)
+        self.assertEqual(grant["binding"]["source_run_id"], run_id)
 
 
 class ExecutorPermissionMappingTests(unittest.TestCase):
@@ -628,7 +669,15 @@ class RunnerPermissionAuthorizationTests(unittest.TestCase):
 
     def test_explicit_full_is_authorized_without_executing_command(self) -> None:
         _service, _task, full = self._packet("full")
-        command = [str(self.fake_hermes), "chat", "--yolo", "-q", "prompt"]
+        command = [
+            str(self.fake_hermes),
+            "chat",
+            "--yolo",
+            "-q",
+            "--max-turns",
+            "90",
+            "prompt",
+        ]
         spawned = {"ok": True, "run_id": "mock-full", "pid": 1, "status": "running"}
         with mock.patch.object(self.state, "_spawn_process", return_value=spawned) as run:
             result = self.state.submit("hermes", command, str(self.project), full)

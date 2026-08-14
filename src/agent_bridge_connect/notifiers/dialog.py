@@ -29,6 +29,8 @@ class DialogNotifier:
         body = str(clean.get("message", ""))
         report_path = str(clean.get("report_path") or "").strip()
         input_type = str(clean.get("input_type") or "message").strip().lower()
+        input_kind = str(clean.get("input_kind") or "").strip().lower()
+        response_protocol = str(clean.get("response_protocol") or "").strip().lower()
         input_options = tuple(
             str(option).strip()
             for option in clean.get("input_options", [])
@@ -48,12 +50,28 @@ class DialogNotifier:
                 check=False,
                 timeout=dialog_timeout_s + 5,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except subprocess.TimeoutExpired:
+            if event_type == _INPUT_EVENT and input_type == "permission":
+                return DeliveryResult(
+                    True,
+                    "permission dialog timed out; request denied",
+                    f"dialog:{event_type}",
+                    {"action": "deny", "decision_source": "timeout"},
+                )
+            return DeliveryResult(False, "dialog notification timed out")
+        except OSError as exc:
             return DeliveryResult(False, f"dialog notification failed: {exc}")
         if result.returncode != 0:
             if event_type == _INPUT_EVENT and (
                 "User canceled" in result.stderr or "(-128)" in result.stderr
             ):
+                if input_type == "permission":
+                    return DeliveryResult(
+                        True,
+                        "permission dialog closed; request denied",
+                        f"dialog:{event_type}",
+                        {"action": "deny", "decision_source": "dialog_closed"},
+                    )
                 return DeliveryResult(
                     True,
                     "input dialog dismissed; task remains waiting",
@@ -74,8 +92,23 @@ class DialogNotifier:
         gave_up = gave_up_match.group(1).lower() == "true" if gave_up_match else False
         message = f"dialog shown; button={button}; gave_up={str(gave_up).lower()}"
         if event_type == _INPUT_EVENT:
-            action = self._input_action(button, input_type, gave_up, input_options)
+            action = self._input_action(
+                button,
+                input_type,
+                gave_up,
+                input_options,
+                input_kind=input_kind,
+                response_protocol=response_protocol,
+            )
             details = {"action": action}
+            if input_type == "permission":
+                details["decision_source"] = (
+                    "timeout"
+                    if gave_up
+                    else "user"
+                    if button in {"Approve", "Deny"}
+                    else "fail_closed"
+                )
             if action == "message":
                 if input_type == "choice":
                     response = button if button in input_options else ""
@@ -112,7 +145,7 @@ class DialogNotifier:
     def _dialog_script(self, event_type: str, input_type: str, timeout_s: int) -> str:
         if event_type == _INPUT_EVENT and input_type == "permission":
             dialog = (
-                'buttons {"Later", "Deny", "Approve"} default button "Later" '
+                'buttons {"Deny", "Approve"} default button "Deny" '
                 f'giving up after {timeout_s} with icon caution'
             )
             return (
@@ -168,11 +201,22 @@ class DialogNotifier:
         input_type: str,
         gave_up: bool,
         input_options: tuple[str, ...] = (),
+        input_kind: str = "",
+        response_protocol: str = "",
     ) -> str:
+        if input_type == "permission":
+            if gave_up:
+                return "deny"
+            return "approve" if button == "Approve" else "deny"
         if gave_up or button in {"Later", "unknown"}:
             return "dismissed"
-        if input_type == "permission":
-            return "approve" if button == "Approve" else "deny" if button == "Deny" else "dismissed"
         if input_type == "choice":
+            if input_kind == "resource_limit" and response_protocol == "approve_deny":
+                if len(input_options) >= 2:
+                    if button == input_options[0]:
+                        return "approve"
+                    if button == input_options[1]:
+                        return "deny"
+                return "dismissed"
             return "message" if button in input_options else "dismissed"
         return "message" if button == "Submit" else "dismissed"

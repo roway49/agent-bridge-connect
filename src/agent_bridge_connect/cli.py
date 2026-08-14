@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
+import math
 import os
 import signal
 import sys
@@ -14,11 +15,15 @@ from typing import Any
 from . import __version__
 from .config import (
     DEFAULT_BOARD_ROOT,
+    DEFAULT_RETAIN_EXECUTOR_SESSIONS,
+    configured_session_retention,
     get_executor_config,
     init_board,
     load_config,
     resolve_runner_allowed_roots,
     resolve_workspace_root,
+    update_config_atomic,
+    validate_config,
 )
 from .executor_registry import get_executor
 from .path_model import DEFAULT_CUSTOMER_PATH, derive_customer_path_plan
@@ -47,6 +52,22 @@ _SHORTHAND_SUGGESTIONS = [
 
 def add_task_root(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--root", default=str(DEFAULT_BOARD_ROOT), help="AgentBC runtime record root.")
+
+
+def _positive_finite_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive finite number")
+    return parsed
+
+
+def _positive_integer(value: str) -> int:
+    if not value.isascii() or not value.isdecimal() or int(value) <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return int(value)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -86,11 +107,29 @@ def build_parser() -> argparse.ArgumentParser:
     init = sub.add_parser("init", help="Initialize the AgentBC runtime record directory.")
     add_task_root(init)
 
+    claude = sub.add_parser("claude", help="Configure Claude executor settings.")
+    claude_sub = claude.add_subparsers(dest="claude_command", required=True)
+    claude_budget = claude_sub.add_parser("budget", help="Set the Claude budget for future executor runs.")
+    claude_budget.add_argument("usd", type=_positive_finite_float)
+
+    hermes = sub.add_parser("hermes", help="Configure Hermes executor settings.")
+    hermes_sub = hermes.add_subparsers(dest="hermes_command", required=True)
+    hermes_turns = hermes_sub.add_parser("max-turns", help="Set Hermes turns for future executor runs.")
+    hermes_turns.add_argument("turns", type=_positive_integer)
+
+    session = sub.add_parser("session", help="Configure executor temporary-session handling.")
+    session_sub = session.add_subparsers(dest="session_command", required=True)
+    retention = session_sub.add_parser("retention", help="Inspect or change executor session retention.")
+    retention_sub = retention.add_subparsers(dest="retention_command", required=True)
+    retention_sub.add_parser("status", help="Show the effective retention setting.")
+    retention_sub.add_parser("enable", help="Retain executor temporary sessions after terminal tasks.")
+    retention_sub.add_parser("disable", help="Remove executor temporary sessions after terminal tasks.")
+
     record = sub.add_parser("record", help="Inspect or clean AgentBC task records.")
     record_sub = record.add_subparsers(dest="record_command", required=True)
     record_clean = record_sub.add_parser(
         "clean",
-        help="Remove terminal-task reports and runtime diagnostics while preserving task state and indexes.",
+        help="Remove eligible terminal-task runtime diagnostics while preserving task state and indexes; reports are never deleted.",
     )
     add_task_root(record_clean)
     record_clean.add_argument("--dry-run", action="store_true", help="Show what would be removed without changing files.")
@@ -227,6 +266,22 @@ def build_parser() -> argparse.ArgumentParser:
     add_task_root(task_close)
     task_close.add_argument("id")
     task_close.add_argument("--confirm", action="store_true")
+
+    task_delete = task_sub.add_parser(
+        "delete",
+        help="Delete one fully terminal task chain by task code.",
+        description=(
+            "Delete one fully terminal task chain by task code. "
+            "Plain deletion shows the owned targets and asks for y/N confirmation."
+        ),
+    )
+    add_task_root(task_delete)
+    task_delete.add_argument("task_code", help="Chain task code, not an iteration id.")
+    task_delete.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show deleted and preserved objects without writing or prompting.",
+    )
 
     task_correct = task_sub.add_parser("correct", help="Add a correction for a task step.")
     add_task_root(task_correct)
@@ -446,6 +501,9 @@ def command_task_create(args: argparse.Namespace) -> int:
         print(f"report: {task.workspace.get('report_file', '')}")
     if task.session_id:
         print(f"conversation: {source_platform}:{task.session_id}")
+    from .execution_policy import execution_policy_view
+
+    _print_execution_policy(execution_policy_view(task.extensions))
     return 0
 
 
@@ -737,6 +795,7 @@ def command_task_dispatch(args: argparse.Namespace) -> int:
     print(f"worker_run_id: {result.get('run_id', '')}")
     print(f"status: {result.get('dispatch_status', '')}")
     print(f"monitor: {result.get('monitor_status', 'not_requested')}")
+    _print_execution_policy(result.get("execution_policy"))
     return 0
 
 
@@ -778,6 +837,8 @@ def _execution_snapshot(task_id: str, board_root: Path, status: dict) -> dict:
     extensions = status.get("extensions") or {}
     execution = dict(extensions.get("agentbc.execution") or {})
     lease = load_lease(task_id, Path(board_root))
+    # OBS-001: the current lease state always comes from the authoritative
+    # run_lease.json. Stale extension snapshots are historical evidence only.
     if lease is not None:
         execution.update(
             {
@@ -788,6 +849,8 @@ def _execution_snapshot(task_id: str, board_root: Path, status: dict) -> dict:
                 "last_heartbeat_at": lease.last_heartbeat_at,
             }
         )
+    else:
+        execution["lease_state"] = "closed"
     run_id = execution.get("executor_run_id") or execution.get("worker_run_id")
     if run_id:
         try:
@@ -807,6 +870,8 @@ def _execution_snapshot(task_id: str, board_root: Path, status: dict) -> dict:
 
 
 def _decorate_task_status(task, board_root: Path) -> dict:
+    from .timing_view import build_timing_view
+
     status = task_to_status(task)
     try:
         chain = TaskService(board_root).resolve_chain(task.id).to_dict()
@@ -827,15 +892,19 @@ def _decorate_task_status(task, board_root: Path) -> dict:
     status["task_date"] = lineage.get("task_date") or ((status.get("workspace") or {}).get("task_date"))
     status["chain_task_id"] = lineage.get("chain_task_id") or ((status.get("workspace") or {}).get("chain_task_id"))
     execution = _execution_snapshot(task.id, board_root, status)
+    timing = build_timing_view(task, board_root)
+    execution["lease_state"] = timing["lease_state"]
     report_file = str(((status.get("workspace") or {}).get("report_file")) or "")
     report_ready = bool(report_file) and Path(report_file).expanduser().exists()
     final_callback = ((status.get("extensions") or {}).get("agentbc.final_callback") or {})
     status["has_final_callback"] = bool(final_callback)
     status["report_ready"] = report_ready
-    status["run_lease_state"] = execution.get("lease_state", "closed")
+    status["run_lease_state"] = timing["lease_state"]
     status["execution"] = execution
+    status["timing"] = timing
     status["debug"] = {
         "execution": execution,
+        "timing": timing,
         "permission": (status.get("extensions") or {}).get(PERMISSION_EXTENSION_KEY) or {},
     }
     return status
@@ -934,6 +1003,22 @@ def command_task_intervention(args: argparse.Namespace) -> int:
             service.cancel_task(task.id)
             cancellation_errors = _cancel_task_runner_runs(task)
             _finish_task_close_cleanup(task, service.board_root)
+            _write_terminal_report(task.id, service.board_root)
+            _notify_terminal(
+                service,
+                task.id,
+                "task.cancelled",
+                "info",
+                "Task cancelled by user",
+            )
+            try:
+                from .session_cleanup import SessionCleanupCoordinator
+
+                SessionCleanupCoordinator(service.board_root).request_cleanup(task.id)
+            except (ABCError, OSError, ValueError):
+                # Cleanup is background maintenance and must never change the
+                # already-recorded cancellation result.
+                pass
         elif args.task_command == "close":
             plan = service.plan_task_close(args.id)
             if plan["is_chain_iteration"] and not args.confirm:
@@ -995,6 +1080,34 @@ def command_task_intervention(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_task_delete(args: argparse.Namespace) -> int:
+    service = _task_service(args.root)
+    try:
+        if args.dry_run:
+            result = service.delete_task_chain(args.task_code, dry_run=True)
+        else:
+            plan = service.plan_task_delete(args.task_code)
+            if plan.get("status") == "already_deleted":
+                result = plan
+            elif not _confirm_task_delete(plan):
+                result = {
+                    "ok": True,
+                    "status": "cancelled",
+                    "task_code": plan.get("task_code", str(args.task_code).upper()),
+                    "task_ids": list(plan.get("task_ids") or []),
+                    "deleted": False,
+                }
+            else:
+                result = service.delete_task_chain(args.task_code, confirmed=True)
+    except ABCError as exc:
+        print(f"{exc.code}: {exc}")
+        return 1
+    if result.get("status") == "deleted":
+        _finish_task_chain_close_cleanup(list(result.get("task_ids") or []), service.board_root)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
 def _cancel_task_runner_runs(task: Any) -> list[str]:
     from .runner import RunnerClient, RunnerError
 
@@ -1023,6 +1136,37 @@ def _cancel_task_runner_runs(task: Any) -> list[str]:
 def _confirm_chain_close(plan: dict[str, Any]) -> bool:
     print(f"This will delete {plan['task_id']} record and report.")
     print("Original project files may already have changed and cannot be restored.")
+    try:
+        answer = input("Continue? [y/N]: ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer.strip().lower() in {"y", "yes"}
+
+
+def _confirm_task_delete(plan: dict[str, Any]) -> bool:
+    task_code = str(plan.get("task_code") or "")
+    task_ids = list(plan.get("task_ids") or [])
+    targets = {
+        str(item.get("kind") or ""): str(item.get("path") or "")
+        for item in list(plan.get("targets") or [])
+        if isinstance(item, dict)
+    }
+    print(f"This will permanently delete task chain {task_code} ({len(task_ids)} iteration(s)):")
+    print(f"  - task records: {targets.get('records', 'AgentBC task records')}")
+    print(f"  - task briefs and reports: {targets.get('reports', 'AgentBC reports')}")
+    if targets.get("artifacts"):
+        print(f"  - default AgentBC artifacts: {targets['artifacts']}")
+    else:
+        print("  - default AgentBC artifacts: none")
+    print("  - task index entries and the task-code claim")
+    customer_projects = [
+        str(item.get("path") or "")
+        for item in list(plan.get("preserve_objects") or [])
+        if isinstance(item, dict) and item.get("kind") == "customer_project"
+    ]
+    for path in customer_projects:
+        print(f"Preserved customer project: {path}")
     try:
         answer = input("Continue? [y/N]: ")
     except (EOFError, KeyboardInterrupt):
@@ -1071,7 +1215,16 @@ def _finish_task_chain_close_cleanup(task_ids: list[str], board_root: str | Path
 
 def command_task_preflight(args: argparse.Namespace) -> int:
     result = _task_service(args.root).preflight(args.id)
-    print(json.dumps({"ok": result.ok, "errors": result.errors}, indent=2))
+    print(
+        json.dumps(
+            {
+                "ok": result.ok,
+                "errors": result.errors,
+                "execution_policy": result.execution_policy,
+            },
+            indent=2,
+        )
+    )
     return 0 if result.ok else 1
 
 
@@ -1308,6 +1461,9 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 _request_task_list_refresh(service.board_root)
                 print(f"worker_error: executor start failed for {task.id}: {start.message}")
                 return 1
+            manages_executor_session = args.executor in {"claude", "hermes", "codex"}
+            if manages_executor_session:
+                service.record_executor_run_started(task.id, start.run_id)
             executor_started = True
             service.update_execution_metadata(task.id, {"executor_run_id": start.run_id})
 
@@ -1316,6 +1472,36 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 if poll.status in ("completed", "cancelled", "input_required", "needs_recovery", "failed", "needs_review"):
                     break
                 time.sleep(max(args.interval, 0.1))
+
+            execution_session = poll.result.get("execution_session")
+            if manages_executor_session:
+                try:
+                    execution_session = service.validate_executor_session_result(
+                        task.id,
+                        start.run_id,
+                        execution_session,
+                    )
+                except ABCError as exc:
+                    recovery_marked = service.mark_task_needs_recovery(
+                        task.id,
+                        exc.code,
+                        str(exc),
+                        {"executor": args.executor, "phase": "session_receipt"},
+                    )
+                    if recovery_marked:
+                        _write_terminal_report(task.id, service.board_root)
+                        _notify_terminal(
+                            service,
+                            task.id,
+                            "task.recovery_required",
+                            "warning",
+                            str(exc),
+                        )
+                    _request_task_list_refresh(service.board_root)
+                    print(f"worker_error: executor session receipt failed for {task.id}: {exc}")
+                    return 1
+            else:
+                execution_session = None
 
             if poll.status not in {"completed", "input_required", "cancelled"}:
                 failure = poll.result.get("failure")
@@ -1330,14 +1516,28 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     else "executor_terminal_failure"
                 )
                 details = {"executor": args.executor, "result": poll.result, "progress": poll.progress}
-                if _is_explicit_retryable_failure(failure):
+                resource_receipt_mismatch = (
+                    isinstance(failure, dict)
+                    and failure.get("kind") == "resource_exhaustion_receipt_mismatch"
+                )
+                if _is_explicit_retryable_failure(failure) or resource_receipt_mismatch:
                     terminal_marked = service.mark_task_needs_recovery(
-                        task.id, failure_code, failure_message, details
+                        task.id,
+                        failure_code,
+                        failure_message,
+                        details,
+                        executor_run_id=start.run_id,
+                        execution_session=execution_session,
                     )
                     event_type, level = "task.recovery_required", "warning"
                 else:
                     terminal_marked = service.mark_task_failed(
-                        task.id, failure_code, failure_message, details
+                        task.id,
+                        failure_code,
+                        failure_message,
+                        details,
+                        executor_run_id=start.run_id,
+                        execution_session=execution_session,
                     )
                     event_type, level = "task.failed", "error"
                 if terminal_marked:
@@ -1346,6 +1546,45 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 _request_task_list_refresh(service.board_root)
                 print(f"worker_error: executor failed for {task.id}: {failure_message}")
                 return 1
+
+            resource_exhaustion = poll.result.get("resource_exhaustion")
+            if (
+                poll.status == "input_required"
+                and isinstance(resource_exhaustion, dict)
+                and resource_exhaustion.get("detected") is True
+            ):
+                blocked = service.block_task_for_resource(
+                    task.id,
+                    start.run_id,
+                    resource_exhaustion,
+                    execution_session=execution_session,
+                )
+                if not blocked.get("ok"):
+                    _write_terminal_report(task.id, service.board_root)
+                    _notify_terminal(
+                        service,
+                        task.id,
+                        "task.recovery_required",
+                        "warning",
+                        str(
+                            blocked.get("message")
+                            or "resource exhaustion wait failed; task requires recovery"
+                        ),
+                    )
+                    _request_task_list_refresh(service.board_root)
+                    print(f"needs_recovery: {task.id}")
+                    return 1
+                _notify_input_required(
+                    service,
+                    task.id,
+                    config_path=getattr(args, "config", None),
+                    interval_s=getattr(args, "interval", 2),
+                )
+                _request_task_list_refresh(service.board_root)
+                print(f"input_required: {task.id}")
+                if args.once:
+                    return 0
+                continue
 
             callback = poll.result.get("agent_callback")
             exit_code = poll.result.get("returncode")
@@ -1358,6 +1597,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 summary=summary,
                 exit_code=exit_code,
                 callback=callback if isinstance(callback, dict) else None,
+                execution_session=execution_session,
             )
             finalized = service.get_task(task.id)
             final_status = finalized.status
@@ -1523,7 +1763,7 @@ def command_doctor(args: argparse.Namespace) -> int:
         print(json.dumps(report, indent=2, ensure_ascii=False))
     else:
         print(render_doctor_text(report))
-    return 0 if report["ok"] else 1
+    return int(report["exit_code"])
 
 
 def _probe_existing_runner(spool: Path | None, token: Path | None) -> dict[str, Any] | None:
@@ -1618,6 +1858,7 @@ def _print_task_status(status: dict, as_json: bool = False) -> None:
             f"effective={permission.get('effective_mode', '-')} "
             f"source={permission.get('selection_source', '-')}"
         )
+    _print_execution_policy(status.get("execution_policy"))
     if status.get("chain_root_task_id"):
         heads = ", ".join(status.get("head_task_ids") or []) or "-"
         print(
@@ -1631,6 +1872,16 @@ def _print_task_status(status: dict, as_json: bool = False) -> None:
         f"Report ready: {'yes' if status.get('report_ready') else 'no'}\t"
         f"Run lease: {status.get('run_lease_state', 'closed')}"
     )
+    timing = status.get("timing") or {}
+    if timing:
+        print(
+            "Timing: "
+            f"wall={_format_seconds_compact(timing.get('wall_duration_s'))}\t"
+            f"execution={_format_seconds_compact(timing.get('execution_duration_s'))}\t"
+            f"waiting={_format_seconds_compact(timing.get('waiting_duration_s'))}\t"
+            f"last_run={_format_seconds_compact(timing.get('last_run_duration_s'))}\t"
+            f"evidence={timing.get('evidence_quality', 'unknown')}"
+        )
     health = status.get("health") or {}
     if health:
         age = health.get("last_progress_age_s")
@@ -1707,7 +1958,11 @@ def _format_task_candidate(summary: dict, *, color: bool = False, timer_now: str
 
 
 def _task_list_timer(summary: dict, timer_now: str | None = None) -> str:
-    """Display-only timer for the task list monitor; it is not task health."""
+    """Display-only timer for the task list monitor; it is not task health.
+
+    Uses the shared timing view's lifecycle (wall) duration so the task list
+    renders the same source value as status/report/notification.
+    """
     status = str(summary.get("status") or "")
     terminal_label = terminal_status_label(status)
     if terminal_label:
@@ -1716,6 +1971,12 @@ def _task_list_timer(summary: dict, timer_now: str | None = None) -> str:
         return "input"
     if status == "cancelled":
         return "cancelled"
+    timing = summary.get("timing")
+    if isinstance(timing, dict):
+        wall = timing.get("wall_duration_s")
+        if wall is not None:
+            return _format_seconds_compact(wall)
+        return "unknown"
     start = str(summary.get("created_at") or "")
     if not start:
         return "unknown"
@@ -1729,6 +1990,14 @@ def _format_elapsed_compact(start: str, end: str) -> str:
     if parsed_start is None or parsed_end is None:
         return "unknown"
     seconds = max(int(round((parsed_end - parsed_start).total_seconds())), 0)
+    return _format_seconds_compact(seconds)
+
+
+def _format_seconds_compact(value: Any) -> str:
+    try:
+        seconds = max(int(round(float(value))), 0)
+    except (TypeError, ValueError):
+        return "unknown"
     hours, remainder = divmod(seconds, 3600)
     minutes, secs = divmod(remainder, 60)
     if hours:
@@ -1807,6 +2076,56 @@ def _print_atomic_dispatch(result: dict[str, Any]) -> None:
     print(f"worker_run_id: {result.get('run_id', '')}")
     print(f"status: {result.get('dispatch_status', '')}")
     print(f"monitor: {result.get('monitor_status', 'not_requested')}")
+    _print_execution_policy(result.get("execution_policy"))
+
+
+def _print_execution_policy(policy: Any) -> None:
+    if not isinstance(policy, dict):
+        return
+    resources = policy.get("resources")
+    if isinstance(resources, dict):
+        print(
+            "Resources: "
+            f"{resources.get('resource', '-')}={resources.get('limit')} "
+            f"source={resources.get('source', '-')} "
+            f"frozen={'yes' if resources.get('frozen') else 'no'} "
+            f"configured={resources.get('configured_limit', '-')} "
+            f"exhaustions={resources.get('exhaustion_count', 0)} "
+            f"last_decision={resources.get('last_decision') or '-'}"
+        )
+    else:
+        print("Resources: none")
+    session = policy.get("session")
+    if isinstance(session, dict):
+        print(
+            "Executor session: "
+            f"retain={'yes' if session.get('retain') else 'no'} "
+            f"session_id={session.get('session_id') or '-'} "
+            f"state={session.get('session_state') or '-'} "
+            f"project_mode={session.get('project_mode') or '-'}"
+        )
+        cleanup = session.get("cleanup")
+        if isinstance(cleanup, dict):
+            print(
+                "Session cleanup: "
+                f"capability={cleanup.get('capability') or 'unknown'} "
+                f"state={cleanup.get('state') or 'not_requested'} "
+                f"attempts={cleanup.get('attempts', 0)} "
+                f"error_code={cleanup.get('error_code') or '-'} "
+                f"retryable={'yes' if cleanup.get('retryable') else 'no'}"
+            )
+    grant = policy.get("permission_grant")
+    if isinstance(grant, dict):
+        print(
+            "Permission grant: "
+            f"state={grant.get('state') or '-'} "
+            f"active={'yes' if grant.get('active') else 'no'} "
+            f"single_use={'yes' if grant.get('max_uses') == 1 else 'no'} "
+            f"transition={grant.get('from_mode') or '-'}->{grant.get('to_mode') or '-'} "
+            f"scope={grant.get('scope') or '-'} "
+            f"uses={grant.get('uses', 0)} "
+            f"reason={grant.get('reason_code') or '-'}"
+        )
 
 
 def _write_terminal_report(task_id: str, board_root: Path) -> None:
@@ -1902,6 +2221,134 @@ def _utc_now_cli() -> str:
     return utc_now()
 
 
+def command_executor_setting(executor: str, key: str, value: int | float) -> int:
+    previous: Any = None
+
+    def mutate(config: dict[str, Any]) -> None:
+        nonlocal previous
+        executors = config.get("executors")
+        executor_config = executors.get(executor) if isinstance(executors, dict) else None
+        if not isinstance(executor_config, dict) or not any(
+            marker in executor_config for marker in ("type", "command")
+        ):
+            raise ABCError(
+                "not_configured",
+                f"{executor} executor is not configured; run agentbc setup first",
+                {"executor": executor},
+            )
+        previous = executor_config.get(key)
+        executor_config[key] = value
+
+    setting = f"executors.{executor}.{key}"
+    try:
+        _, changed = update_config_atomic(mutate)
+    except (ABCError, OSError, ValueError, TypeError) as exc:
+        _print_config_command_error(exc, setting)
+        return 2
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "setting": setting,
+                "previous": previous,
+                "value": value,
+                "changed": changed,
+                "source": "command" if changed else "configured",
+                "scope": "future_executor_runs",
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def command_session_retention(action: str) -> int:
+    setting = "sessions.retain_executor_sessions"
+    if action == "status":
+        try:
+            config = load_config()
+            errors = validate_config(config)
+            if errors:
+                raise ABCError("config_invalid", "; ".join(errors), {"errors": errors})
+            value, source = configured_session_retention(config)
+        except (ABCError, OSError, ValueError, TypeError) as exc:
+            _print_config_command_error(exc, setting)
+            return 2
+        payload = _retention_payload(
+            previous=value,
+            value=value,
+            changed=False,
+            source=source,
+        )
+    else:
+        desired = action == "enable"
+        previous = DEFAULT_RETAIN_EXECUTOR_SESSIONS
+
+        def mutate(config: dict[str, Any]) -> None:
+            nonlocal previous
+            previous, _ = configured_session_retention(config)
+            config.setdefault("sessions", {})["retain_executor_sessions"] = desired
+
+        try:
+            _, changed = update_config_atomic(mutate)
+        except (ABCError, OSError, ValueError, TypeError) as exc:
+            _print_config_command_error(exc, setting)
+            return 2
+        payload = _retention_payload(
+            previous=previous,
+            value=desired,
+            changed=changed,
+            source="command" if changed else "configured",
+        )
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _retention_payload(
+    *,
+    previous: bool,
+    value: bool,
+    changed: bool,
+    source: str,
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "setting": "sessions.retain_executor_sessions",
+        "previous": previous,
+        "value": value,
+        "changed": changed,
+        "source": source,
+        "scope": "future_executor_runs",
+        "dispatcher_conversations": "never_deleted_by_agentbc",
+        "managed_sessions": "executor_temporary_sessions_only",
+    }
+
+
+def _print_config_command_error(exc: Exception, setting: str) -> None:
+    if isinstance(exc, ABCError):
+        error = exc.code
+        message = exc.message
+        details = exc.details
+    else:
+        error = "config_error"
+        message = str(exc)
+        details = {}
+    print(
+        json.dumps(
+            {
+                "ok": False,
+                "setting": setting,
+                "error": error,
+                "message": message,
+                "details": details,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if not raw_argv:
@@ -1946,6 +2393,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "doctor":
         return command_doctor(args)
+
+    if args.command == "claude":
+        return command_executor_setting("claude", "max_budget_usd", args.usd)
+
+    if args.command == "hermes":
+        return command_executor_setting("hermes", "max_turns", args.turns)
+
+    if args.command == "session":
+        return command_session_retention(args.retention_command)
 
     if args.command == "uninstall":
         from .setup import run_uninstall
@@ -1999,6 +2455,8 @@ def main(argv: list[str] | None = None) -> int:
             return command_task_recover(args)
         if args.task_command == "callback":
             return command_task_callback(args)
+        if args.task_command == "delete":
+            return command_task_delete(args)
         if args.task_command in {"pause", "resume", "cancel", "close", "correct", "retry", "reassign", "handoff"}:
             return command_task_intervention(args)
         raise AssertionError(args.task_command)
@@ -2021,6 +2479,9 @@ def _expand_shorthand(argv: list[str]) -> list[str]:
         "doctor",
         "uninstall",
         "init",
+        "claude",
+        "hermes",
+        "session",
         "record",
         "task",
         "worker",

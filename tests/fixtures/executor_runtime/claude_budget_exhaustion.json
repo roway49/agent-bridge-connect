@@ -1,0 +1,8 @@
+{
+  "capture_kind": "binary-contract-strings",
+  "runtime_version": "2.1.226",
+  "structured_subtype": "error_max_budget_usd",
+  "message_prefix": "Error: Exceeded USD budget (",
+  "flag_reference": "reached --max-budget-usd",
+  "verified_by_live_paid_canary": false
+}

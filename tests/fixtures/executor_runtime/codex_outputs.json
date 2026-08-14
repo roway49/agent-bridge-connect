@@ -1,0 +1,6 @@
+{
+  "thread_id": "019fe9f4-6306-7d31-9dca-11b67ee67701",
+  "unique_receipt_jsonl": "{\"type\":\"thread.started\",\"thread_id\":\"019fe9f4-6306-7d31-9dca-11b67ee67701\"}\n{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"done\"}}\n",
+  "missing_receipt_jsonl": "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"done\"}}\n",
+  "duplicate_receipt_jsonl": "{\"type\":\"thread.started\",\"thread_id\":\"019fe9f4-6306-7d31-9dca-11b67ee67701\"}\n{\"type\":\"thread.started\",\"thread_id\":\"019fe9f4-6306-7d31-9dca-11b67ee67701\"}\n"
+}

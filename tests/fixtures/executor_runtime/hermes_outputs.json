@@ -1,0 +1,10 @@
+{
+  "runtime_version": "0.17.0",
+  "session_receipt_stderr": "\nsession_id: 20260810_010203_a1b2c3\n",
+  "iteration_exhaustion": [
+    "turn_exit_reason=max_iterations_reached(60/60)",
+    "⚠️  Iteration budget exhausted (60/60) — asking model to summarise",
+    "⚠️  Reached maximum iterations (60). Requesting summary...",
+    "turn_exit_reason: budget_exhausted"
+  ]
+}

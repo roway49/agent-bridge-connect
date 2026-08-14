@@ -4,10 +4,18 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from .execution_policy import execution_policy_view
 from .notifiers.dialog import DialogNotifier
 from .notifiers.file import FileNotifier
 from .reports import redact_secrets
 from .terminal_states import TASK_TERMINAL_STATES, terminal_status_label
+from .timing_view import build_timing_view
+
+RESOURCE_DECISION_APPROVE_LABEL = "提高预算并继续"
+RESOURCE_DECISION_DENY_LABEL = "终止任务"
+RESOURCE_DECISION_KIND = "resource_limit"
+RESOURCE_DECISION_PROTOCOL = "approve_deny"
+PERMISSION_DIALOG_TIMEOUT_RESPONSE = "agentbc_permission_dialog_timeout"
 
 
 def notify_terminal(
@@ -55,6 +63,7 @@ def notify_input_required(
     file_result = FileNotifier(service.board_root / "notifications.jsonl").send(payload)
     dialog_result = DialogNotifier().send(payload)
     action = str(dialog_result.details.get("action") or "dismissed")
+    decision_source = str(dialog_result.details.get("decision_source") or "")
     service.store.append_event(
         task_id,
         {
@@ -66,6 +75,7 @@ def notify_input_required(
             "dialog_ok": dialog_result.ok,
             "dialog_message": dialog_result.message,
             "dialog_action": action,
+            "dialog_decision_source": decision_source,
             "dialog_delay_s": 0,
             "created_at": utc_now(),
         },
@@ -77,7 +87,15 @@ def notify_input_required(
             response_result = responder(
                 str(payload["input_id"]),
                 action,
-                str(dialog_result.details.get("message") or ""),
+                (
+                    PERMISSION_DIALOG_TIMEOUT_RESPONSE
+                    if payload.get("input_type") == "permission"
+                    and action == "deny"
+                    and decision_source == "timeout"
+                    else ""
+                    if payload.get("input_type") == "permission"
+                    else str(dialog_result.details.get("message") or "")
+                ),
             )
         except Exception as exc:
             response_error = compact_notification_text(str(redact_secrets(str(exc))), 240)
@@ -125,11 +143,20 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
     if not input_id:
         raise ValueError(f"Task {task_id} input request has no response ID")
     input_type = str(request.get("type") or "message").strip().lower()
+    input_kind = str(request.get("kind") or "").strip()
+    response_protocol = str(request.get("response_protocol") or "").strip()
+    is_resource_decision = (
+        input_type == "choice"
+        and input_kind == RESOURCE_DECISION_KIND
+        and response_protocol == RESOURCE_DECISION_PROTOCOL
+    )
     input_options = (
         [str(option).strip() for option in request.get("options", []) if str(option).strip()]
         if input_type == "choice" and isinstance(request.get("options"), list)
         else []
     )
+    if is_resource_decision:
+        input_options = [RESOURCE_DECISION_APPROVE_LABEL, RESOURCE_DECISION_DENY_LABEL]
     option_descriptions = (
         [
             compact_notification_text(str(description).strip(), 160)
@@ -141,7 +168,7 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
     )
     if len(option_descriptions) != len(input_options):
         option_descriptions = []
-    if input_type == "permission":
+    if input_type == "permission" or is_resource_decision:
         command = (
             f"agentbc task respond {task_id} --input {input_id} --approve"
             f" (or --deny)"
@@ -153,6 +180,11 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
     summary = compact_notification_text(str(request.get("summary") or ""), 240)
     if input_type == "choice":
         reason = compact_notification_text(str(request.get("reason") or summary), 240)
+        if is_resource_decision and not option_descriptions:
+            option_descriptions = [
+                "Approve: double this task's resource limit and continue the same session.",
+                "Deny: terminate the task with a failed terminal state.",
+            ]
         body_lines = [
             f"Task: {task_id} needs your decision",
             f"Blocked step: {blocked_step}",
@@ -180,12 +212,17 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
                 [
                     "Requested access:",
                     compact_notification_text(str(request.get("requested_permission") or ""), 180),
+                    "Approve grants the corresponding Executor its complete full permission for exactly the next continuation of this same task/session.",
+                    "The technical scope is not limited to Git or the blocked command.",
+                    "The grant is single-use.",
+                    "Deny terminates the task as failed.",
                     "Choose Approve or Deny below.",
                 ]
             )
         else:
             body_lines.append("Enter your response below to resume this same task.")
     body = "\n".join(body_lines)
+    permission_grant = execution_policy_view(task.extensions).get("permission_grant")
     return {
         "task_id": task_id,
         "event_type": "task.input_required",
@@ -197,9 +234,12 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         "deadline_at": str(request.get("deadline_at") or ""),
         "input_id": input_id,
         "input_type": input_type,
+        "input_kind": input_kind,
+        "response_protocol": response_protocol,
         "input_reason": str(request.get("reason") or ""),
         "input_options": input_options,
         "input_option_descriptions": option_descriptions,
+        "permission_grant": permission_grant,
     }
 
 
@@ -209,7 +249,7 @@ def build_notification_payload(
     event_type: str,
     level: str,
     message: str,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     task = service.get_task(task_id)
     workspace = task.workspace or {}
     extensions = task.extensions or {}
@@ -219,16 +259,18 @@ def build_notification_payload(
     executor = str(task.assignee or "unknown")
     report_path = str(workspace.get("report_file") or "")
     status = terminal_status_label(task.status) or str(task.status or level or "unknown")
+    timing = build_timing_view(task, service.board_root)
+    duration_text = format_duration_seconds(timing.get("wall_duration_s"))
     body = "\n".join(
         [
             f"Task: {task_id} {status}",
             f"Title: {compact_notification_text(task.title, 96)}",
             f"Dispatcher/Executor: {dispatcher} -> {executor}",
-            f"Duration: {format_elapsed(task.created_at, task.updated_at)}",
+            f"Duration: {duration_text}",
             f"Report: {report_path}",
         ]
     )
-    return {
+    payload = {
         "task_id": task_id,
         "event_type": event_type,
         "title": "Agent-Bridge-Connect",
@@ -236,6 +278,14 @@ def build_notification_payload(
         "message": body,
         "report_path": report_path,
     }
+    payload.update(
+        {
+            key: _notification_float(timing.get(key))
+            for key in ("wall_duration_s", "execution_duration_s", "waiting_duration_s", "last_run_duration_s")
+        }
+    )
+    payload["execution_evidence"] = str(timing.get("evidence_quality") or "unknown")
+    return payload
 
 
 def should_show_dialog_notification(service: Any, task_id: str, level: str) -> bool:
@@ -288,6 +338,14 @@ def format_elapsed(start: str, end: str) -> str:
     if start_dt is None or end_dt is None:
         return "unknown"
     seconds = max(int(round((end_dt - start_dt).total_seconds())), 0)
+    return format_duration_seconds(seconds)
+
+
+def format_duration_seconds(value: Any) -> str:
+    try:
+        seconds = max(int(round(float(value))), 0)
+    except (TypeError, ValueError):
+        return "unknown"
     hours, remainder = divmod(seconds, 3600)
     minutes, secs = divmod(remainder, 60)
     if hours:
@@ -295,6 +353,13 @@ def format_elapsed(start: str, end: str) -> str:
     if minutes:
         return f"{minutes}m {secs:02d}s"
     return f"{secs}s"
+
+
+def _notification_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def parse_timestamp(value: str) -> datetime | None:

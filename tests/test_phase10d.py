@@ -1871,7 +1871,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
 
         self.assertFalse(task_run_temp_path(running).exists())
         self.assertFalse(Path(running.workspace["task_file"]).exists())
-        self.assertFalse(Path(running.workspace["report_file"]).exists())
+        self.assertTrue(Path(running.workspace["report_file"]).exists())
         self.assertTrue((Path(running.workspace["internal_task_dir"]) / "task.json").exists())
         self.assertFalse(artifact_root.exists())
 
@@ -1916,7 +1916,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         self.assertTrue(Path(source.workspace["task_file"]).exists())
         self.assertTrue(Path(source.workspace["report_file"]).exists())
         self.assertFalse(Path(handoff.workspace["task_file"]).exists())
-        self.assertFalse(Path(handoff.workspace["report_file"]).exists())
+        self.assertTrue(Path(handoff.workspace["report_file"]).exists())
         self.assertTrue(Path(source.workspace["report_root"]).exists())
 
     def test_task_list_current_excludes_pending_tasks(self):
@@ -2935,9 +2935,9 @@ class Phase10dIntegrationTests(unittest.TestCase):
             "status": "ready",
             "executors": ["hermes"],
         }
-        client.submit.return_value = {
+        client.submit.side_effect = lambda *args, **kwargs: {
             "ok": True,
-            "run_id": "runner-hermes-test",
+            "run_id": kwargs["executor_run_id"],
             "pid": 4321,
             "status": "running",
         }
@@ -2969,6 +2969,10 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         polled = executor.poll(started.run_id)
         self.assertTrue(started.ok)
+        self.assertEqual(
+            started.run_id,
+            client.submit.call_args.kwargs["executor_run_id"],
+        )
         self.assertEqual(polled.status, "completed")
         self.assertEqual(polled.result["transport"], "runner")
         self.assertEqual(
@@ -2989,9 +2993,9 @@ class Phase10dIntegrationTests(unittest.TestCase):
             "status": "ready",
             "executors": ["hermes"],
         }
-        client.submit.return_value = {
+        client.submit.side_effect = lambda *args, **kwargs: {
             "ok": True,
-            "run_id": "runner-hermes-transient",
+            "run_id": kwargs["executor_run_id"],
             "pid": 4321,
             "status": "running",
         }
@@ -3011,6 +3015,10 @@ class Phase10dIntegrationTests(unittest.TestCase):
         polled = executor.poll(started.run_id)
 
         self.assertTrue(started.ok)
+        self.assertEqual(
+            started.run_id,
+            client.submit.call_args.kwargs["executor_run_id"],
+        )
         self.assertEqual(polled.status, "running")
         self.assertEqual(polled.progress["runner_status"], "transient_unavailable")
         self.assertEqual(polled.result["failure"]["kind"], "runner_status_transient")
@@ -3143,7 +3151,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(command[:2], [sys.executable, "-p"])
         self.assertIn("--safe-mode", command)
-        self.assertIn("--no-session-persistence", command)
+        self.assertNotIn("--no-session-persistence", command)
         self.assertEqual(command[command.index("--permission-mode") + 1], "acceptEdits")
         self.assertEqual(command[command.index("--output-format") + 1], "text")
         self.assertIn("--add-dir", command)
@@ -3415,7 +3423,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
                 "Session: isolated_test\n"
                 f"AGENTBC_FINAL_CALLBACK: {json.dumps(completed_callback(task, summary='layered contract complete'), separators=(',', ':'))}\n"
             ),
-            stderr="",
+            stderr="session_id: 20260810_010203_phase3\n",
         )
         executor = HermesExecutor(command=sys.executable, transport="direct")
         executor._version = "Hermes test"

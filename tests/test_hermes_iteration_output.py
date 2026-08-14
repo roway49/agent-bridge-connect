@@ -45,6 +45,7 @@ class HermesOutputExtractionTests(unittest.TestCase):
         task_id: str = "TEST-001",
         final_state: str = "completed",
         step_results: list[dict] | None = None,
+        input_details: dict | None = None,
     ) -> str:
         payload = {
             "version": 1,
@@ -55,6 +56,8 @@ class HermesOutputExtractionTests(unittest.TestCase):
             if step_results is not None
             else [{"id": 1, "status": "done"}, {"id": 2, "status": "done"}],
         }
+        if input_details is not None:
+            payload["input"] = input_details
         return f"{FINAL_CALLBACK_PREFIX} {json.dumps(payload)}"
 
     def _run_direct(
@@ -89,7 +92,15 @@ class HermesOutputExtractionTests(unittest.TestCase):
         remote_status: str = "completed",
     ):
         executor = HermesExecutor(command=sys.executable, transport="runner")
-        submit = {"run_id": "hermes-runner-1", "pid": 9999}
+        submitted_run_ids: list[str] = []
+
+        def _fake_submit(*args, **kwargs):
+            # The Runner must echo the Adapter-preallocated executor run ID so
+            # the production request/response equality check stays meaningful.
+            executor_run_id = str(kwargs.get("executor_run_id") or "")
+            submitted_run_ids.append(executor_run_id)
+            return {"run_id": executor_run_id, "pid": 9999}
+
         remote = {
             "status": remote_status,
             "stdout": output,
@@ -107,11 +118,14 @@ class HermesOutputExtractionTests(unittest.TestCase):
                 "health",
                 return_value={"executors": ["hermes"]},
             ),
-            patch.object(executor._runner_client, "submit", return_value=submit),
+            patch.object(executor._runner_client, "submit", side_effect=_fake_submit),
             patch.object(executor._runner_client, "status", return_value=remote),
         ):
             start = executor.start(self.packet)
             self.assertTrue(start.ok)
+            # Request/response equality: the ID the Adapter sent to the Runner
+            # is the ID the Runner echoed and the ID the Adapter accepted.
+            self.assertEqual(submitted_run_ids, [start.run_id])
             return executor.poll(start.run_id)
 
     # ---- final-response extraction -------------------------------------
@@ -242,7 +256,7 @@ class HermesOutputExtractionTests(unittest.TestCase):
             ("prompt_echo", f"{prompt}\n{self._marker()}", "completed"),
             ("duplicate", f"{self._marker()}\n{self._marker()}", "failed"),
             ("missing", "no marker", "failed"),
-            ("budget_no_marker", "Iteration budget exhausted (60/60)\nno marker", "failed"),
+            ("budget_no_marker", "Iteration budget exhausted (60/60)\nno marker", "input_required"),
         ]
         for case, output, expected_status in cases:
             with self.subTest(case=case):
@@ -314,16 +328,23 @@ class HermesOutputExtractionTests(unittest.TestCase):
         self.assertEqual(diag["iteration_source"], "none")
         self.assertIsNone(diag["iteration_used"])
 
-    def test_budget_exhaustion_without_marker_is_iteration_budget_exhausted(self) -> None:
+    def test_budget_exhaustion_without_marker_is_system_input_required(self) -> None:
         output = (
             "⚠️  Reached maximum iterations (60). Requesting summary...\n"
             "⚠️  Iteration budget exhausted (60/60) — asking model to summarise\n"
             "I ran out of iterations before finishing."
         )
         poll = self._run_direct(output)
-        self.assertEqual(poll.status, "failed")
-        self.assertEqual(poll.result["failure"]["kind"], "iteration_budget_exhausted")
+        self.assertEqual(poll.status, "input_required")
+        self.assertEqual(poll.result["failure"]["kind"], "resource_limit_exhausted")
         self.assertFalse(poll.result["failure"]["retryable"])
+        self.assertIsNone(poll.result["agent_callback"])
+        exhaustion = poll.result["resource_exhaustion"]
+        self.assertTrue(exhaustion["detected"])
+        self.assertEqual(exhaustion["executor"], "hermes")
+        self.assertEqual(exhaustion["resource"], "max_turns")
+        self.assertEqual(exhaustion["used"], 60)
+        self.assertEqual(exhaustion["limit"], 60)
         iteration = poll.result["iteration"]
         self.assertTrue(iteration["iteration_exhausted"])
         self.assertEqual(iteration["iteration_used"], 60)
@@ -332,11 +353,13 @@ class HermesOutputExtractionTests(unittest.TestCase):
         self.assertTrue(extensions_iteration["iteration_exhausted"])
         self.assertEqual(extensions_iteration["iteration_used"], 60)
 
-    def test_budget_exhaustion_with_nonzero_exit_is_iteration_budget_exhausted(self) -> None:
+    def test_budget_exhaustion_with_nonzero_exit_is_system_input_required(self) -> None:
         output = "⚠️  Iteration budget exhausted (60/60) — asking model to summarise\nno marker"
         poll = self._run_direct(output, returncode=1)
-        self.assertEqual(poll.status, "failed")
-        self.assertEqual(poll.result["failure"]["kind"], "iteration_budget_exhausted")
+        self.assertEqual(poll.status, "input_required")
+        self.assertEqual(poll.result["failure"]["kind"], "resource_limit_exhausted")
+        self.assertIsNone(poll.result["agent_callback"])
+        self.assertEqual(poll.result["resource_exhaustion"]["limit"], 60)
 
     def test_valid_completed_routes_normally_despite_budget_exhaustion(self) -> None:
         output = (
@@ -349,7 +372,7 @@ class HermesOutputExtractionTests(unittest.TestCase):
         self.assertIsNone(poll.result["failure"])
         self.assertTrue(poll.result["iteration"]["iteration_exhausted"])
 
-    def test_valid_input_required_routes_normally_despite_budget_exhaustion(self) -> None:
+    def test_native_budget_exhaustion_overrides_ordinary_input_required(self) -> None:
         marker = self._marker(
             final_state="input_required",
             step_results=[{"id": 1, "status": "done"}, {"id": 2, "status": "blocked"}],
@@ -357,8 +380,53 @@ class HermesOutputExtractionTests(unittest.TestCase):
         output = f"⚠️  Iteration budget exhausted (60/60) — asking model to summarise\n{marker}"
         poll = self._run_direct(output)
         self.assertEqual(poll.status, "input_required")
-        self.assertEqual(poll.result["agent_callback"]["final_state"], "input_required")
+        self.assertIsNone(poll.result["agent_callback"])
+        self.assertEqual(poll.result["failure"]["kind"], "resource_limit_exhausted")
+        self.assertEqual(poll.result["resource_exhaustion"]["limit"], 60)
         self.assertTrue(poll.result["iteration"]["iteration_exhausted"])
+
+    def test_native_budget_exhaustion_overrides_choice_on_both_transports(self) -> None:
+        marker = self._marker(
+            final_state="input_required",
+            step_results=[{"id": 1, "status": "done"}, {"id": 2, "status": "blocked"}],
+            input_details={
+                "type": "choice",
+                "reason": "Continue after the current iteration limit.",
+                "options": [
+                    {"label": "continue", "description": "Continue execution."},
+                    {"label": "stop", "description": "Stop execution."},
+                ],
+            },
+        )
+        output = f"⚠️  Reached maximum iterations (60). Requesting summary...\n{marker}"
+        for transport, poll in (
+            ("direct", self._run_direct(output)),
+            ("runner", self._run_runner(output)),
+        ):
+            with self.subTest(transport=transport):
+                self.assertEqual(poll.status, "input_required")
+                self.assertIsNone(poll.result["agent_callback"])
+                self.assertEqual(
+                    poll.result["failure"]["kind"],
+                    "resource_limit_exhausted",
+                )
+                self.assertEqual(poll.result["resource_exhaustion"]["limit"], 60)
+
+    def test_permission_input_keeps_priority_over_budget_exhaustion(self) -> None:
+        marker = self._marker(
+            final_state="input_required",
+            step_results=[{"id": 1, "status": "done"}, {"id": 2, "status": "blocked"}],
+            input_details={
+                "type": "permission",
+                "requested_permission": "full",
+                "reason": "The blocked step needs one full continuation.",
+            },
+        )
+        output = f"⚠️  Reached maximum iterations (60). Requesting summary...\n{marker}"
+        poll = self._run_direct(output)
+        self.assertEqual(poll.status, "input_required")
+        self.assertEqual(poll.result["agent_callback"]["input"]["type"], "permission")
+        self.assertIsNone(poll.result["failure"])
 
     def test_transport_recovery_preserved_despite_budget_output(self) -> None:
         output = (

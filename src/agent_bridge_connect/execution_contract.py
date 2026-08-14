@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -11,10 +12,16 @@ FINAL_CALLBACK_VERSION = 1
 AGENT_FINAL_STATES = frozenset({"completed", "input_required", "cancelled"})
 STEP_RESULT_STATUSES = frozenset({"done", "failed", "blocked", "pending"})
 CHOICE_INPUT_TYPE = "choice"
+PERMISSION_INPUT_TYPE = "permission"
+PERMISSION_REQUESTED_MODE = "full"
 CHOICE_OPTION_COUNT = 2
 MAX_CHOICE_OPTION_LENGTH = 48
 MAX_CHOICE_REASON_LENGTH = 240
 MAX_CHOICE_DESCRIPTION_LENGTH = 160
+MAX_PERMISSION_REASON_LENGTH = 240
+_NATIVE_PERMISSION_OVERRIDE_FIELDS = frozenset(
+    {"argv", "command", "executor_flags", "flags", "native_executor_flags"}
+)
 
 
 @dataclass(frozen=True)
@@ -31,6 +38,7 @@ class ExecutorTerminalResult:
     status: str
     callback: dict[str, Any] | None
     failure: dict[str, Any] | None
+    resource_exhaustion: dict[str, Any] | None = None
 
 
 def build_agent_callback(
@@ -134,13 +142,21 @@ def validate_callback_payload(
                 f"Completed marker contains non-done steps: {', '.join(map(str, incomplete))}",
             )
     elif final_state == "input_required":
-        if not any(item.get("status") == "blocked" for item in normalized_results):
+        blocked_results = [
+            item for item in normalized_results if item.get("status") == "blocked"
+        ]
+        if not blocked_results:
             return _invalid(
                 "completion_marker_input_step_missing",
                 "input_required marker must identify at least one blocked step",
             )
         input_details = callback.get("input")
-        if isinstance(input_details, dict) and str(input_details.get("type") or "").strip().lower() == CHOICE_INPUT_TYPE:
+        input_type = (
+            str(input_details.get("type") or "").strip().lower()
+            if isinstance(input_details, dict)
+            else ""
+        )
+        if isinstance(input_details, dict) and input_type == CHOICE_INPUT_TYPE:
             reason = input_details.get("reason")
             if not isinstance(reason, str) or not reason.strip():
                 return _invalid(
@@ -202,6 +218,47 @@ def validate_callback_payload(
                 "type": CHOICE_INPUT_TYPE,
                 "reason": clean_reason,
                 "options": options,
+            }
+        elif isinstance(input_details, dict) and input_type == PERMISSION_INPUT_TYPE:
+            if len(blocked_results) != 1:
+                return _invalid(
+                    "completion_marker_permission_step_invalid",
+                    "permission input must identify exactly one blocked declared step",
+                )
+            reason = input_details.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                return _invalid(
+                    "completion_marker_permission_reason_invalid",
+                    "permission input must give a concrete non-empty reason",
+                )
+            clean_reason = reason.strip()
+            if len(clean_reason) > MAX_PERMISSION_REASON_LENGTH:
+                clean_reason = (
+                    clean_reason[: MAX_PERMISSION_REASON_LENGTH - 1].rstrip() + "…"
+                )
+            requested_permission = input_details.get("requested_permission")
+            if (
+                not isinstance(requested_permission, str)
+                or requested_permission.strip().lower() != PERMISSION_REQUESTED_MODE
+            ):
+                return _invalid(
+                    "completion_marker_permission_request_invalid",
+                    "permission input requested_permission must be full",
+                )
+            native_fields = sorted(
+                _NATIVE_PERMISSION_OVERRIDE_FIELDS.intersection(input_details)
+            )
+            if native_fields:
+                return _invalid(
+                    "completion_marker_permission_native_flags_invalid",
+                    "permission input must not include native executor flags",
+                )
+            callback = dict(callback)
+            callback["input"] = {
+                **input_details,
+                "type": PERMISSION_INPUT_TYPE,
+                "requested_permission": PERMISSION_REQUESTED_MODE,
+                "reason": clean_reason,
             }
 
     normalized = dict(callback)
@@ -286,8 +343,15 @@ def route_executor_terminal(
     executor_name: str,
     stderr: str = "",
     runtime_failure: dict[str, Any] | None = None,
+    resource_exhaustion: dict[str, Any] | None = None,
 ) -> ExecutorTerminalResult:
-    """Route only declared flow state plus explicit process/transport evidence."""
+    """Route only declared flow state plus explicit process/transport evidence.
+
+    Terminal-state priority is fixed: a valid agent callback wins, then a
+    retryable transport/infrastructure failure keeps ``needs_recovery``, then
+    a confirmed resource exhaustion becomes a system ``input_required`` wait,
+    and only then does a strict marker failure apply.
+    """
     if returncode == 0 and validation.valid and validation.callback is not None:
         return ExecutorTerminalResult(
             status=str(validation.callback["final_state"]),
@@ -296,6 +360,8 @@ def route_executor_terminal(
         )
     if isinstance(runtime_failure, dict) and runtime_failure.get("retryable") is True:
         return ExecutorTerminalResult("needs_recovery", None, dict(runtime_failure))
+    if isinstance(resource_exhaustion, dict) and resource_exhaustion.get("detected") is True:
+        return _route_resource_exhaustion(resource_exhaustion)
     if returncode == 0:
         return ExecutorTerminalResult(
             "failed",
@@ -316,6 +382,103 @@ def route_executor_terminal(
     )
     failure["retryable"] = False
     return ExecutorTerminalResult("failed", None, failure)
+
+
+def build_resource_exhaustion(
+    executor: str,
+    resource: str,
+    *,
+    used: int | float | None,
+    limit: int | float | None,
+    source: str,
+    snapshot_limit: int | float | None = None,
+) -> dict[str, Any]:
+    """Build the structured resource-exhaustion receipt for adapter output.
+
+    ``limit_matches_snapshot`` is ``None`` when the snapshot is unavailable or
+    the exhausted run did not report a concrete limit (so no mismatch evidence
+    exists); only an explicit ``False`` forces ``needs_recovery``.
+    """
+    matches: bool | None = None
+    if limit is not None and snapshot_limit is not None:
+        matches = _resource_limits_equal(limit, snapshot_limit)
+    return {
+        "detected": True,
+        "executor": str(executor or "").strip().lower(),
+        "resource": str(resource or "").strip(),
+        "used": used,
+        "limit": limit,
+        "source": str(source or "").strip(),
+        "limit_matches_snapshot": matches,
+    }
+
+
+def resource_snapshot_limit(task_packet: Any, executor: str) -> int | float | None:
+    """Return the frozen task resource limit for one executor, if present."""
+    if not isinstance(task_packet, dict):
+        return None
+    extensions = task_packet.get("extensions")
+    if not isinstance(extensions, dict):
+        return None
+    resources = extensions.get("agentbc.resources")
+    if not isinstance(resources, dict):
+        return None
+    if str(resources.get("executor") or "").strip().lower() != str(executor).strip().lower():
+        return None
+    value = resources.get("current_limit")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value
+
+
+def _route_resource_exhaustion(
+    resource_exhaustion: dict[str, Any],
+) -> ExecutorTerminalResult:
+    payload = dict(resource_exhaustion)
+    if payload.get("limit_matches_snapshot") is False:
+        return ExecutorTerminalResult(
+            "needs_recovery",
+            None,
+            {
+                "kind": "resource_exhaustion_receipt_mismatch",
+                "layer": "flow_contract",
+                "message": (
+                    "Executor resource exhaustion limit does not match the task "
+                    "snapshot; refusing to auto-scale the resource"
+                ),
+                "retryable": False,
+                "resource_exhaustion": payload,
+            },
+            resource_exhaustion=payload,
+        )
+    return ExecutorTerminalResult(
+        "input_required",
+        None,
+        {
+            "kind": "resource_limit_exhausted",
+            "layer": "executor",
+            "message": (
+                f"{payload.get('executor') or 'executor'} resource "
+                f"({payload.get('resource') or 'resource'}) limit exhausted"
+            ),
+            "retryable": False,
+            "resource_exhaustion": payload,
+        },
+        resource_exhaustion=payload,
+    )
+
+
+def _resource_limits_equal(observed: int | float, expected: int | float) -> bool:
+    if isinstance(observed, bool) or isinstance(expected, bool):
+        return False
+    try:
+        left = float(observed)
+        right = float(expected)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(left) or not math.isfinite(right):
+        return False
+    return math.isclose(left, right, rel_tol=1e-9, abs_tol=1e-9)
 
 
 def detect_retryable_transport_failure(stdout: str, stderr: str = "") -> dict[str, Any] | None:

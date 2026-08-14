@@ -138,6 +138,54 @@ class PackageVersionTests(unittest.TestCase):
         self.assertEqual(bp.python_to_tag_version(pv), product_ver)
 
 
+class ReleaseDocumentationTests(unittest.TestCase):
+    """Package-facing release docs must follow the source version mapping."""
+
+    def test_package_facing_docs_use_current_version_and_tag(self) -> None:
+        package_version = bp.get_package_version(_REPO)
+        product_tag = bp.python_to_tag_version(package_version)
+        product_version = product_tag.removeprefix("v")
+        paths = (
+            "README.md",
+            "README_ZH.md",
+            "docs/QUICK_START.md",
+            "docs/QUICK_START_ZH.md",
+            "docs/USER_GUIDE.md",
+            "docs/USER_GUIDE_ZH.md",
+            "docs/RELEASE_PROCESS.md",
+            "docs/RELEASE_PROCESS_ZH.md",
+        )
+        for relative in paths:
+            text = (_REPO / relative).read_text(encoding="utf-8")
+            with self.subTest(path=relative):
+                self.assertIn(package_version, text)
+                self.assertIn(product_version, text)
+
+    def test_changelog_has_current_dated_release_section(self) -> None:
+        package_version = bp.get_package_version(_REPO)
+        product_version = bp.python_to_tag_version(package_version).removeprefix("v")
+        changelog = (_REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+        heading = next(
+            line for line in changelog.splitlines()
+            if line.startswith(f"## {product_version} - ")
+        )
+        release_date = heading.removeprefix(f"## {product_version} - ")
+        self.assertRegex(release_date, r"^\d{4}-\d{2}-\d{2}$")
+        self.assertNotEqual(release_date, "Unreleased")
+
+    def test_publish_and_release_check_pin_the_same_build_tools(self) -> None:
+        publish = (
+            _REPO / ".github" / "workflows" / "publish-pypi.yml"
+        ).read_text(encoding="utf-8")
+        release_check = (
+            _REPO / ".github" / "workflows" / "release-check.yml"
+        ).read_text(encoding="utf-8")
+        for requirement in ('"build==1.5.0"', '"twine==6.2.0"'):
+            with self.subTest(requirement=requirement):
+                self.assertIn(requirement, publish)
+                self.assertIn(requirement, release_check)
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # build identity (_build_info.json)
 # ═══════════════════════════════════════════════════════════════════════

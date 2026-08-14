@@ -18,11 +18,31 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .effective_permissions import (
+    is_temporary_permission,
+    resolve_effective_permission,
+    validate_temporary_permission_context,
+)
+from .execution_policy import (
+    RESOURCE_EXTENSION_KEY,
+    SESSION_EXTENSION_KEY,
+    attach_execution_policy,
+    build_resource_snapshot,
+    build_session_snapshot,
+    validate_resource_snapshot,
+    validate_session_snapshot,
+)
 from .path_provider import find_binary
 from .permission_modes import (
+    PERMISSION_EXTENSION_KEY,
     assert_executor_permission_supported,
     permission_record_from_extensions,
     validate_permission_command,
+)
+from .permission_grants import (
+    PERMISSION_GRANT_EXTENSION_KEY,
+    consume_permission_grant,
+    permission_grant_from_extensions,
 )
 from .protocol import ABCError
 
@@ -33,6 +53,34 @@ MAX_MANAGED_FILE_BYTES = 10 * 1024
 TERMINAL_STATES = {"completed", "failed", "cancelled"}
 MANAGED_RECORD_NAME_RE = re.compile(r"[23456789ABCDEFGHJKMNPQRSTVWXYZ]{4,}-\d{3}-report\.md\Z")
 LEGACY_RUNNER_LAUNCH_AGENT_LABEL = "com.agentbc.runner"
+
+# --- Phase 2 (1.0.2A) legacy migration and Runner policy validation ---
+# Integration merge point: Task 1 (1.0.2A resource configuration foundations,
+# commit 4e60e4f) owns agent_bridge_connect.execution_policy; this section only
+# consumes its public snapshot builders/validators and extension keys. The
+# Runner never reads the user's current configuration for legacy backfill and
+# never injects executor resource/session flags. Phase 3 validates the argv
+# emitted by adapters against these frozen Phase 2 snapshots.
+PHASE2_EXECUTOR_PROJECT_ROOT_KEY = "executor_project_root"
+PHASE2_EXECUTION_EXTENSION_KEY = "agentbc.execution"
+PHASE2_LEGACY_UNRECORDED_KEY = "legacy_unrecorded"
+PHASE2_LEGACY_BACKFILLED_KEY = "legacy_snapshot_backfilled"
+PHASE2_LEGACY_BACKFILLED_AT_KEY = "legacy_backfilled_at"
+PHASE2_LEGACY_DEFAULT_LIMITS: dict[str, tuple[int | float, str]] = {
+    "claude": (10.0, "legacy_default_10"),
+    "hermes": (90, "legacy_default_90"),
+}
+PHASE2_LEGACY_RETENTION = False
+PHASE2_AUDIT_EVENT_TYPE = "execution_policy_audit"
+PHASE2_POLICY_EXTENSION_KEYS = (RESOURCE_EXTENSION_KEY, SESSION_EXTENSION_KEY)
+PHASE6_INPUT_EXTENSION_KEY = "agentbc.input"
+PHASE6_LINEAGE_EXTENSION_KEY = "agentbc.lineage"
+PHASE6_AUTHORIZATION_EXTENSION_KEYS = (
+    PERMISSION_GRANT_EXTENSION_KEY,
+    PHASE6_INPUT_EXTENSION_KEY,
+    PHASE6_LINEAGE_EXTENSION_KEY,
+)
+_EXECUTOR_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$")
 
 _EXECUTOR_COMMAND_RULES: dict[str, dict[str, Any]] = {
     "hermes": {
@@ -54,8 +102,154 @@ _EXECUTOR_COMMAND_RULES: dict[str, dict[str, Any]] = {
 }
 
 
+def _canonical_flag_values(command: list[str], flag: str) -> tuple[list[str], bool]:
+    """Return separated flag values and whether a non-canonical equals form exists."""
+    values: list[str] = []
+    noncanonical = False
+    for index, token in enumerate(command):
+        if token == flag:
+            values.append(command[index + 1] if index + 1 < len(command) else "")
+        elif token.startswith(f"{flag}="):
+            noncanonical = True
+    return values, noncanonical
+
+
 class RunnerError(RuntimeError):
     pass
+
+
+def _phase2_legacy_ephemeral_project_path(workspace: dict[str, Any], task_id: str) -> str:
+    """Return the canonical iteration-scoped ephemeral Claude Project path.
+
+    The session UUID is stored separately in ``agentbc.session.session_id``.  It
+    must never become another project-directory segment.
+    """
+    from .path_model import canonical_executor_project_root
+
+    agentbc_root = str((workspace or {}).get("agentbc_root") or "").strip()
+    task_code = str((workspace or {}).get("task_code") or "").strip()
+    task_date = str((workspace or {}).get("task_date") or "").strip()
+    if not agentbc_root or not task_code or not task_date or not str(task_id).strip():
+        raise RunnerError(
+            "invalid_execution_policy: legacy Claude task is missing canonical path fields"
+        )
+    return str(
+        canonical_executor_project_root(agentbc_root, task_date, task_code, task_id)
+    )
+
+
+def _phase2_required_policy_keys(executor: str) -> tuple[str, ...]:
+    normalized = str(executor or "").strip().lower()
+    if normalized in PHASE2_LEGACY_DEFAULT_LIMITS:
+        return PHASE2_POLICY_EXTENSION_KEYS
+    if normalized == "codex":
+        return (SESSION_EXTENSION_KEY,)
+    return ()
+
+
+def _phase2_legacy_default_snapshots(
+    executor: str,
+    task_id: str,
+    workspace: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Build the canonical fixed legacy snapshots without reading user configuration."""
+    normalized = str(executor or "").strip().lower()
+    if normalized not in {"claude", "hermes", "codex"}:
+        raise RunnerError(
+            f"invalid_execution_policy: no legacy defaults for executor {executor}"
+        )
+    resources = None
+    default = PHASE2_LEGACY_DEFAULT_LIMITS.get(normalized)
+    if default is not None:
+        limit, source = default
+        resources = build_resource_snapshot(executor, limit, source=source)
+    if normalized == "claude":
+        session = build_session_snapshot(
+            executor,
+            retain=PHASE2_LEGACY_RETENTION,
+            session_id=str(uuid.uuid4()),
+            session_state="pending",
+            project_path=_phase2_legacy_ephemeral_project_path(workspace, task_id),
+        )
+    else:
+        session = build_session_snapshot(
+            executor,
+            retain=PHASE2_LEGACY_RETENTION,
+            session_state="pending",
+        )
+    return resources, session
+
+
+def _phase2_packet_policy_mismatch(
+    packet: dict[str, Any],
+    persisted: dict[str, Any],
+) -> str | None:
+    """Compare a worker task packet against the authoritative disk snapshot.
+
+    Returns a compact fail-closed reason when the packet is not fully consistent
+    with the disk record, or None when it is:
+    - ``missing:<key>``   packet omits a policy snapshot recorded on disk;
+    - ``injected:<key>``  packet carries a policy snapshot absent from disk;
+    - ``modified:<key>``  packet and disk disagree on a policy snapshot;
+    - ``expired:<key>``   packet reflects an older task state than the disk.
+    """
+    packet_ext = packet.get("extensions")
+    disk_ext = persisted.get("extensions")
+    if not isinstance(packet_ext, dict):
+        packet_ext = {}
+    if not isinstance(disk_ext, dict):
+        disk_ext = {}
+    for key in PHASE2_POLICY_EXTENSION_KEYS:
+        in_packet = key in packet_ext
+        in_disk = key in disk_ext
+        if in_packet and not in_disk:
+            return f"injected:{key}"
+        if not in_packet and in_disk:
+            return f"missing:{key}"
+        if in_packet and in_disk and packet_ext[key] != disk_ext[key]:
+            return f"modified:{key}"
+    packet_execution = packet_ext.get(PHASE2_EXECUTION_EXTENSION_KEY)
+    disk_execution = disk_ext.get(PHASE2_EXECUTION_EXTENSION_KEY)
+    if (
+        isinstance(packet_execution, dict)
+        and isinstance(disk_execution, dict)
+        and packet_execution != disk_execution
+    ):
+        return f"expired:{PHASE2_EXECUTION_EXTENSION_KEY}"
+    for key in ("status", "updated_at"):
+        if key in packet and key in persisted and packet[key] != persisted[key]:
+            return f"expired:{key}"
+    return None
+
+
+def _phase6_packet_authorization_mismatch(
+    packet: dict[str, Any],
+    persisted: dict[str, Any],
+) -> str | None:
+    """Compare grant/input/lineage state without interpreting grant fields."""
+    packet_ext = packet.get("extensions")
+    disk_ext = persisted.get("extensions")
+    packet_ext = packet_ext if isinstance(packet_ext, dict) else {}
+    disk_ext = disk_ext if isinstance(disk_ext, dict) else {}
+    for key in PHASE6_AUTHORIZATION_EXTENSION_KEYS:
+        in_packet = key in packet_ext
+        in_disk = key in disk_ext
+        if in_packet and not in_disk:
+            return f"injected:{key}"
+        if not in_packet and in_disk:
+            return f"missing:{key}"
+        if in_packet and packet_ext[key] != disk_ext[key]:
+            return f"modified:{key}"
+    if packet_ext.get(PERMISSION_EXTENSION_KEY) != disk_ext.get(
+        PERMISSION_EXTENSION_KEY
+    ):
+        return f"modified:{PERMISSION_EXTENSION_KEY}"
+    for key in ("id", "task_id", "assignee", "status", "updated_at"):
+        packet_value = packet.get(key)
+        disk_value = persisted.get("id") if key == "task_id" else persisted.get(key)
+        if packet_value is not None and disk_value is not None and packet_value != disk_value:
+            return f"expired:{key}"
+    return None
 
 
 def default_runner_root() -> Path:
@@ -506,18 +700,30 @@ class RunnerClient:
     def health(self) -> dict[str, Any]:
         return self._request({"op": "health"})
 
+    def storage_status(self, paths: list[str | Path]) -> dict[str, Any]:
+        """Ask the Runner to inspect storage access from its own process."""
+        return self._request(
+            {
+                "op": "storage_status",
+                "paths": [str(Path(path).expanduser()) for path in paths],
+            }
+        )
+
     def submit(
         self,
         executor: str,
         command: list[str],
         cwd: str | Path,
         task: dict[str, Any] | None = None,
+        *,
+        executor_run_id: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "op": "submit",
             "executor": executor,
             "command": command,
             "cwd": str(cwd),
+            "executor_run_id": executor_run_id or "",
         }
         if task is not None:
             payload["task"] = task
@@ -567,6 +773,8 @@ class RunnerClient:
         command: list[str],
         cwd: str | Path,
         task: dict[str, Any],
+        *,
+        executor_run_id: str | None = None,
     ) -> dict[str, Any]:
         return self._request(
             {
@@ -575,6 +783,7 @@ class RunnerClient:
                 "command": command,
                 "cwd": str(Path(cwd).expanduser()),
                 "task": task,
+                "executor_run_id": executor_run_id or "",
             }
         )
 
@@ -785,16 +994,72 @@ class RunnerState:
         self.known_boards: set[Path] = {DEFAULT_BOARD_ROOT.expanduser().resolve()}
         (self.state_root / "runs").mkdir(parents=True, exist_ok=True)
 
+    def storage_status(self, paths: Any) -> dict[str, Any]:
+        """Return read-only path diagnostics from the authoritative Runner.
+
+        The operation is deliberately limited to configured Runner roots and
+        never creates a path.  Doctor can therefore distinguish a sandboxed
+        controller's permissions from the process that actually performs task
+        and report writes without exposing the Runner's root policy.
+        """
+        if not isinstance(paths, list) or not 1 <= len(paths) <= 8:
+            raise RunnerError("runner storage probe requires between 1 and 8 paths")
+        resolved: list[Path] = []
+        seen: set[str] = set()
+        for raw in paths:
+            if not isinstance(raw, str) or not raw.strip():
+                raise RunnerError("runner storage probe paths must be non-empty strings")
+            path = Path(raw).expanduser().resolve()
+            if not any(_is_within(path, root) for root in self.allowed_roots):
+                raise RunnerError("runner storage probe path is outside allowed roots")
+            key = str(path)
+            if key in seen:
+                raise RunnerError("runner storage probe paths must be unique")
+            seen.add(key)
+            resolved.append(path)
+
+        status: list[dict[str, Any]] = []
+        for path in resolved:
+            exists = path.exists()
+            status.append(
+                {
+                    "path": str(path),
+                    "exists": exists,
+                    "is_dir": path.is_dir() if exists else False,
+                    "readable": os.access(path, os.R_OK) if exists else False,
+                    "writable": (
+                        os.access(path, os.W_OK)
+                        if exists
+                        else _write_capable_from_process(path)
+                    ),
+                }
+            )
+        return {"ok": True, "status": "ready", "paths": status}
+
     def submit(
         self,
         executor: str,
         command: list[str],
         cwd: str,
         task: dict[str, Any] | None = None,
+        executor_run_id: str | None = None,
     ) -> dict[str, Any]:
         work_dir = Path(cwd).expanduser().resolve()
-        self._validate_request(executor, command, work_dir, task)
-        return self._spawn_process(executor, command, work_dir, f"runner-{executor}")
+        with self.lock:
+            self._authorize_executor_run(
+                executor,
+                command,
+                work_dir,
+                task,
+                executor_run_id or "",
+            )
+            return self._spawn_process(
+                executor,
+                command,
+                work_dir,
+                f"runner-{executor}",
+                run_id=executor_run_id or None,
+            )
 
     def authorize_command(
         self,
@@ -802,10 +1067,235 @@ class RunnerState:
         command: list[str],
         cwd: str,
         task: dict[str, Any] | None,
+        executor_run_id: str | None = None,
     ) -> dict[str, Any]:
         work_dir = Path(cwd).expanduser().resolve()
-        self._validate_request(executor, command, work_dir, task)
-        return {"ok": True, "executor": executor, "authorized": True}
+        with self.lock:
+            permission = self._authorize_executor_run(
+                executor,
+                command,
+                work_dir,
+                task,
+                executor_run_id or "",
+            )
+        return {
+            "ok": True,
+            "executor": executor,
+            "executor_run_id": executor_run_id or "",
+            "authorized": True,
+            "effective_permission_mode": permission["effective_mode"],
+        }
+
+    def _phase2_structure_errors(
+        self,
+        extensions: dict[str, Any] | None,
+        executor: str,
+    ) -> list[str]:
+        """Structural policy errors for the persisted snapshots (Task 1 validators)."""
+        extensions = extensions if isinstance(extensions, dict) else {}
+        errors: list[str] = []
+        if RESOURCE_EXTENSION_KEY in extensions:
+            errors.extend(
+                validate_resource_snapshot(extensions[RESOURCE_EXTENSION_KEY], executor=executor)
+            )
+        if SESSION_EXTENSION_KEY in extensions:
+            errors.extend(
+                validate_session_snapshot(extensions[SESSION_EXTENSION_KEY], executor=executor)
+            )
+        return errors
+
+    def _phase2_append_audit(
+        self,
+        board: Path,
+        task_id: str,
+        executor: str,
+        outcome: str,
+        reason: str,
+    ) -> None:
+        """Record a sanitized execution_policy_audit event (no paths, content, or secrets)."""
+        from .task_store import TaskStore
+
+        try:
+            TaskStore(board).append_event(
+                task_id,
+                {
+                    "event_type": PHASE2_AUDIT_EVENT_TYPE,
+                    "task_id": task_id,
+                    "executor": str(executor or "").strip().lower(),
+                    "outcome": outcome,
+                    "reason": reason,
+                    "created_at": _utc_now(),
+                },
+            )
+        except (ABCError, OSError, ValueError):
+            # Auditing must never take down dispatch or authorization.
+            pass
+
+    def _enforce_phase2_dispatch_policy(
+        self,
+        service,
+        task: dict[str, Any],
+        executor: str,
+        board: Path,
+    ) -> dict[str, Any]:
+        """Enforce the Phase 2 execution-policy contract at dispatch time.
+
+        Native tasks (``workspace.executor_project_root`` present) fail closed
+        with ``invalid_execution_policy`` when required snapshots are missing or
+        corrupt; they are never treated as legacy. Legacy tasks missing snapshots
+        are backfilled exactly once inside the Runner lock with the canonical
+        fixed defaults (never the user's current configuration). Terminal legacy
+        tasks are not rewritten; their public state is marked
+        ``legacy_unrecorded`` through the normal metadata path.
+        """
+        from .task_store import TaskStore
+
+        task_id = str(task.get("id") or task.get("task_id") or "").strip()
+        workspace = task.get("workspace")
+        extensions = task.get("extensions")
+        if not isinstance(workspace, dict):
+            workspace = {}
+        if not isinstance(extensions, dict):
+            extensions = {}
+        native = bool(workspace.get(PHASE2_EXECUTOR_PROJECT_ROOT_KEY))
+        terminal = str(task.get("status") or "").strip().lower() in TERMINAL_STATES
+        required_keys = _phase2_required_policy_keys(executor)
+        missing = [key for key in required_keys if key not in extensions]
+        if native:
+            errors = [f"missing {key}" for key in missing]
+            errors.extend(self._phase2_structure_errors(extensions, executor))
+            if errors:
+                reason = f"invalid_execution_policy: {'; '.join(errors)}"
+                self._phase2_append_audit(board, task_id, executor, "fail", reason)
+                raise RunnerError(reason)
+            return task
+        if terminal:
+            execution = extensions.get(PHASE2_EXECUTION_EXTENSION_KEY)
+            if not (
+                isinstance(execution, dict) and execution.get(PHASE2_LEGACY_UNRECORDED_KEY) is True
+            ):
+                service.update_execution_metadata(task_id, {PHASE2_LEGACY_UNRECORDED_KEY: True})
+            return task
+        refreshed = task
+        if missing:
+            with self.lock:
+                store = TaskStore(board)
+                persisted = store.read_task(task_id)
+                persisted_extensions = persisted.get("extensions")
+                persisted_workspace = persisted.get("workspace")
+                if not isinstance(persisted_extensions, dict):
+                    persisted_extensions = {}
+                if not isinstance(persisted_workspace, dict):
+                    persisted_workspace = {}
+                persisted_required = _phase2_required_policy_keys(executor)
+                persisted_missing = [
+                    key for key in persisted_required if key not in persisted_extensions
+                ]
+                persisted_errors = self._phase2_structure_errors(
+                    persisted_extensions, executor
+                )
+                if persisted_errors:
+                    reason = f"invalid_execution_policy: {'; '.join(persisted_errors)}"
+                    self._phase2_append_audit(
+                        board, task_id, executor, "fail", reason
+                    )
+                    raise RunnerError(reason)
+                if not persisted_missing:
+                    return persisted
+                resources, session = _phase2_legacy_default_snapshots(
+                    executor,
+                    task_id,
+                    persisted_workspace,
+                )
+                updated_extensions = attach_execution_policy(
+                    persisted_extensions,
+                    resources=(
+                        resources
+                        if RESOURCE_EXTENSION_KEY in persisted_missing
+                        else None
+                    ),
+                    session=(
+                        session if SESSION_EXTENSION_KEY in persisted_missing else None
+                    ),
+                )
+                execution = dict(persisted_extensions.get(PHASE2_EXECUTION_EXTENSION_KEY) or {})
+                execution[PHASE2_LEGACY_BACKFILLED_KEY] = True
+                execution[PHASE2_LEGACY_BACKFILLED_AT_KEY] = _utc_now()
+                updated_extensions[PHASE2_EXECUTION_EXTENSION_KEY] = execution
+                now = _utc_now()
+                store.write_task(
+                    task_id,
+                    {**persisted, "extensions": updated_extensions, "updated_at": now},
+                )
+                self._phase2_append_audit(
+                    board,
+                    task_id,
+                    executor,
+                    "backfilled",
+                    "legacy_snapshot_backfilled",
+                )
+                refreshed = store.read_task(task_id)
+        refreshed_extensions = refreshed.get("extensions")
+        if not isinstance(refreshed_extensions, dict):
+            refreshed_extensions = {}
+        errors = [
+            f"missing {key}"
+            for key in _phase2_required_policy_keys(executor)
+            if key not in refreshed_extensions
+        ]
+        errors.extend(self._phase2_structure_errors(refreshed_extensions, executor))
+        if errors:
+            reason = f"invalid_execution_policy: {'; '.join(errors)}"
+            self._phase2_append_audit(board, task_id, executor, "fail", reason)
+            raise RunnerError(reason)
+        return refreshed
+
+    def _enforce_phase2_authorization(
+        self,
+        executor: str,
+        task: dict[str, Any] | None,
+    ) -> None:
+        """Validate the worker task packet against the authoritative disk snapshot.
+
+        Fails closed on missing/injected/modified/expired policy content and on
+        invalid or missing disk snapshots (Phase 2 native tasks never fall back
+        to legacy auto-fix here). Every failure is recorded as a sanitized
+        ``execution_policy_audit`` event.
+        """
+        from .task_store import TaskStore
+
+        if not isinstance(task, dict):
+            return
+        task_id = str(task.get("task_id") or task.get("id") or "").strip()
+        task_board = task.get("task_board") if isinstance(task.get("task_board"), dict) else {}
+        board_value = str(task_board.get("root") or "").strip()
+        if not task_id or not board_value:
+            # Identity is already enforced by _persisted_permission_authorization.
+            return
+        board = Path(board_value).expanduser().resolve()
+        from .config import DEFAULT_BOARD_ROOT
+
+        default_board = DEFAULT_BOARD_ROOT.expanduser().resolve()
+        if board != default_board and not any(_is_within(board, root) for root in self.allowed_roots):
+            raise RunnerError("task board is outside allowed roots")
+        persisted = TaskStore(board).read_task(task_id)
+        mismatch = _phase2_packet_policy_mismatch(task, persisted)
+        if mismatch is not None:
+            self._phase2_append_audit(board, task_id, executor, "fail", mismatch)
+            raise RunnerError(f"execution_policy_mismatch: {mismatch}")
+        persisted_extensions = persisted.get("extensions")
+        if not isinstance(persisted_extensions, dict):
+            persisted_extensions = {}
+        errors = [
+            f"missing {key}"
+            for key in _phase2_required_policy_keys(executor)
+            if key not in persisted_extensions
+        ]
+        errors.extend(self._phase2_structure_errors(persisted_extensions, executor))
+        if errors:
+            reason = f"invalid_execution_policy: {'; '.join(errors)}"
+            self._phase2_append_audit(board, task_id, executor, "fail", reason)
+            raise RunnerError(reason)
 
     def dispatch_worker(
         self,
@@ -837,6 +1327,8 @@ class RunnerState:
             raise RunnerError(f"runner task unavailable: {task_id}") from exc
         task = task_model.to_dict()
         task_id = task_model.id
+        task = self._enforce_phase2_dispatch_policy(service, task, executor, board)
+        task_model = service.get_task(task_id)
         self._validate_task_path_plan(task)
         if task.get("assignee") != executor:
             raise RunnerError(f"task {task_id} is not assigned to {executor}")
@@ -969,6 +1461,7 @@ class RunnerState:
 
     def dispatch_task(self, request: dict[str, Any]) -> dict[str, Any]:
         from .config import load_config
+        from .execution_policy import execution_policy_view
         from .service import TaskService
 
         board = self._atomic_board(str(request.get("board_root") or ""))
@@ -996,7 +1489,10 @@ class RunnerState:
             bool(request.get("monitor", False)),
         )
         self._ensure_task_list_dashboard(board, task_id=task_id)
-        return dispatched
+        return {
+            **dispatched,
+            "execution_policy": execution_policy_view(task_model.extensions),
+        }
 
     def respond_and_dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
         """Record an input answer and launch the same task under one Runner lock."""
@@ -1012,13 +1508,27 @@ class RunnerState:
             service = TaskService(board, config=load_config(config))
             expired = service.expire_waiting_inputs()
             if any(item.get("task_id") == task_id for item in expired):
+                expired_task = service.get_task(task_id)
+                timed_out_permission = (
+                    expired_task.status == "failed"
+                    and bool(expired_task.errors)
+                    and expired_task.errors[-1].get("code")
+                    == "permission_denied_by_timeout"
+                )
+                event_type = "task.failed" if timed_out_permission else "task.recovery_required"
+                level = "error" if timed_out_permission else "warning"
+                message = (
+                    "Permission request timed out and was automatically denied"
+                    if timed_out_permission
+                    else "Input response deadline expired"
+                )
                 write_report_files(task_id, board)
                 notify_terminal(
                     service,
                     task_id,
-                    "task.recovery_required",
-                    "warning",
-                    "Input response deadline expired",
+                    event_type,
+                    level,
+                    message,
                 )
                 self._refresh_task_list_dashboard(board)
                 raise RunnerError(f"input deadline expired for task {task_id}")
@@ -1032,6 +1542,21 @@ class RunnerState:
             except ABCError as exc:
                 raise RunnerError(f"{exc.code}: {exc}") from exc
             if not result.get("dispatch_required"):
+                if result.get("resource_terminated"):
+                    failure = result.get("failure") or {}
+                    failure_message = str(
+                        failure.get("message")
+                        or "Task terminated after executor resource exhaustion"
+                    )
+                    write_report_files(task_id, board)
+                    notify_terminal(
+                        service,
+                        task_id,
+                        "task.failed",
+                        "error",
+                        failure_message,
+                    )
+                    self._refresh_task_list_dashboard(board)
                 return result
             task = service.get_task(task_id)
             try:
@@ -1046,6 +1571,19 @@ class RunnerState:
                     resuming=True,
                 )
             except RunnerError as exc:
+                task_extensions = task.extensions if isinstance(task.extensions, dict) else {}
+                if PERMISSION_GRANT_EXTENSION_KEY in task_extensions:
+                    revoke = getattr(service, "revoke_permission_grant", None)
+                    if not callable(revoke):
+                        raise RunnerError(
+                            "permission_grant_revoke_unavailable: Core revoke helper is required"
+                        ) from exc
+                    try:
+                        revoke(task.id, "dispatch_failed")
+                    except ABCError as revoke_exc:
+                        raise RunnerError(
+                            f"{revoke_exc.code}: {revoke_exc}"
+                        ) from revoke_exc
                 service.mark_task_needs_recovery(
                     task.id,
                     "input_resume_dispatch_failed",
@@ -1092,19 +1630,52 @@ class RunnerState:
                 for item in items:
                     task_id = str(item.get("task_id") or "")
                     try:
+                        expired_task = service.get_task(task_id)
+                        timed_out_permission = (
+                            expired_task.status == "failed"
+                            and bool(expired_task.errors)
+                            and expired_task.errors[-1].get("code")
+                            == "permission_denied_by_timeout"
+                        )
                         write_report_files(task_id, board)
                         notify_terminal(
                             service,
                             task_id,
-                            "task.recovery_required",
-                            "warning",
-                            "Input response deadline expired",
+                            "task.failed" if timed_out_permission else "task.recovery_required",
+                            "error" if timed_out_permission else "warning",
+                            (
+                                "Permission request timed out and was automatically denied"
+                                if timed_out_permission
+                                else "Input response deadline expired"
+                            ),
                         )
                         self._refresh_task_list_dashboard(board)
                     except (ABCError, OSError, ValueError):
                         pass
                     expired.append(item)
         return expired
+
+    def maintain_session_cleanup(self, *, now: str | None = None) -> list[dict[str, Any]]:
+        """Runner-owned cleanup maintenance for terminal executor sessions.
+
+        Scans every known board for terminal sessions that need a cleanup pass:
+        eligible ``not_requested`` sessions, due ``failed`` retries, and
+        ``pending`` receipts left over from a crashed process.  The coordinator
+        re-reads each authoritative snapshot from disk under a per-task lock and
+        never mutates non-eligible tasks.
+        """
+        from .session_cleanup import SessionCleanupCoordinator
+
+        processed: list[dict[str, Any]] = []
+        with self.lock:
+            boards = tuple(sorted(self.known_boards, key=str))
+        for board in boards:
+            try:
+                coordinator = SessionCleanupCoordinator(board)
+                processed.extend(coordinator.maintain_board(now=now))
+            except (ABCError, OSError, ValueError):
+                continue
+        return processed
 
     def handoff_and_dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
         from .config import load_config
@@ -1139,6 +1710,7 @@ class RunnerState:
         config: Path | None,
         request: dict[str, Any],
     ) -> dict[str, Any]:
+        from .execution_policy import execution_policy_view, public_workspace_view
         from .reports import write_report_files
 
         try:
@@ -1165,7 +1737,8 @@ class RunnerState:
             **dispatched,
             "task_id": task.id,
             "assignee": task.assignee,
-            "workspace": task.workspace,
+            "workspace": public_workspace_view(task.workspace),
+            "execution_policy": execution_policy_view(task.extensions),
         }
 
     def _validate_task_path_plan(self, task: dict[str, Any]) -> None:
@@ -1405,10 +1978,19 @@ class RunnerState:
         command: list[str],
         work_dir: Path,
         run_prefix: str,
+        *,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
-        run_id = f"{run_prefix}-{uuid.uuid4().hex[:12]}"
+        run_id = run_id or f"{run_prefix}-{uuid.uuid4().hex[:12]}"
+        if not _EXECUTOR_RUN_ID_RE.fullmatch(run_id):
+            raise RunnerError("runner run id is invalid")
+        if run_id in self.runs:
+            raise RunnerError(f"runner run id already exists: {run_id}")
         run_dir = self.state_root / "runs" / run_id
-        run_dir.mkdir(parents=True, exist_ok=False)
+        try:
+            run_dir.mkdir(parents=True, exist_ok=False)
+        except FileExistsError as exc:
+            raise RunnerError(f"runner run id already exists: {run_id}") from exc
         stdout_path = run_dir / "stdout.log"
         stderr_path = run_dir / "stderr.log"
         stdout_file = stdout_path.open("wb")
@@ -1559,6 +2141,9 @@ class RunnerState:
         command: list[str],
         cwd: Path,
         task: dict[str, Any] | None = None,
+        *,
+        persisted_task: dict[str, Any] | None = None,
+        permission: dict[str, Any] | None = None,
     ) -> None:
         rules = _EXECUTOR_COMMAND_RULES.get(executor)
         if rules is None:
@@ -1568,7 +2153,10 @@ class RunnerState:
         expected = self.allowed_executables.get(executor)
         if expected is None or Path(command[0]).expanduser().resolve() != expected:
             raise RunnerError("runner executable is not allowlisted")
-        persisted_task, permission = self._persisted_permission_authorization(executor, task)
+        if persisted_task is None or permission is None:
+            persisted_task, permission = self._persisted_permission_authorization(
+                executor, task
+            )
         allowed_roots = list(self.allowed_roots)
         allowed_roots.extend(self._task_scoped_allowed_roots(persisted_task))
         if not cwd.is_dir() or not any(_is_within(cwd, root) for root in allowed_roots):
@@ -1593,6 +2181,292 @@ class RunnerState:
             validate_permission_command(executor, command, permission)
         except ABCError as exc:
             raise RunnerError(f"{exc.code}: {exc}") from exc
+
+    def _authorize_executor_run(
+        self,
+        executor: str,
+        command: list[str],
+        cwd: Path,
+        task: dict[str, Any] | None,
+        executor_run_id: str,
+    ) -> dict[str, Any]:
+        """Authorize one run and atomically consume any temporary grant.
+
+        Callers hold ``self.lock`` across this method.  Packet/disk matching,
+        installed full-capability verification, target binding and durable
+        consumption happen before canonical argv validation and before spawn.
+        """
+        if not isinstance(task, dict):
+            raise RunnerError(
+                "unsupported_permission_mode: missing persisted task permission authorization"
+            )
+        persisted, _base_permission = self._persisted_permission_authorization(
+            executor, task
+        )
+        mismatch = _phase6_packet_authorization_mismatch(task, persisted)
+        if mismatch is not None:
+            raise RunnerError(f"permission_authorization_mismatch: {mismatch}")
+        self._enforce_phase2_authorization(executor, task)
+
+        task_id = str(persisted.get("id") or "").strip()
+        task_board = task.get("task_board")
+        board_value = (
+            str(task_board.get("root") or "").strip()
+            if isinstance(task_board, dict)
+            else ""
+        )
+        if not task_id or not board_value:
+            raise RunnerError(
+                "permission_authorization_invalid: task identity is required"
+            )
+        board = Path(board_value).expanduser().resolve()
+        from .service import TaskService
+        from .task_store import TaskStore
+
+        chain = TaskService(board).resolve_chain(task_id)
+        if not chain.requested_is_head or len(chain.head_task_ids) != 1:
+            raise RunnerError(
+                "permission_authorization_mismatch: task is not the unique chain head"
+            )
+        extensions = dict(persisted.get("extensions") or {})
+        try:
+            grant = permission_grant_from_extensions(extensions)
+        except ABCError as exc:
+            raise RunnerError(f"{exc.code}: {exc}") from exc
+
+        if grant is not None and grant["state"]["status"] == "issued":
+            if task.get("runner_authorization_required") is not True:
+                raise RunnerError(
+                    "permission_grant_runner_context_required: issued grants require "
+                    "an explicit Runner-managed worker packet"
+                )
+            if not _EXECUTOR_RUN_ID_RE.fullmatch(executor_run_id):
+                raise RunnerError(
+                    "permission_grant_target_invalid: executor_run_id must be an opaque identifier"
+                )
+            try:
+                validated_grant = validate_temporary_permission_context(
+                    persisted,
+                    executor,
+                    executor_run_id,
+                    expected_status="issued",
+                )
+                assert_executor_permission_supported(
+                    executor,
+                    "full",
+                    self.allowed_executables.get(executor),
+                )
+            except ABCError as exc:
+                raise RunnerError(f"{exc.code}: {exc}") from exc
+            try:
+                binding = validated_grant["binding"]
+                consumed = consume_permission_grant(
+                    validated_grant,
+                    executor_run_id,
+                    executor=executor,
+                    task_id=task_id,
+                    input_id=str(binding.get("input_id") or ""),
+                    session_id=str(binding.get("session_id") or ""),
+                    source_run_id=str(binding.get("source_run_id") or ""),
+                )
+            except ABCError as exc:
+                raise RunnerError(f"{exc.code}: {exc}") from exc
+            extensions[PERMISSION_GRANT_EXTENSION_KEY] = consumed
+            persisted = {**persisted, "extensions": extensions, "updated_at": _utc_now()}
+            store = TaskStore(board)
+            store.write_task(task_id, persisted)
+            store.append_event(
+                task_id,
+                {
+                    "event_type": "permission_grant_consumed",
+                    "task_id": task_id,
+                    "executor": executor,
+                    "executor_run_id": executor_run_id,
+                    "created_at": consumed["audit"]["consumed_at"],
+                },
+            )
+
+            try:
+                effective = resolve_effective_permission(
+                    persisted,
+                    executor,
+                    executor_run_id,
+                    trusted_runner_managed=True,
+                )
+            except ABCError as exc:
+                raise RunnerError(f"{exc.code}: {exc}") from exc
+            if (
+                not is_temporary_permission(effective)
+                or effective.get("grant_status") != "consumed"
+            ):
+                raise RunnerError(
+                    "permission_authorization_invalid: consumed grant did not resolve "
+                    "inside trusted Runner context"
+                )
+        else:
+            try:
+                effective = resolve_effective_permission(
+                    persisted,
+                    executor,
+                    executor_run_id,
+                )
+            except ABCError as exc:
+                raise RunnerError(f"{exc.code}: {exc}") from exc
+
+        self._validate_request(
+            executor,
+            command,
+            cwd,
+            task,
+            persisted_task=persisted,
+            permission=effective,
+        )
+        try:
+            self._validate_phase3_execution_command(
+                executor,
+                command,
+                cwd,
+                persisted,
+            )
+        except RunnerError as exc:
+            self._phase2_append_audit(
+                board,
+                task_id,
+                executor,
+                "fail",
+                str(exc).split(":", 1)[0],
+            )
+            raise
+        return effective
+
+    def _enforce_phase3_authorization(
+        self,
+        executor: str,
+        command: list[str],
+        cwd: Path,
+        task: dict[str, Any] | None,
+    ) -> None:
+        persisted_task, _permission = self._persisted_permission_authorization(executor, task)
+        try:
+            self._validate_phase3_execution_command(executor, command, cwd, persisted_task)
+        except RunnerError as exc:
+            task_id = str(persisted_task.get("id") or persisted_task.get("task_id") or "")
+            task_board = task.get("task_board") if isinstance(task, dict) else None
+            board_value = str(task_board.get("root") or "") if isinstance(task_board, dict) else ""
+            if task_id and board_value:
+                self._phase2_append_audit(
+                    Path(board_value).expanduser().resolve(),
+                    task_id,
+                    executor,
+                    "fail",
+                    str(exc).split(":", 1)[0],
+                )
+            raise
+
+    def _validate_phase3_execution_command(
+        self,
+        executor: str,
+        command: list[str],
+        cwd: Path,
+        persisted_task: dict[str, Any],
+    ) -> None:
+        """Match resource/session argv to the authoritative Phase 2 snapshots."""
+        extensions = persisted_task.get("extensions")
+        extensions = extensions if isinstance(extensions, dict) else {}
+        session = extensions.get(SESSION_EXTENSION_KEY)
+        session_errors = validate_session_snapshot(session, executor=executor)
+        if session_errors:
+            raise RunnerError(
+                f"runner_session_argument_mismatch: {'; '.join(session_errors)}"
+            )
+        session_id = str(session.get("session_id") or "").strip()
+        resumed = bool(session.get("run_ids") or [])
+
+        if executor in {"claude", "hermes"}:
+            resources = extensions.get(RESOURCE_EXTENSION_KEY)
+            resource_errors = validate_resource_snapshot(resources, executor=executor)
+            if resource_errors:
+                raise RunnerError(
+                    f"runner_resource_argument_mismatch: {'; '.join(resource_errors)}"
+                )
+            flag = "--max-budget-usd" if executor == "claude" else "--max-turns"
+            values, noncanonical = _canonical_flag_values(command, flag)
+            current_limit = resources.get("current_limit")
+            expected_value = (
+                str(float(current_limit)) if executor == "claude" else str(int(current_limit))
+            )
+            if noncanonical or values != [expected_value]:
+                raise RunnerError(
+                    f"runner_resource_argument_mismatch: {flag} must appear once with the frozen task value"
+                )
+
+        resume_values, resume_noncanonical = _canonical_flag_values(command, "--resume")
+        session_values, session_noncanonical = _canonical_flag_values(command, "--session-id")
+        if resume_noncanonical or session_noncanonical:
+            raise RunnerError(
+                "runner_session_argument_mismatch: session flags require separated canonical values"
+            )
+
+        if executor == "claude":
+            if "--no-session-persistence" in command:
+                raise RunnerError(
+                    "runner_session_argument_mismatch: Claude session persistence cannot be disabled"
+                )
+            expected_project = Path(str(session.get("project_path") or "")).expanduser().resolve()
+            if cwd != expected_project:
+                raise RunnerError(
+                    "runner_executor_cwd_mismatch: Claude cwd does not match the frozen session project"
+                )
+            if resumed:
+                valid = resume_values == [session_id] and not session_values and bool(session_id)
+            else:
+                valid = session_values == [session_id] and not resume_values and bool(session_id)
+            if not valid:
+                raise RunnerError(
+                    "runner_session_argument_mismatch: Claude fresh/resume flags do not match task history"
+                )
+            return
+
+        if executor == "hermes":
+            if "--continue" in command or "-c" in command:
+                raise RunnerError(
+                    "runner_session_argument_mismatch: Hermes ambiguous continuation is forbidden"
+                )
+            if session_values:
+                raise RunnerError(
+                    "runner_session_argument_mismatch: Hermes does not accept a preassigned session ID"
+                )
+            if resumed:
+                valid = resume_values == [session_id] and bool(session_id)
+            else:
+                valid = not resume_values
+            if not valid:
+                raise RunnerError(
+                    "runner_session_argument_mismatch: Hermes resume flag does not match task history"
+                )
+            return
+
+        if executor == "codex":
+            if "--ephemeral" in command or "--last" in command:
+                raise RunnerError(
+                    "runner_session_argument_mismatch: Codex requires persistent explicit-ID sessions"
+                )
+            resume_positions = [
+                index for index, token in enumerate(command[2:], 2) if token == "resume"
+            ]
+            if resumed:
+                valid = (
+                    len(resume_positions) == 1
+                    and bool(session_id)
+                    and resume_positions[0] + 1 < len(command)
+                    and command[resume_positions[0] + 1] == session_id
+                )
+            else:
+                valid = not resume_positions
+            if not valid:
+                raise RunnerError(
+                    "runner_session_argument_mismatch: Codex resume command does not match task history"
+                )
 
     def _persisted_permission_authorization(
         self,
@@ -1792,6 +2666,7 @@ class RunnerService:
         now = time.monotonic()
         if now - self._last_maintenance_at >= 60.0:
             self.runner_state.maintain_waiting_inputs()
+            self.runner_state.maintain_session_cleanup()
             self._last_maintenance_at = now
         handled = False
         for request_path in sorted(self.requests_dir.glob("*.json")):
@@ -1964,6 +2839,8 @@ def _dispatch_request(state: RunnerState, request: dict[str, Any]) -> dict[str, 
             },
             "atomic_dispatch": True,
         }
+    if operation == "storage_status":
+        return state.storage_status(request.get("paths"))
     if operation == "submit":
         task = request.get("task")
         return state.submit(
@@ -1971,6 +2848,7 @@ def _dispatch_request(state: RunnerState, request: dict[str, Any]) -> dict[str, 
             request.get("command") or [],
             str(request.get("cwd") or ""),
             task if isinstance(task, dict) else None,
+            str(request.get("executor_run_id") or "") or None,
         )
     if operation == "authorize_command":
         task = request.get("task")
@@ -1979,6 +2857,7 @@ def _dispatch_request(state: RunnerState, request: dict[str, Any]) -> dict[str, 
             request.get("command") or [],
             str(request.get("cwd") or ""),
             task if isinstance(task, dict) else None,
+            str(request.get("executor_run_id") or "") or None,
         )
     if operation == "process_sample":
         patterns = request.get("patterns")
@@ -2127,6 +3006,14 @@ def _is_within(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _write_capable_from_process(path: Path) -> bool:
+    """Return whether this process can create a missing descendant path."""
+    current = path
+    while not current.exists() and current.parent != current:
+        current = current.parent
+    return current.is_dir() and os.access(current, os.W_OK)
 
 
 def _utc_now() -> str:

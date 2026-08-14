@@ -281,6 +281,25 @@ def cleanup_empty_managed_task_artifacts(task: Any) -> bool:
 
 def cleanup_cancelled_task_files(task: Any) -> None:
     cleanup_task_report_records(task)
+    extensions = getattr(task, "extensions", None) or {}
+    session = extensions.get("agentbc.session") if isinstance(extensions, dict) else None
+    cleanup = session.get("cleanup") if isinstance(session, dict) else None
+    cleanup_state = (
+        str(cleanup.get("state") or "not_requested")
+        if isinstance(cleanup, dict)
+        else "not_requested"
+    )
+    if (
+        isinstance(session, dict)
+        and session.get("executor") == "claude"
+        and session.get("project_mode") == "ephemeral"
+        and session.get("retain") is False
+        and cleanup_state not in {"retained", "succeeded", "unsupported"}
+    ):
+        # Claude's official project purge must run before its task-scoped
+        # project directory is removed.  The adapter performs only validated,
+        # non-recursive rmdir cleanup after purge succeeds.
+        return
     cleanup_managed_task_artifacts(task)
 
 

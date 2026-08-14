@@ -2,7 +2,7 @@
 
 中文 | [English](PREVIEW.md)
 
-AgentBC `1.0.1A3` 已建立本地任务、Runner、报告和恢复机制。后续版本计划继续
+AgentBC `1.0.2A` 已建立本地任务、Runner、报告、资源、权限和恢复机制。后续版本计划继续
 拓展以下方向。
 
 ## 更多 Agent

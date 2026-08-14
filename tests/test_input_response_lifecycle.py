@@ -13,7 +13,11 @@ from unittest import mock
 from agent_bridge_connect.adapters import DeliveryResult
 from agent_bridge_connect.cli import build_parser
 from agent_bridge_connect.executors.codex import _build_prompt as build_codex_prompt
-from agent_bridge_connect.notifications import build_input_required_notification, notify_input_required
+from agent_bridge_connect.notifications import (
+    PERMISSION_DIALOG_TIMEOUT_RESPONSE,
+    build_input_required_notification,
+    notify_input_required,
+)
 from agent_bridge_connect.protocol import ABCError
 from agent_bridge_connect.reports import generate_report, generate_report_md, generate_task_brief
 from agent_bridge_connect.run_lease import (
@@ -59,11 +63,11 @@ class InputResponseLifecycleTests(unittest.TestCase):
             "version": 1,
             "task_id": self.task.id,
             "final_state": "input_required",
-            "summary": "Need approval; password=hidden-value",
+            "summary": "Need input; password=hidden-value",
             "executor_run_id": "shell-first-run",
             "input": {
-                "type": "permission",
-                "requested_permission": "Allow network; password=hidden-value",
+                "type": "message",
+                "reason": "Continue work; password=hidden-value",
             },
             "step_results": [
                 {"id": 1, "status": "done"},
@@ -105,7 +109,7 @@ class InputResponseLifecycleTests(unittest.TestCase):
         self.assertFalse(Path(current.workspace["report_file"]).exists())
         self.assertEqual(request["executor_run_id"], "shell-first-run")
         self.assertEqual(request["blocked_step_id"], 2)
-        self.assertEqual(request["type"], "permission")
+        self.assertEqual(request["type"], "message")
         self.assertEqual(request["status"], "waiting")
         self.assertNotIn("hidden-value", json.dumps(request))
         deadline = datetime.fromisoformat(request["deadline_at"].replace("Z", "+00:00"))
@@ -127,10 +131,11 @@ class InputResponseLifecycleTests(unittest.TestCase):
         )
         request = self._input()
         exact_command = (
-            f"agentbc task respond {self.task.id} --input {request['input_id']} --approve"
+            f"agentbc task respond {self.task.id} --input {request['input_id']} "
+            '--message "<response>"'
         )
         self.assertEqual(notification["event_type"], "task.input_required")
-        self.assertEqual(notification["respond_command"], f"{exact_command} (or --deny)")
+        self.assertEqual(notification["respond_command"], exact_command)
         self.assertEqual(notification["deadline_at"], request["deadline_at"])
         self.assertNotIn("Respond:", notification["message"])
         self.assertNotIn("Deadline:", notification["message"])
@@ -237,6 +242,32 @@ class InputResponseLifecycleTests(unittest.TestCase):
         responder.assert_not_called()
         self.assertEqual(self.service.get_task(self.task.id).status, "input_required")
         self.assertEqual(load_lease(self.task.id, self.board).state, RunLeaseState.SUSPENDED)
+
+    def test_permission_dialog_timeout_is_forwarded_as_deny_not_text(self) -> None:
+        request = self._input()
+        task = self.service.get_task(self.task.id)
+        task.extensions["agentbc.input"]["type"] = "permission"
+        task.extensions["agentbc.input"]["requested_permission"] = "full"
+        self.service.store.write_task(task.id, task.to_dict())
+        responder = mock.Mock(return_value={"task_id": task.id, "status": "failed"})
+        with mock.patch(
+            "agent_bridge_connect.notifications.DialogNotifier.send",
+            return_value=DeliveryResult(
+                True,
+                "timed out",
+                details={"action": "deny", "decision_source": "timeout"},
+            ),
+        ):
+            notify_input_required(self.service, task.id, responder=responder)
+
+        responder.assert_called_once_with(
+            request["input_id"],
+            "deny",
+            PERMISSION_DIALOG_TIMEOUT_RESPONSE,
+        )
+        delivery = self.service.store.read_events(task.id)[-2]
+        self.assertEqual(delivery["dialog_action"], "deny")
+        self.assertEqual(delivery["dialog_decision_source"], "timeout")
 
     def test_worker_notification_wires_dialog_response_to_runner(self) -> None:
         from agent_bridge_connect.cli import _notify_input_required
@@ -447,8 +478,34 @@ class InputResponseLifecycleTests(unittest.TestCase):
         task.status = "running"
         task.steps[1]["status"] = "pending"
         task.extensions["agentbc.input"] = request
+        # Authoritative RunLease run intervals: one run before input, one after.
+        task.extensions = dict(task.extensions or {})
+        execution = dict((task.extensions.get("agentbc.execution") or {}))
+        execution["run_intervals"] = [
+            {
+                "run_id": "shell-first-run",
+                "executor_id": "shell",
+                "started_at": "2025-12-31T23:00:00Z",
+                "ended_at": "2026-01-01T00:00:00Z",
+                "duration_s": 60 * 60,
+                "state": "closed",
+            },
+            {
+                "run_id": "shell-second-run",
+                "executor_id": "shell",
+                "started_at": "2026-01-01T02:00:00Z",
+                "ended_at": "2026-01-01T03:00:00Z",
+                "duration_s": 60 * 60,
+                "state": "closed",
+            },
+        ]
+        task.extensions["agentbc.execution"] = execution
         self.service.store.write_task(task.id, task.to_dict())
+        # The on-disk run lease reflects only the final (second) run.
         lease = load_lease(task.id, self.board)
+        lease.run_id = "shell-second-run"
+        lease.started_at = "2026-01-01T02:00:00Z"
+        lease.last_heartbeat_at = "2026-01-01T03:00:00Z"
         lease.state = RunLeaseState.CLOSED
         save_lease(lease, self.board)
 
@@ -470,6 +527,9 @@ class InputResponseLifecycleTests(unittest.TestCase):
         self.assertEqual(report["wall_duration_s"], 4 * 60 * 60)
         self.assertEqual(report["waiting_duration_s"], 2 * 60 * 60)
         self.assertEqual(report["execution_duration_s"], 2 * 60 * 60)
+        self.assertEqual(report["last_run_duration_s"], 60 * 60)
+        self.assertEqual(report["execution_evidence"], "authoritative")
+        self.assertEqual(report["run_count"], 2)
 
     def test_resume_launch_failure_becomes_recovery_with_precise_evidence(self) -> None:
         request = self._input()

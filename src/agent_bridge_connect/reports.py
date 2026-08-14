@@ -18,6 +18,8 @@ from .run_lease import (
 from .task_id import split_task_ref, task_sequence
 from .task_store import TaskStore
 from .terminal_states import TASK_TERMINAL_STATES
+from .timing_view import build_timing_view
+from .execution_policy import execution_policy_view, public_workspace_view
 
 
 _OPENAI_KEY_RE = re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{12,}", re.IGNORECASE)
@@ -67,18 +69,24 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
     created_at = _created_at(task, events)
     completed_at = _completed_at(task, events)
     workspace = task.get("workspace") or {}
+    extensions = task.get("extensions") or {}
+    session_snapshot = extensions.get("agentbc.session") or {}
     artifacts = _dedupe_values(
         [
             *_collect_named_values(steps, "artifacts"),
-            *_collect_workspace_artifacts(workspace),
+            *_collect_workspace_artifacts(workspace, session_snapshot),
         ]
     )
+    artifacts = [
+        artifact
+        for artifact in artifacts
+        if not _is_internal_executor_artifact(artifact, workspace, session_snapshot)
+    ]
     errors = list(task.get("errors") or [])
     errors.extend(_collect_named_values(steps, "error", include_scalars=True))
     lease = load_lease(task_id, root)
     lease_state = lease.state if lease is not None else RunLeaseState.CLOSED
     heartbeat_age = round(heartbeat_age_s(lease), 3) if lease is not None else None
-    extensions = task.get("extensions") or {}
     final_callback = extensions.get("agentbc.final_callback") or {}
     report_ready = bool(workspace.get("report_file")) and Path(str(workspace.get("report_file"))).expanduser().exists()
     chain = _chain_snapshot(task_id, root, task)
@@ -97,10 +105,10 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         and report_ready
     )
     generated_at = _utc_now()
-    duration_end = completed_at or generated_at
-    wall_duration_s = _duration_seconds(created_at, duration_end, steps)
-    waiting_duration_s = _waiting_duration_seconds(extensions, duration_end)
-    execution_duration_s = round(max(wall_duration_s - waiting_duration_s, 0.0), 3)
+    timing = build_timing_view(task, root, now=generated_at)
+    wall_duration_s = timing["wall_duration_s"]
+    waiting_duration_s = timing["waiting_duration_s"]
+    execution_duration_s = timing["execution_duration_s"]
     input_request = extensions.get("agentbc.input") if isinstance(extensions.get("agentbc.input"), dict) else {}
     permission = permission_record_from_extensions(extensions)
 
@@ -116,7 +124,7 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "artifacts": artifacts,
         "interventions": interventions,
         "errors": errors,
-        "workspace": workspace,
+        "workspace": public_workspace_view(workspace),
         "session_id": task.get("session_id"),
         "provenance": extensions.get("agentbc.provenance") or {},
         "lineage": extensions.get("agentbc.lineage") or {},
@@ -134,8 +142,15 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "execution_duration_s": execution_duration_s,
         "waiting_duration_s": waiting_duration_s,
         "wall_duration_s": wall_duration_s,
+        "last_run_duration_s": timing["last_run_duration_s"],
+        "execution_evidence": timing["evidence_quality"],
+        "execution_duration_known": timing["execution_duration_known"],
+        "run_count": timing["run_count"],
+        "run_intervals": timing["run_intervals"],
+        "timing": timing,
         "input": input_request,
         "permission": permission,
+        "execution_policy": execution_policy_view(extensions),
         "run_lease_state": lease_state,
         "time_since_last_heartbeat_s": heartbeat_age,
         "recovery_recommendation": (
@@ -192,6 +207,7 @@ def generate_task_brief(task_id: str, board_root: Path) -> dict[str, Any]:
             "interventions": report["interventions"],
             "workspace": report.get("workspace") or {},
             "permission": report.get("permission") or {},
+            "execution_policy": report.get("execution_policy") or {},
         },
         "changed_files": changed_files,
         "verification": verification,
@@ -382,7 +398,10 @@ def _collect_named_values(
     return _dedupe_values(collected)
 
 
-def _collect_workspace_artifacts(workspace: dict[str, Any]) -> list[str]:
+def _collect_workspace_artifacts(
+    workspace: dict[str, Any],
+    session: dict[str, Any] | None = None,
+) -> list[str]:
     if workspace.get("customer_dir") is True:
         return []
     artifacts_dir = workspace.get("artifacts_dir") if isinstance(workspace, dict) else None
@@ -394,11 +413,37 @@ def _collect_workspace_artifacts(workspace: dict[str, Any]) -> list[str]:
     values: list[str] = []
     for path in sorted(root.rglob("*")):
         if path.is_file():
+            if _is_internal_executor_artifact(str(path), workspace, session or {}):
+                continue
             try:
                 values.append(str(path.relative_to(root)))
             except ValueError:
                 values.append(str(path))
     return values
+
+
+def _is_internal_executor_artifact(
+    artifact: Any,
+    workspace: dict[str, Any],
+    session: dict[str, Any],
+) -> bool:
+    if not isinstance(artifact, str) or session.get("project_mode") != "ephemeral":
+        return False
+    project_path = str(session.get("project_path") or "").strip()
+    if not project_path:
+        return False
+    internal_root = Path(project_path).expanduser().resolve()
+    candidate = Path(artifact).expanduser()
+    if not candidate.is_absolute():
+        artifact_root = str(workspace.get("artifact_root") or workspace.get("artifacts_dir") or "")
+        if not artifact_root:
+            return False
+        candidate = Path(artifact_root).expanduser() / candidate
+    try:
+        candidate.resolve().relative_to(internal_root)
+    except ValueError:
+        return False
+    return True
 
 
 def _dedupe_values(values: list[Any]) -> list[Any]:
@@ -522,44 +567,6 @@ def _created_at(task: dict[str, Any], events: list[dict[str, Any]]) -> str:
     return ""
 
 
-def _duration_seconds(created_at: Any, completed_at: Any, steps: list[dict[str, Any]]) -> float:
-    start = _parse_timestamp(created_at)
-    end = _parse_timestamp(completed_at)
-    if start is not None and end is not None:
-        return round(max((end - start).total_seconds(), 0.0), 3)
-    durations = _collect_named_values(steps, "duration_s", include_scalars=True)
-    return round(
-        sum(float(value) for value in durations if isinstance(value, (int, float))),
-        3,
-    )
-
-
-def _waiting_duration_seconds(extensions: dict[str, Any], end_at: Any) -> float:
-    end = _parse_timestamp(end_at)
-    if end is None:
-        return 0.0
-    requests: list[dict[str, Any]] = []
-    history = extensions.get("agentbc.input_history")
-    if isinstance(history, list):
-        requests.extend(item for item in history if isinstance(item, dict))
-    current = extensions.get("agentbc.input")
-    if isinstance(current, dict):
-        requests.append(current)
-    total = 0.0
-    seen: set[str] = set()
-    for request in requests:
-        input_id = str(request.get("input_id") or "")
-        if input_id and input_id in seen:
-            continue
-        if input_id:
-            seen.add(input_id)
-        start = _parse_timestamp(request.get("created_at"))
-        stop = _parse_timestamp(request.get("responded_at")) or end
-        if start is not None:
-            total += max((min(stop, end) - start).total_seconds(), 0.0)
-    return round(total, 3)
-
-
 def _parse_timestamp(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
@@ -596,7 +603,10 @@ def _render_report_md(report: dict[str, Any]) -> str:
         f"- Completed: `{_format_report_timestamp(completed_at) if completed_at else 'not completed'}`",
         f"- Duration: `{_format_duration(report.get('duration_s'))}`",
         f"- Execution duration: `{_format_duration(report.get('execution_duration_s'))}`",
+        f"- Last run duration: `{_format_duration(report.get('last_run_duration_s'))}`",
+        f"- Execution evidence: `{report.get('execution_evidence') or 'unknown'}`",
         f"- Waiting duration: `{_format_duration(report.get('waiting_duration_s'))}`",
+        f"- Wall duration: `{_format_duration(report.get('wall_duration_s'))}`",
         f"- Run lease: `{report.get('run_lease_state', 'closed')}`",
         f"- Last heartbeat age: `{_format_heartbeat_age(report.get('time_since_last_heartbeat_s'))}`",
         f"- Recovery: {report.get('recovery_recommendation', '')}",
@@ -623,6 +633,49 @@ def _render_report_md(report: dict[str, Any]) -> str:
         )
     else:
         lines.append("- None")
+
+    policy = report.get("execution_policy") or {}
+    resources = policy.get("resources") or {}
+    executor_session = policy.get("session") or {}
+    session_cleanup = executor_session.get("cleanup") or {}
+    grant = policy.get("permission_grant") or {}
+    lines.extend(
+        [
+            "",
+            "## Execution Policy",
+            f"- Resource: `{resources.get('resource') or 'none'}`",
+            f"- Effective limit: `{resources.get('limit') if resources else 'none'}`",
+            f"- Configured limit: `{resources.get('configured_limit') if resources else 'none'}`",
+            f"- Exhaustion count: `{resources.get('exhaustion_count') if resources else 'none'}`",
+            f"- Last decision: `{resources.get('last_decision') or 'none'}`",
+            f"- Resource source: `{resources.get('source') or 'none'}`",
+            f"- Resource frozen: `{'yes' if resources.get('frozen') else 'no'}`",
+            f"- Retain executor session: `{'yes' if executor_session.get('retain') else 'no'}`",
+            f"- Executor session ID: `{executor_session.get('session_id') or 'pending'}`",
+            f"- Session state: `{executor_session.get('session_state') or 'unavailable'}`",
+            f"- Project mode: `{executor_session.get('project_mode') or 'unavailable'}`",
+            f"- Cleanup capability: `{session_cleanup.get('capability') or 'unknown'}`",
+            f"- Cleanup state: `{session_cleanup.get('state') or 'not_requested'}`",
+            f"- Cleanup attempts: `{session_cleanup.get('attempts', 0)}`",
+            f"- Cleanup error code: `{session_cleanup.get('error_code') or 'none'}`",
+            f"- Cleanup retryable: `{'yes' if session_cleanup.get('retryable') else 'no'}`",
+        ]
+    )
+    if grant:
+        lines.extend(
+            [
+                f"- Permission grant: `{grant.get('state') or 'none'}`",
+                f"- Permission grant active: `{'yes' if grant.get('active') else 'no'}`",
+                f"- Permission grant temporary: `{'yes' if grant.get('temporary') else 'no'}`",
+                f"- Permission grant transition: `{grant.get('from_mode') or 'safe'}` -> `{grant.get('to_mode') or 'full'}`",
+                f"- Permission grant scope: `{grant.get('scope') or 'none'}` with `{grant.get('max_uses', 1)}` use(s)",
+                f"- Permission grant uses: `{grant.get('uses', 0)}`",
+                f"- Permission grant reason: `{grant.get('reason_code') or 'none'}`",
+                f"- Permission grant issued: `{grant.get('issued_at') or 'none'}`",
+                f"- Permission grant consumed: `{grant.get('consumed_at') or 'none'}`",
+                f"- Permission grant revoked: `{grant.get('revoked_at') or 'none'}`",
+            ]
+        )
 
     image_inputs = (report.get("media") or {}).get("images") or []
     if image_inputs:
@@ -654,6 +707,11 @@ def _render_report_md(report: dict[str, Any]) -> str:
             f"- Blocked step/type: `{input_request.get('blocked_step_id', '')}` / `{input_request.get('type', '')}`",
             f"- Summary: {input_request.get('summary', '')}",
         ]
+        if input_request.get("kind") or input_request.get("response_protocol"):
+            input_lines.append(
+                f"- Kind/response protocol: `{input_request.get('kind', '')}` / "
+                f"`{input_request.get('response_protocol', '')}`"
+            )
         if input_request.get("reason"):
             input_lines.append(f"- Decision reason: {input_request.get('reason', '')}")
         if input_request.get("options"):
@@ -736,6 +794,8 @@ def _render_report_md(report: dict[str, Any]) -> str:
             "",
             "## Duration",
             f"- Execution duration: `{_format_duration(report.get('execution_duration_s'))}`",
+            f"- Last run duration: `{_format_duration(report.get('last_run_duration_s'))}`",
+            f"- Execution evidence: `{report.get('execution_evidence') or 'unknown'}`",
             f"- Waiting duration: `{_format_duration(report.get('waiting_duration_s'))}`",
             f"- Wall duration: `{_format_duration(report.get('wall_duration_s'))}`",
             "",

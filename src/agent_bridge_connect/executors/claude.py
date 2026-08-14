@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import errno
 import json
-import shlex
+import math
+import os
+import re
 import subprocess
 import uuid
 from pathlib import Path
@@ -12,27 +15,52 @@ from agent_bridge_connect.adapters import (
     ExecutorLevel,
     PollResult,
     ProbeResult,
+    SessionCleanupCapability,
+    SessionCleanupRequest,
+    SessionCleanupResult,
     StartResult,
 )
 from agent_bridge_connect.execution_contract import (
-    FINAL_CALLBACK_PREFIX,
+    CallbackValidation,
+    build_resource_exhaustion,
     detect_retryable_transport_failure,
     extract_callback_validation_from_output,
+    resource_snapshot_limit,
     route_executor_terminal,
     strip_callback_line,
 )
+from agent_bridge_connect.effective_permissions import resolve_effective_permission
 from agent_bridge_connect.permission_modes import (
     assert_executor_permission_supported,
     permission_flags,
     permission_record_from_extensions,
 )
-from agent_bridge_connect.protocol import ABCError, resumed_input_prompt_lines, task_step_text
+from agent_bridge_connect.path_model import (
+    validate_managed_cleanup_paths,
+    validate_path_plan_workspace,
+)
+from agent_bridge_connect.protocol import ABCError
+from agent_bridge_connect.prompt_contract import PromptPlatformExtras, build_prompt_contract
 from agent_bridge_connect.runner import RunnerClient, RunnerError
 
 from .base import CLIExecutorBase
 from ..path_provider import find_binary
 
 SAFETY_TIMEOUT_S = 24 * 60 * 60
+CLAUDE_PROJECT_PURGE_TIMEOUT_S = 30
+
+_CLAUDE_BUDGET_ERROR_RE = re.compile(
+    r"(?m)^Error:\s+Exceeded\s+USD\s+budget(?:\s*\(|\s*$)"
+)
+_CLAUDE_BUDGET_AMOUNT_RE = re.compile(
+    r"Exceeded\s+USD\s+budget\s*\(\s*\$?\s*(?P<amount>\d+(?:\.\d+)?)"
+)
+_CLAUDE_PROJECT_ABSENT_RE = re.compile(
+    r"(?im)^(?:no claude code (?:project )?state found(?: for (?:project )?)?"
+    r"|no project (?:state )?found(?: for (?:path )?)?"
+    r"|project (?:state )?not found)"
+    r"(?:[.: ].*)?$"
+)
 
 
 class ClaudeExecutor(CLIExecutorBase):
@@ -53,7 +81,7 @@ class ClaudeExecutor(CLIExecutorBase):
         permission_mode: str = "acceptEdits",
         safe_mode: bool = True,
         output_format: str = "text",
-        max_budget_usd: float | None = 1.0,
+        max_budget_usd: float | None = 10.0,
         allowed_tools: list[str] | tuple[str, ...] | str | None = None,
         command: str | None = None,
         transport: str = "runner",
@@ -144,13 +172,162 @@ class ClaudeExecutor(CLIExecutorBase):
         return ExecutorCapabilities(
             structured_output=True,
             streaming_events=self.output_format == "stream-json",
-            resume=False,
+            resume=True,
             cancel=False,
             input_required=False,
             model_selection=True,
             multimodal=True,
             parallelism=1,
             level=ExecutorLevel.L1,
+        )
+
+    def session_cleanup_capability(
+        self,
+        request: SessionCleanupRequest,
+    ) -> SessionCleanupCapability:
+        if request.retain is True or request.project_mode == "native":
+            return SessionCleanupCapability(
+                capability="not_applicable",
+                strategy="retain",
+            )
+        request_error = _claude_cleanup_request_error(request)
+        if request_error:
+            return SessionCleanupCapability(
+                capability="unsupported",
+                strategy="none",
+                error_code=request_error,
+            )
+        if self.agent_bin is None:
+            return SessionCleanupCapability(
+                capability="unsupported",
+                strategy="none",
+                error_code="claude_project_purge_unavailable",
+            )
+        try:
+            completed = subprocess.run(
+                [str(self.agent_bin), "project", "purge", "--help"],
+                text=True,
+                capture_output=True,
+                check=False,
+                shell=False,
+                timeout=CLAUDE_PROJECT_PURGE_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            return SessionCleanupCapability(
+                capability="unsupported",
+                strategy="none",
+                error_code="claude_project_purge_help_timeout",
+            )
+        except OSError:
+            return SessionCleanupCapability(
+                capability="unsupported",
+                strategy="none",
+                error_code="claude_project_purge_unavailable",
+            )
+        help_text = "\n".join((completed.stdout or "", completed.stderr or ""))
+        if completed.returncode != 0 or not _supports_claude_project_purge(help_text):
+            return SessionCleanupCapability(
+                capability="unsupported",
+                strategy="none",
+                error_code="claude_project_purge_unsupported",
+            )
+        return SessionCleanupCapability(
+            capability="supported",
+            strategy="claude_project_purge",
+        )
+
+    def cleanup_session(self, request: SessionCleanupRequest) -> SessionCleanupResult:
+        if request.retain is True or request.project_mode == "native":
+            return SessionCleanupResult(
+                state="retained",
+                capability="not_applicable",
+                strategy="retain",
+            )
+
+        request_error = _claude_cleanup_request_error(request)
+        if request_error:
+            return _claude_cleanup_failed(request_error)
+        path_error = _validate_claude_cleanup_paths(request)
+        if path_error:
+            return _claude_cleanup_failed(path_error)
+
+        capability = self.session_cleanup_capability(request)
+        if capability.capability != "supported":
+            return SessionCleanupResult(
+                state="unsupported",
+                capability="unsupported",
+                strategy="none",
+                error_code=capability.error_code or "claude_project_purge_unsupported",
+                retryable=False,
+            )
+
+        if self.agent_bin is None:  # Guard against mutation after the capability probe.
+            return _claude_cleanup_failed("claude_project_purge_unavailable")
+        purge_command = [
+            str(self.agent_bin),
+            "project",
+            "purge",
+            "--yes",
+            request.project_path,
+        ]
+        try:
+            completed = subprocess.run(
+                purge_command,
+                text=True,
+                capture_output=True,
+                check=False,
+                shell=False,
+                timeout=CLAUDE_PROJECT_PURGE_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            return _claude_cleanup_failed(
+                "claude_project_purge_timeout",
+                retryable=True,
+            )
+        except OSError:
+            return _claude_cleanup_failed(
+                "claude_project_purge_unavailable",
+                retryable=True,
+            )
+
+        purge_output = "\n".join((completed.stdout or "", completed.stderr or ""))
+        if completed.returncode != 0 and not _claude_project_is_absent(purge_output):
+            return _claude_cleanup_failed("claude_project_purge_failed")
+
+        for field in ("executor_project_root", "task_root", "chain_root"):
+            request_error = _claude_cleanup_request_error(request)
+            if request_error:
+                return _claude_cleanup_failed(request_error)
+            try:
+                paths = validate_managed_cleanup_paths(
+                    request.workspace,
+                    task_id=request.task_id,
+                    project_path=request.project_path,
+                )
+            except ABCError as exc:
+                return _claude_cleanup_failed(exc.code)
+            except (OSError, TypeError, ValueError):
+                return _claude_cleanup_failed("cleanup_path_invalid")
+            try:
+                os.rmdir(getattr(paths, field))
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                if exc.errno in {errno.ENOTEMPTY, errno.EEXIST}:
+                    # The chain root is also the managed Artifact root when the
+                    # user did not provide a customer path. Normal deliverables
+                    # (and sibling task iterations) must survive session cleanup.
+                    if field == "chain_root":
+                        continue
+                    return _claude_cleanup_failed(
+                        "claude_cleanup_directory_not_empty"
+                    )
+                return _claude_cleanup_failed("claude_cleanup_rmdir_failed")
+
+        return SessionCleanupResult(
+            state="succeeded",
+            capability="supported",
+            strategy="claude_project_purge",
         )
 
     def start(self, task_packet: dict) -> StartResult:
@@ -163,12 +340,28 @@ class ClaudeExecutor(CLIExecutorBase):
         root = _workspace_root(task_packet)
         if root is None or not root.is_dir():
             return StartResult(ok=False, run_id="", message=f"workspace not found: {root}")
+        try:
+            execution_root = _claude_execution_root(task_packet, root)
+            execution_session = _claude_execution_session(task_packet)
+        except (OSError, ValueError) as exc:
+            return StartResult(ok=False, run_id="", message=f"invalid claude session: {exc}")
 
         run_id = f"claude-{task_packet.get('task_id', 'unknown')}-{uuid.uuid4().hex[:8]}"
         self._task_packets[run_id] = dict(task_packet)
         self._start_run_lease(task_packet, run_id, "claude")
         prompt = _build_prompt(task_packet)
-        permission = permission_record_from_extensions(task_packet.get("extensions"))
+        try:
+            permission = resolve_effective_permission(
+                task_packet,
+                "claude",
+                run_id,
+                trusted_runner_managed=(
+                    task_packet.get("runner_authorization_required") is True
+                ),
+            )
+        except ABCError as exc:
+            self._close_run_lease(run_id)
+            return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
         try:
             assert_executor_permission_supported(
                 "claude", permission["effective_mode"], self.agent_bin
@@ -176,16 +369,26 @@ class ClaudeExecutor(CLIExecutorBase):
         except ABCError as exc:
             self._close_run_lease(run_id)
             return StartResult(ok=False, run_id="", message=str(exc))
-        command = self._build_command(prompt, root, task_packet, permission)
+        try:
+            command = self._build_command(prompt, root, task_packet, permission)
+        except ValueError as exc:
+            self._close_run_lease(run_id)
+            return StartResult(ok=False, run_id="", message=f"invalid claude policy: {exc}")
 
         try:
             if task_packet.get("runner_authorization_required") is True:
-                RunnerClient().authorize_command("claude", command, root, task_packet)
+                RunnerClient().authorize_command(
+                    "claude",
+                    command,
+                    execution_root,
+                    task_packet,
+                    executor_run_id=run_id,
+                )
             self._heartbeat_run(run_id)
             completed = subprocess.run(
                 command,
                 input=prompt,
-                cwd=root,
+                cwd=execution_root,
                 text=True,
                 capture_output=True,
                 check=False,
@@ -194,7 +397,7 @@ class ClaudeExecutor(CLIExecutorBase):
         except subprocess.TimeoutExpired as exc:
             stdout = _coerce_output(exc.stdout or "")
             stderr = _coerce_output(exc.stderr or "")
-            self._store_run(run_id, root, None)
+            self._store_run(run_id, execution_root, None)
             self._mark_run_stale(run_id)
             self._runs[run_id] = PollResult(
                 status="needs_recovery",
@@ -211,6 +414,11 @@ class ClaudeExecutor(CLIExecutorBase):
                         "retryable": True,
                     },
                     "extensions": self.get_extensions(),
+                    **(
+                        {"execution_session": execution_session}
+                        if execution_session is not None
+                        else {}
+                    ),
                 },
             )
             return StartResult(ok=True, run_id=run_id, message="claude execution needs recovery")
@@ -234,9 +442,17 @@ class ClaudeExecutor(CLIExecutorBase):
             executor_name="claude",
             stderr=stderr,
             runtime_failure=detect_retryable_transport_failure(output_text, stderr),
+            resource_exhaustion=_claude_resource_exhaustion(
+                stdout,
+                stderr,
+                parsed_output,
+                task_packet,
+                validation,
+                completed.returncode,
+            ),
         )
         status = terminal.status
-        self._store_run(run_id, root, completed.returncode)
+        self._store_run(run_id, execution_root, completed.returncode)
         result = {
             "stdout": stdout,
             "stderr": stderr,
@@ -247,7 +463,13 @@ class ClaudeExecutor(CLIExecutorBase):
             "marker_valid": validation.valid,
             "marker_seen": validation.marker_seen,
             "failure": terminal.failure,
+            "resource_exhaustion": terminal.resource_exhaustion,
             "extensions": self.get_extensions(),
+            **(
+                {"execution_session": execution_session}
+                if execution_session is not None
+                else {}
+            ),
         }
         self._runs[run_id] = PollResult(
             status=status,
@@ -288,7 +510,7 @@ class ClaudeExecutor(CLIExecutorBase):
                 else None
             ),
             "dangerous_permissions_policy": "explicit_persisted_full_task_only",
-            "resume": False,
+            "resume": True,
         }
         if self._last_run_id is not None:
             metadata["last_run"] = self._run_metadata[self._last_run_id]
@@ -306,7 +528,10 @@ class ClaudeExecutor(CLIExecutorBase):
         selected = permission or permission_record_from_extensions(task_packet.get("extensions"))
         command = [str(self.agent_bin), "-p"]
         command.extend(permission_flags("claude", selected["effective_mode"]))
-        command.append("--no-session-persistence")
+        execution_session = _claude_execution_session(task_packet)
+        if execution_session is not None:
+            session_flag = "--resume" if execution_session["resumed"] else "--session-id"
+            command.extend([session_flag, execution_session["session_id"]])
         command.extend(["--output-format", self.output_format])
         if self.output_format == "stream-json":
             command.append("--verbose")
@@ -317,8 +542,9 @@ class ClaudeExecutor(CLIExecutorBase):
             command.extend(["--model", self.model])
         if self.effort:
             command.extend(["--effort", self.effort])
-        if self.max_budget_usd is not None:
-            command.extend(["--max-budget-usd", str(self.max_budget_usd)])
+        max_budget_usd = _claude_max_budget_usd(task_packet, self.max_budget_usd)
+        if max_budget_usd is not None:
+            command.extend(["--max-budget-usd", str(max_budget_usd)])
         if self.allowed_tools:
             tools_arg = _claude_tools_argument(self.allowed_tools)
             if tools_arg:
@@ -342,88 +568,205 @@ class ClaudeExecutor(CLIExecutorBase):
         }
 
 
-def _build_prompt(task_packet: dict[str, Any]) -> str:
-    title = str(task_packet.get("title") or task_packet.get("task_id") or "Untitled task")
-    workspace = task_packet.get("workspace") if isinstance(task_packet.get("workspace"), dict) else {}
-    task_board = task_packet.get("task_board") if isinstance(task_packet.get("task_board"), dict) else {}
-    board_root = str(task_board.get("root") or "")
-    task_id = str(task_packet.get("task_id") or "")
-    lineage = {}
-    if isinstance(task_packet.get("extensions"), dict):
-        value = task_packet["extensions"].get("agentbc.lineage")
-        lineage = value if isinstance(value, dict) else {}
-    progress_command = (
-        f"agentbc task progress {shlex.quote(task_id)} --root {shlex.quote(board_root)} "
-        '--summary "describe current progress"'
+def _claude_cleanup_request_error(request: SessionCleanupRequest) -> str:
+    if str(request.executor or "").strip().lower() != "claude":
+        return "claude_cleanup_executor_mismatch"
+    if request.retain is not False or request.project_mode != "ephemeral":
+        return "claude_cleanup_mode_invalid"
+    if request.strategy != "claude_project_purge":
+        return "claude_cleanup_strategy_mismatch"
+    session_id = str(request.session_id or "").strip()
+    try:
+        parsed_session_id = uuid.UUID(session_id)
+    except (AttributeError, ValueError):
+        return "claude_cleanup_session_invalid"
+    if str(parsed_session_id) != session_id.lower():
+        return "claude_cleanup_session_invalid"
+    if not str(request.task_id or "").strip():
+        return "cleanup_task_mismatch"
+    if not str(request.project_path or "").strip():
+        return "cleanup_project_mismatch"
+    return ""
+
+
+def _supports_claude_project_purge(help_text: str) -> bool:
+    frozen_contract = (
+        "Usage: claude project purge [options] [path]",
+        "Delete all Claude Code state for a project",
+        "--yes",
+        "Skip confirmation prompt",
     )
-    lines = [
-        "You are executing a structured AgentBC task with Claude Code.",
-        "",
-        f"Task ID: {task_packet.get('task_id', '')}",
-        f"Task: {title}",
-        f"Project root: {workspace.get('project_root') or workspace.get('root', '')}",
-        f"Artifact root: {workspace.get('artifact_root') or workspace.get('artifacts_dir', '')}",
-        f"Report directory: {workspace.get('report_root') or workspace.get('output_dir', '')}",
-        f"Task brief: {workspace.get('task_file', '')}",
-        f"Report: {workspace.get('report_file', '')}",
-        "",
-        "Rules:",
-        "- Write user deliverables only under the Artifact root named above. Never write deliverables directly in the AgentBC workspace root, report directory, or record directory.",
-        "- If customer_dir is true, edit the existing project in place and do not copy it into the AgentBC workspace.",
-        "- If any path is rejected as outside allowed roots, stop and report the configuration problem; never copy the project/file to an allowed AgentBC directory to bypass the rejection.",
-        "- If this task continues an existing deliverable, modify the existing baseline instead of creating a sibling project directory.",
-        "- AgentBC Core owns the execution report. Do not write or replace REPORT.md.",
-        "- Do not claim user acceptance. completed only means your agent turn is finished and ready for user review.",
-        "- Do not create Claude-internal tasks/todos. The AgentBC task record and report are the only execution ledger.",
-        "- If the step asks another agent to execute or review work, use the AgentBC CLI handoff/dispatch command instead of doing that agent's work inline.",
-        "- Keep required long-running commands in the foreground with a tool timeout longer than the expected runtime.",
-        "- If Claude Code moves a command to the background, use BashOutput repeatedly until it exits. Never end this turn while a required background command is still running.",
-        "",
-        "Steps:",
-    ]
-    resume_context = resumed_input_prompt_lines(task_packet)
-    if resume_context:
-        lines.extend(["", *resume_context, ""])
-    for index, step in enumerate(task_packet.get("steps") or [], 1):
-        lines.append(f"{index}. {task_step_text(step)} [status: {step.get('status', 'pending')}]")
-    if lineage:
-        lines.extend(
-            [
-                "",
-                f"Iteration chain root: {lineage.get('chain_root_task_id', '')}",
-                f"Base task: {lineage.get('base_task_id', '')}",
-                f"Task code: {lineage.get('task_code', workspace.get('task_code', ''))}",
-                f"Iteration: {lineage.get('iteration_index', workspace.get('iteration', ''))}",
-                f"Base artifact root: {lineage.get('base_artifacts_dir', workspace.get('artifacts_dir', ''))}",
-            ]
+    return all(item in help_text for item in frozen_contract)
+
+
+def _validate_claude_cleanup_paths(request: SessionCleanupRequest) -> str:
+    try:
+        validate_managed_cleanup_paths(
+            request.workspace,
+            task_id=request.task_id,
+            project_path=request.project_path,
         )
-    lines.extend(
-        [
-            "",
-            "After completing all steps, print a concise summary.",
-            "For long-running work, refresh AgentBC progress at least every few minutes:",
-            progress_command,
-        ]
+    except ABCError as exc:
+        return exc.code
+    except (OSError, TypeError, ValueError):
+        return "cleanup_path_invalid"
+    return ""
+
+
+def _claude_project_is_absent(output: str) -> bool:
+    return _CLAUDE_PROJECT_ABSENT_RE.search(output or "") is not None
+
+
+def _claude_cleanup_failed(
+    error_code: str,
+    *,
+    retryable: bool = False,
+) -> SessionCleanupResult:
+    return SessionCleanupResult(
+        state="failed",
+        capability="supported",
+        strategy="claude_project_purge",
+        error_code=error_code,
+        retryable=retryable,
     )
-    step_results = ",".join(
-        f'{{"id":{step.get("id", index)},"status":"done"}}'
-        for index, step in enumerate(task_packet.get("steps") or [], 1)
+
+
+def _claude_max_budget_usd(
+    task_packet: dict[str, Any],
+    configured_budget: float | None,
+) -> int | float | None:
+    extensions = (
+        task_packet.get("extensions")
+        if isinstance(task_packet.get("extensions"), dict)
+        else {}
     )
-    lines.extend(
-        [
-            "",
-            "Your final response must end with exactly one single-line terminal marker and no text after it:",
-            (
-                f'{FINAL_CALLBACK_PREFIX} {{"version":1,"task_id":{json.dumps(task_id)},'
-                f'"final_state":"completed","summary":"concise summary",'
-                f'"step_results":[{step_results}]}}'
+    if "agentbc.resources" not in extensions:
+        value: Any = configured_budget
+    else:
+        resource = extensions["agentbc.resources"]
+        if not isinstance(resource, dict):
+            raise ValueError("agentbc.resources must be an object")
+        if str(resource.get("executor") or "").strip().lower() != "claude":
+            raise ValueError("agentbc.resources.executor must be claude")
+        if resource.get("resource") != "max_budget_usd":
+            raise ValueError("agentbc.resources.resource must be max_budget_usd")
+        value = resource.get("current_limit")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Claude max budget must be a number")
+    if not math.isfinite(float(value)) or value <= 0:
+        raise ValueError("Claude max budget must be finite and greater than zero")
+    return float(value)
+
+
+def _claude_execution_session(task_packet: dict[str, Any]) -> dict[str, Any] | None:
+    extensions = (
+        task_packet.get("extensions")
+        if isinstance(task_packet.get("extensions"), dict)
+        else {}
+    )
+    if "agentbc.session" not in extensions:
+        return None
+    session = extensions["agentbc.session"]
+    if not isinstance(session, dict):
+        raise ValueError("agentbc.session must be an object")
+    if str(session.get("executor") or "").strip().lower() != "claude":
+        raise ValueError("agentbc.session.executor must be claude")
+    session_id = str(session.get("session_id") or "").strip()
+    try:
+        parsed_session_id = uuid.UUID(session_id)
+    except (AttributeError, ValueError) as exc:
+        raise ValueError("agentbc.session.session_id must be a UUID") from exc
+    if str(parsed_session_id) != session_id.lower():
+        raise ValueError("agentbc.session.session_id must use canonical UUID syntax")
+    run_ids = session.get("run_ids")
+    if (
+        not isinstance(run_ids, list)
+        or any(not isinstance(item, str) or not item.strip() for item in run_ids)
+        or len(run_ids) != len(set(run_ids))
+    ):
+        raise ValueError("agentbc.session.run_ids must contain unique non-empty strings")
+    return {
+        "version": 1,
+        "executor": "claude",
+        "session_id": session_id,
+        "resumed": bool(run_ids),
+        "persistence": "persistent",
+        "source": "preallocated",
+    }
+
+
+def _claude_execution_root(task_packet: dict[str, Any], workspace_root: Path) -> Path:
+    execution_session = _claude_execution_session(task_packet)
+    if execution_session is None:
+        return workspace_root
+    extensions = task_packet["extensions"]
+    session = extensions["agentbc.session"]
+    retain = session.get("retain")
+    if not isinstance(retain, bool):
+        raise ValueError("agentbc.session.retain must be a boolean")
+    project_path = str(session.get("project_path") or "").strip()
+    if not project_path:
+        raise ValueError("agentbc.session.project_path is required for Claude")
+    project_root = Path(project_path).expanduser()
+    if not project_root.is_absolute():
+        raise ValueError("agentbc.session.project_path must be absolute")
+    project_root = project_root.resolve()
+
+    workspace = (
+        task_packet.get("workspace")
+        if isinstance(task_packet.get("workspace"), dict)
+        else {}
+    )
+    if retain:
+        if session.get("project_mode") != "native":
+            raise ValueError("retained Claude sessions must use native project mode")
+        frozen_user_root = Path(
+            str(workspace.get("project_root") or workspace.get("root") or "")
+        ).expanduser()
+        if not frozen_user_root.is_absolute() or project_root != frozen_user_root.resolve():
+            raise ValueError("retained Claude project path does not match the frozen workspace")
+        if not project_root.is_dir():
+            raise ValueError(f"retained Claude project path does not exist: {project_root}")
+        return project_root
+
+    if session.get("project_mode") != "ephemeral":
+        raise ValueError("non-retained Claude sessions must use ephemeral project mode")
+    try:
+        validate_path_plan_workspace(workspace)
+    except ABCError as exc:
+        raise ValueError(f"invalid Claude PathPlan: {exc}") from exc
+    planned_path = str(workspace.get("executor_project_root") or "").strip()
+    if not planned_path:
+        raise ValueError("workspace.executor_project_root is required for ephemeral Claude")
+    planned_root = Path(planned_path).expanduser()
+    if not planned_root.is_absolute() or project_root != planned_root.resolve():
+        raise ValueError("Claude project path does not match workspace.executor_project_root")
+    project_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not project_root.is_dir() or project_root.resolve() != planned_root.resolve():
+        raise ValueError("Claude project path is not a safe directory")
+    return project_root
+
+
+def _build_prompt(task_packet: dict[str, Any]) -> str:
+    """Build the Claude prompt: shared contract plus Claude Code rules."""
+    return build_prompt_contract(
+        task_packet,
+        PromptPlatformExtras(
+            opening="You are executing a structured AgentBC task with Claude Code.",
+            task_id_line=True,
+            summary_line="After completing all steps, print a concise summary.",
+            extra_rules=(
+                "Do not claim user acceptance. completed only means your agent turn is finished and ready for user review.",
+                "Do not create Claude-internal tasks/todos. The AgentBC task record and report are the only execution ledger.",
+                "Your process cwd may be an internal temporary Claude project, not the Project root. Never place user deliverables in cwd by relative path; use the exact absolute Project root or Artifact root printed above for every deliverable and for the working directory of commands that create deliverables.",
+                "If the step asks another agent to execute or review work, use the AgentBC CLI handoff/dispatch command instead of doing that agent's work inline.",
+                "Keep required long-running commands in the foreground with a tool timeout longer than the expected runtime.",
+                "If Claude Code moves a command to the background, use BashOutput repeatedly until it exits. Never end this turn while a required background command is still running.",
             ),
-            "Use final_state input_required only with at least one declared step status blocked; plain permission or approval prose is not a valid stop.",
-            'For a two-option user decision, include "input":{"type":"choice","reason":"why the user must decide","options":[{"label":"Option A","description":"what A does or changes"},{"label":"Option B","description":"what B does or changes"}]}; give a concrete reason and a concrete description for each option. Labels must be distinct and at most 48 characters; descriptions must be at most 160 characters. Use type message for free text and type permission only for approve/deny.',
-            "A zero CLI exit without a valid marker fails the task. completed means flow execution ended, not user acceptance or quality approval.",
-        ]
+        ),
     )
-    return "\n".join(lines)
 
 
 def _workspace_root(task_packet: dict[str, Any]) -> Path | None:
@@ -531,6 +874,95 @@ def _extract_output_text(stdout: str, output_format: str) -> tuple[str, Any]:
                             texts.append(item["text"])
         return "\n".join(texts) if texts else stdout, parsed_lines
     return stdout, None
+
+
+def _claude_resource_exhaustion(
+    stdout: str,
+    stderr: str,
+    parsed_output: Any,
+    task_packet: dict[str, Any],
+    validation: CallbackValidation,
+    returncode: int,
+) -> dict[str, Any] | None:
+    """Detect confirmed Claude budget exhaustion with structured precedence.
+
+    Structured detection: the ``error_max_budget_usd`` subtype in Claude's JSON
+    output is authoritative whenever present. Text fallback is intentionally
+    narrow: it only accepts the exact ``Exceeded USD budget`` phrase when there
+    is no valid callback, the CLI exited non-zero, and the phrase appears in the
+    CLI error output. A valid callback or a retryable transport failure always
+    wins the terminal-state priority regardless of these diagnostics.
+    """
+    structured_detected, structured_limit = _claude_structured_budget_receipt(
+        parsed_output
+    )
+    if structured_detected:
+        return build_resource_exhaustion(
+            "claude",
+            "max_budget_usd",
+            used=None,
+            limit=structured_limit,
+            source="structured_error_max_budget_usd",
+            snapshot_limit=resource_snapshot_limit(task_packet, "claude"),
+        )
+    if validation.valid or returncode == 0:
+        return None
+    error_output = str(stderr or "")
+    if _CLAUDE_BUDGET_ERROR_RE.search(error_output) is None:
+        candidate = str(stdout or "").lstrip()
+        error_output = candidate if _CLAUDE_BUDGET_ERROR_RE.match(candidate) else ""
+    if _CLAUDE_BUDGET_ERROR_RE.search(error_output) is None:
+        return None
+    amount = _claude_budget_amount_from_text(error_output)
+    return build_resource_exhaustion(
+        "claude",
+        "max_budget_usd",
+        used=None,
+        limit=amount,
+        source="text_exceeded_usd_budget",
+        snapshot_limit=resource_snapshot_limit(task_packet, "claude"),
+    )
+
+
+def _claude_structured_budget_receipt(
+    parsed_output: Any,
+) -> tuple[bool, int | float | None]:
+    """Recursively find the authoritative subtype and its optional limit."""
+    if isinstance(parsed_output, dict):
+        if (
+            str(parsed_output.get("subtype") or "").strip() == "error_max_budget_usd"
+            or str(parsed_output.get("type") or "").strip() == "error_max_budget_usd"
+        ):
+            amount = _claude_budget_amount_from_text(
+                str(parsed_output.get("message") or "")
+            )
+            if amount is not None:
+                return True, amount
+            for field in ("budget", "max_budget_usd", "limit", "amount"):
+                value = parsed_output.get(field)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    return True, float(value)
+            return True, None
+        for value in parsed_output.values():
+            detected, limit = _claude_structured_budget_receipt(value)
+            if detected:
+                return True, limit
+    elif isinstance(parsed_output, list):
+        for item in parsed_output:
+            detected, limit = _claude_structured_budget_receipt(item)
+            if detected:
+                return True, limit
+    return False, None
+
+
+def _claude_budget_amount_from_text(text: str) -> int | float | None:
+    match = _CLAUDE_BUDGET_AMOUNT_RE.search(str(text or ""))
+    if match is None:
+        return None
+    try:
+        return float(match.group("amount"))
+    except (AttributeError, ValueError):
+        return None
 
 
 def _extract_summary(text: str) -> str:

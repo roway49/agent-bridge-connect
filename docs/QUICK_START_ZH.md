@@ -17,7 +17,7 @@
 包，然后执行 setup；它会识别本地执行器、安装 AgentBC 集成并启动 Runner：
 
 ```bash
-python3 -m pip install agentbc==1.0.1a3
+python3 -m pip install agentbc==1.0.2a1
 agentbc setup
 ```
 
@@ -26,25 +26,25 @@ agentbc setup
 
 ## 3. 通过已校验的 GitHub Release 安装
 
-打开 [AgentBC 1.0.1A3 Release](https://github.com/roway49/agent-bridge-connect/releases/tag/v1.0.1A3)
+打开 [AgentBC 1.0.2A Release](https://github.com/roway49/agent-bridge-connect/releases/tag/v1.0.2A)
 查看发布说明和资产。推荐使用一行安装命令：它会下载发布校验文件、验证压缩包、
 在隔离环境中安装 AgentBC、执行 setup，并运行纯包 smoke test：
 
 ```bash
 curl -fsSL \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A3/install-agentbc-alpha.sh \
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.2A/install-agentbc-alpha.sh \
   | sh -s -- \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.1A3
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.2A
 ```
 
 如需手动安装，请从同一个 Release 下载 Alpha 压缩包及其 `.sha256` 文件，随后
 依次校验压缩包和包内文件：
 
 ```bash
-shasum -a 256 -c agentbc-v1.0.1A3-macos-local-alpha.tar.gz.sha256
+shasum -a 256 -c agentbc-v1.0.2A-macos-local-alpha.tar.gz.sha256
 mkdir -p "$HOME/AgentBC-Alpha"
-tar -xzf agentbc-v1.0.1A3-macos-local-alpha.tar.gz -C "$HOME/AgentBC-Alpha"
-cd "$HOME/AgentBC-Alpha/agentbc-v1.0.1A3-macos-local-alpha"
+tar -xzf agentbc-v1.0.2A-macos-local-alpha.tar.gz -C "$HOME/AgentBC-Alpha"
+cd "$HOME/AgentBC-Alpha/agentbc-v1.0.2A-macos-local-alpha"
 shasum -a 256 -c SHA256SUMS
 ```
 
@@ -53,7 +53,7 @@ shasum -a 256 -c SHA256SUMS
 ### 安装手动下载的压缩包
 
 ```bash
-./install_local_alpha.sh ./agentbc-1.0.1a3-py3-none-any.whl
+./install_local_alpha.sh ./agentbc-1.0.2a1-py3-none-any.whl
 ```
 
 安装脚本会创建隔离环境、识别本地执行器、安装 AgentBC 集成、执行 setup，
@@ -75,13 +75,32 @@ command -v agentbc
 agentbc --version
 agentbc setup --show
 agentbc runner status
+agentbc doctor
 ```
 
-以上四项都成功后再开始派发任务。Release 包还提供不启动 Agent 的纯包验证：
+以上五项全部成功后再开始派发任务；`doctor` 健康时退出码为 `0`，有警告（例如已安装 Skill
+漂移）为 `1`，安装不可用时为 `2`。Release 包还提供不启动 Agent 的纯包验证：
 
 ```bash
 ./run_local_alpha_smoke.sh
 ```
+
+## 6. 命令一览
+
+[用户指南](USER_GUIDE_ZH.md) 是完整的命令与行为契约。以下为其中覆盖的固定命令：
+
+- `agentbc claude budget <usd>` / `agentbc hermes max-turns <turns>`：后续 Executor run 的
+  资源默认值；每个任务在派发时冻结生效值。
+- `agentbc session retention status|enable|disable`：执行器临时会话保留策略。清理在后台
+  无感执行，永远不会删除派发者会话。
+- `agentbc record clean`：只删除符合条件的终态任务运行时诊断；`task.json`、索引和报告始终
+  保留——报告永远不会被删除。
+- `agentbc task close <TASKCODE>`：只关闭当前排队中（pending）或活跃的 chain head；终态与
+  过期迭代都会被拒绝。
+- `agentbc doctor`：只读健康检查，退出码契约固定为 `0` healthy / `1` warning /
+  `2` unavailable。
+- 权限模式 `inherit` / `safe` / `full` 通过 `--permission-mode` 传递；`safe` 任务可以停下来
+  用 approve/deny 的 `permission` 输入请求一次性 `full` 延续。
 
 下一步请阅读[用户指南](USER_GUIDE_ZH.md)，了解任务创建、查询、handoff、
 恢复与关闭流程。

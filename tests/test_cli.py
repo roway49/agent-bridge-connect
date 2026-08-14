@@ -16,6 +16,9 @@ class CliTests(unittest.TestCase):
             "doctor",
             "uninstall",
             "init",
+            "claude",
+            "hermes",
+            "session",
             "task",
             "worker",
             "runner",
@@ -23,7 +26,6 @@ class CliTests(unittest.TestCase):
             self.assertIn(command, help_text)
         for legacy_command in (
             "submit",
-            "session",
             "watch",
             "notify",
             "_shorthand",

@@ -32,12 +32,12 @@ Task briefs, reports, and default-workspace deliverables are not stored here:
 
 Deliverables for a user-selected customer path remain in that customer project.
 
-Run `agentbc record clean` to remove terminal-task runtime diagnostics while
-preserving `task.json`, `TASK_INDEX.md`, and `task_index.jsonl`. Task briefs and
-reports in `../tasks/report/` are not affected by record cleanup.
+Run `agentbc record clean` to remove eligible terminal-task runtime diagnostics
+only. `task.json`, `TASK_INDEX.md`, and `task_index.jsonl` are always preserved,
+and reports are never deleted by record cleanup.
 
-`agentbc task close <TASKCODE>` only applies to the current active chain head.
-Terminal, pending, and stale iterations are rejected. Closing an active `001`
+`agentbc task close <TASKCODE>` closes the current queued (pending) or active
+chain head; terminal and stale iterations are rejected. Closing an active `001`
 root removes its reports, AgentBC-managed artifacts, runtime record, and task-code
 claim. Closing an active later iteration requires `--confirm`; only that iteration's
 task/report files and runtime record are removed. Earlier iterations, indexes, the
@@ -63,6 +63,23 @@ def compact_diagnostic_details(value: Any) -> Any:
         compact: dict[str, Any] = {}
         for key, item in value.items():
             name = str(key)
+            if name == "events" and isinstance(item, list):
+                compact["events_seen"] = len(item)
+                event_types: list[str] = []
+                for event in item:
+                    if not isinstance(event, dict):
+                        continue
+                    event_type = str(event.get("event_type") or "").strip()
+                    if event_type and event_type not in event_types:
+                        event_types.append(event_type)
+                    if len(event_types) >= 8:
+                        break
+                if event_types:
+                    compact["event_types"] = event_types
+                continue
+            if name in {"command", "aggregated_output", "prompt", "raw_output"}:
+                compact[f"{name}_bytes"] = len(str(item or "").encode("utf-8"))
+                continue
             if name in {"stdout", "stderr"}:
                 text = str(item or "")
                 compact[f"{name}_bytes"] = len(text.encode("utf-8"))
@@ -196,6 +213,11 @@ def _compact_terminal_extensions(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
     compact: dict[str, Any] = {}
+    for key in ("agentbc.resources", "agentbc.session", "agentbc.permission"):
+        item = value.get(key)
+        if item not in (None, "", [], {}):
+            # These v1 policy receipts are already bounded and must remain exact.
+            compact[key] = item
     for key in (
         "agentbc.provenance",
         "agentbc.lineage",

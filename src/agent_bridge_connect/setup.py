@@ -7,6 +7,18 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from . import __version__
+from .config import (
+    DEFAULT_CLAUDE_MAX_BUDGET_USD,
+    DEFAULT_HERMES_MAX_TURNS,
+    configured_claude_budget,
+    configured_hermes_max_turns,
+    configured_session_retention,
+    load_config,
+    resolve_config_path,
+    update_config_atomic,
+    validate_config,
+)
 from .path_provider import find_binary
 from .permission_modes import (
     DEFAULT_PERMISSION_MODE,
@@ -14,15 +26,22 @@ from .permission_modes import (
     normalize_permission_mode,
 )
 from .protocol import ABCError
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10
-    tomllib = None  # type: ignore[assignment]
+from .skill_packages import (
+    build_skill_manifest,
+    classify_skill_package,
+    remove_managed_skill_package,
+    replace_managed_skill_package,
+)
 
 
 _OWNED_ALIAS_MARKER = "# AgentBC-owned abc shim"
 _COMMAND_TIMEOUT_S = 10
+_HERMES_CONFIG_TIMEOUT_S = 5
+_HERMES_CONFIG_MAX_BYTES = 1024 * 1024
+_PROTECTED_EXECUTOR_SETTINGS = {
+    "claude": frozenset({"max_budget_usd"}),
+    "hermes": frozenset({"max_turns"}),
+}
 _SKILL_TEMPLATE_FALLBACK = """# AgentBC Skill
 
 当用户要求执行、审查或管理任务时，使用 agentbc CLI：
@@ -294,6 +313,8 @@ def run_show() -> dict[str, Any]:
     _print_scan_report(agents, workspace_root)
     permission_mode, permission_source = configured_permission_mode(config)
     _print_permission_mode_help(permission_mode)
+    resources = _configured_resource_report(config)
+    _print_resource_settings(resources)
     return {
         "ok": True,
         "mode": "show",
@@ -302,6 +323,7 @@ def run_show() -> dict[str, Any]:
         "workspace_root": workspace_root,
         "permission_mode": permission_mode,
         "permission_source": permission_source,
+        "resources": resources,
     }
 
 
@@ -313,8 +335,6 @@ def run_setup(
     config_path = _config_path()
     config = _load_config(config_path)
     agents = scan_all_agents()
-    config.setdefault("workspace_root", str(_default_workspace_root()))
-    config["board_root"] = str(_effective_workspace_root(config) / "record")
     workspace_root = str(_effective_workspace_root(config))
     _print_scan_report(agents, workspace_root)
     previous_permission = config.get("permission_mode")
@@ -323,10 +343,11 @@ def run_setup(
         explicit_mode=permission_mode,
         interactive=interactive,
     )
-    config["permission_mode"] = selected_permission
-    executors = config.setdefault("executors", {})
+    permission_touched = previous_permission is None or selected_permission != previous_permission
     enabled: list[str] = []
     skipped: list[str] = []
+    executor_updates: dict[str, dict[str, Any]] = {}
+    resource_updates: dict[str, tuple[Any, bool, str]] = {}
 
     for agent in agents:
         if not agent["found"] or not agent["supported_executor"]:
@@ -340,13 +361,44 @@ def run_setup(
             ):
                 skipped.append(agent["name"])
                 continue
-        executors[agent["name"]] = _executor_config_for(agent)
+        executor_updates[agent["name"]] = _executor_config_for(agent)
+        if agent["name"] == "claude":
+            resource_updates["claude"] = _select_claude_budget(config, interactive=interactive)
+        elif agent["name"] == "hermes":
+            resource_updates["hermes"] = _select_hermes_max_turns(
+                config,
+                command=agent.get("path") or agent.get("binary") or "hermes",
+                interactive=interactive,
+            )
         enabled.append(agent["name"])
 
-    config_written = False
-    if enabled or not config_path.exists() or previous_permission != selected_permission:
-        _write_config(config_path, config)
-        config_written = True
+    retention_value, retention_touched, retention_source = _select_session_retention(
+        config,
+        interactive=interactive,
+    )
+
+    def apply_setup(latest: dict[str, Any]) -> None:
+        latest.setdefault("workspace_root", str(_default_workspace_root()))
+        latest.setdefault("board_root", str(_effective_workspace_root(latest) / "record"))
+        if permission_touched:
+            latest["permission_mode"] = selected_permission
+        executors = latest.setdefault("executors", {})
+        for name, desired in executor_updates.items():
+            current = executors.get(name)
+            if not isinstance(current, dict):
+                current = {}
+            executors[name] = _merge_executor_config(name, current, desired)
+        claude_setting = resource_updates.get("claude")
+        if claude_setting and claude_setting[1]:
+            executors.setdefault("claude", {})["max_budget_usd"] = claude_setting[0]
+        hermes_setting = resource_updates.get("hermes")
+        if hermes_setting and hermes_setting[1]:
+            executors.setdefault("hermes", {})["max_turns"] = hermes_setting[0]
+        if retention_touched:
+            latest.setdefault("sessions", {})["retain_executor_sessions"] = retention_value
+
+    config, config_written = update_config_atomic(apply_setup, config_path)
+    workspace_root = str(_effective_workspace_root(config))
     from .config import init_board
 
     init_board(config["board_root"])
@@ -357,7 +409,7 @@ def run_setup(
         skill_results["codex"] = (
             install_codex_skill(interactive=True)
             if interactive
-            else install_codex_skill(interactive=False, force=True)
+            else install_codex_skill(interactive=False)
         )
     else:
         skill_results["codex"] = {
@@ -371,7 +423,7 @@ def run_setup(
         skill_results["hermes"] = (
             install_hermes_skill(interactive=True)
             if interactive
-            else install_hermes_skill(interactive=False, force=True, all_profiles=True)
+            else install_hermes_skill(interactive=False, all_profiles=True)
         )
     else:
         skill_results["hermes"] = {
@@ -385,7 +437,7 @@ def run_setup(
         skill_results["claude"] = (
             install_claude_skill(interactive=True)
             if interactive
-            else install_claude_skill(interactive=False, force=True)
+            else install_claude_skill(interactive=False)
         )
     else:
         skill_results["claude"] = {
@@ -405,6 +457,10 @@ def run_setup(
         "config_written": config_written,
         "workspace_root": workspace_root,
         "permission_mode": selected_permission,
+        "resources": {
+            **_configured_resource_report(config),
+            "retention_selection_source": retention_source,
+        },
         "codex": codex,
         "capabilities": capabilities,
         "agents": agents,
@@ -426,10 +482,34 @@ def run_update(interactive: bool = True) -> dict[str, Any]:
     _print_scan_report(agents, workspace_root)
     items = _update_items(agents, config)
     _print_selectable_items("Updates", items)
-    selected = _select_items(items, interactive=interactive)
-    actions = [_apply_update_item(item, config) for item in selected]
+    selected = (
+        _select_items(items, interactive=True)
+        if interactive
+        else [item for item in items if item["action"].startswith("install_")]
+    )
+    actions = [
+        _apply_update_item(item, config, force=interactive)
+        for item in selected
+    ]
     if any(action.get("config_changed") for action in actions):
-        _write_config(config_path, config)
+        selected_executors = [
+            item for item in selected if item.get("action") == "update_executor"
+        ]
+
+        def apply_updates(latest: dict[str, Any]) -> None:
+            latest.setdefault("workspace_root", str(_default_workspace_root()))
+            latest.setdefault("board_root", str(_effective_workspace_root(latest) / "record"))
+            executors = latest.setdefault("executors", {})
+            for item in selected_executors:
+                agent = item["agent"]
+                current = executors.get(agent["name"])
+                if not isinstance(current, dict):
+                    current = {}
+                executors[agent["name"]] = _merge_executor_config(
+                    agent["name"], current, _executor_config_for(agent)
+                )
+
+        update_config_atomic(apply_updates, config_path)
     return {
         "ok": True,
         "mode": "update",
@@ -500,8 +580,9 @@ def run_uninstall(
     hermes_result = uninstall_hermes_skill(interactive=False, force=True, all_profiles=True)
     if hermes_result.get("removed"):
         removed.extend(str(Path(path).parent) for path in hermes_result.get("paths", []))
-    for skill_root in (_claude_skill_path().parent, _codex_skill_root()):
-        _remove_owned_path(skill_root, removed)
+    for result in (uninstall_claude_skill(), uninstall_codex_skill()):
+        if result.get("removed"):
+            removed.append(str(Path(result["path"]).parent))
 
     install_root = Path(os.environ.get("AGENTBC_ALPHA_HOME", Path.home() / ".agentbc-alpha")).expanduser()
     bin_dir = Path(os.environ.get("AGENTBC_BIN_DIR", Path.home() / ".local" / "bin")).expanduser()
@@ -640,58 +721,14 @@ def install_codex_skill(
     root = Path(path).expanduser() if path is not None else _codex_skill_root()
     if root.name == "SKILL.md":
         root = root.parent
-    skill_template = _load_codex_skill_template()
-    yaml_template = _load_codex_openai_template()
-    skill_path = root / "SKILL.md"
-    if _codex_skill_package_matches(root, skill_template, yaml_template):
-        return {
-            "installed": True,
-            "changed": False,
-            "status": "already_installed",
-            "path": str(skill_path),
-        }
-
-    if interactive and not force:
-        print(f"Codex Skill requires writing: {root}")
-        try:
-            answer = input("Install Codex Skill? [Y/n/view] ")
-        except EOFError:
-            return {
-                "installed": False,
-                "changed": False,
-                "status": "skipped_no_confirmation",
-                "path": str(skill_path),
-            }
-        if answer.strip().lower() in {"view", "v"}:
-            print(skill_template)
-            if not _confirm("Confirm install? [Y/n] ", default=True, eof_default=False):
-                return {
-                    "installed": False,
-                    "changed": False,
-                    "status": "declined",
-                    "path": str(skill_path),
-                }
-        elif answer.strip().lower() in {"n", "no", "q", "quit"}:
-            return {
-                "installed": False,
-                "changed": False,
-                "status": "declined",
-                "path": str(skill_path),
-            }
-
-    _replace_skill_package(
+    return _install_skill_package(
         root,
-        {
-            Path("SKILL.md"): skill_template,
-            Path("agents/openai.yaml"): yaml_template,
-        },
+        platform="codex",
+        display_name="Codex Skill",
+        result_path=root / "SKILL.md",
+        interactive=interactive,
+        force=force,
     )
-    return {
-        "installed": True,
-        "changed": True,
-        "status": "installed",
-        "path": str(skill_path),
-    }
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -711,65 +748,80 @@ def install_hermes_skill(
 ) -> dict[str, Any]:
     """Install the Hermes AgentBC Skill and derived command across profiles."""
     destinations = _hermes_skill_destinations(path=path, all_profiles=all_profiles)
-    template = _load_skill_template()
-    reference_template = _load_skill_reference_template()
-    pending = [
-        destination
+    states = {
+        destination: _classify_installed_skill(destination.parent, "hermes")
         for destination in destinations
-        if not _hermes_skill_package_matches(destination, template, reference_template)
-    ]
+    }
+    pending = [destination for destination, state in states.items() if state["classification"] != "current"]
     result_base = {
         "path": str(destinations[0]),
         "paths": [str(destination) for destination in destinations],
         "profile_scope": "all" if path is None and all_profiles else "single",
         "profile_count": max(len(destinations) - 1, 0),
         "command": "/agentbc",
+        "classifications": {
+            str(destination): state["classification"] for destination, state in states.items()
+        },
+        "expected_manifest": states[destinations[0]]["expected_manifest"],
     }
     if not pending:
         return {
             **result_base,
-            "installed": True,
+            "installed": all(state["installed"] for state in states.values()),
             "changed": False,
             "status": "already_installed",
+            "classification": "current",
+            "manifest": states[destinations[0]]["manifest"],
+        }
+
+    modified = [
+        destination for destination in pending if states[destination]["classification"] == "modified"
+    ]
+    if modified and not interactive and not force:
+        return {
+            **result_base,
+            "installed": all(state["installed"] for state in states.values()),
+            "changed": False,
+            "status": "modified_requires_confirmation",
+            "classification": "modified",
+            "manifest": states[modified[0]]["manifest"],
         }
 
     if interactive and not force:
         print("Hermes Skill and /agentbc command require writing:")
         for destination in pending:
             print(f"  {destination}")
-        try:
-            answer = input("Install Hermes Skill in all detected profiles? [Y/n/view] ")
-        except EOFError:
+        confirmation = _confirm_skill_package_install(
+            "Install Hermes Skill in all detected profiles?",
+            preview=_load_skill_template(),
+            modified=bool(modified),
+        )
+        if confirmation != "confirmed":
             return {
                 **result_base,
                 "installed": False,
                 "changed": False,
-                "status": "skipped_no_confirmation",
-            }
-        if answer.strip().lower() in {"view", "v"}:
-            print(template)
-            if not _confirm("Confirm install? [Y/n] ", default=True, eof_default=False):
-                return {
-                    **result_base,
-                    "installed": False,
-                    "changed": False,
-                    "status": "declined",
-                }
-        elif answer.strip().lower() in {"n", "no", "q", "quit"}:
-            return {
-                **result_base,
-                "installed": False,
-                "changed": False,
-                "status": "declined",
+                "status": (
+                    "skipped_no_confirmation"
+                    if confirmation == "no_confirmation"
+                    else "declined"
+                ),
+                "classification": "modified" if modified else states[pending[0]]["classification"],
+                "manifest": states[pending[0]]["manifest"],
             }
 
     for destination in pending:
-        _write_hermes_skill_package(destination, template, reference_template)
+        _write_current_skill_package(destination.parent, "hermes", states[destination])
     return {
         **result_base,
         "installed": True,
         "changed": True,
         "status": "installed",
+        "classification": "current",
+        "previous_classification": (
+            "modified" if modified else states[pending[0]]["classification"]
+        ),
+        "manifest": _expected_skill_manifest("hermes"),
     }
 
 
@@ -781,50 +833,133 @@ def install_claude_skill(
 ) -> dict[str, Any]:
     """Install or refresh the Claude Code AgentBC controller skill."""
     destination = Path(path).expanduser() if path is not None else _claude_skill_path()
-    template = _load_claude_skill_template()
-    if _single_skill_package_matches(destination, template):
+    return _install_skill_package(
+        destination.parent,
+        platform="claude",
+        display_name="Claude Skill",
+        result_path=destination,
+        interactive=interactive,
+        force=force,
+    )
+
+
+def _install_skill_package(
+    root: Path,
+    *,
+    platform: str,
+    display_name: str,
+    result_path: Path,
+    interactive: bool,
+    force: bool,
+) -> dict[str, Any]:
+    state = _classify_installed_skill(root, platform)
+    result_base = {
+        "path": str(result_path),
+        "classification": state["classification"],
+        "manifest": state["manifest"],
+        "expected_manifest": state["expected_manifest"],
+    }
+    if state["classification"] == "current":
         return {
+            **result_base,
             "installed": True,
             "changed": False,
             "status": "already_installed",
-            "path": str(destination),
         }
-
+    if state["classification"] == "modified" and not interactive and not force:
+        return {
+            **result_base,
+            "installed": state["installed"],
+            "changed": False,
+            "status": "modified_requires_confirmation",
+        }
     if interactive and not force:
-        print(f"Claude Skill requires writing: {destination}")
-        try:
-            answer = input("Install Claude Skill? [Y/n/view] ")
-        except EOFError:
+        print(f"{display_name} requires writing: {root}")
+        confirmation = _confirm_skill_package_install(
+            f"Install {display_name}?",
+            preview=_current_skill_files(platform)["SKILL.md"].decode("utf-8"),
+            modified=state["classification"] == "modified",
+        )
+        if confirmation != "confirmed":
             return {
+                **result_base,
                 "installed": False,
                 "changed": False,
-                "status": "skipped_no_confirmation",
-                "path": str(destination),
+                "status": (
+                    "skipped_no_confirmation"
+                    if confirmation == "no_confirmation"
+                    else "declined"
+                ),
             }
-        if answer.strip().lower() in {"view", "v"}:
-            print(template)
-            if not _confirm("Confirm install? [Y/n] ", default=True, eof_default=False):
-                return {
-                    "installed": False,
-                    "changed": False,
-                    "status": "declined",
-                    "path": str(destination),
-                }
-        elif answer.strip().lower() in {"n", "no", "q", "quit"}:
-            return {
-                "installed": False,
-                "changed": False,
-                "status": "declined",
-                "path": str(destination),
-            }
-
-    _replace_skill_package(destination.parent, {Path(destination.name): template})
+    _write_current_skill_package(root, platform, state)
     return {
+        **result_base,
         "installed": True,
         "changed": True,
         "status": "installed",
-        "path": str(destination),
+        "classification": "current",
+        "previous_classification": state["classification"],
+        "manifest": state["expected_manifest"],
     }
+
+
+def _confirm_skill_package_install(prompt: str, *, preview: str, modified: bool) -> str:
+    suffix = " [y/N/view] " if modified else " [Y/n/view] "
+    try:
+        answer = input(prompt + suffix).strip().lower()
+    except EOFError:
+        return "no_confirmation"
+    if answer in {"view", "v"}:
+        print(preview)
+        confirmed = _confirm(
+            "Confirm replacement? [y/N] " if modified else "Confirm install? [Y/n] ",
+            default=not modified,
+            eof_default=False,
+        )
+        return "confirmed" if confirmed else "declined"
+    if answer in {"y", "yes"}:
+        return "confirmed"
+    if answer in {"n", "no", "q", "quit"}:
+        return "declined"
+    return "declined" if modified else "confirmed"
+
+
+def _current_skill_files(platform: str) -> dict[str, bytes]:
+    skill_loaders = {
+        "codex": _load_codex_skill_template,
+        "claude": _load_claude_skill_template,
+        "hermes": _load_skill_template,
+    }
+    files = {
+        "SKILL.md": skill_loaders[platform]().encode("utf-8"),
+        "references/agentbc-steps-yaml.md": _load_skill_reference_template().encode("utf-8"),
+        "references/controller-contract.md": _load_controller_contract_template().encode("utf-8"),
+    }
+    if platform == "codex":
+        files["agents/openai.yaml"] = _load_codex_openai_template().encode("utf-8")
+    return files
+
+
+def _expected_skill_manifest(platform: str) -> dict[str, Any]:
+    return build_skill_manifest(platform, __version__, _current_skill_files(platform))
+
+
+def _classify_installed_skill(root: Path, platform: str) -> dict[str, Any]:
+    return classify_skill_package(
+        root,
+        platform=platform,
+        package_version=__version__,
+        current_files=_current_skill_files(platform),
+    )
+
+
+def _write_current_skill_package(root: Path, platform: str, state: dict[str, Any]) -> None:
+    replace_managed_skill_package(
+        root,
+        platform=platform,
+        files=_current_skill_files(platform),
+        manifest=state["expected_manifest"],
+    )
 
 
 def uninstall_hermes_skill(
@@ -858,15 +993,51 @@ def uninstall_hermes_skill(
                 "path": str(destinations[0]),
                 "paths": [str(destination) for destination in destinations],
             }
-    for destination in existing:
-        shutil.rmtree(destination.parent)
+    removals = [
+        remove_managed_skill_package(
+            destination.parent,
+            platform="hermes",
+            package_version=__version__,
+            current_files=_current_skill_files("hermes"),
+        )
+        for destination in existing
+    ]
+    changed = any(result["changed"] for result in removals)
     return {
-        "removed": True,
-        "changed": True,
-        "status": "removed",
+        "removed": changed,
+        "changed": changed,
+        "status": "removed" if changed else "missing",
         "path": str(destinations[0]),
         "paths": [str(destination) for destination in destinations],
+        "classifications": [result["classification"] for result in removals],
     }
+
+
+def _uninstall_single_skill(root: Path, platform: str) -> dict[str, Any]:
+    result = remove_managed_skill_package(
+        root,
+        platform=platform,
+        package_version=__version__,
+        current_files=_current_skill_files(platform),
+    )
+    return {
+        **result,
+        "status": "removed" if result["removed"] else "missing",
+        "path": str(root / "SKILL.md"),
+    }
+
+
+def uninstall_codex_skill(path: str | Path | None = None) -> dict[str, Any]:
+    root = Path(path).expanduser() if path is not None else _codex_skill_root()
+    if root.name == "SKILL.md":
+        root = root.parent
+    return _uninstall_single_skill(root, "codex")
+
+
+def uninstall_claude_skill(path: str | Path | None = None) -> dict[str, Any]:
+    destination = Path(path).expanduser() if path is not None else _claude_skill_path()
+    root = destination.parent if destination.name == "SKILL.md" else destination
+    return _uninstall_single_skill(root, "claude")
 
 
 def generate_default_config() -> dict[str, Any]:
@@ -1005,26 +1176,237 @@ def _executor_config_for(agent: dict[str, Any]) -> dict[str, Any]:
         result["safe_mode"] = True
         result["permission_mode"] = "acceptEdits"
         result["output_format"] = "text"
-        result["max_budget_usd"] = 1.0
+        result["max_budget_usd"] = DEFAULT_CLAUDE_MAX_BUDGET_USD
         result["allowed_tools"] = ["Read", "Write", "Edit", "Bash"]
     return result
 
 
-def _write_config(path: Path, config: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(_toml_dumps(config), encoding="utf-8")
-    temporary.replace(path)
+def _merge_executor_config(
+    name: str,
+    current: dict[str, Any],
+    desired: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(current)
+    protected = _PROTECTED_EXECUTOR_SETTINGS.get(name, frozenset())
+    for key, value in desired.items():
+        if key not in protected:
+            merged[key] = value
+    return merged
 
 
 def _load_config(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    if tomllib is not None:
-        with path.open("rb") as handle:
-            data = tomllib.load(handle)
-        return data if isinstance(data, dict) else {}
-    return _load_toml_compat(path.read_text(encoding="utf-8"))
+    config = load_config(path)
+    errors = validate_config(config)
+    if errors:
+        raise ABCError("config_invalid", "; ".join(errors), {"errors": errors})
+    return config
+
+
+def resolve_hermes_default_max_turns(command: str) -> tuple[int, str]:
+    """Read only Hermes' documented max-turns field without exposing its config."""
+    try:
+        completed = subprocess.run(
+            [command, "config", "path"],
+            capture_output=True,
+            text=True,
+            timeout=_HERMES_CONFIG_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return DEFAULT_HERMES_MAX_TURNS, "hermes_default_90"
+    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    if completed.returncode != 0 or len(lines) != 1:
+        return DEFAULT_HERMES_MAX_TURNS, "hermes_default_90"
+    path = Path(lines[0]).expanduser()
+    try:
+        if not path.is_file() or path.stat().st_size > _HERMES_CONFIG_MAX_BYTES:
+            return DEFAULT_HERMES_MAX_TURNS, "hermes_default_90"
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return DEFAULT_HERMES_MAX_TURNS, "hermes_default_90"
+    nested, legacy = _extract_hermes_max_turns(text)
+    if nested is not None:
+        return nested, "hermes_agent_config"
+    if legacy is not None:
+        return legacy, "hermes_legacy_config"
+    return DEFAULT_HERMES_MAX_TURNS, "hermes_default_90"
+
+
+def _extract_hermes_max_turns(text: str) -> tuple[int | None, int | None]:
+    nested: int | None = None
+    legacy: int | None = None
+    in_agent = False
+    agent_child_indent: int | None = None
+    for raw_line in text.splitlines():
+        content = raw_line.split("#", 1)[0].rstrip()
+        if not content.strip() or "\t" in content[: len(content) - len(content.lstrip())]:
+            continue
+        indent = len(content) - len(content.lstrip(" "))
+        stripped = content.strip()
+        if indent == 0:
+            in_agent = stripped == "agent:"
+            agent_child_indent = None
+            value = _plain_yaml_positive_int(stripped, "max_turns")
+            if value is not None:
+                legacy = value
+            continue
+        if in_agent:
+            if agent_child_indent is None:
+                agent_child_indent = indent
+            value = _plain_yaml_positive_int(stripped, "max_turns")
+            if value is not None and indent == agent_child_indent:
+                nested = value
+    return nested, legacy
+
+
+def _plain_yaml_positive_int(line: str, key: str) -> int | None:
+    prefix = f"{key}:"
+    if not line.startswith(prefix):
+        return None
+    raw = line[len(prefix) :].strip()
+    if not raw.isascii() or not raw.isdecimal():
+        return None
+    value = int(raw)
+    return value if value > 0 else None
+
+
+def _select_claude_budget(
+    config: dict[str, Any],
+    *,
+    interactive: bool,
+) -> tuple[float, bool, str]:
+    current_table = config.get("executors", {}).get("claude", {})
+    has_current = isinstance(current_table, dict) and "max_budget_usd" in current_table
+    current, current_source = configured_claude_budget(config)
+    if not interactive:
+        return (current, not has_current, current_source)
+    prompt = (
+        f"Claude max budget current ${current:g} "
+        f"[Enter=keep, 1=default ${DEFAULT_CLAUDE_MAX_BUDGET_USD:g}, 2=custom]: "
+        if has_current
+        else f"Claude max budget [1=default ${DEFAULT_CLAUDE_MAX_BUDGET_USD:g}, 2=custom] (1): "
+    )
+    answer = _prompt(prompt, default="").strip().lower()
+    if has_current and not answer:
+        return current, False, "configured"
+    if not answer or answer in {"1", "default"}:
+        return DEFAULT_CLAUDE_MAX_BUDGET_USD, True, "claude_default_10"
+    if answer not in {"2", "custom"}:
+        print("Choose 1 for default or 2 for custom.")
+        return _select_claude_budget(config, interactive=interactive)
+    while True:
+        raw = _prompt("Claude max budget USD: ", default="").strip()
+        if not raw:
+            return (current, False, "configured") if has_current else (
+                DEFAULT_CLAUDE_MAX_BUDGET_USD,
+                True,
+                "claude_default_10",
+            )
+        try:
+            value = float(raw)
+        except ValueError:
+            value = 0.0
+        if value > 0 and value != float("inf") and value == value:
+            return value, True, "custom"
+        print("Enter a positive finite number.")
+
+
+def _select_hermes_max_turns(
+    config: dict[str, Any],
+    *,
+    command: str,
+    interactive: bool,
+) -> tuple[int, bool, str]:
+    current_table = config.get("executors", {}).get("hermes", {})
+    has_current = isinstance(current_table, dict) and "max_turns" in current_table
+    current, current_source = configured_hermes_max_turns(config)
+    if not interactive:
+        if has_current:
+            return current, False, current_source
+        value, source = resolve_hermes_default_max_turns(command)
+        return value, True, source
+    prompt = (
+        f"Hermes max turns current {current} [Enter=keep, 1=use Hermes default, 2=custom]: "
+        if has_current
+        else "Hermes max turns [1=use Hermes default, 2=custom] (1): "
+    )
+    answer = _prompt(prompt, default="").strip().lower()
+    if has_current and not answer:
+        return current, False, "configured"
+    if not answer or answer in {"1", "default"}:
+        value, source = resolve_hermes_default_max_turns(command)
+        return value, True, source
+    if answer not in {"2", "custom"}:
+        print("Choose 1 for default or 2 for custom.")
+        return _select_hermes_max_turns(config, command=command, interactive=interactive)
+    while True:
+        raw = _prompt("Hermes max turns: ", default="").strip()
+        if not raw:
+            if has_current:
+                return current, False, "configured"
+            value, source = resolve_hermes_default_max_turns(command)
+            return value, True, source
+        if raw.isascii() and raw.isdecimal() and int(raw) > 0:
+            return int(raw), True, "custom"
+        print("Enter a positive integer.")
+
+
+def _select_session_retention(
+    config: dict[str, Any],
+    *,
+    interactive: bool,
+) -> tuple[bool, bool, str]:
+    sessions = config.get("sessions")
+    has_current = isinstance(sessions, dict) and "retain_executor_sessions" in sessions
+    current, source = configured_session_retention(config)
+    if not interactive:
+        return current, not has_current, source
+    if has_current:
+        default_label = "enabled" if current else "disabled"
+        prompt = f"Retain executor temporary sessions? [y/n, Enter={default_label}]: "
+    else:
+        prompt = "Retain executor temporary sessions? [y/N]: "
+    answer = _prompt(prompt, default="").strip().lower()
+    if not answer:
+        return current, not has_current, source
+    if answer in {"y", "yes", "enable", "enabled"}:
+        return True, True, "interactive"
+    if answer in {"n", "no", "disable", "disabled"}:
+        return False, True, "interactive"
+    print("Choose y or n.")
+    return _select_session_retention(config, interactive=interactive)
+
+
+def _configured_resource_report(config: dict[str, Any]) -> dict[str, Any]:
+    claude, claude_source = configured_claude_budget(config)
+    hermes, hermes_source = configured_hermes_max_turns(config)
+    retention, retention_source = configured_session_retention(config)
+    return {
+        "claude_max_budget_usd": claude,
+        "claude_source": claude_source,
+        "hermes_max_turns": hermes,
+        "hermes_source": hermes_source,
+        "retain_executor_sessions": retention,
+        "retention_source": retention_source,
+    }
+
+
+def _print_resource_settings(resources: dict[str, Any]) -> None:
+    print()
+    print("Executor resource settings:")
+    print(
+        f"  Claude max budget: ${resources['claude_max_budget_usd']:g} "
+        f"({resources['claude_source']})"
+    )
+    print(
+        f"  Hermes max turns: {resources['hermes_max_turns']} "
+        f"({resources['hermes_source']})"
+    )
+    print(
+        "  Retain executor sessions: "
+        f"{str(resources['retain_executor_sessions']).lower()} "
+        f"({resources['retention_source']})"
+    )
 
 
 def _update_items(agents: list[dict[str, Any]], config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1035,7 +1417,10 @@ def _update_items(agents: list[dict[str, Any]], config: dict[str, Any]) -> list[
             continue
         current = executors.get(agent["name"], {})
         desired = _executor_config_for(agent)
-        if not isinstance(current, dict) or current != desired:
+        merged = _merge_executor_config(
+            agent["name"], current if isinstance(current, dict) else {}, desired
+        )
+        if not isinstance(current, dict) or current != merged:
             status = "enable" if not current else "refresh"
             items.append(
                 {
@@ -1107,7 +1492,7 @@ def _clean_items() -> list[dict[str, Any]]:
                 "id": "skill:claude",
                 "label": "Claude Skill",
                 "path": str(claude_root),
-                "action": "remove_skill_root",
+                "action": "remove_claude_skill",
             }
         )
     codex_root = _codex_skill_root()
@@ -1117,7 +1502,7 @@ def _clean_items() -> list[dict[str, Any]]:
                 "id": "skill:codex",
                 "label": "Codex Skill",
                 "path": str(codex_root),
-                "action": "remove_skill_root",
+                "action": "remove_codex_skill",
             }
         )
     alias_path = Path.home() / ".local" / "bin" / "abc"
@@ -1154,22 +1539,31 @@ def _clean_items() -> list[dict[str, Any]]:
     return items
 
 
-def _apply_update_item(item: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+def _apply_update_item(
+    item: dict[str, Any],
+    config: dict[str, Any],
+    *,
+    force: bool = True,
+) -> dict[str, Any]:
     action = item["action"]
     if action == "update_executor":
         agent = item["agent"]
         config.setdefault("workspace_root", str(_default_workspace_root()))
-        config["board_root"] = str(_effective_workspace_root(config) / "record")
-        config.setdefault("executors", {})[agent["name"]] = _executor_config_for(agent)
+        config.setdefault("board_root", str(_effective_workspace_root(config) / "record"))
+        executors = config.setdefault("executors", {})
+        current = executors.get(agent["name"])
+        executors[agent["name"]] = _merge_executor_config(
+            agent["name"], current if isinstance(current, dict) else {}, _executor_config_for(agent)
+        )
         return {"item": item["id"], "status": "updated", "config_changed": True}
     if action == "install_skill":
-        result = install_hermes_skill(interactive=False, force=True, all_profiles=True)
+        result = install_hermes_skill(interactive=False, force=force, all_profiles=True)
         return {"item": item["id"], "status": result["status"], "config_changed": False, **result}
     if action == "install_claude_skill":
-        result = install_claude_skill(path=item["path"], interactive=False, force=True)
+        result = install_claude_skill(path=item["path"], interactive=False, force=force)
         return {"item": item["id"], "status": result["status"], "config_changed": False, **result}
     if action == "install_codex_skill":
-        result = install_codex_skill(path=item["path"], interactive=False, force=True)
+        result = install_codex_skill(path=item["path"], interactive=False, force=force)
         return {"item": item["id"], "status": result["status"], "config_changed": False, **result}
     raise AssertionError(action)
 
@@ -1179,10 +1573,10 @@ def _apply_clean_item(item: dict[str, Any]) -> dict[str, Any]:
     if action == "remove_skill":
         result = uninstall_hermes_skill(interactive=False, force=True)
         return {"item": item["id"], **result}
-    if action == "remove_skill_root":
-        path = Path(item["path"])
-        shutil.rmtree(path)
-        return {"item": item["id"], "removed": True, "status": "removed", "path": str(path)}
+    if action == "remove_claude_skill":
+        return {"item": item["id"], **uninstall_claude_skill(item["path"])}
+    if action == "remove_codex_skill":
+        return {"item": item["id"], **uninstall_codex_skill(item["path"])}
     if action == "remove_alias":
         path = Path(item["path"])
         if not item.get("owned"):
@@ -1320,14 +1714,11 @@ def _select_items(items: list[dict[str, Any]], *, interactive: bool) -> list[dic
 
 def _hermes_skill_state() -> dict[str, Any]:
     paths = _hermes_skill_destinations(all_profiles=True)
-    template = _load_skill_template()
-    reference_template = _load_skill_reference_template()
-    matches = [
-        _hermes_skill_package_matches(path, template, reference_template)
-        for path in paths
-    ]
-    installed = all(path.exists() for path in paths)
-    up_to_date = all(matches)
+    states = [_classify_installed_skill(path.parent, "hermes") for path in paths]
+    classifications = [state["classification"] for state in states]
+    installed = all(state["installed"] for state in states)
+    up_to_date = all(classification == "current" for classification in classifications)
+    classification = _combined_skill_classification(classifications)
     return {
         "installed": installed,
         "path": str(paths[0]),
@@ -1335,7 +1726,11 @@ def _hermes_skill_state() -> dict[str, Any]:
         "profile_scope": "all",
         "command": "/agentbc",
         "up_to_date": up_to_date,
-        "current_version": "current" if up_to_date else ("partial" if any(path.exists() for path in paths) else ""),
+        "classification": classification,
+        "classifications": classifications,
+        "manifest": states[0]["manifest"],
+        "expected_manifest": states[0]["expected_manifest"],
+        "current_version": classification if classification != "missing" else "",
         "desired_version": "current",
     }
 
@@ -1343,36 +1738,42 @@ def _hermes_skill_state() -> dict[str, Any]:
 def _codex_skill_state() -> dict[str, Any]:
     root = _codex_skill_root()
     skill_path = root / "SKILL.md"
-    skill_template = _load_codex_skill_template()
-    yaml_template = _load_codex_openai_template()
-    installed = skill_path.exists()
-    up_to_date = _codex_skill_package_matches(root, skill_template, yaml_template)
+    state = _classify_installed_skill(root, "codex")
     return {
-        "installed": installed,
+        "installed": state["installed"],
         "path": str(skill_path),
-        "up_to_date": up_to_date,
-        "current_version": "current" if up_to_date else ("custom" if installed else ""),
+        "up_to_date": state["up_to_date"],
+        "classification": state["classification"],
+        "manifest": state["manifest"],
+        "expected_manifest": state["expected_manifest"],
+        "current_version": state["classification"] if state["installed"] else "",
         "desired_version": "current",
     }
 
 
 def _claude_skill_state() -> dict[str, Any]:
     path = _claude_skill_path()
-    template = _load_claude_skill_template()
-    installed = path.exists()
-    current = ""
-    if installed:
-        try:
-            current = path.read_text(encoding="utf-8")
-        except OSError:
-            current = ""
+    state = _classify_installed_skill(path.parent, "claude")
     return {
-        "installed": installed,
+        "installed": state["installed"],
         "path": str(path),
-        "up_to_date": installed and current == template,
-        "current_version": "current" if installed and current == template else ("custom" if installed else ""),
+        "up_to_date": state["up_to_date"],
+        "classification": state["classification"],
+        "manifest": state["manifest"],
+        "expected_manifest": state["expected_manifest"],
+        "current_version": state["classification"] if state["installed"] else "",
         "desired_version": "current",
     }
+
+
+def _combined_skill_classification(classifications: list[str]) -> str:
+    if classifications and len(set(classifications)) == 1:
+        return classifications[0]
+    if "modified" in classifications:
+        return "modified"
+    if all(classification == "missing" for classification in classifications):
+        return "missing"
+    return "partial"
 
 
 def _hermes_skill_path() -> Path:
@@ -1421,108 +1822,6 @@ def _hermes_skill_destinations(
     return [root / "skills" / "agentbc" / "SKILL.md" for root in roots]
 
 
-def _hermes_skill_package_matches(
-    destination: Path,
-    template: str,
-    reference_template: str,
-) -> bool:
-    reference = destination.parent / "references" / "agentbc-steps-yaml.md"
-    try:
-        return (
-            destination.read_text(encoding="utf-8") == template
-            and reference.read_text(encoding="utf-8") == reference_template
-            and _package_files(destination.parent)
-            == {Path(destination.name), Path("references/agentbc-steps-yaml.md")}
-        )
-    except OSError:
-        return False
-
-
-def _write_hermes_skill_package(
-    destination: Path,
-    template: str,
-    reference_template: str,
-) -> None:
-    _replace_skill_package(
-        destination.parent,
-        {
-            Path(destination.name): template,
-            Path("references/agentbc-steps-yaml.md"): reference_template,
-        },
-    )
-
-
-def _codex_skill_package_matches(
-    root: Path,
-    skill_template: str,
-    yaml_template: str,
-) -> bool:
-    try:
-        return (
-            (root / "SKILL.md").read_text(encoding="utf-8") == skill_template
-            and (root / "agents" / "openai.yaml").read_text(encoding="utf-8") == yaml_template
-            and _package_files(root) == {Path("SKILL.md"), Path("agents/openai.yaml")}
-        )
-    except OSError:
-        return False
-
-
-def _single_skill_package_matches(destination: Path, template: str) -> bool:
-    try:
-        return (
-            destination.read_text(encoding="utf-8") == template
-            and _package_files(destination.parent) == {Path(destination.name)}
-        )
-    except OSError:
-        return False
-
-
-def _package_files(root: Path) -> set[Path]:
-    if not root.is_dir():
-        return set()
-    return {
-        path.relative_to(root)
-        for path in root.rglob("*")
-        if path.is_file() or path.is_symlink()
-    }
-
-
-def _replace_skill_package(root: Path, files: dict[Path, str]) -> None:
-    root = root.expanduser()
-    root.parent.mkdir(parents=True, exist_ok=True)
-    temporary_root = root.with_name(f".{root.name}.agentbc-tmp-{os.getpid()}")
-    if temporary_root.exists() or temporary_root.is_symlink():
-        if temporary_root.is_dir() and not temporary_root.is_symlink():
-            shutil.rmtree(temporary_root)
-        else:
-            temporary_root.unlink()
-    temporary_root.mkdir(parents=True)
-    for relative_path, content in files.items():
-        destination = temporary_root / relative_path
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(content, encoding="utf-8")
-    backup_root = root.with_name(f".{root.name}.agentbc-backup-{os.getpid()}")
-    if backup_root.exists() or backup_root.is_symlink():
-        if backup_root.is_dir() and not backup_root.is_symlink():
-            shutil.rmtree(backup_root)
-        else:
-            backup_root.unlink()
-    had_existing = root.exists() or root.is_symlink()
-    if had_existing:
-        root.replace(backup_root)
-    try:
-        temporary_root.replace(root)
-    except Exception:
-        if had_existing and (backup_root.exists() or backup_root.is_symlink()):
-            backup_root.replace(root)
-        raise
-    if had_existing:
-        if backup_root.is_dir() and not backup_root.is_symlink():
-            shutil.rmtree(backup_root)
-        else:
-            backup_root.unlink(missing_ok=True)
-
-
 def _claude_skill_path() -> Path:
     override = os.environ.get("AGENTBC_CLAUDE_SKILL_PATH")
     if override:
@@ -1559,6 +1858,16 @@ def _load_skill_reference_template() -> str:
         / "skills"
         / "references"
         / "agentbc-steps-yaml.md"
+    )
+    return template_path.read_text(encoding="utf-8").rstrip() + "\n"
+
+
+def _load_controller_contract_template() -> str:
+    template_path = (
+        Path(__file__).resolve().parent
+        / "skills"
+        / "references"
+        / "controller-contract.md"
     )
     return template_path.read_text(encoding="utf-8").rstrip() + "\n"
 
@@ -1752,10 +2061,7 @@ def _command_output(result: subprocess.CompletedProcess[str] | None) -> str:
 
 
 def _config_path() -> Path:
-    override = os.environ.get("AGENTBC_CONFIG_PATH")
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / ".abc" / "config.toml"
+    return resolve_config_path()
 
 
 def _default_workspace_root() -> Path:
@@ -1838,71 +2144,3 @@ def _unique_paths(paths: list[Path]) -> list[Path]:
             seen.add(marker)
             unique.append(path.expanduser())
     return unique
-
-
-def _load_toml_compat(text: str) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    current = result
-    for raw_line in text.splitlines():
-        line = raw_line.split("#", 1)[0].strip()
-        if not line:
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            current = result
-            for part in line[1:-1].split("."):
-                current = current.setdefault(part.strip(), {})
-            continue
-        if "=" not in line:
-            raise ValueError(f"Invalid TOML line: {raw_line}")
-        key, raw_value = line.split("=", 1)
-        current[key.strip()] = _parse_toml_value(raw_value.strip())
-    return result
-
-
-def _parse_toml_value(value: str) -> Any:
-    if value.lower() in {"true", "false"}:
-        return value.lower() == "true"
-    try:
-        return json.loads(value)
-    except json.JSONDecodeError:
-        try:
-            return int(value)
-        except ValueError:
-            return value
-
-
-def _toml_dumps(config: dict[str, Any]) -> str:
-    lines: list[str] = []
-
-    def write_table(table: dict[str, Any], prefix: tuple[str, ...]) -> None:
-        scalar_items = [
-            (key, value) for key, value in table.items() if not isinstance(value, dict)
-        ]
-        child_tables = [
-            (key, value) for key, value in table.items() if isinstance(value, dict)
-        ]
-        if prefix:
-            lines.append(f"[{'.'.join(prefix)}]")
-        for key, value in scalar_items:
-            lines.append(f"{key} = {_toml_value(value)}")
-        if scalar_items and child_tables:
-            lines.append("")
-        for index, (key, value) in enumerate(child_tables):
-            write_table(value, (*prefix, key))
-            if index != len(child_tables) - 1:
-                lines.append("")
-
-    write_table(config, ())
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def _toml_value(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, str):
-        return json.dumps(value)
-    if isinstance(value, list):
-        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
-    if isinstance(value, (int, float)):
-        return str(value)
-    raise TypeError(f"Unsupported TOML value: {value!r}")

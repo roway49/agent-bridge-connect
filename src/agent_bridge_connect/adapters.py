@@ -57,6 +57,37 @@ class AdapterResult:
     message: str = ""
 
 
+@dataclass(frozen=True)
+class SessionCleanupRequest:
+    """Transient exact-session cleanup input; never persisted as the receipt."""
+
+    executor: str
+    session_id: str
+    task_id: str = ""
+    retain: bool = False
+    project_mode: str = "none"
+    strategy: str = "none"
+    project_path: str = field(default="", repr=False)
+    workspace: dict[str, Any] = field(default_factory=dict, repr=False)
+
+
+@dataclass(frozen=True)
+class SessionCleanupCapability:
+    capability: str
+    strategy: str = "none"
+    error_code: str = ""
+
+
+@dataclass(frozen=True)
+class SessionCleanupResult:
+    state: str
+    capability: str
+    strategy: str
+    error_code: str = ""
+    retryable: bool = False
+    next_attempt_at: str = ""
+
+
 @dataclass
 class DeliveryResult:
     ok: bool
@@ -87,6 +118,26 @@ class ExecutorPort(ABC):
 
     def send_input(self, run_id: str, message: str) -> AdapterResult:
         return AdapterResult(False, "input is not supported")
+
+    def session_cleanup_capability(
+        self,
+        request: SessionCleanupRequest,
+    ) -> SessionCleanupCapability:
+        return SessionCleanupCapability(
+            capability="unsupported",
+            strategy="none",
+            error_code="session_cleanup_unsupported",
+        )
+
+    def cleanup_session(self, request: SessionCleanupRequest) -> SessionCleanupResult:
+        """Fail closed until an Executor adapter implements an official delete action."""
+        return SessionCleanupResult(
+            state="unsupported",
+            capability="unsupported",
+            strategy="none",
+            error_code="session_cleanup_unsupported",
+            retryable=False,
+        )
 
 
 class NotifierPort(ABC):

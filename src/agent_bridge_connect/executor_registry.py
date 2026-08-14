@@ -23,6 +23,7 @@ BUILTIN_EXECUTOR_RUNTIME_KEYS = {
             "profile",
             "provider",
             "model",
+            "max_turns",
             "quiet",
             "command",
             "transport",
@@ -46,6 +47,14 @@ BUILTIN_EXECUTOR_RUNTIME_KEYS = {
             "runner_token",
         }
     ),
+}
+
+BUILTIN_EXECUTOR_CONFIG_ONLY_KEYS = {
+    "mock": frozenset(),
+    "shell": frozenset(),
+    "codex": frozenset(),
+    "hermes": frozenset(),
+    "claude": frozenset(),
 }
 
 EXECUTOR_METADATA_KEYS = frozenset(
@@ -80,7 +89,10 @@ def get_executor(name: str, config: dict | None = None) -> ExecutorPort:
     executor_class = getattr(importlib.import_module(module_name), class_name)
     raw_config = config or {}
     runtime_keys = BUILTIN_EXECUTOR_RUNTIME_KEYS[name]
-    unknown_keys = sorted(set(raw_config) - runtime_keys - EXECUTOR_METADATA_KEYS)
+    config_only_keys = BUILTIN_EXECUTOR_CONFIG_ONLY_KEYS[name]
+    unknown_keys = sorted(
+        set(raw_config) - runtime_keys - config_only_keys - EXECUTOR_METADATA_KEYS
+    )
     if unknown_keys:
         joined = ", ".join(unknown_keys)
         raise ValueError(f"Unsupported {name} executor config: {joined}")

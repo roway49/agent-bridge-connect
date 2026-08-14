@@ -1,0 +1,13 @@
+codex-cli 0.146.0
+
+Permanently delete a saved session by id or session name
+
+Usage: codex delete [OPTIONS] <SESSION>
+
+Arguments:
+  <SESSION>
+          Session id (UUID) or session name. UUIDs take precedence if it parses
+
+Options:
+      --force
+          Delete without prompting. SESSION must be a UUID

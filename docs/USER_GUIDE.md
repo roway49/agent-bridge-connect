@@ -2,21 +2,47 @@
 
 [中文](USER_GUIDE_ZH.md) | English
 
+Applies to AgentBC **1.0.2A** (Python package `1.0.2a1`).
+
 ## Command Surface
 
 Use `agentbc <group> <command> --help` for the exact options installed by your
 version.
 
 - `agentbc setup`: discover executors and install local integrations.
+- `agentbc doctor`: read-only installation and Runner health check.
 - `agentbc uninstall`: remove AgentBC with separate managed-data choices.
 - `agentbc init`: initialize the managed runtime record directory.
+- `agentbc claude budget`: configure the Claude budget for future runs.
+- `agentbc hermes max-turns`: configure the Hermes turn limit for future runs.
+- `agentbc session retention`: inspect or change executor temporary-session retention.
 - `agentbc record clean`: clean eligible runtime diagnostics.
-- `agentbc task`: create, inspect, hand off, intervene, close, and recover.
+- `agentbc task`: create, inspect, hand off, intervene, close, delete, and recover.
 - `agentbc worker`: run task-board worker operations.
 - `agentbc runner`: start, stop, inspect, sample, and show Runner work.
 
 Setup starts Runner in the background. Use `runner start` for recovery,
 `runner stop` for shutdown, and foreground `runner serve` only for debugging.
+
+### Commands Added Or Changed In 1.0.2A
+
+| Command | Purpose and boundary |
+| --- | --- |
+| `agentbc setup --show` | Read-only discovery and effective-setting view. It never refreshes files or starts a migration. |
+| `agentbc claude budget <usd>` | Set a positive finite USD limit for future Claude task snapshots. Existing tasks keep their frozen value. |
+| `agentbc hermes max-turns <turns>` | Set a positive integer turn limit for future Hermes task snapshots. Existing tasks keep their frozen value. |
+| `agentbc session retention status` | Read the effective executor temporary-session retention setting. |
+| `agentbc session retention enable` | Keep executor temporary sessions after terminal tasks. It never affects dispatcher conversations. |
+| `agentbc session retention disable` | Request background official session cleanup after eligible terminal tasks; active, waiting, and recovery tasks retain their session. |
+| `agentbc task respond <TASK-ID> --input <INPUT-ID> --approve` | Approve the current resource or permission decision and resume the same task/session under its validated one-time policy. |
+| `agentbc task respond <TASK-ID> --input <INPUT-ID> --deny` | Deny the current resource or permission decision; the resulting stable failure reason depends on the input type. |
+| `agentbc task delete <TASKCODE> --dry-run` | List AgentBC-owned records, reports, index entries, and default artifacts without prompting or writing. |
+| `agentbc task delete <TASKCODE>` | Show the same deletion plan and require interactive `y/N`; customer projects are always preserved. |
+| `agentbc doctor [--json]` | Run the read-only Doctor v2 checks. Exit codes are `0` healthy, `1` warning, and `2` unavailable. |
+
+These commands modify configuration or task state only through AgentBC's
+validated contracts. Do not substitute executor-native budget, permission,
+session, or deletion flags in an AgentBC task command.
 
 ## Executors
 
@@ -40,6 +66,109 @@ agentbc task handoff 4XMC --to hermes --source-platform claude --dispatch
 Direct terminal use may omit the flag and is recorded as `cli`. Restart agent
 clients after setup so they reload installed skills. Executor-specific model
 selection is not part of the stable Alpha contract.
+
+## Executor Resources And Session Retention
+
+Configure the defaults used for future executor runs:
+
+```bash
+agentbc claude budget 50
+agentbc hermes max-turns 150
+agentbc session retention status
+agentbc session retention enable
+agentbc session retention disable
+```
+
+The Claude value is a positive finite USD amount. Hermes accepts a positive
+integer. Claude and Hermes must already be configured by `agentbc setup`; those
+two commands otherwise return `not_configured` with exit code 2. Session
+retention can be configured independently. Successful commands emit stable JSON
+with the previous value, new value, whether the file changed, and
+`"scope": "future_executor_runs"`. Repeating the current value is safe and does
+not rewrite the config.
+
+Interactive setup offers default or custom values and preserves an existing
+value when Enter is pressed. Non-interactive setup also preserves existing
+values. New settings use these defaults:
+
+- AgentBC task permission: `inherit` (preserve the executor's user/global settings);
+- Claude budget: `$10`;
+- Hermes turns: `agent.max_turns` from the path returned by
+  `hermes config path`, then legacy top-level `max_turns`, then `90`;
+- executor session retention: `false`.
+
+They are stored in AgentBC config as:
+
+```toml
+[executors.claude]
+max_budget_usd = 50.0
+
+[executors.hermes]
+max_turns = 150
+
+[sessions]
+retain_executor_sessions = true
+```
+
+Phase 2 task-contract status: every new Claude or Hermes task freezes its
+effective resource limit in `agentbc.resources`, and every new Claude, Hermes,
+or Codex task freezes retention and executor-session metadata in
+`agentbc.session`. Missing settings use `$10`, `90`, and retention `false`;
+present invalid settings fail closed. Handoff creates a new snapshot for its
+target executor, reassign rebuilds the snapshot, and resume, retry, recover, or
+re-dispatch of the same task keeps the original snapshot.
+
+Accepted create/dispatch output, preflight, status, report, and task briefs use
+one path-free `execution_policy` view. It shows the effective limit, source, and
+frozen state (or `null` resources for Codex), plus retention, executor session
+ID/state, and project mode. Executor-only project paths remain inside the task
+packet and are not listed as artifacts. Ephemeral Claude projects use the
+canonical managed path `<TASK-ID>/claude`; Runner validates legacy backfill and
+the worker packet against the durable snapshot. The same public policy includes a
+bounded cleanup projection containing only capability, state, attempts, stable
+error code, and retryability. Doctor uses the authoritative receipt: unsupported,
+failed, and cleanup pending for more than five minutes are warnings; retained and
+succeeded are healthy.
+
+Cleanup is background and user-transparent. It manages only temporary sessions
+created by the Executor, never deletes the dispatcher conversation that created or
+handed off a task, and never requires users to manage a separate runtime directory.
+Active, `input_required`, and recovery tasks keep their session; cleanup failure or
+an unsupported capability does not change the terminal task/report result.
+
+## Permission Modes
+
+Every task carries one of three canonical permission modes — `inherit`, `safe`, or `full`:
+
+- `inherit` adds no AgentBC permission, approval, sandbox, or yolo override and keeps the executor's existing user/global settings;
+- `safe` is the conservative task override and preserves established executor approval behavior;
+- `full` is an explicit audited choice for the installed executor's strongest documented noninteractive access.
+
+On first setup, Enter selects `inherit`. Existing configured values are preserved when Enter is
+pressed. Tasks missing a permission snapshot from an older AgentBC version still fall back to
+`safe`; changing the new-install default never broadens legacy tasks.
+
+Pass `--permission-mode <inherit|safe|full>` on `task create` or `task handoff` only when the user
+chose a task override; otherwise a new task uses the configured default and a handoff inherits its
+source task. Never pass raw executor permission flags (`--yolo`, `--dangerously-skip-permissions`,
+bypass flags, sandbox or config overrides) in AgentBC commands.
+
+A `safe` task that reaches a step genuinely requiring `full` stops with `input_required` and a
+`type: permission` input declaring `requested_permission=full` plus the blocked step. Approve or
+deny through the dialog or the fallback:
+
+```bash
+agentbc task respond 4XMC-001 --input INPUT_ID --approve
+agentbc task respond 4XMC-001 --input INPUT_ID --deny
+```
+
+Approving issues a one-time `full` grant for the next same-session continuation of that task only;
+it is consumed or revoked afterward and is never inherited by retry, recover, reassign, handoff, or
+a new task. Denying ends the task `failed` with the stable reason `permission_denied_by_user`.
+The permission dialog has exactly Approve and Deny, no Later action or text field, defaults to
+Deny, and automatically denies on timeout or close; timeout uses the stable reason
+`permission_denied_by_timeout`. Plain message text or approval prose is not a permission grant and
+never a completion marker.
 
 ## Create Versus Handoff
 
@@ -154,13 +283,24 @@ termination may leave a user project partially modified.
 agentbc task pause 4XMC
 agentbc task resume 4XMC
 agentbc task close 4XMC
+agentbc task delete 4XMC --dry-run
+agentbc task delete 4XMC
 agentbc task recover 4XMC
 ```
 
-Close applies only to a queued or active current head. Root-task close releases its code
-and removes AgentBC-owned files. Later chain iterations preserve prior history
-and warn that project changes cannot be rolled back. Customer-project files are
-never deleted.
+Close applies only to the current queued (pending) or active chain head. Terminal iterations
+(completed, failed, cancelled, rejected) and stale non-head iterations are rejected. Root-task close
+releases its code and removes AgentBC-owned files. Later chain iterations preserve prior history
+and warn that project changes cannot be rolled back. Customer-project files are never deleted.
+
+Delete accepts a task code, never an iteration ID. It requires every iteration in
+the chain to be `completed`, `failed`, `cancelled`, or `rejected`; queued, active,
+input-required, and recovery-required chains are rejected as a whole. `--dry-run`
+makes no writes, never prompts, and lists both deleted and preserved objects. Plain
+`task delete` first lists the task records, briefs/reports, task index entries, and
+default AgentBC artifacts that will be removed, then asks `Continue? [y/N]`. Only an
+explicit `y`/`yes` commits deletion. EOF, Ctrl-C, Enter, or `n` cancels without writes.
+Customer projects are always preserved.
 
 ## Records And Cache
 
@@ -170,9 +310,23 @@ agentbc record clean
 agentbc runner process-sample
 ```
 
-Record cleaning preserves the global index, authoritative state, readable
-reports, and deliverables. Choose concurrency according to the executor workload
-and machine.
+Record cleaning removes only eligible terminal-task runtime diagnostics (events,
+interventions, run leases, and run logs of terminal tasks). It always preserves the global index,
+authoritative `task.json` state, readable reports, and deliverables; reports are never deleted by
+record cleanup. Choose concurrency according to the executor workload and machine.
+
+## Doctor
+
+```bash
+agentbc doctor
+agentbc doctor --json
+```
+
+`doctor` is a read-only health check of the installation: package/build identity, configuration,
+Runner identity and spool, storage permissions, installed Skill manifests, executor discovery, and
+session-cleanup receipts. The exit code contract is fixed: `0` = healthy, `1` = warning (for
+example a Skill drift or a cleanup receipt in warning state), `2` = unavailable (for example a
+missing Runner or config). `--json` emits the same structured diagnostics as the text view.
 
 ## Troubleshooting
 

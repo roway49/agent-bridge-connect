@@ -1,5 +1,75 @@
 # Changelog
 
+## 1.0.2A - 2026-08-14
+
+> Development is closed for Python package `1.0.2a1`. Publication remains
+> gated on the immutable `v1.0.2A` tag, release-matrix validation, and final
+> artifact checks.
+
+### Added
+
+- Persistent Claude budget and Hermes turn-limit configuration through
+  `agentbc claude budget <usd>` and `agentbc hermes max-turns <turns>`.
+- Executor temporary-session retention controls through
+  `agentbc session retention status|enable|disable`, with task-level frozen
+  session policy and background terminal cleanup.
+- Same-session continuation for Claude, Hermes, and Codex using exact official
+  executor session IDs; ambiguous recent-session recovery is rejected.
+- Resource-exhaustion decisions that let users approve a task-local doubled
+  budget/turn limit or deny continuation with a stable terminal reason.
+- One-time `safe` to `full` permission continuation through the existing
+  approve/deny input flow. The base task permission remains unchanged, and the
+  grant cannot leak into retry, recovery, handoff, reassignment, or a new task.
+- Doctor v2 diagnostics with one text/JSON data source and fixed exit codes:
+  `0` healthy, `1` warning, and `2` unavailable.
+- Versioned Skill manifests and a shared controller contract used by Codex,
+  Claude, and Hermes installations.
+
+### Changed
+
+- First-time setup now defaults task permission to `inherit`, Claude budget to
+  `$10`, Hermes turns to the discovered Hermes value (or `90`), and executor
+  session retention to `false`.
+- Resource and session settings are frozen into each task. Updating global
+  configuration affects future executor runs only.
+- Permission dialogs have exactly Approve and Deny. Close or timeout denies the
+  request; free text cannot grant permission.
+- `agentbc task delete <TASKCODE>` now shows AgentBC-owned records, reports,
+  index entries, and default artifacts before an internal `y/N` confirmation.
+  `--dry-run` remains read-only, and customer projects are never deleted.
+- `agentbc record clean` removes eligible terminal runtime diagnostics only;
+  authoritative task state and reports are always preserved.
+
+### Fixed
+
+- Doctor storage checks now use a scoped Runner-side probe, avoiding false
+  `unavailable` results when the controller itself runs in a safe sandbox.
+- Hermes native `Reached maximum iterations` output now takes precedence over
+  an ordinary model choice callback, so the resource approve/deny flow opens
+  reliably and resumed runs receive the doubled `--max-turns` value.
+- Permission reasons are bounded before persistence so an oversized model
+  explanation cannot suppress the approval dialog.
+- Cancellation now closes waiting inputs, RunLeases, and executor-session state
+  before terminal cleanup eligibility is evaluated.
+- Claude managed-project cleanup preserves normal artifacts while continuing
+  to fail closed on unexpected files, path drift, symlinks, or unsafe removal.
+
+### Validation
+
+- Development cutoff: `1007` source tests and `172` final affected regressions
+  passed with Ruff, compileall, and `git diff --check`.
+- Release candidate: `1010` source tests pass on Python 3.10, 3.11, and 3.14.
+  The Intel MacBook gate also passes Ruff, compileall, shell syntax, Twine,
+  wheel/sdist manifest validation, clean installation, upgrade from `1.0.1a3`,
+  rollback to `1.0.1a3`, and package smoke.
+- Real Codex, Claude, and Hermes canaries verified one-time permission
+  continuation, exact-session resume, and terminal cleanup with retention off.
+- Real Codex, Claude, and Hermes canaries verified `retain=true` terminal
+  receipts: official session IDs remained recorded, cleanup resolved as
+  `retained` with zero attempts, and Doctor remained healthy.
+- Real Claude and Hermes canaries verified repeated resource exhaustion,
+  task-local doubling, same-session continuation, and explicit user denial.
+
 ## 1.0.1A3 - 2026-08-08
 
 - Removed host-installed Codex, Claude, and Hermes dependencies from the release-check test suite.

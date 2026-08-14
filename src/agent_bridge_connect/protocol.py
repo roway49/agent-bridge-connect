@@ -129,6 +129,7 @@ class ResultModel(ExtensibleModel):
 class PreflightResult:
     ok: bool
     errors: list[str]
+    execution_policy: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
