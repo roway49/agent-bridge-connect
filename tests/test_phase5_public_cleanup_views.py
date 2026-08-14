@@ -349,16 +349,15 @@ class Phase5DocumentationTests(unittest.TestCase):
         ):
             self.assertIn(phrase, chinese)
 
-    def test_integration_docs_keep_session_partially_complete(self) -> None:
+    def test_integration_docs_preserve_executor_session_cleanup_boundary(self) -> None:
         checklist = self._read("AGENTBC_1.0.2A_DEVELOPMENT_CHECKLIST.md")
         handbook = self._read("AGENTBC_ALPHA_DEVELOPMENT_HANDBOOK.md")
 
         for document in (checklist, handbook):
-            self.assertIn("270d671", document)
-            self.assertIn("代码完成", document)
-            self.assertIn("集中验证", document)
             self.assertIn("SESSION-001", document)
-            self.assertIn("P2P", document)
+            self.assertIn("retain", document)
+            self.assertIn("cleanup", document)
+            self.assertIn("dispatcher conversation", document)
 
     def test_all_controller_skills_preserve_cleanup_boundary(self) -> None:
         for relative in (
