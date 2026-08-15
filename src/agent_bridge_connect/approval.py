@@ -110,12 +110,20 @@ def validate_approval_receipt(
     task_id: str | None = None,
     session_id: str | None = None,
     request_id: str | None = None,
+    executor_run_id: str | None = None,
+    request_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """Validate the strict v1 schema fail closed and return a defensive copy.
 
     Unknown additive fields are retained at every object level.  Fields or
     values that could persist sensitive execution/session material are rejected
     even when they are otherwise unknown extensions.
+
+    The optional binding arguments harden single-action approval to exactly one
+    native request: an expected ``executor_run_id`` and ``request_fingerprint``
+    are checked against the receipt just like the task, official session and
+    native request id.  A response that resolves to a different run or a
+    different fingerprint is rejected fail closed.
     """
     if not isinstance(value, dict):
         _invalid("approval_invalid", "Approval receipt must be an object")
@@ -168,6 +176,24 @@ def validate_approval_receipt(
         _invalid(
             "approval_request_mismatch",
             "Approval receipt request_id does not match the native request",
+        )
+    expected_executor_run_id = str(receipt.get("executor_run_id") or "")
+    if (
+        executor_run_id is not None
+        and expected_executor_run_id != str(executor_run_id).strip()
+    ):
+        _invalid(
+            "approval_run_mismatch",
+            "Approval receipt executor_run_id does not match the authoritative run",
+        )
+    expected_fingerprint = str(receipt.get("request_fingerprint") or "")
+    if (
+        request_fingerprint is not None
+        and expected_fingerprint != str(request_fingerprint).strip()
+    ):
+        _invalid(
+            "approval_fingerprint_mismatch",
+            "Approval receipt request_fingerprint does not match the native request",
         )
 
     state = _require_object(receipt, "state")
@@ -233,12 +259,18 @@ def record_approval_decision(
     task_id: str | None = None,
     session_id: str | None = None,
     request_id: str | None = None,
+    executor_run_id: str | None = None,
+    request_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """Record one decision on the same native receipt (idempotent per source).
 
     Approve / Deny / close / timeout all record their auditable decision source
     on the receipt that created the wait.  Re-recording the exact same decision
     and source returns the receipt unchanged; a conflicting replay is rejected.
+
+    The optional binding arguments are forwarded to :func:`validate_approval_receipt`
+    so a decision that resolves to a different run, session, request, or
+    fingerprint is rejected fail closed before anything is recorded.
     """
     receipt = validate_approval_receipt(
         value,
@@ -246,6 +278,8 @@ def record_approval_decision(
         task_id=task_id,
         session_id=session_id,
         request_id=request_id,
+        executor_run_id=executor_run_id,
+        request_fingerprint=request_fingerprint,
     )
     clean_decision = str(decision or "").strip().lower()
     if clean_decision not in APPROVAL_DECISION_TYPES:
@@ -353,6 +387,62 @@ def core_bounded_summary(
 def approval_receipt_pending(value: Any) -> bool:
     """Return whether the receipt is waiting for a user decision."""
     return validate_approval_receipt(value)["state"]["status"] == "pending"
+
+
+def pending_approval_request(
+    extensions: dict[str, Any] | None,
+    *,
+    task_status: str = "",
+) -> dict[str, Any] | None:
+    """Return the waiting single-action approval input, or ``None``.
+
+    A single-action approval is only "pending" while the task is actually
+    waiting for input and the persisted receipt is still ``pending``.  Stale
+    receipts left behind by a crash, timeout, or transport death (the task is no
+    longer ``input_required``, or the receipt is already answered) never count
+    as pending, so an explicit recovery can request a fresh approval request id
+    instead of being blocked by the dead request.
+    """
+    if task_status and str(task_status).strip().lower() != "input_required":
+        return None
+    values = extensions if isinstance(extensions, dict) else {}
+    receipt_value = values.get(APPROVAL_EXTENSION_KEY)
+    if not isinstance(receipt_value, dict):
+        return None
+    try:
+        receipt = validate_approval_receipt(receipt_value)
+    except ABCError:
+        return None
+    if receipt["state"]["status"] != "pending":
+        return None
+    request = values.get("agentbc.input")
+    if (
+        not isinstance(request, dict)
+        or str(request.get("status") or "") != "waiting"
+        or str(request.get("type") or "") != APPROVAL_KIND
+        or str(request.get("scope") or "") != APPROVAL_SCOPE
+    ):
+        return None
+    return request
+
+
+def assert_no_pending_approval(
+    extensions: dict[str, Any] | None,
+    *,
+    task_status: str = "",
+) -> None:
+    """Reject a concurrent second single-action approval fail closed.
+
+    One pending receipt may drive exactly one native request and one dialog.  A
+    second native permission request while the first is still waiting is refused
+    with ``approval_already_pending`` so a single dialog can never authorize two
+    different actions.
+    """
+    if pending_approval_request(extensions, task_status=task_status) is not None:
+        _invalid(
+            "approval_already_pending",
+            "A single-action approval is already waiting for this task",
+        )
 
 
 def new_request_id() -> str:
