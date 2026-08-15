@@ -35,6 +35,13 @@ from agent_bridge_connect.permission_modes import (
     permission_flags,
     permission_record_from_extensions,
 )
+from agent_bridge_connect.permission_registry import (
+    HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID,
+    TRANSPORT_HERMES_ACP,
+    build_permission_audit_payload,
+    executor_permission_mapping,
+    probe_hermes_acp,
+)
 from agent_bridge_connect.protocol import ABCError
 from agent_bridge_connect.prompt_contract import PromptPlatformExtras, build_prompt_contract
 
@@ -57,6 +64,18 @@ _HERMES_SESSION_ABSENT_RE = re.compile(
 _HERMES_INITIALIZING_LINE_RE = re.compile(
     r"(?m)^[ \t]*Initializing agent\.\.\.[ \t]*\r?$"
 )
+
+
+def hermes_acp_yolo_env() -> dict[str, str]:
+    """Subprocess-scoped ``HERMES_YOLO_MODE=1`` override for Hermes full mode.
+
+    Returns a fresh environment mapping that MUST only be applied to the
+    spawned Hermes ACP subprocess environment.  It never mutates the user's
+    global environment.  The Runner control loop applies it per subprocess
+    and records the :func:`permission_audit` payload; AgentBC only freezes
+    the capability here (``transport=hermes-acp``).
+    """
+    return {"HERMES_YOLO_MODE": "1"}
 
 
 class HermesExecutor(CLIExecutorBase):
@@ -105,6 +124,7 @@ class HermesExecutor(CLIExecutorBase):
         self._runner_runs: set[str] = set()
         self._runner_closed: set[str] = set()
         self._runner_poll_errors: dict[str, int] = {}
+        self._acp_probe: dict[str, Any] | None = None
 
     def probe(self) -> ProbeResult:
         if self.agent_bin is None:
@@ -200,6 +220,18 @@ class HermesExecutor(CLIExecutorBase):
             parallelism=1,
             level=ExecutorLevel.L2,
         )
+
+    def acp_capability(self) -> dict[str, Any]:
+        """Frozen Hermes ACP capability probe (PERM-103-002).
+
+        Uses only the official ``hermes acp --check`` / ``hermes acp
+        --version`` CLI surface and caches the result per executor instance.
+        It never scans Hermes private session databases or logs, never reads
+        user configuration, and never modifies the global environment.
+        """
+        if self._acp_probe is None:
+            self._acp_probe = probe_hermes_acp(self.agent_bin)
+        return self._acp_probe
 
     def session_cleanup_capability(
         self,
@@ -701,6 +733,33 @@ class HermesExecutor(CLIExecutorBase):
             metadata["last_run"] = last_run
             if isinstance(last_run.get("iteration"), dict):
                 metadata["iteration"] = last_run["iteration"]
+        acp = self.acp_capability()
+        metadata["acp"] = {
+            "transport": TRANSPORT_HERMES_ACP,
+            "capability_id": HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID,
+            "check": {
+                "ok": acp["ok"],
+                "reason": acp.get("reason") or "",
+                "version": acp.get("version"),
+            },
+            "request_permission": {
+                # Reserved capability surface; the Runner control loop binds
+                # the exact session-level capability at session init.
+                "state": "reserved_task2",
+                "capability_id": HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID,
+            },
+        }
+        permission = metadata.get("permission")
+        if isinstance(permission, dict):
+            mode = permission.get("effective_mode")
+            if isinstance(mode, str):
+                mapping = executor_permission_mapping("hermes", mode)
+                metadata["permission_capability"] = mapping
+                if mode == "full":
+                    metadata["permission_audit"] = build_permission_audit_payload(
+                        permission,
+                        executor="hermes",
+                    )
         return {
             "executor.hermes": metadata,
             "executor": {"hermes": metadata},

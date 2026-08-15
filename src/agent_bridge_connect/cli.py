@@ -47,6 +47,7 @@ _SHORTHAND_SUGGESTIONS = [
     "task logs",
     "worker run",
     "runner status",
+    "permissions status",
 ]
 
 
@@ -88,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument(
         "--permission-mode",
         choices=CANONICAL_PERMISSION_MODES,
-        help="Set the default execution permission mode: inherit, safe, or full.",
+        help="Set the unified default permission mode for future tasks: inherit, safe, or full.",
     )
 
     doctor = sub.add_parser("doctor", help="Inspect build, configuration, and Runner identity without changing state.")
@@ -124,6 +125,25 @@ def build_parser() -> argparse.ArgumentParser:
     retention_sub.add_parser("status", help="Show the effective retention setting.")
     retention_sub.add_parser("enable", help="Retain executor temporary sessions after terminal tasks.")
     retention_sub.add_parser("disable", help="Remove executor temporary sessions after terminal tasks.")
+
+    permissions = sub.add_parser(
+        "permissions",
+        help="Inspect or change the unified AgentBC permission mode.",
+    )
+    permissions_sub = permissions.add_subparsers(dest="permissions_command", required=True)
+    permissions_sub.add_parser(
+        "status",
+        help="Show the effective permission mode, its sources, and the executor mapping.",
+    )
+    permissions_set = permissions_sub.add_parser(
+        "set",
+        help="Set the unified default permission mode for future tasks.",
+    )
+    permissions_set.add_argument(
+        "mode",
+        choices=CANONICAL_PERMISSION_MODES,
+        help="inherit, safe, or full.",
+    )
 
     record = sub.add_parser("record", help="Inspect or clean AgentBC task records.")
     record_sub = record.add_subparsers(dest="record_command", required=True)
@@ -2263,6 +2283,58 @@ def command_executor_setting(executor: str, key: str, value: int | float) -> int
     return 0
 
 
+def command_permissions(action: str, mode: str | None = None) -> int:
+    setting = "permissions.mode"
+    if action == "status":
+        from .permission_registry import permissions_status_payload
+
+        try:
+            config = load_config()
+            errors = validate_config(config)
+            if errors:
+                raise ABCError("config_invalid", "; ".join(errors), {"errors": errors})
+        except (ABCError, OSError, ValueError, TypeError) as exc:
+            _print_config_command_error(exc, setting)
+            return 2
+        payload = permissions_status_payload(config)
+    else:
+        from .permission_modes import configured_permission_mode
+        from .config import apply_permissions_setting
+
+        desired = mode if isinstance(mode, str) else "inherit"
+        previous: str | None = None
+        previous_source = ""
+
+        def mutate(config: dict[str, Any]) -> None:
+            nonlocal previous, previous_source
+            previous, previous_source = configured_permission_mode(config)
+            apply_permissions_setting(config, desired)
+
+        try:
+            _, changed = update_config_atomic(mutate)
+        except (ABCError, OSError, ValueError, TypeError) as exc:
+            _print_config_command_error(exc, setting)
+            return 2
+        payload = {
+            "ok": True,
+            "command": "permissions set",
+            "setting": setting,
+            "previous": previous,
+            "previous_source": previous_source,
+            "value": desired,
+            "changed": changed,
+            "source": "command" if changed else "configured",
+            "scope": "future_tasks",
+            "note": (
+                "Affects newly dispatched root tasks and handoff iterations "
+                "only; active, input_required, needs_recovery tasks and "
+                "same-task resume keep their frozen permission snapshot."
+            ),
+        }
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    return 0
+
+
 def command_session_retention(action: str) -> int:
     setting = "sessions.retain_executor_sessions"
     if action == "status":
@@ -2403,6 +2475,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "session":
         return command_session_retention(args.retention_command)
 
+    if args.command == "permissions":
+        return command_permissions(args.permissions_command, getattr(args, "mode", None))
+
     if args.command == "uninstall":
         from .setup import run_uninstall
 
@@ -2482,6 +2557,7 @@ def _expand_shorthand(argv: list[str]) -> list[str]:
         "claude",
         "hermes",
         "session",
+        "permissions",
         "record",
         "task",
         "worker",
