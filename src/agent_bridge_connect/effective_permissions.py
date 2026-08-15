@@ -4,6 +4,13 @@ The durable grant envelope lives in :mod:`permission_grants`.  This module is
 the only place outside Core that interprets a task packet as permission for a
 specific run.  Adapters and Runner therefore agree on the same fail-closed
 binding rules without teaching each executor about grant fields.
+
+PERM-103-005: the ``safe -> full`` one-shot grant path below is legacy and is
+kept read-only for terminal history and the cutover gate.  New-channel tasks
+never carry grants (the approval control plane records ``agentbc.approval``
+receipts instead of issuing grants), so the new-task/new-runtime paths do not
+depend on grant issuance or consumption; an issued grant on a dispatched task
+is a cutover-blocking legacy state, not a live upgrade.
 """
 
 from __future__ import annotations

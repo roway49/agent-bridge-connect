@@ -180,6 +180,50 @@ class TerminalHistoricalProjectionTests(unittest.TestCase):
         self.assertTrue(projection["read_only"])
         self.assertEqual(projection["legacy_permission_mode"], "safe")
 
+    def test_v1_terminal_projection_projects_missing_sources_as_null(self) -> None:
+        harness = _Harness()
+        self.addCleanup(harness.close)
+        task_id = harness.create(status="running")
+        task = harness.service.get_task(task_id)
+        extensions = dict(task.extensions or {})
+        # Original v1 permission record: no version and no v2 source fields.
+        extensions["agentbc.permission"] = {
+            "requested_mode": "full",
+            "effective_mode": "full",
+            "selection_source": "legacy_task",
+        }
+        task.extensions = extensions
+        task.status = "completed"
+        harness.service.store.write_task(task_id, task.to_dict())
+        projection = terminal_historical_projection(harness.service.get_task(task_id))
+        permission = projection["permission"]
+        # Effective mode is preserved verbatim.
+        self.assertEqual(permission["effective_mode"], "full")
+        self.assertEqual(projection["legacy_permission_mode"], "full")
+        # Missing source fields project as null, never as a rewritten value.
+        self.assertIsNone(permission["configured_mode"])
+        self.assertIsNone(permission["inherited_mode"])
+        self.assertIsNone(permission["task_override"])
+        self.assertIsNone(permission["version"])
+        self.assertEqual(permission["selection_source"], "legacy_task")
+
+    def test_v2_terminal_projection_keeps_source_fields(self) -> None:
+        harness = _Harness()
+        self.addCleanup(harness.close)
+        task_id = harness.create(status="running")
+        task = harness.service.get_task(task_id)
+        task.status = "cancelled"
+        harness.service.store.write_task(task_id, task.to_dict())
+        projection = terminal_historical_projection(harness.service.get_task(task_id))
+        permission = projection["permission"]
+        self.assertEqual(permission["effective_mode"], "safe")
+        self.assertEqual(permission["configured_mode"], "safe")
+        self.assertEqual(permission["version"], 2)
+        self.assertIsNone(permission["inherited_mode"])
+        # The harness created the task with an explicit permission override.
+        self.assertEqual(permission["task_override"], "safe")
+        self.assertEqual(permission["selection_source"], "explicit_task")
+
 
 class PermissionModeDoubleReadTests(unittest.TestCase):
     def test_inherit_is_preserved(self) -> None:

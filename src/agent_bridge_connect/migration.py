@@ -10,6 +10,9 @@ Manual bypass installs drop the board into a maintenance mode that only permits
 Terminal historical tasks and the old ``agentbc.permission`` record stay
 read-only, and the legacy top-level ``permission_mode`` is double-read and only
 normalized on the first actual setting modification.
+
+The supported ``agentbc update`` preflight and the manual-bypass maintenance
+entry live in :mod:`update` and call back into this module's gate.
 """
 
 from __future__ import annotations
@@ -82,14 +85,16 @@ def terminal_historical_projection(task: Any) -> dict[str, Any]:
 
     The old ``agentbc.permission`` record and any unconsumed grant facts are
     preserved verbatim in the durable task; this projection only exposes the
-    stable legacy mode and never rewrites history.
+    stable legacy mode and never rewrites history.  Missing v2 source fields
+    (``configured_mode`` / ``inherited_mode`` / ``task_override`` /
+    ``selection_source`` / ``version``) project as ``null`` while the
+    original effective mode is always preserved.
     """
     status = str(getattr(task, "status", "") or "").strip().lower()
     extensions = dict(getattr(task, "extensions", None) or {})
     permission = extensions.get(LEGACY_PERMISSION_EXTENSION_KEY)
-    legacy_mode = str(permission.get("effective_mode") or LEGACY_PERMISSION_MODE)
-    if isinstance(permission, dict) and permission.get("effective_mode"):
-        legacy_mode = str(permission["effective_mode"])
+    record = dict(permission) if isinstance(permission, dict) else {}
+    legacy_mode = str(record.get("effective_mode") or LEGACY_PERMISSION_MODE)
     grant = None
     if PERMISSION_GRANT_EXTENSION_KEY in extensions:
         try:
@@ -102,6 +107,14 @@ def terminal_historical_projection(task: Any) -> dict[str, Any]:
         "terminal": status in TASK_TERMINAL_STATES,
         "legacy_permission_mode": legacy_mode,
         "read_only": True,
+        "permission": {
+            "effective_mode": legacy_mode,
+            "configured_mode": record.get("configured_mode"),
+            "inherited_mode": record.get("inherited_mode"),
+            "task_override": record.get("task_override"),
+            "selection_source": record.get("selection_source"),
+            "version": record.get("version"),
+        },
     }
     if grant is not None:
         projection["legacy_grant"] = {

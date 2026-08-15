@@ -4,6 +4,13 @@ The v1 envelope is deliberately internal.  It records only durable binding,
 scope, state, and timestamp data needed to authorize one future executor run;
 it never stores the permission prompt, command line, executor output, secrets,
 private paths, or session content.
+
+PERM-103-005: the envelope is the legacy read-only grant contract.  New
+channels never issue or consume grants (the approval control plane uses
+``agentbc.approval`` receipts and never upgrades ``effective_mode``), and the
+supported update preflight consumes this contract only through the cutover
+gate in :mod:`migration`.  Existing v1 extensions stay untouched on terminal
+history.
 """
 
 from __future__ import annotations

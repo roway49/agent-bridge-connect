@@ -105,6 +105,21 @@ def build_parser() -> argparse.ArgumentParser:
     artifacts.add_argument("--keep-artifacts", dest="remove_artifacts", action="store_false")
     uninstall.set_defaults(remove_records=None, remove_artifacts=None)
 
+    update = sub.add_parser(
+        "update",
+        help="Supported update preflight: cutover-ready or legacy_permission_cutover_blocked.",
+    )
+    add_task_root(update)
+    update.add_argument("--config", type=Path)
+    update.add_argument(
+        "--bypass",
+        action="store_true",
+        help=(
+            "Manual wheel/bundle install bypass: enter cutover maintenance mode "
+            "(doctor/status/report and explicit termination only; create/dispatch blocked)."
+        ),
+    )
+
     init = sub.add_parser("init", help="Initialize the AgentBC runtime record directory.")
     add_task_root(init)
 
@@ -455,6 +470,9 @@ def command_task_create(args: argparse.Namespace) -> int:
         print('path_model_v2_required: use --customer-path "default path" or --customer-path <project-path> instead of --workspace/--output-dir')
         return 1
     try:
+        from .migration import assert_maintenance_command_allowed
+
+        assert_maintenance_command_allowed(_task_service(args.root, config_path), "create")
         customer_dir_hint = (
             _parse_customer_dir(args.customer_dir)
             if getattr(args, "customer_dir", None) is not None
@@ -799,6 +817,14 @@ def command_task_dispatch(args: argparse.Namespace) -> int:
     from .runner import RunnerClient, RunnerError
 
     try:
+        from .migration import assert_maintenance_command_allowed
+
+        assert_maintenance_command_allowed(
+            _task_service(
+                args.root, _optional_path_arg(getattr(args, "config", None))
+            ),
+            "dispatch",
+        )
         result = RunnerClient().dispatch_task(
             args.id,
             args.root,
@@ -2335,6 +2361,24 @@ def command_permissions(action: str, mode: str | None = None) -> int:
     return 0
 
 
+def command_update(args: argparse.Namespace) -> int:
+    """Run the supported PERM-103-005 update preflight or the bypass entry."""
+    from .update import manual_bypass_install, update_preflight
+
+    config_path = _optional_path_arg(getattr(args, "config", None))
+    try:
+        service = _task_service(args.root, config_path)
+        if args.bypass:
+            result = manual_bypass_install(service)
+        else:
+            result = update_preflight(service)
+    except (ABCError, OSError, ValueError, TypeError) as exc:
+        print(f"update_error: {exc}")
+        return 2
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if result.get("cutover_ready") else (0 if args.bypass else 1)
+
+
 def command_session_retention(action: str) -> int:
     setting = "sessions.retain_executor_sessions"
     if action == "status":
@@ -2478,6 +2522,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "permissions":
         return command_permissions(args.permissions_command, getattr(args, "mode", None))
 
+    if args.command == "update":
+        return command_update(args)
+
     if args.command == "uninstall":
         from .setup import run_uninstall
 
@@ -2551,6 +2598,7 @@ def main(argv: list[str] | None = None) -> int:
 def _expand_shorthand(argv: list[str]) -> list[str]:
     known_commands = {
         "setup",
+        "update",
         "doctor",
         "uninstall",
         "init",
