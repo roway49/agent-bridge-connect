@@ -31,14 +31,20 @@ class PermissionContractTests(unittest.TestCase):
         self.assertEqual(legacy_permission_record()["effective_mode"], "safe")
 
     def test_explicit_mode_overrides_configured_default(self) -> None:
-        self.assertEqual(
-            build_permission_record(explicit_mode="inherit", config={"permission_mode": "full"}),
-            {
-                "requested_mode": "inherit",
-                "effective_mode": "inherit",
-                "selection_source": "explicit_task",
-            },
+        record = build_permission_record(
+            explicit_mode="inherit", config={"permission_mode": "full"}
         )
+        self.assertEqual(record["version"], 2)
+        self.assertEqual(record["requested_mode"], "inherit")
+        self.assertEqual(record["effective_mode"], "inherit")
+        self.assertEqual(record["selection_source"], "explicit_task")
+        self.assertEqual(record["task_override"], "inherit")
+        self.assertEqual(record["configured_mode"], "full")
+        self.assertEqual(record["scope"], "task")
+        self.assertEqual(record["permission_args"], [])
+        self.assertIn("codex", record["mapping"])
+        self.assertIn("claude", record["mapping"])
+        self.assertIn("hermes", record["mapping"])
         self.assertEqual(
             build_permission_record(config={"permission_mode": "full"})["selection_source"],
             "configured_default",
@@ -155,13 +161,14 @@ class TaskPermissionPersistenceTests(unittest.TestCase):
             inherited_default.extensions[PERMISSION_EXTENSION_KEY]["effective_mode"], "inherit"
         )
         self.assertEqual(
-            explicit.extensions[PERMISSION_EXTENSION_KEY],
-            {
-                "requested_mode": "full",
-                "effective_mode": "full",
-                "selection_source": "explicit_task",
-            },
+            explicit.extensions[PERMISSION_EXTENSION_KEY]["effective_mode"], "full"
         )
+        explicit_record = explicit.extensions[PERMISSION_EXTENSION_KEY]
+        self.assertEqual(explicit_record["version"], 2)
+        self.assertEqual(explicit_record["requested_mode"], "full")
+        self.assertEqual(explicit_record["selection_source"], "explicit_task")
+        self.assertEqual(explicit_record["task_override"], "full")
+        self.assertEqual(explicit_record["configured_mode"], "inherit")
 
     def test_legacy_task_cannot_gain_full_from_new_config(self) -> None:
         service = self._service("safe")

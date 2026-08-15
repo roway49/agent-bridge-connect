@@ -48,6 +48,16 @@ def validate_config(config: dict[str, Any]) -> list[str]:
     for section in ("executors", "notifiers", "sessions"):
         if section in config and not isinstance(config[section], dict):
             errors.append(f"{section} must be a table")
+    permissions = config.get("permissions")
+    if "permissions" in config and not isinstance(permissions, dict):
+        errors.append("permissions must be a table")
+    if isinstance(permissions, dict) and "mode" in permissions:
+        from .permission_modes import normalize_permission_mode
+
+        try:
+            normalize_permission_mode(permissions.get("mode"))
+        except ABCError as exc:  # validation returns errors instead of raising
+            errors.append(str(exc))
     board_root = config.get("board_root")
     if board_root is not None and not isinstance(board_root, str):
         errors.append("board_root must be a string")
@@ -110,6 +120,38 @@ def configured_session_retention(config: dict[str, Any] | None) -> tuple[bool, s
     if isinstance(sessions, dict) and isinstance(sessions.get("retain_executor_sessions"), bool):
         return sessions["retain_executor_sessions"], "configured"
     return DEFAULT_RETAIN_EXECUTOR_SESSIONS, "session_default_false"
+
+
+def apply_permissions_setting(config: dict[str, Any], mode: str) -> bool:
+    """Normalize one unified permission setting transaction (PERM-103-005).
+
+    Shared by ``agentbc permissions set`` and ``agentbc setup`` so both use
+    the same source and the same atomic transaction: writes the unified
+    ``permissions.mode`` key and removes the legacy top-level
+    ``permission_mode`` key on the first actual modification.  Returns True
+    when the transaction changes the persisted config.
+    """
+    from .permission_modes import configured_permission_mode, normalize_permission_mode
+
+    selected = normalize_permission_mode(mode)
+    current, _ = configured_permission_mode(config)
+    legacy_present = "permission_mode" in config
+    permissions = config.setdefault("permissions", {})
+    permissions["mode"] = selected
+    config.pop("permission_mode", None)
+    return current != selected or legacy_present
+
+
+def set_permissions_mode_atomic(
+    mode: str,
+    path: str | Path | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Atomically set the unified global permission mode under the config lock."""
+
+    def mutate(config: dict[str, Any]) -> None:
+        apply_permissions_setting(config, mode)
+
+    return update_config_atomic(mutate, path)
 
 
 def write_config_atomic(
