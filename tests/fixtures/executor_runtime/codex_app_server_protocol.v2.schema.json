@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "generated_from": "codex app-server generate-json-schema --experimental",
+  "codex_version": "0.146.0",
+  "protocol_version": 2,
+  "client_methods": [
+    "initialize",
+    "thread/start",
+    "thread/resume",
+    "turn/start"
+  ],
+  "server_request_methods": [
+    "item/commandExecution/requestApproval",
+    "item/fileChange/requestApproval",
+    "item/permissions/requestApproval"
+  ],
+  "server_notifications": ["turn/completed"],
+  "thread_start_response": {
+    "required": ["thread"],
+    "thread_required": ["id"]
+  },
+  "turn_start_params": {
+    "required": ["threadId", "input"]
+  },
+  "single_action_responses": {
+    "command": {"decisions": ["accept", "decline", "cancel"]},
+    "file_change": {"decisions": ["accept", "decline", "cancel"]},
+    "permissions": {"required": ["permissions"], "scopes": ["turn", "session"]}
+  },
+  "agentbc_constraints": {
+    "approval_decisions": ["accept", "decline"],
+    "approval_scope": "turn",
+    "forbidden_decisions": ["acceptForSession", "amendment"],
+    "receipt_source": "jsonl_thread_started"
+  }
+}
