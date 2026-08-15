@@ -4,6 +4,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from .approval import APPROVAL_SCOPE
 from .execution_policy import execution_policy_view
 from .notifiers.dialog import DialogNotifier
 from .notifiers.file import FileNotifier
@@ -118,6 +119,20 @@ def notify_input_required(
                     "report_path": str(payload.get("report_path") or ""),
                 }
             )
+        # Single-action approval responses must resolve to the same native
+        # request that created the wait; a response recorded against a different
+        # request id fails closed and is never treated as a successful answer.
+        if (
+            payload.get("input_type") == "permission"
+            and payload.get("approval_request_id")
+            and not response_error
+        ):
+            response_request_id = str(response_result.get("request_id") or "")
+            if response_request_id and response_request_id != payload["approval_request_id"]:
+                response_error = (
+                    "approval_request_mismatch: "
+                    "response resolved to a different native request"
+                )
         service.store.append_event(
             task_id,
             {
@@ -246,6 +261,11 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
             body_lines.append("Enter your response below to resume this same task.")
     body = "\n".join(body_lines)
     permission_grant = execution_policy_view(task.extensions).get("permission_grant")
+    is_single_action_approval = (
+        input_type == "permission"
+        and request.get("scope") == APPROVAL_SCOPE
+        and bool(str(request.get("request_id") or "").strip())
+    )
     return {
         "task_id": task_id,
         "event_type": "task.input_required",
@@ -263,6 +283,24 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         "input_options": input_options,
         "input_option_descriptions": option_descriptions,
         "permission_grant": permission_grant,
+        # Single-action approval binding: the notification is tied to exactly one
+        # native request so a dialog can only Approve/Deny the bound request.
+        "approval_request_id": (
+            str(request.get("request_id") or "") if is_single_action_approval else ""
+        ),
+        "approval_request_fingerprint": (
+            str(request.get("request_fingerprint") or "")
+            if is_single_action_approval
+            else ""
+        ),
+        "approval_executor_run_id": (
+            str(request.get("executor_run_id") or "")
+            if is_single_action_approval
+            else ""
+        ),
+        "approval_scope": (
+            str(request.get("scope") or "") if is_single_action_approval else ""
+        ),
     }
 
 

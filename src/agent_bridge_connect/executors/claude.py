@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,9 +24,11 @@ from agent_bridge_connect.adapters import (
     StartResult,
 )
 from agent_bridge_connect.approval import (
+    assert_no_pending_approval,
     compute_request_fingerprint,
     core_bounded_summary,
     new_request_id,
+    validate_approval_receipt,
 )
 from agent_bridge_connect.execution_contract import (
     CallbackValidation,
@@ -36,7 +39,10 @@ from agent_bridge_connect.execution_contract import (
     route_executor_terminal,
     strip_callback_line,
 )
-from agent_bridge_connect.effective_permissions import resolve_effective_permission
+from agent_bridge_connect.effective_permissions import (
+    SESSION_EXTENSION_KEY,
+    resolve_effective_permission,
+)
 from agent_bridge_connect.permission_modes import (
     assert_executor_permission_supported,
     permission_flags,
@@ -567,6 +573,14 @@ class ClaudeExecutor(CLIExecutorBase):
             decision_callback=lambda request: self._approval_decision_callback(
                 task_packet, run_id, execution_session, request
             ),
+            transport_death_callback=lambda request_id: (
+                self._invalidate_approval_after_transport_death(
+                    task_packet,
+                    run_id,
+                    execution_session,
+                    request_id,
+                )
+            ),
         )
         try:
             command = self._build_control_command(
@@ -641,6 +655,50 @@ class ClaudeExecutor(CLIExecutorBase):
             return StartResult(ok=False, run_id="", message=f"failed to start claude: {exc}")
 
         assert captured is not None
+        if captured.get("transport_death_while_approval") is True:
+            # Transport died while a single-action approval was pending.  The
+            # request is invalidated (crash denial recorded by the broker hook)
+            # and the run must be recovered with a fresh request id.
+            self._store_run(run_id, execution_root, int(captured.get("returncode") or 0))
+            self._mark_run_stale(run_id)
+            aborted_request_id = str(captured.get("aborted_request_id") or "")
+            failure_message = (
+                "Claude transport died while a single-action approval was pending; "
+                "the request is invalidated and recovery requires a fresh request id"
+            )
+            self._runs[run_id] = PollResult(
+                status="needs_recovery",
+                progress={"steps_total": len(steps)},
+                result={
+                    "stdout": str(captured.get("stdout") or ""),
+                    "stderr": str(captured.get("stderr") or ""),
+                    "summary": "",
+                    "returncode": captured.get("returncode"),
+                    "agent_callback": None,
+                    "marker_valid": False,
+                    "marker_seen": False,
+                    "failure": {
+                        "kind": "transport_death_while_approval_pending",
+                        "layer": "executor",
+                        "message": failure_message,
+                        "retryable": True,
+                    },
+                    "aborted_request_id": aborted_request_id,
+                    "extensions": self.get_extensions(),
+                    **(
+                        {"execution_session": execution_session}
+                        if execution_session is not None
+                        else {}
+                    ),
+                },
+            )
+            self._close_run_lease(run_id)
+            return StartResult(
+                ok=True,
+                run_id=run_id,
+                message="claude transport died while approval pending",
+            )
+
         self._heartbeat_run(run_id)
         stdout = str(captured.get("stdout") or "")
         stderr = str(captured.get("stderr") or "")
@@ -706,7 +764,14 @@ class ClaudeExecutor(CLIExecutorBase):
         The callback persists an ``agentbc.approval`` v1 receipt and blocks for a
         user decision.  It only ever returns allow/deny and never applies
         ``updated_permissions``.  It is safe to call from the broker thread.
+
+        Fail-closed guarantees: a concurrent second request while one approval is
+        already waiting is refused without touching the pending receipt; the
+        persisted receipt must bind ``task_id`` + ``executor_run_id`` +
+        ``session_id`` + ``request_id`` + fingerprint; and a response that was
+        recorded for a different native request is never returned as ``allow``.
         """
+        from agent_bridge_connect.approval import APPROVAL_EXTENSION_KEY
         from agent_bridge_connect.notifications import notify_input_required
         from agent_bridge_connect.service import TaskService
 
@@ -730,6 +795,21 @@ class ClaudeExecutor(CLIExecutorBase):
             tool_input=request.get("tool_input") or {},
         )
         summary = core_bounded_summary(executor="claude", operation=operation)
+
+        # Concurrent second request fail-closed: only one single-action approval
+        # may wait at a time, so one dialog can never authorize two actions.
+        try:
+            current = service.get_task(task_id)
+        except ABCError as exc:
+            return {"permission": "deny", "error": exc.code, "request_id": request_id}
+        try:
+            assert_no_pending_approval(
+                current.extensions or {},
+                task_status=current.status,
+            )
+        except ABCError as exc:
+            return {"permission": "deny", "error": exc.code, "request_id": request_id}
+
         try:
             service.block_task_for_approval(
                 task_id,
@@ -740,6 +820,19 @@ class ClaudeExecutor(CLIExecutorBase):
                 executor="claude",
                 operation=operation,
                 summary=summary,
+            )
+        except ABCError as exc:
+            return {"permission": "deny", "error": exc.code, "request_id": request_id}
+        try:
+            persisted = service.get_task(task_id)
+            validate_approval_receipt(
+                (persisted.extensions or {}).get(APPROVAL_EXTENSION_KEY),
+                executor="claude",
+                task_id=task_id,
+                session_id=session_id,
+                request_id=request_id,
+                executor_run_id=run_id,
+                request_fingerprint=fingerprint,
             )
         except ABCError as exc:
             return {"permission": "deny", "error": exc.code, "request_id": request_id}
@@ -760,11 +853,93 @@ class ClaudeExecutor(CLIExecutorBase):
         except ABCError as exc:
             return {"permission": "deny", "error": exc.code, "request_id": request_id}
         response = outcome.get("response") or {}
+        # Approve only the bound native request: a decision recorded against a
+        # different request id is never reported back as ``allow``.
+        response_request_id = str(response.get("request_id") or "").strip()
+        if response_request_id and response_request_id != request_id:
+            return {"permission": "deny", "error": "approval_request_mismatch", "request_id": request_id}
         decision = str(response.get("approval_decision") or "").strip().lower()
         if decision not in {"allow", "deny"}:
             action = str(outcome.get("dialog_action") or "").strip().lower()
             decision = "deny" if action in {"deny", "dismissed", "timeout"} else "allow"
         return {"permission": decision, "request_id": request_id}
+
+    def _invalidate_approval_after_transport_death(
+        self,
+        task_packet: dict[str, Any],
+        run_id: str,
+        execution_session: dict[str, Any] | None,
+        request_id: str,
+    ) -> None:
+        """Invalidate a single-action approval whose native transport died.
+
+        When the Claude transport exits while a can_use_tool request is waiting
+        on a user decision, the old request must not be reusable.  If the
+        approval receipt is still pending (the user never answered, or the dialog
+        failed), a fail-closed ``crash`` denial is recorded on the same receipt so
+        the dead request is durably invalidated and recovery must mint a fresh
+        request id.  The worker transitions the task to ``needs_recovery`` from
+        the executor's poll result.
+        """
+        from agent_bridge_connect.approval import (
+            APPROVAL_EXTENSION_KEY,
+            record_approval_decision,
+        )
+        from agent_bridge_connect.service import TaskService
+
+        board_root = (
+            task_packet.get("task_board") or {}
+        ).get("root") or _workspace_root(task_packet)
+        service = TaskService(board_root, config=getattr(self, "_config", None) or {})
+        task_id = str(task_packet.get("task_id") or "")
+        try:
+            current = service.get_task(task_id)
+        except ABCError:
+            return
+        extensions = dict(current.extensions or {})
+        receipt_value = extensions.get(APPROVAL_EXTENSION_KEY)
+        if not isinstance(receipt_value, dict):
+            return
+        try:
+            receipt = validate_approval_receipt(receipt_value)
+        except ABCError:
+            return
+        if receipt["state"]["status"] != "pending":
+            return
+        session_id = str(
+            (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
+        )
+        try:
+            updated = record_approval_decision(
+                receipt_value,
+                "deny",
+                source="crash",
+                executor=current.assignee,
+                task_id=current.id,
+                session_id=session_id,
+                request_id=str(receipt.get("request_id") or ""),
+                executor_run_id=run_id,
+                request_fingerprint=str(receipt.get("request_fingerprint") or ""),
+            )
+        except ABCError:
+            return
+        extensions[APPROVAL_EXTENSION_KEY] = updated
+        current.extensions = extensions
+        current.updated_at = _utc_now()
+        service.store.write_task(current.id, current.to_dict())
+        service.store.append_event(
+            current.id,
+            {
+                "event_type": "task.approval_transport_death",
+                "task_id": current.id,
+                "request_id": str(receipt.get("request_id") or ""),
+                "executor_run_id": run_id,
+                "decision": "deny",
+                "decision_source": "crash",
+                "reason": "Claude transport died while a single-action approval was pending; the request is invalidated",
+                "created_at": _utc_now(),
+            },
+        )
 
     def _build_control_command(
         self,
@@ -939,10 +1114,13 @@ class ClaudePermissionPromptBroker:
         session_id: str,
         decision_callback: Any,
         verbose: bool = False,
+        transport_death_callback: Any = None,
     ) -> None:
         self.session_id = str(session_id or "").strip()
         self.decision_callback = decision_callback
         self.verbose = bool(verbose)
+        self.transport_death_callback = transport_death_callback
+        self._last_request_id = ""
 
     def broker_command(self) -> str:
         """Return a self-contained fail-closed stdio broker command.
@@ -973,6 +1151,7 @@ class ClaudePermissionPromptBroker:
             tool_name = str(request.get("tool_name") or request.get("tool") or "unknown")
             print(f"can_use_tool capture: {tool_name}", file=sys.stderr)
         result = self.decision_callback(request)
+        self._last_request_id = str((result or {}).get("request_id") or "").strip()
         permission = str((result or {}).get("permission") or "").strip().lower()
         if permission == "allow":
             return json.dumps({"permission": "allow"})
@@ -1007,6 +1186,8 @@ class ClaudePermissionPromptBroker:
         stderr_lines: list[str] = []
         init_verified = False
         user_message_sent = False
+        transport_death_while_approval = False
+        aborted_request_id = ""
         try:
             if process.stdout is not None:
                 for raw_line in process.stdout:
@@ -1032,9 +1213,24 @@ class ClaudePermissionPromptBroker:
                             process.stdin.flush()
                     if isinstance(parsed, dict) and self._is_can_use_tool(parsed):
                         response = self.handle_request_line(json.dumps(parsed))
+                        if process.poll() is not None:
+                            # The transport died while the user decision was
+                            # being made.  The native request is void: transport
+                            # death invalidates the request and recovery requires
+                            # a fresh request id.
+                            transport_death_while_approval = True
+                            aborted_request_id = self._last_request_id
+                            self._notify_transport_death(aborted_request_id)
+                            break
                         if process.stdin is not None:
-                            process.stdin.write(response + "\n")
-                            process.stdin.flush()
+                            try:
+                                process.stdin.write(response + "\n")
+                                process.stdin.flush()
+                            except OSError:
+                                transport_death_while_approval = True
+                                aborted_request_id = self._last_request_id
+                                self._notify_transport_death(aborted_request_id)
+                                break
             process.wait(timeout=timeout_s)
         except subprocess.TimeoutExpired:
             process.kill()
@@ -1063,7 +1259,18 @@ class ClaudePermissionPromptBroker:
             "stdout": "\n".join(stdout_lines),
             "stderr": "\n".join(stderr_lines),
             "init_verified": init_verified,
+            "transport_death_while_approval": transport_death_while_approval,
+            "aborted_request_id": aborted_request_id,
         }
+
+    def _notify_transport_death(self, request_id: str) -> None:
+        """Notify the executor that transport died with a pending approval."""
+        if self.transport_death_callback is None:
+            return
+        try:
+            self.transport_death_callback(request_id)
+        except ABCError:
+            pass
 
     def _verify_init_receipt(self, receipt: dict[str, Any]) -> bool:
         received = str(receipt.get("session_id") or "").strip()
@@ -1080,6 +1287,10 @@ class ClaudePermissionPromptBroker:
             event_type == "tool_permission"
             or "can_use_tool" in str(parsed.get("event_type") or "")
         )
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _parse_stream_json_line(line: str) -> dict[str, Any] | None:
