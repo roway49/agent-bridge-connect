@@ -9,6 +9,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .approval import (
+    APPROVAL_EXTENSION_KEY,
+    APPROVAL_SCOPE,
+    build_approval_receipt,
+    record_approval_decision,
+    validate_approval_receipt,
+)
 from .config import DEFAULT_BOARD_ROOT, get_executor_config, init_board
 from .execution_contract import validate_callback_payload
 from .execution_policy import (
@@ -26,6 +33,12 @@ from .execution_policy import (
     validate_execution_policy_extensions,
     validate_resource_snapshot,
     validate_session_snapshot,
+)
+from .migration import (
+    assert_legacy_cutover_clear,
+    assert_maintenance_command_allowed,
+    legacy_permission_cutover_blocked,
+    maintenance_mode_view,
 )
 from .executor_registry import get_executor
 from .media import media_extension, normalize_image_inputs, task_image_paths
@@ -74,6 +87,7 @@ HANDOFF_SOURCE_STATUSES = {"completed"}
 DELETE_ELIGIBLE_STATUSES = {"completed", "failed", "cancelled", "rejected"}
 DEFAULT_INPUT_WAIT_SECONDS = 24 * 60 * 60
 PERMISSION_DIALOG_TIMEOUT_RESPONSE = "agentbc_permission_dialog_timeout"
+PERMISSION_DIALOG_CLOSED_RESPONSE = "agentbc_permission_dialog_closed"
 
 
 @dataclass(frozen=True)
@@ -122,6 +136,7 @@ class TaskService:
         permission_mode: str | None = None,
         inherited_permission: dict[str, Any] | None = None,
     ) -> TaskModel:
+        assert_maintenance_command_allowed(self, "create")
         title = title.strip()
         assignee = _normalize_executor_ref(
             assignee,
@@ -475,6 +490,7 @@ class TaskService:
     def start_task_run(self, task_id: str, executor_id: str) -> str:
         from .task_health import write_task_progress
 
+        assert_maintenance_command_allowed(self, "dispatch")
         task = self.get_task(task_id)
         validate_path_plan_workspace(task.workspace or {})
         execution = dict((task.extensions or {}).get("agentbc.execution") or {})
@@ -962,6 +978,35 @@ class TaskService:
         current.updated_at = _utc_now()
         self.store.write_task(task_id, _without_none(current.to_dict()))
 
+    def _approval_receipt_for_response(
+        self,
+        task: TaskModel,
+        extensions: dict[str, Any],
+        request: dict[str, Any],
+        input_id: str,
+    ) -> dict[str, Any]:
+        """Return the durable approval receipt bound to a responding input."""
+        if APPROVAL_EXTENSION_KEY not in extensions:
+            raise ABCError(
+                "permission_input_invalid",
+                "Approval input is missing the persisted agentbc.approval receipt",
+            )
+        session_id = str(
+            (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
+        )
+        if not session_id:
+            raise ABCError(
+                "permission_input_invalid",
+                "Approval input is missing the authoritative executor session",
+            )
+        return validate_approval_receipt(
+            extensions[APPROVAL_EXTENSION_KEY],
+            executor=task.assignee,
+            task_id=task.id,
+            session_id=session_id,
+            request_id=str(request.get("request_id") or ""),
+        )
+
     def _permission_wait_contract_failure(
         self,
         task: TaskModel,
@@ -1368,6 +1413,228 @@ class TaskService:
             "exhaustion_count": resources["exhaustion_count"],
         }
 
+    def block_task_for_approval(
+        self,
+        task_id: str,
+        *,
+        executor_run_id: str,
+        session_id: str,
+        request_id: str,
+        request_fingerprint: str,
+        executor: str,
+        operation: str,
+        summary: str = "",
+        blocked_step_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Block the first incomplete step for one structured native approval request.
+
+        Core entry for the ``PERM-103-003`` approval flow.  The caller supplies
+        the executor-neutral ``agentbc.approval`` v1 binding facts; Core builds a
+        bounded summary, persists the approval receipt under
+        ``agentbc.approval``, and creates an ``input_required(type=permission)``
+        request that only Approve / Deny can answer through
+        :func:`notify_input_required`.  No safe-to-full grant is issued and the
+        task ``effective_mode`` is never changed.
+        """
+        from .approval import (
+            APPROVAL_SCOPE,
+            compute_request_fingerprint,
+            core_bounded_summary,
+            new_request_id,
+        )
+        from .reports import redact_secrets
+        from .run_lease import suspend_lease
+        from .task_health import clear_task_progress
+
+        task = self.get_task(task_id)
+        task_id = task.id
+        chain = self.resolve_chain(task_id)
+        if not chain.requested_is_head or len(chain.head_task_ids) != 1:
+            raise ABCError(
+                "approval_stale_chain",
+                "Approval request must target the current unique chain head",
+                chain.to_dict(),
+            )
+        normalized_executor = str(executor or "").strip().lower()
+        if normalized_executor != str(task.assignee or "").strip().lower():
+            raise ABCError(
+                "approval_executor_mismatch",
+                "Approval request executor does not match the task assignee",
+            )
+        normalized_run_id = str(executor_run_id or "").strip()
+        if not normalized_run_id:
+            raise ABCError(
+                "approval_run_missing",
+                "Approval request requires the authoritative executor run id",
+            )
+        session = (task.extensions or {}).get(SESSION_EXTENSION_KEY)
+        session_errors = validate_session_snapshot(session, executor=task.assignee)
+        if session_errors:
+            raise ABCError("approval_session_invalid", "; ".join(session_errors), {"errors": session_errors})
+        official_session_id = str(session.get("session_id") or "").strip()
+        if not official_session_id or official_session_id != str(session_id or "").strip():
+            raise ABCError(
+                "approval_session_mismatch",
+                "Approval request does not match the official executor session",
+            )
+        run_ids = list(session.get("run_ids") or [])
+        if not run_ids or run_ids[-1] != normalized_run_id:
+            raise ABCError(
+                "approval_run_mismatch",
+                "Approval request does not match the latest executor run",
+            )
+
+        clean_request_id = str(request_id or "").strip()
+        if not clean_request_id:
+            clean_request_id = new_request_id()
+        clean_fingerprint = str(request_fingerprint or "").strip()
+        if not clean_fingerprint:
+            clean_fingerprint = compute_request_fingerprint(
+                executor=normalized_executor,
+                session_id=official_session_id,
+                tool_name=operation,
+            )
+        clean_operation = str(operation or "").strip()
+        if not clean_operation:
+            raise ABCError("approval_operation_invalid", "Approval request requires an operation")
+        clean_summary = str(summary or "").strip()
+        if not clean_summary:
+            clean_summary = core_bounded_summary(
+                executor=normalized_executor,
+                operation=clean_operation,
+            )
+
+        receipt = build_approval_receipt(
+            task_id=task_id,
+            executor_run_id=normalized_run_id,
+            executor=normalized_executor,
+            session_id=official_session_id,
+            request_id=clean_request_id,
+            request_fingerprint=clean_fingerprint,
+            kind="permission",
+            operation=clean_operation,
+            summary=str(redact_secrets(clean_summary)),
+            scope=APPROVAL_SCOPE,
+        )
+
+        step_id = blocked_step_id or _first_incomplete_step_id(task.steps)
+        if step_id is None:
+            raise ABCError(
+                "approval_no_step",
+                "Approval request cannot be created: no incomplete step exists",
+            )
+
+        now = _utc_now()
+        deadline_at = (
+            _parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)
+        ).isoformat().replace("+00:00", "Z")
+        request: dict[str, Any] = {
+            "input_id": f"input-{uuid.uuid4().hex}",
+            "executor_run_id": normalized_run_id,
+            "blocked_step_id": step_id,
+            "type": "permission",
+            "scope": APPROVAL_SCOPE,
+            "request_id": clean_request_id,
+            "request_fingerprint": clean_fingerprint,
+            "operation": clean_operation,
+            "summary": receipt["summary"],
+            "created_at": now,
+            "deadline_at": deadline_at,
+            "status": "waiting",
+        }
+
+        extensions = dict(task.extensions or {})
+        previous = extensions.get("agentbc.input")
+        history = list(extensions.get("agentbc.input_history") or [])
+        if isinstance(previous, dict):
+            history.append(previous)
+
+        extensions[APPROVAL_EXTENSION_KEY] = receipt
+        extensions = self._record_run_interval(task_id, extensions)
+        extensions.pop("agentbc.completion_intent", None)
+        extensions.pop("agentbc.final_callback", None)
+        extensions["agentbc.input"] = request
+        if history:
+            extensions["agentbc.input_history"] = history
+        task.extensions = _merge_execution(
+            extensions,
+            {
+                "internal_status": "waiting",
+                "lease_state": "suspended",
+                "waiting_since": now,
+            },
+        )
+        task.status = "input_required"
+        task.updated_at = now
+        task.steps = [
+            _resource_block_step(step, step_id)
+            for step in task.steps
+        ]
+        self._release_lease(task_id)
+        self.store.write_task(task_id, _without_none(task.to_dict()))
+        suspend_lease(
+            task_id,
+            self.board_root,
+            executor_run_id=normalized_run_id,
+            executor_id=task.assignee,
+            work_dir=str(
+                (task.workspace or {}).get("project_root")
+                or (task.workspace or {}).get("root")
+                or self.board_root
+            ),
+        )
+        clear_task_progress(task)
+        self.store.append_event(
+            task_id,
+            {
+                "event_type": "task.approval_required",
+                "task_id": task_id,
+                "created_at": now,
+                "input_id": request["input_id"],
+                "request_id": clean_request_id,
+                "blocked_step_id": step_id,
+                "scope": APPROVAL_SCOPE,
+            },
+        )
+        self._refresh_task_index()
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "status": "input_required",
+            "input_id": request["input_id"],
+            "request_id": clean_request_id,
+            "request_fingerprint": clean_fingerprint,
+            "scope": APPROVAL_SCOPE,
+            "blocked_step_id": step_id,
+        }
+
+    def cutover_preflight(self) -> dict[str, Any]:
+        """Return the strict cutover gate for a supported update/preflight.
+
+        Any old-channel ``pending`` / ``running`` / ``input_required`` /
+        ``needs_recovery`` task, unconsumed one-shot grant, or legacy permission
+        marker blocks the cutover with ``legacy_permission_cutover_blocked``.
+        """
+        return legacy_permission_cutover_blocked(self)
+
+    def assert_legacy_cutover_clear(self) -> dict[str, Any]:
+        """Raise ``legacy_permission_cutover_blocked`` when the gate is closed."""
+        return assert_legacy_cutover_clear(self)
+
+    def enter_maintenance_mode(self, reason: str = "") -> dict[str, Any]:
+        """Enter cutover maintenance mode (manual bypass install)."""
+        from .migration import enter_maintenance_mode as _enter_marker
+
+        return _enter_marker(self, reason=reason)
+
+    def exit_maintenance_mode(self) -> dict[str, Any]:
+        from .migration import exit_maintenance_mode as _exit_marker
+
+        return _exit_marker(self)
+
+    def maintenance_mode(self) -> dict[str, Any]:
+        return maintenance_mode_view(self)
+
     def _fail_closed_resource_block(
         self,
         task: TaskModel,
@@ -1415,6 +1682,7 @@ class TaskService:
         from .run_lease import RunLeaseState, load_lease
         from .task_health import write_task_progress
 
+        assert_maintenance_command_allowed(self, "respond")
         task = self.get_task(task_id)
         request = (task.extensions or {}).get("agentbc.input")
         if not isinstance(request, dict):
@@ -1490,6 +1758,10 @@ class TaskService:
             if is_permission_request
             and response_type == "deny"
             and message == PERMISSION_DIALOG_TIMEOUT_RESPONSE
+            else "dialog_closed"
+            if is_permission_request
+            and response_type == "deny"
+            and message == PERMISSION_DIALOG_CLOSED_RESPONSE
             else "user"
         )
         answered["response"] = {
@@ -1505,6 +1777,102 @@ class TaskService:
         extensions["agentbc.input"] = answered
         if updated_resources is not None:
             extensions[RESOURCE_EXTENSION_KEY] = updated_resources
+
+        is_approval_request = (
+            is_permission_request
+            and request.get("scope") == APPROVAL_SCOPE
+            and bool(str(request.get("request_id") or "").strip())
+        )
+        if is_approval_request:
+            receipt = self._approval_receipt_for_response(
+                task,
+                extensions,
+                request,
+                current_input_id,
+            )
+            approval_source = permission_denial_source if response_type == "deny" else "user"
+            updated_receipt = record_approval_decision(
+                receipt,
+                response_type,
+                source=approval_source,
+                decided_at=now,
+                executor=task.assignee,
+                task_id=task.id,
+                session_id=str(
+                    (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
+                ),
+                request_id=str(request.get("request_id") or ""),
+            )
+            extensions[APPROVAL_EXTENSION_KEY] = updated_receipt
+            blocked_step_id = request.get("blocked_step_id")
+            if not any(
+                step.get("id") == blocked_step_id and step.get("status") == "blocked"
+                for step in task.steps
+            ):
+                raise ABCError(
+                    "permission_input_invalid",
+                    "Approval input does not identify the current blocked step",
+                )
+            task.steps = [
+                {**step, "status": "pending"}
+                if step.get("id") == blocked_step_id and step.get("status") == "blocked"
+                else dict(step)
+                for step in task.steps
+            ]
+            task.status = "running"
+            task.updated_at = now
+            task.extensions = _merge_execution(
+                extensions,
+                {
+                    "internal_status": "resuming",
+                    "lease_state": "suspended",
+                    "resuming_at": now,
+                },
+            )
+            self.store.write_task(task.id, _without_none(task.to_dict()))
+            self.store.append_event(
+                task.id,
+                {
+                    "event_type": "task.input_answered",
+                    "task_id": task.id,
+                    "input_id": current_input_id,
+                    "response_type": response_type,
+                    "response_source": approval_source,
+                    "approval_scope": APPROVAL_SCOPE,
+                    "created_at": now,
+                },
+            )
+            self.store.append_event(
+                task.id,
+                {
+                    "event_type": "task.approval_decided",
+                    "task_id": task.id,
+                    "request_id": str(request.get("request_id") or ""),
+                    "decision": response_type,
+                    "decision_source": approval_source,
+                    "scope": APPROVAL_SCOPE,
+                    "created_at": now,
+                },
+            )
+            write_task_progress(
+                task,
+                state="resuming",
+                message="approval decision recorded; resuming the same task session",
+                source="runner",
+            )
+            self._refresh_task_index()
+            return {
+                "ok": True,
+                "task_id": task.id,
+                "input_id": current_input_id,
+                "request_id": str(request.get("request_id") or ""),
+                "status": "resuming",
+                "dispatch_required": True,
+                "approval_decision": response_type,
+                "approval_source": approval_source,
+                "same_session": True,
+            }
+
         if is_resource_decision and response_type == "deny":
             failure_code = {
                 "claude": "budget_exhausted_user_terminated",
@@ -1751,6 +2119,60 @@ class TaskService:
                 task.extensions = dict(task.extensions or {})
                 task.extensions["agentbc.input"] = answered_request
                 task.updated_at = expired_at
+                is_approval_request = (
+                    request.get("scope") == APPROVAL_SCOPE
+                    and bool(str(request.get("request_id") or "").strip())
+                )
+                if is_approval_request:
+                    # Approval-based timeout auto-denies on the same native
+                    # request, records the decision source, and never issues a
+                    # safe-to-full grant.  The task is moved to needs_recovery so
+                    # the official session is never silently lost.
+                    extensions = dict(task.extensions)
+                    try:
+                        receipt = self._approval_receipt_for_response(
+                            task,
+                            extensions,
+                            request,
+                            str(request.get("input_id") or ""),
+                        )
+                    except ABCError:
+                        receipt = None
+                    if receipt is not None:
+                        updated_receipt = record_approval_decision(
+                            receipt,
+                            "deny",
+                            source="timeout",
+                            decided_at=expired_at,
+                            executor=task.assignee,
+                            task_id=task.id,
+                            session_id=str(
+                                (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
+                            ),
+                            request_id=str(request.get("request_id") or ""),
+                        )
+                        extensions[APPROVAL_EXTENSION_KEY] = updated_receipt
+                        task.extensions = extensions
+                        self.store.write_task(task.id, _without_none(task.to_dict()))
+                    changed = self.mark_task_needs_recovery(
+                        task.id,
+                        "approval_denied_by_timeout",
+                        "Approval request timed out and was automatically denied",
+                        {
+                            "input_id": request.get("input_id", ""),
+                            "request_id": request.get("request_id", ""),
+                            "executor": task.assignee,
+                            "response_source": "timeout",
+                        },
+                    )
+                    if changed:
+                        expired.append(
+                            {
+                                "task_id": task.id,
+                                "input_id": request.get("input_id", ""),
+                            }
+                        )
+                    continue
                 failure_code = "permission_denied_by_timeout"
                 failure_message = "Permission request timed out and was automatically denied"
                 self._mark_task_failed_model(
