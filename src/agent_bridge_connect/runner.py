@@ -23,6 +23,7 @@ from .effective_permissions import (
     resolve_effective_permission,
     validate_temporary_permission_context,
 )
+from .control import ApprovalControlPlane, ControlPlaneError, normalize_decision
 from .execution_policy import (
     RESOURCE_EXTENSION_KEY,
     SESSION_EXTENSION_KEY,
@@ -45,6 +46,7 @@ from .permission_grants import (
     permission_grant_from_extensions,
 )
 from .protocol import ABCError
+from .session import SessionRecoveryRequired, control_root_for_task
 
 
 MAX_REQUEST_BYTES = 1024 * 1024
@@ -91,7 +93,9 @@ _EXECUTOR_COMMAND_RULES: dict[str, dict[str, Any]] = {
     "codex": {
         "required_subcommand": "exec",
         "required_flags": {"--json"},
-        "description": "Codex exec --json (structured JSONL output)",
+        "alternate_subcommand": "app-server",
+        "alternate_flags": {"--stdio", "--listen"},
+        "description": "Codex exec --json or app-server --stdio (structured control transport)",
     },
     "claude": {
         "required_subcommand": None,
@@ -787,6 +791,72 @@ class RunnerClient:
             }
         )
 
+    def respond_approval(
+        self,
+        task_id: str,
+        executor_run_id: str,
+        session_id: str,
+        request_id: str,
+        decision: str,
+        *,
+        board_root: str | Path | None = None,
+        control_root: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """Submit one exact accept/decline decision to the Runner control plane."""
+        selected = normalize_decision(decision)
+        return self._request(
+            {
+                "op": "respond_approval",
+                "task_id": str(task_id),
+                "executor_run_id": str(executor_run_id),
+                "session_id": str(session_id),
+                "request_id": str(request_id),
+                "decision": selected,
+                "board_root": str(Path(board_root).expanduser()) if board_root else "",
+                "control_root": str(Path(control_root).expanduser()) if control_root else "",
+            }
+        )
+
+    def control_status(
+        self,
+        task_id: str,
+        executor_run_id: str,
+        *,
+        session_id: str | None = None,
+        board_root: str | Path | None = None,
+        control_root: str | Path | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            {
+                "op": "control_status",
+                "task_id": str(task_id),
+                "executor_run_id": str(executor_run_id),
+                "session_id": str(session_id or ""),
+                "board_root": str(Path(board_root).expanduser()) if board_root else "",
+                "control_root": str(Path(control_root).expanduser()) if control_root else "",
+            }
+        )
+
+    def control_events(
+        self,
+        task_id: str,
+        executor_run_id: str,
+        *,
+        session_id: str | None = None,
+        board_root: str | Path | None = None,
+        control_root: str | Path | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            {
+                "op": "control_events",
+                "task_id": str(task_id),
+                "executor_run_id": str(executor_run_id),
+                "session_id": str(session_id or ""),
+                "board_root": str(Path(board_root).expanduser()) if board_root else "",
+                "control_root": str(Path(control_root).expanduser()) if control_root else "",
+            }
+        )
+
     def show_task(self, task_id: str, board_root: str | Path) -> dict[str, Any]:
         return self._request(
             {
@@ -1086,6 +1156,86 @@ class RunnerState:
             "effective_permission_mode": permission["effective_mode"],
         }
 
+    def _control_plane_from_request(self, request: dict[str, Any]) -> ApprovalControlPlane:
+        task_id = str(request.get("task_id") or "").strip()
+        executor_run_id = str(request.get("executor_run_id") or "").strip()
+        session_id = str(request.get("session_id") or "").strip()
+        if not task_id or not executor_run_id or not session_id:
+            raise RunnerError("approval control requires task, run, and session IDs")
+        board_value = str(request.get("board_root") or "").strip()
+        explicit_value = str(request.get("control_root") or "").strip()
+        try:
+            if explicit_value:
+                root = control_root_for_task(
+                    task_id,
+                    board_root=board_value or None,
+                    explicit_root=explicit_value,
+                )
+            elif board_value:
+                root = control_root_for_task(task_id, board_root=board_value)
+            else:
+                candidates = [
+                    control_root_for_task(task_id, board_root=board)
+                    for board in sorted(self.known_boards, key=str)
+                    if control_root_for_task(task_id, board_root=board).is_dir()
+                ]
+                if len(candidates) != 1:
+                    raise ValueError(
+                        "task board is not uniquely known; respond_approval requires an exact control root"
+                    )
+                root = candidates[0]
+            if board_value:
+                board = Path(board_value).expanduser().resolve()
+                if not any(_is_within(board, allowed_root) for allowed_root in self.allowed_roots):
+                    raise ValueError("task board is outside allowed roots")
+                if not _is_within(root, board):
+                    raise ValueError("control root is outside the task board")
+                if root != control_root_for_task(task_id, board_root=board):
+                    raise ValueError("control root is not the canonical task control directory")
+            elif root.parent.name != ".agentbc-control":
+                raise ValueError("control root is not the canonical task control directory")
+            if not any(_is_within(root, allowed_root) for allowed_root in self.allowed_roots):
+                raise ValueError("control root is outside allowed roots")
+            return ApprovalControlPlane(
+                root,
+                task_id=task_id,
+                executor_run_id=executor_run_id,
+                session_id=session_id,
+                executor=str(request.get("executor") or "codex"),
+                create=False,
+            )
+        except (ValueError, ControlPlaneError) as exc:
+            raise RunnerError(f"approval_control_invalid: {exc}") from exc
+
+    def respond_approval(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Atomically record one Core/Task 3 single-action decision."""
+        try:
+            plane = self._control_plane_from_request(request)
+            response = plane.respond_approval(
+                str(request.get("task_id") or ""),
+                str(request.get("executor_run_id") or ""),
+                str(request.get("session_id") or ""),
+                str(request.get("request_id") or ""),
+                str(request.get("decision") or ""),
+            )
+        except (ControlPlaneError, SessionRecoveryRequired) as exc:
+            raise RunnerError(f"{getattr(exc, 'code', 'approval_control_error')}: {exc}") from exc
+        return response
+
+    def control_status(self, request: dict[str, Any]) -> dict[str, Any]:
+        try:
+            plane = self._control_plane_from_request(request)
+        except (ControlPlaneError, SessionRecoveryRequired) as exc:
+            raise RunnerError(f"{getattr(exc, 'code', 'approval_control_error')}: {exc}") from exc
+        return {"ok": True, "control": plane.status()}
+
+    def control_events(self, request: dict[str, Any]) -> dict[str, Any]:
+        try:
+            plane = self._control_plane_from_request(request)
+        except (ControlPlaneError, SessionRecoveryRequired) as exc:
+            raise RunnerError(f"{getattr(exc, 'code', 'approval_control_error')}: {exc}") from exc
+        return {"ok": True, "events": plane.events()}
+
     def _phase2_structure_errors(
         self,
         extensions: dict[str, Any] | None,
@@ -1273,6 +1423,7 @@ class RunnerState:
             # Identity is already enforced by _persisted_permission_authorization.
             return
         board = Path(board_value).expanduser().resolve()
+        self.known_boards.add(board)
         from .config import DEFAULT_BOARD_ROOT
 
         default_board = DEFAULT_BOARD_ROOT.expanduser().resolve()
@@ -2161,6 +2312,24 @@ class RunnerState:
         allowed_roots.extend(self._task_scoped_allowed_roots(persisted_task))
         if not cwd.is_dir() or not any(_is_within(cwd, root) for root in allowed_roots):
             raise RunnerError(f"runner cwd is outside allowed roots: {cwd}")
+        codex_app_server = (
+            executor == "codex"
+            and len(command) >= 2
+            and command[1] == "app-server"
+        )
+        if codex_app_server:
+            if command.count("app-server") != 1:
+                raise RunnerError("codex App Server command must contain one app-server subcommand")
+            if "--stdio" not in command and not any(
+                token == "stdio://" or token.startswith("stdio://")
+                for token in command
+            ):
+                raise RunnerError("codex App Server requires stdio transport")
+            if any(token in {"--last", "--continue", "resume", "--ephemeral"} for token in command):
+                raise RunnerError(
+                    "runner_session_argument_mismatch: Codex App Server requires explicit RPC session IDs"
+                )
+            return
         required_subcommand = rules.get("required_subcommand")
         if required_subcommand and required_subcommand not in command:
             raise RunnerError(
@@ -2399,6 +2568,20 @@ class RunnerState:
                 raise RunnerError(
                     f"runner_resource_argument_mismatch: {flag} must appear once with the frozen task value"
                 )
+
+        if executor == "codex" and len(command) >= 2 and command[1] == "app-server":
+            if any(token in {"--last", "--continue", "resume", "--ephemeral", "--session-id", "--resume"} for token in command):
+                raise RunnerError(
+                    "runner_session_argument_mismatch: Codex App Server does not accept ambiguous CLI continuation"
+                )
+            if "--stdio" not in command and not any(
+                token == "stdio://" or token.startswith("stdio://")
+                for token in command
+            ):
+                raise RunnerError(
+                    "runner_session_argument_mismatch: Codex App Server must use stdio"
+                )
+            return
 
         resume_values, resume_noncanonical = _canonical_flag_values(command, "--resume")
         session_values, session_noncanonical = _canonical_flag_values(command, "--session-id")
@@ -2859,6 +3042,12 @@ def _dispatch_request(state: RunnerState, request: dict[str, Any]) -> dict[str, 
             task if isinstance(task, dict) else None,
             str(request.get("executor_run_id") or "") or None,
         )
+    if operation == "respond_approval":
+        return state.respond_approval(request)
+    if operation == "control_status":
+        return state.control_status(request)
+    if operation == "control_events":
+        return state.control_events(request)
     if operation == "process_sample":
         patterns = request.get("patterns")
         return state.process_sample(patterns if isinstance(patterns, list) else None)
