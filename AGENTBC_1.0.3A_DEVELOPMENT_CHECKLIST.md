@@ -1,38 +1,41 @@
 # AgentBC 1.0.3A 需求开发清单
 
 > 制定日期：2026-08-11  
-> 最近整理：2026-08-14
+> 最近整理：2026-08-15
 > 状态：范围已整理、尚未开始实现
 > 目标版本：`v1.0.3A`  
 > 来源基线：`1.0.2A` 开发截止代码 `b8af2f3a0a1f56814854e3f46056dd8ab9cf55d7`
+> 计划开发起点：`private/integration@fc2f3f19d18d1c23890ee02a4ee9600c36456a60`
 > 前置条件：`1.0.2A` 最终发布身份与双机 Gate 完成；Phase 0 只读契约盘点可提前进行
 > 架构依据：`AGENTBC_ALPHA_DEVELOPMENT_HANDBOOK.md`
 
 ## 0. 产品目标
 
-`1.0.3A` 在既定 update/Homebrew、协议 fixtures 和模块机械拆分之外，新增 P0
-权限治理主线：AgentBC 提供一个统一、可解释、可审计的 Agent 权限设置，并把它确定性
-映射到后续新派发的 Codex、Claude、Hermes 任务。用户不再需要同时理解 AgentBC 全局
-默认、handoff 来源权限、Executor 原生全局配置和各 CLI 私有参数。
+`1.0.3A` 以权限治理、可信进度和简化分发为主线：AgentBC 提供一个统一、可解释、可审计
+的权限 registry，但不改变已经验证体验良好的权限默认和继承逻辑。首次 setup 继续默认
+`inherit`，已有配置继续保留；未显式覆盖的新根任务读取配置默认值，handoff 继续继承来源
+Task 的冻结权限，同 Task retry/recover/input resume 继续使用原快照。
 
 本版同时补齐权限阻塞到 `input_required` 的控制平面闭环。权限审批必须成为结构化运行
 事件；不能继续依赖 Agent 在最终自然语言中主动填写 marker，也不能因为 Executor 没有
 TTY 而等待 60/120 秒后静默拒绝。
 
-版本边界已冻结：统一权限继承、权限审批弹窗及其 Adapter/Core/Runner 协议、资源耗尽时
-权威 step progress、update/Homebrew、协议 fixtures 和模块机械拆分全部由 `1.0.3A` 承担，
-不再回填已截止的 `1.0.2A`。“在首次工具审批前交付 session receipt”的早期 handshake
-仍属于本版。
+版本边界已冻结：权限映射与审计、权限审批弹窗及其 Adapter/Core/Runner 协议、资源耗尽时
+权威 step progress、交互式 update 和 Homebrew 由 `1.0.3A` 承担，不再回填已截止的
+`1.0.2A`。“在首次工具审批前交付 session receipt”的早期 handshake 仍属于本版。完整
+Executor 协议 fixture matrix 与模块局部重构延期到 `1.0.4A`，本版只保留支撑新增合同所需
+的定向 fixture 和 characterization tests。
 
 ## 1. 当前问题与责任边界
 
-### 1.1 权限来源过多
+### 1.1 权限来源需要统一解释
 
-当前 `explicit task > handoff source > AgentBC config > legacy safe` 的优先级会让新根任务、
-handoff、retry/resume 和 Executor 原生配置呈现不同结果。Hermes 的 `inherit` 与 `safe`
-目前都不追加权限参数，命令层无法证明二者语义不同；若用户原生配置改变，任务行为可能
-漂移。另一方面，修改 AgentBC 全局默认不会改变已创建任务或从旧任务继承的 handoff，
-用户容易误以为“全局 full 已生效”。
+当前 `explicit task > handoff source > AgentBC config > legacy safe` 是已经投入使用的既定
+优先级，本版必须保持；问题不在优先级本身，而在公共视图无法完整解释配置默认、handoff
+继承、Task override、冻结快照和最终 Executor argv。Hermes 的 `inherit` 与 `safe` 目前都
+不追加权限参数，命令层无法证明二者语义不同；若用户原生配置改变，任务行为可能漂移。
+修改 AgentBC 全局默认不会改变已创建任务或从旧任务继承的 handoff，界面必须明确这一
+作用域，不能让用户误以为“全局 full 已作用于现有 Task”。
 
 ### 1.2 弹窗后半段统一，阻塞事件入口不统一
 
@@ -57,10 +60,11 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 | `PERM-103-006` | P0 | 权限弹窗 reason 过长 | `E4S2-001` 超长 reason 曾阻断弹窗 | 极简首屏，详情独立展开 |
 | `PERM-103-007` | P0 | Claude 临时工程写权限仍依赖 Prompt 约束 | `KXNX-001` 曾把交付物写入临时 cwd | 文件级 capability 与 Artifact root 分权 |
 | `FLOW-103-001` | P0 | 系统资源耗尽覆盖 callback 时低估已完成 step | `BTCN-001` 实际完成 2 个 step，终态报告显示 `0/4` | Runner/Core 权威 progress receipt 与单调合并 |
-| `UPD-103-001` | P1 | 缺少稳定自更新与回退事务 | 1.0.2A 依赖手工 bundle 替换 | update/rollback/identity 同源 |
-| `PKG-103-001` | P1 | Homebrew 尚无正式 formula/cask Gate | 1.0.2A 只有 wheel/sdist/local bundle | 可验证安装、升级、卸载与回退 |
-| `PROTO-103-001` | P1 | Executor argv/help/output fixture 更新仍分散 | 1.0.2A 多次因真实 CLI 输出漂移补丁修复 | 版本化 fixture matrix 与 fail-closed probe |
-| `ARCH-103-001` | P1 | Service/Runner/CLI/Setup 继续过度集中 | 1.0.2A 收口时共享文件修改风险高 | 只做有回归保护的机械拆分 |
+| `UPD-103-001` | P1 | Alpha 缺少低心智负担的更新入口 | 1.0.2A 依赖手工 bundle 替换 | `agentbc update` 自动检查并以 `y/N` 确认升级；不提供 rollback 命令 |
+| `PKG-103-001` | P1 | Homebrew 尚无正式 formula/cask Gate | 1.0.2A 只有 wheel/sdist/local bundle | 可验证安装、升级、卸载与迁移 |
+| `PROTO-104-001` | 延期至 1.0.4A | Executor argv/help/output fixture 更新仍分散 | 1.0.2A 多次因真实 CLI 输出漂移补丁修复 | 与局部重构一起建立完整版本化 fixture matrix；1.0.3A 只补定向 fixture |
+| `ARCH-104-001` | 延期至 1.0.4A | Service/Runner/CLI/Setup 继续过度集中 | 1.0.2A 收口时共享文件修改风险高 | 在完整 characterization/fixture 保护下进行局部重构 |
+| `FLOW-104-001` | 延期至 1.0.4A | handoff 固定只声明一个 step，但自由文本可包含多段 Step 编号 | `XCKX-002`、`76MG-002` 实现与测试完成后因 callback 返回未声明的 Step 2～4 被 fail closed | 为 handoff 增加结构化多 steps 合同、预检和跨 Executor callback 一致性测试 |
 
 ## 2. P0：统一 Agent 权限设置（`PERM-103-001`）
 
@@ -68,21 +72,23 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 
   ```text
   agentbc permissions status
+  agentbc permissions set inherit
   agentbc permissions set safe
   agentbc permissions set full
   ```
 
 - setup 使用同一设置来源，显示“影响后续新派发任务”，不得暗示会修改 active、
   `input_required`、`needs_recovery` 或同 Task resume；
-- 用户主流程只暴露 `safe` / `full` 两个清晰模式。现有 `inherit` 作为 legacy/高级兼容值
-  双读，不再作为 setup 默认选项；升级不得把历史 `inherit` 静默改成 `full`；
-- 每次创建新的根任务或 handoff iteration 时，从当时的统一全局设置生成权限快照；
-  retry、recover、input response 和同 Task resume 继续使用该 Task 已冻结快照；
+- `inherit|safe|full` 继续作为三个一等公开值；首次 setup 默认 `inherit`，已有配置值保留，
+  升级不得把历史 `inherit` 静默改成 `safe` 或 `full`；
+- 没有显式 task override 的新根任务从配置默认值生成权限快照；没有显式 override 的 handoff
+  继续继承来源 Task 快照；retry、recover、input response 和同 Task resume 继续使用当前
+  Task 已冻结快照；
 - 显式 task override 只影响该新 Task，必须在 create/dispatch 输出、preflight、status、
-  report 中同时显示 `configured_mode`、`task_override`、`effective_mode`、`mapping` 和
-  `scope`，不得只显示模糊的 `selection_source`；
-- 全局设置、task override 与最终 Executor argv 必须通过同一个 permission registry 映射，
-  Setup、Service、Adapter、Runner 不得各自维护一份条件分支。
+  report 中同时显示 `configured_mode`、`inherited_mode`、`task_override`、`effective_mode`、
+  `mapping` 和 `scope`，不得只显示模糊的 `selection_source`；
+- 配置默认、handoff 来源、task override 与最终 Executor argv 必须通过同一个 permission
+  registry 解释和映射，Setup、Service、Adapter、Runner 不得各自维护一份条件分支。
 
 ## 3. P0：Executor 权限能力映射（`PERM-103-002`）
 
@@ -90,12 +96,15 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 
 | 模式 | Codex | Claude | Hermes |
 | --- | --- | --- | --- |
+| inherit | 不追加 AgentBC 权限覆盖，保留原生用户/全局设置 | 不追加 AgentBC 权限覆盖，保留原生用户/全局设置 | 不追加 AgentBC 权限覆盖，保留原生用户/全局设置 |
 | safe | workspace-write + 明确非交互审批语义 | safe-mode + `acceptEdits` | 必须新增受限、非交互、可审计的 safe approval 能力；未探测到时拒绝后台派发并给出可行动原因 |
 | full | strongest documented bypass flag | `--dangerously-skip-permissions` | `--yolo` |
 
+- `inherit` 是默认且稳定的透传模式；必须显示其作用域和最终 argv 证据，但不得把 Executor
+  原生权限重新命名成 AgentBC `safe` 或 `full`；
 - `safe` 不得读取 Executor 原生危险全局配置后静默升级；
-- `full` 必须由统一设置或显式 task override 产生，记录审计，不允许由 prompt、普通
-  input response、handoff 文案或原生配置注入；
+- AgentBC 管理的 `full` 必须由配置默认、来源 Task 快照或显式 task override 产生，记录
+  审计，不允许由 prompt、普通 input response、handoff 文案或原生配置注入；
 - Executor 无法精确表达目标模式时返回 `permission_capability_unsupported`，不得把
   `safe` 近似成 `inherit`，也不得把 `safe` 近似成 `full`；
 - Hermes `--safe-mode`、`--accept-hooks` 不能冒充 AgentBC safe，`--yolo` 只能映射 full。
@@ -180,8 +189,8 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 - 历史任务继续按持久化 `agentbc.permission` 运行，不做原地提权或批量改写；
 - 旧顶层 `permission_mode` 双读迁移到统一 permission 配置事务，首次实际修改时再规范化；
 - 老任务缺失权限仍按 legacy safe fail closed；
-- handoff 行为变更必须有协议版本：新协议按“创建时读取统一全局设置”，旧协议继续读取
-  来源任务快照，避免升级后重解释历史任务；
+- 保持既有 handoff 语义：未显式覆盖时继续读取来源任务快照，不因升级或全局默认变化重解释
+  历史任务；新根任务才在未显式覆盖时读取当前配置默认；
 - User Guide、三 Executor skills、setup/help/doctor/status/report 同步统一术语。
 
 ## 7. P0：资源耗尽与终态进度权威化（`FLOW-103-001`）
@@ -203,40 +212,62 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 - Codex、Claude、Hermes 和 fake Executor 覆盖耗尽前部分完成、两次耗尽、权限等待、恢复、
   重放、乱序、重复 receipt、旧任务无 receipt 和任务/session 漂移。
 
-## 8. P1：更新、分发、fixtures 与机械拆分
+## 8. P1：更新、分发与延期边界
 
-### 8.1 自更新与回退（`UPD-103-001`）
+### 8.1 交互式自更新（`UPD-103-001`）
 
-- `agentbc update check|apply|rollback` 只消费签名或哈希可验证的版本清单；apply 前验证当前
-  package/Runner identity，更新 CLI、Runner 和三平台 Skill 后再原子切换；
-- 更新保留配置、任务、报告和 customer project；失败自动回退上一份可启动包，不运行 setup
-  覆盖用户选择；Runner 必须在新旧 identity 间明确停止/启动，不允许混装；
+- 用户只需运行 `agentbc update`；命令自动读取签名或哈希可验证的版本清单并检查更新；
+- 已是最新版本时显示 current/latest/channel 后零写入退出；检测到新版本时显示当前版本、
+  目标版本、来源和摘要，然后询问 `Upgrade? [y/N]`，只有明确 `y`/`yes` 才执行升级；
+- Alpha 不提供公开 `check|apply|rollback` 子命令，也不提供用户主动回滚命令；升级失败必须
+  保持或恢复本次操作前仍可启动的版本，不能把内部失败恢复暴露为公共 rollback 功能；
+- 升级前验证当前 package/Runner identity，更新 CLI、Runner 和三平台 Skill 后再原子切换；
+  保留配置、任务、报告和 customer project，不运行 setup 覆盖用户选择；Runner 必须在
+  新旧 identity 间明确停止/启动，不允许混装；
 - update、doctor 和安装器共用 build identity、版本和修复建议，不新增第二套版本判断。
 
 ### 8.2 Homebrew（`PKG-103-001`）
 
 - 产出可审阅 formula/cask，固定 Python、wheel/sdist SHA-256、Runner service 和卸载边界；
-- 覆盖 clean install、upgrade、rollback、uninstall、PATH 冲突和已有 PyPI/local-alpha 迁移；
+- 覆盖 clean install、upgrade、uninstall、PATH 冲突和已有 PyPI/local-alpha 迁移；
 - 不覆盖用户配置、record、report、artifact 或 Executor Skill 修改；受管 Skill 漂移先报告，
   不静默覆盖。
 
-### 8.3 协议 fixtures（`PROTO-103-001`）
+### 8.3 协议 fixtures（延期到 `1.0.4A / PROTO-104-001`）
 
-- 为三 Executor 冻结 version/help/argv/output/session/approval/resource fixture matrix；
-- probe 只接受已知能力组合，未知版本 fail closed 并给出可行动诊断；
-- fixture 更新必须附真实 CLI 版本、脱敏采样、解析单测和相邻 Runner 回归，禁止只改 regex。
+- `1.0.3A` 不建设覆盖三 Executor 全部 version/help/argv/output/session/approval/resource 的完整
+  fixture matrix；只为本版新增 permission/session/progress 合同补充最小定向 fixture；
+- 完整版本化 matrix、未知版本组合的系统化 fail-closed probe 和 fixture 更新流程统一移入
+  `1.0.4A`，与局部重构一并实施。
 
-### 8.4 模块机械拆分（`ARCH-103-001`）
+### 8.4 模块局部重构（延期到 `1.0.4A / ARCH-104-001`）
 
-- 优先拆出 permission registry、approval transport、Doctor collectors、Runner IPC handlers 和
-  update service；保留现有公共入口与 import compatibility；
-- 一次只移动一个职责，先加 characterization test，再移动实现，最后删除旧入口；
-- 不在机械拆分提交中改变状态机、schema、CLI 文案或权限语义。
+- `1.0.3A` 只允许为实现新合同新增窄模块，不安排 Service/Runner/CLI/Setup 的主动拆分；
+- `1.0.4A` 在完整协议 fixture matrix 和 characterization tests 保护下进行局部重构，优先拆出
+  permission registry、approval transport、Doctor collectors、Runner IPC handlers 和 update
+  service，同时保留公共入口与 import compatibility；
+- 重构提交不得混入状态机、schema、CLI 文案或权限语义变化。
+
+### 8.5 handoff 结构化多 steps（延期到 `1.0.4A / FLOW-104-001`）
+
+- `1.0.3A` 保持现有 handoff 单 step 合同，不修改 Core、CLI、prompt 或 callback 校验；handoff
+  message 只是该唯一 step 的说明，控制端不得在其中使用会被误解为正式合同的 `Step 2+`
+  编号，Executor callback 只能返回任务包实际声明的 step ID；
+- `1.0.4A` 为 `agentbc task handoff` 增加结构化 steps 输入，复用根任务的规范
+  `steps[].description` schema，同时继续继承 chain、PathPlan、artifact root、权限快照、资源和
+  session 策略；自由文本 message 与结构化 steps 的组合及优先级必须唯一、可解释；
+- create/dispatch preflight 必须校验 declared step IDs、重复/缺失编号及自由文本中的歧义编号，
+  在启动 Executor 前给出稳定错误，不能等最终 callback 才发现合同不一致；
+- Prompt 及 `AGENTBC_FINAL_CALLBACK` 示例只能从持久化 task packet 的 declared steps 生成，
+  Claude、Hermes、Codex 与 fake Executor 均覆盖单 step、多 steps、嵌套编号、重试、恢复和
+  handoff 链；
+- 继续保留当前严格 fail-closed 校验：callback 出现未知、重复、缺失或非完成 step 时不得
+  静默归并或猜测映射。
 
 ## 9. 实施阶段与依赖
 
-1. **Phase 0：现状审计与契约冻结**——从 `b8af2f3` 建基线；冻结 permission registry、
-   approval event、early session、progress receipt、legacy 双读和预期失败测试；
+1. **Phase 0：现状审计与契约冻结**——从 `fc2f3f1` 建基线；冻结 permission registry、
+   approval event、early session、progress receipt、legacy 双读和本版最小定向 fixture；
 2. **Phase 1：统一设置与 registry**——配置事务、setup、`agentbc permissions`、三 Executor
    capability mapping、公共视图与迁移；
 3. **Phase 2：Runner/Adapter 控制平面**——早期 session handshake、approval transport、
@@ -245,31 +276,51 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
    `FLOW-103-001` 单调进度合并、极简弹窗和报告投影；
 5. **Phase 4：权限细分与 Claude 临时工程**——`PERM-103-007`、路径攻击矩阵、三 Executor
    safe/full 和旧任务兼容 canary；
-6. **Phase 5：update/Homebrew/fixtures/机械拆分**——严格按 8 节独立提交与独立门禁；
-7. **Phase 6：集成与发布**——安装升级回退、Python/双机、三 Executor、失败注入、发布身份。
+6. **Phase 5：交互式 update 与 Homebrew**——自动 check、`y/N` 升级、失败保持旧版本、安装/
+   升级/卸载/迁移；不实现 rollback 命令、完整 fixture matrix 或主动模块拆分；
+7. **Phase 6：集成与发布**——安装升级、Python/双机、三 Executor、失败注入、发布身份。
 
 ### 9.1 `1.0.3A` 开始前的人工过渡规则
 
-- 每次创建新的根任务或 handoff iteration 前，控制端先向用户确认目标 Agent 完成任务
-  所需权限是 `safe` 还是 `full`；
-- 派发时显式传入 `--permission-mode safe|full`，不得依赖当前多来源继承结果；
+- 默认继续使用现有 `inherit` 逻辑；新根任务未指定 override 时使用配置默认，handoff 未指定
+  override 时继承来源 Task，控制端不得为了“更明确”而强制改写为 `safe` 或 `full`；
+- 只有用户明确要求当前 Task 覆盖时才传 `--permission-mode inherit|safe|full`；
 - `full` 只在明确提示风险并取得本次派发授权后使用；不能把 Hermes `--yolo` 当作默认；
 - retry/recover/resume 保持任务已冻结权限，不借普通 input 改权；
 - 该规则是操作门禁，不要求 `1.0.2A` 新增命令、弹窗或协议字段；统一设置与自动弹窗在
   `1.0.3A` Phase 1～3 替代人工流程。
 
+### 9.2 目标日程
+
+| 日期 | 阶段 | 退出门禁 |
+| --- | --- | --- |
+| 2026-08-17～08-19 | Phase 0 | `fc2f3f1` 基线、权限/approval/session/progress 合同与最小定向 fixture 冻结 |
+| 2026-08-20～08-28 | Phase 1 | `inherit|safe|full` registry、配置事务、既有继承逻辑、公共视图和迁移通过 |
+| 2026-08-29～09-06 | Phase 2 | 三 Executor early session 与 approval transport；Hermes unsupported 路径可行动且 fail closed |
+| 2026-09-07～09-13 | Phase 3 | Approve/Deny、同 session resume、极简弹窗与单调 progress receipt 通过 |
+| 2026-09-14～09-20 | Phase 4 | Claude 文件级 capability、路径攻击矩阵、旧任务兼容与三 Executor canary 通过 |
+| 2026-09-21～09-24 | Phase 5 | `agentbc update` 自动 check/`y/N` 升级及 Homebrew 安装、升级、卸载、迁移通过 |
+| 2026-09-25～09-27 | Phase 6 | 全量、Python/双机、真实 Executor、失败注入与发布身份 Gate 通过 |
+
+目标发布窗口为 `2026-09-27`；若 Hermes early approval/session capability 或 Claude 文件级
+capability 无法由当前上游 CLI 精确表达，本版按既定 fail-closed 合同交付，不以危险近似
+实现换取日期。
+
 ## 10. 验收门禁
 
-- 改一次统一全局权限后，后续 Codex/Claude/Hermes 新任务均展示并执行正确映射；
-- 同 Task resume 不因全局设置变化而漂移，新 handoff iteration 按新协议读取当前统一设置；
+- 首次 setup 继续默认 `inherit`，已有配置值升级后保持；修改配置默认后，后续新根任务展示并
+  执行正确映射，已创建 Task 不变化；
+- 同 Task resume 不因全局设置变化而漂移，未显式覆盖的新 handoff iteration 继续继承来源
+  Task 快照；
 - Hermes safe 无可用 headless approval 能力时在派发前明确拒绝，不再运行二十分钟后超时；
 - 三 Executor 权限受阻均进入同一 `input_required` 弹窗，任务保留官方 session ID；
 - approve 只执行精确授权动作，deny 有明确结果；权限弹窗无 Later/文本输入，关闭和超时
   自动 Deny 并记录来源；
 - 缺失 receipt、伪造 permission argv、native dangerous config、safe→full 注入全部 fail closed；
 - 资源/权限等待前已经确认的 step progress 不回退、不重复计数，旧任务无 receipt 时不伪造；
-- update/rollback 后 CLI、Runner 与三平台 Skill identity 一致，配置、record、report、artifact
-  和 customer project 均保持；Homebrew 与 PyPI/local bundle 迁移有可复现证据；
+- `agentbc update` 自动 check；无更新零写入，有更新以 `y/N` 确认，升级成功后 CLI、Runner 与
+  三平台 Skill identity 一致，失败时旧版本仍可启动；配置、record、report、artifact 和
+  customer project 均保持；Homebrew 与 PyPI/local bundle 迁移有可复现证据；
 - 单测、Runner 集成、真实 CLI canary、Ruff、compileall、`git diff --check` 和发布身份检查通过。
 
 ## 11. 明确不做
@@ -279,5 +330,10 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 - 不把 Hermes `--yolo` 当作 safe 的临时修复；
 - 不允许普通 input 文本修改权限快照；
 - 不从自然语言或被系统覆盖的 callback 猜测已完成 step；
-- 不在机械拆分中顺带改状态机，不用 update 静默覆盖用户 Skill 或配置；
+- Alpha 不提供 `agentbc update rollback` 或其他用户主动回滚命令；
+- 不在 `1.0.3A` 建设完整 Executor fixture matrix 或主动拆分共享模块；二者随局部重构进入
+  `1.0.4A`；
+- 不在 `1.0.3A` 改造 handoff 单 step 合同；结构化多 steps、预检与 Executor 一致性测试进入
+  `1.0.4A / FLOW-104-001`；
+- 不用 update 静默覆盖用户 Skill 或配置；
 - 不在 `1.0.2A` 临时回填这一协议级改造。
