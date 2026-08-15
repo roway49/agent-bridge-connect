@@ -16,6 +16,7 @@ RESOURCE_DECISION_DENY_LABEL = "终止任务"
 RESOURCE_DECISION_KIND = "resource_limit"
 RESOURCE_DECISION_PROTOCOL = "approve_deny"
 PERMISSION_DIALOG_TIMEOUT_RESPONSE = "agentbc_permission_dialog_timeout"
+PERMISSION_DIALOG_CLOSED_RESPONSE = "agentbc_permission_dialog_closed"
 
 
 def notify_terminal(
@@ -92,6 +93,10 @@ def notify_input_required(
                     if payload.get("input_type") == "permission"
                     and action == "deny"
                     and decision_source == "timeout"
+                    else PERMISSION_DIALOG_CLOSED_RESPONSE
+                    if payload.get("input_type") == "permission"
+                    and action == "deny"
+                    and decision_source == "dialog_closed"
                     else ""
                     if payload.get("input_type") == "permission"
                     else str(dialog_result.details.get("message") or "")
@@ -207,7 +212,25 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
             "Why this is blocked:",
             summary,
         ]
-        if input_type == "permission" and request.get("requested_permission"):
+        is_single_action_approval = (
+            input_type == "permission"
+            and request.get("scope") == "single_action"
+        )
+        if input_type == "permission" and is_single_action_approval:
+            operation = compact_notification_text(
+                str(request.get("operation") or ""), 120
+            )
+            if operation:
+                body_lines.append(f"Requested operation: {operation}")
+            body_lines.extend(
+                [
+                    "Approve authorizes only this exact single action in the current session.",
+                    "Deny returns to the same session and the agent handles the rejection.",
+                    "This approval never changes the task permission mode.",
+                    "Choose Approve or Deny below.",
+                ]
+            )
+        elif input_type == "permission" and request.get("requested_permission"):
             body_lines.extend(
                 [
                     "Requested access:",

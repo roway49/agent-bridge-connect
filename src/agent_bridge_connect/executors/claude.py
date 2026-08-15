@@ -5,7 +5,9 @@ import json
 import math
 import os
 import re
+import shlex
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,11 @@ from agent_bridge_connect.adapters import (
     SessionCleanupRequest,
     SessionCleanupResult,
     StartResult,
+)
+from agent_bridge_connect.approval import (
+    compute_request_fingerprint,
+    core_bounded_summary,
+    new_request_id,
 )
 from agent_bridge_connect.execution_contract import (
     CallbackValidation,
@@ -49,6 +56,8 @@ from ..path_provider import find_binary
 SAFETY_TIMEOUT_S = 24 * 60 * 60
 CLAUDE_PROJECT_PURGE_TIMEOUT_S = 30
 
+PERMISSION_PROMPT_TOOL_FLAG = "--permission-prompt-tool"
+
 _CLAUDE_BUDGET_ERROR_RE = re.compile(
     r"(?m)^Error:\s+Exceeded\s+USD\s+budget(?:\s*\(|\s*$)"
 )
@@ -61,6 +70,7 @@ _CLAUDE_PROJECT_ABSENT_RE = re.compile(
     r"|project (?:state )?not found)"
     r"(?:[.: ].*)?$"
 )
+_STREAM_INIT_SUBTYPE = "init"
 
 
 class ClaudeExecutor(CLIExecutorBase):
@@ -479,6 +489,347 @@ class ClaudeExecutor(CLIExecutorBase):
         self._close_run_lease(run_id)
         return StartResult(ok=True, run_id=run_id, message=f"claude execution {status}")
 
+    def supports_permission_prompt_tool(self) -> bool:
+        """Return whether the installed Claude CLI exposes the stdio prompt tool.
+
+        The flag is version-dependent.  When absent, the executor falls back to
+        an equivalent local MCP broker that captures ``can_use_tool`` events
+        from the stream-json control channel.
+        """
+        if self.agent_bin is None:
+            return False
+        try:
+            completed = subprocess.run(
+                [str(self.agent_bin), "--help"],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return PERMISSION_PROMPT_TOOL_FLAG in f"{completed.stdout}\n{completed.stderr}"
+
+    def start_control(self, task_packet: dict) -> StartResult:
+        """Run the Claude stream/control path with structured approval capture.
+
+        The control path pre-allocates ``--session-id`` and only sends the user
+        message after the official init receipt has been verified.  Permission
+        requests are captured as ``can_use_tool`` events and answered with
+        allow/deny only; ``updated_permissions`` is never applied.  The new run
+        chain does not rely on the ``AGENTBC_FINAL_CALLBACK`` marker nor on
+        legacy safe-to-full grants.
+        """
+        steps = task_packet.get("steps") or []
+        if not steps:
+            return StartResult(ok=False, run_id="", message="no steps")
+        if self.agent_bin is None:
+            return StartResult(ok=False, run_id="", message="claude unavailable")
+
+        root = _workspace_root(task_packet)
+        if root is None or not root.is_dir():
+            return StartResult(ok=False, run_id="", message=f"workspace not found: {root}")
+        try:
+            execution_root = _claude_execution_root(task_packet, root)
+            execution_session = _claude_execution_session(task_packet)
+        except (OSError, ValueError) as exc:
+            return StartResult(ok=False, run_id="", message=f"invalid claude session: {exc}")
+
+        run_id = f"claude-{task_packet.get('task_id', 'unknown')}-{uuid.uuid4().hex[:8]}"
+        self._task_packets[run_id] = dict(task_packet)
+        self._start_run_lease(task_packet, run_id, "claude")
+        prompt = _build_prompt(task_packet)
+        try:
+            permission = resolve_effective_permission(
+                task_packet,
+                "claude",
+                run_id,
+                trusted_runner_managed=(
+                    task_packet.get("runner_authorization_required") is True
+                ),
+            )
+        except ABCError as exc:
+            self._close_run_lease(run_id)
+            return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
+        try:
+            assert_executor_permission_supported(
+                "claude", permission["effective_mode"], self.agent_bin
+            )
+        except ABCError as exc:
+            self._close_run_lease(run_id)
+            return StartResult(ok=False, run_id="", message=str(exc))
+
+        execution_session_id = (
+            str(execution_session["session_id"]) if execution_session is not None else ""
+        )
+        broker = ClaudePermissionPromptBroker(
+            session_id=execution_session_id,
+            decision_callback=lambda request: self._approval_decision_callback(
+                task_packet, run_id, execution_session, request
+            ),
+        )
+        try:
+            command = self._build_control_command(
+                prompt,
+                root,
+                task_packet,
+                permission,
+                broker,
+            )
+        except ValueError as exc:
+            self._close_run_lease(run_id)
+            return StartResult(ok=False, run_id="", message=f"invalid claude control policy: {exc}")
+
+        captured: dict[str, Any] | None = None
+        try:
+            if task_packet.get("runner_authorization_required") is True:
+                RunnerClient().authorize_command(
+                    "claude",
+                    command,
+                    execution_root,
+                    task_packet,
+                    executor_run_id=run_id,
+                )
+            self._heartbeat_run(run_id)
+            captured = broker.run_controlled(
+                command=command,
+                cwd=execution_root,
+                timeout_s=self.timeout_s,
+                on_started=lambda: self._heartbeat_run(run_id),
+            )
+        except subprocess.TimeoutExpired:
+            self._store_run(run_id, execution_root, None)
+            self._mark_run_stale(run_id)
+            result = self._timeout_poll_result(steps, run_id, execution_session)
+            self._runs[run_id] = PollResult(
+                status="needs_recovery",
+                progress={"steps_total": len(steps)},
+                result=result,
+            )
+            return StartResult(ok=True, run_id=run_id, message="claude execution needs recovery")
+        except ABCError as exc:
+            self._store_run(run_id, execution_root, None)
+            self._mark_run_stale(run_id)
+            self._runs[run_id] = PollResult(
+                status="needs_recovery",
+                progress={"steps_total": len(steps)},
+                result={
+                    "stdout": "",
+                    "stderr": str(exc),
+                    "summary": "",
+                    "returncode": None,
+                    "agent_callback": None,
+                    "marker_valid": False,
+                    "marker_seen": False,
+                    "failure": {
+                        "kind": exc.code,
+                        "layer": "executor",
+                        "message": str(exc),
+                        "retryable": False,
+                    },
+                    "extensions": self.get_extensions(),
+                    **(
+                        {"execution_session": execution_session}
+                        if execution_session is not None
+                        else {}
+                    ),
+                },
+            )
+            return StartResult(ok=True, run_id=run_id, message="claude control init receipt failed")
+        except (OSError, RunnerError) as exc:
+            self._close_run_lease(run_id)
+            return StartResult(ok=False, run_id="", message=f"failed to start claude: {exc}")
+
+        assert captured is not None
+        self._heartbeat_run(run_id)
+        stdout = str(captured.get("stdout") or "")
+        stderr = str(captured.get("stderr") or "")
+        output_text, parsed_output = _extract_output_text(stdout, self.output_format)
+        validation = extract_callback_validation_from_output(
+            output_text,
+            task_packet,
+            run_id,
+        )
+        terminal = route_executor_terminal(
+            validation,
+            int(captured.get("returncode") or 0),
+            executor_name="claude",
+            stderr=stderr,
+            runtime_failure=detect_retryable_transport_failure(output_text, stderr),
+            resource_exhaustion=_claude_resource_exhaustion(
+                stdout,
+                stderr,
+                parsed_output,
+                task_packet,
+                validation,
+                int(captured.get("returncode") or 0),
+            ),
+        )
+        status = terminal.status
+        self._store_run(run_id, execution_root, int(captured.get("returncode") or 0))
+        result = {
+            "stdout": stdout,
+            "stderr": stderr,
+            "summary": _extract_summary(output_text),
+            "parsed_output": parsed_output,
+            "returncode": int(captured.get("returncode") or 0),
+            "agent_callback": terminal.callback,
+            "marker_valid": validation.valid,
+            "marker_seen": validation.marker_seen,
+            "failure": terminal.failure,
+            "resource_exhaustion": terminal.resource_exhaustion,
+            "init_verified": captured.get("init_verified") is True,
+            "extensions": self.get_extensions(),
+            **(
+                {"execution_session": execution_session}
+                if execution_session is not None
+                else {}
+            ),
+        }
+        self._runs[run_id] = PollResult(
+            status=status,
+            progress={"steps_total": len(steps), "callback_seen": terminal.callback is not None},
+            result=result,
+        )
+        self._close_run_lease(run_id)
+        return StartResult(ok=True, run_id=run_id, message=f"claude execution {status}")
+
+    def _approval_decision_callback(
+        self,
+        task_packet: dict[str, Any],
+        run_id: str,
+        execution_session: dict[str, Any] | None,
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Route one captured can_use_tool request through the Core approval flow.
+
+        The callback persists an ``agentbc.approval`` v1 receipt and blocks for a
+        user decision.  It only ever returns allow/deny and never applies
+        ``updated_permissions``.  It is safe to call from the broker thread.
+        """
+        from agent_bridge_connect.notifications import notify_input_required
+        from agent_bridge_connect.service import TaskService
+
+        board_root = (
+            task_packet.get("task_board") or {}
+        ).get("root") or _workspace_root(task_packet)
+        service = TaskService(board_root, config=getattr(self, "_config", None) or {})
+        task_id = str(task_packet.get("task_id") or "")
+        session_id = (
+            str(execution_session["session_id"])
+            if execution_session is not None
+            else str(request.get("session_id") or "")
+        )
+        tool_name = str(request.get("tool_name") or request.get("tool") or "unknown").strip()
+        operation = tool_name or "an action"
+        request_id = str(request.get("request_id") or "").strip() or new_request_id()
+        fingerprint = compute_request_fingerprint(
+            executor="claude",
+            session_id=session_id,
+            tool_name=tool_name,
+            tool_input=request.get("tool_input") or {},
+        )
+        summary = core_bounded_summary(executor="claude", operation=operation)
+        try:
+            service.block_task_for_approval(
+                task_id,
+                executor_run_id=run_id,
+                session_id=session_id,
+                request_id=request_id,
+                request_fingerprint=fingerprint,
+                executor="claude",
+                operation=operation,
+                summary=summary,
+            )
+        except ABCError as exc:
+            return {"permission": "deny", "error": exc.code, "request_id": request_id}
+
+        def responder(input_id: str, action: str, message: str) -> dict[str, Any]:
+            try:
+                return service.respond_to_input(
+                    task_id,
+                    input_id,
+                    response_type=action,
+                    message=message,
+                )
+            except ABCError as exc:
+                return {"ok": False, "error": exc.code, "status": "failed"}
+
+        try:
+            outcome = notify_input_required(service, task_id, responder=responder)
+        except ABCError as exc:
+            return {"permission": "deny", "error": exc.code, "request_id": request_id}
+        response = outcome.get("response") or {}
+        decision = str(response.get("approval_decision") or "").strip().lower()
+        if decision not in {"allow", "deny"}:
+            action = str(outcome.get("dialog_action") or "").strip().lower()
+            decision = "deny" if action in {"deny", "dismissed", "timeout"} else "allow"
+        return {"permission": decision, "request_id": request_id}
+
+    def _build_control_command(
+        self,
+        prompt: str,
+        workspace_root: Path,
+        task_packet: dict[str, Any],
+        permission: dict[str, str] | None,
+        broker: "ClaudePermissionPromptBroker",
+    ) -> list[str]:
+        if self.agent_bin is None:
+            raise RuntimeError("claude unavailable")
+        selected = permission or permission_record_from_extensions(task_packet.get("extensions"))
+        command = [str(self.agent_bin), "-p"]
+        command.extend(permission_flags("claude", selected["effective_mode"]))
+        execution_session = _claude_execution_session(task_packet)
+        if execution_session is not None:
+            session_flag = "--resume" if execution_session["resumed"] else "--session-id"
+            command.extend([session_flag, execution_session["session_id"]])
+        command.extend(["--output-format", "stream-json", "--verbose"])
+        if self.supports_permission_prompt_tool():
+            command.extend([PERMISSION_PROMPT_TOOL_FLAG, broker.broker_command()])
+        if selected["effective_mode"] == "safe":
+            for writable_root in _claude_writable_roots(task_packet, workspace_root):
+                command.extend(["--add-dir", str(writable_root)])
+        if self.model:
+            command.extend(["--model", self.model])
+        if self.effort:
+            command.extend(["--effort", self.effort])
+        max_budget_usd = _claude_max_budget_usd(task_packet, self.max_budget_usd)
+        if max_budget_usd is not None:
+            command.extend(["--max-budget-usd", str(max_budget_usd)])
+        if self.allowed_tools:
+            tools_arg = _claude_tools_argument(self.allowed_tools)
+            if tools_arg:
+                command.extend(["--tools", tools_arg])
+            command.extend(["--allowedTools", ",".join(self.allowed_tools)])
+        command.extend(["--disallowedTools", "TaskCreate,TaskUpdate,TodoWrite"])
+        return command
+
+    def _timeout_poll_result(
+        self,
+        steps: list[dict[str, Any]],
+        run_id: str,
+        execution_session: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "stdout": "",
+            "stderr": "",
+            "summary": "",
+            "returncode": None,
+            "agent_callback": None,
+            "marker_valid": False,
+            "marker_seen": False,
+            "failure": {
+                "kind": "executor_timeout",
+                "layer": "executor",
+                "message": f"claude safety runtime exceeded after {self.timeout_s}s",
+                "retryable": True,
+            },
+            "extensions": self.get_extensions(),
+        }
+        if execution_session is not None:
+            result["execution_session"] = execution_session
+        return result
+
     def get_extensions(self) -> dict:
         task_permission = None
         if self._last_run_id is not None:
@@ -566,6 +917,179 @@ class ClaudeExecutor(CLIExecutorBase):
             "output_format": self.output_format,
             "transport": self.transport,
         }
+
+
+class ClaudePermissionPromptBroker:
+    """Local stdio/MCP-equivalent broker that captures ``can_use_tool``.
+
+    The broker models the ``--permission-prompt-tool stdio`` contract: Claude
+    invokes a tool with one JSON request per line on stdin and expects one JSON
+    response per line on stdout.  This implementation intentionally only ever
+    emits ``{"permission": "allow"}`` or ``{"permission": "deny"}``; it never
+    applies ``updated_permissions`` and never grants a safe-to-full upgrade.
+
+    The control run also verifies the official session init receipt before the
+    user message is sent, so a fresh pre-allocated ``--session-id`` is bound to
+    the running session before any permission request can be produced.
+    """
+
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        decision_callback: Any,
+        verbose: bool = False,
+    ) -> None:
+        self.session_id = str(session_id or "").strip()
+        self.decision_callback = decision_callback
+        self.verbose = bool(verbose)
+
+    def broker_command(self) -> str:
+        """Return a self-contained fail-closed stdio broker command.
+
+        The real approval decision is made in-process by the local MCP-equivalent
+        broker (:meth:`run_controlled`).  If a newer Claude CLI exposes
+        ``--permission-prompt-tool``, this fallback still never grants access:
+        it only ever replies ``{"permission": "deny"}`` so permissions cannot be
+        widened through the stdio tool.
+        """
+        script = (
+            "import sys,json\n"
+            "for line in sys.stdin:\n"
+            "    print(json.dumps({'permission':'deny'}))\n"
+            "    sys.stdout.flush()\n"
+        )
+        return f"{sys.executable} -c {shlex.quote(script)}"
+
+    def handle_request_line(self, line: str) -> str:
+        """Handle one stdio JSON request line and return the response line."""
+        try:
+            request = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            return json.dumps({"permission": "deny", "error": "invalid_json"})
+        if not isinstance(request, dict):
+            return json.dumps({"permission": "deny", "error": "invalid_request"})
+        if self.verbose:
+            tool_name = str(request.get("tool_name") or request.get("tool") or "unknown")
+            print(f"can_use_tool capture: {tool_name}", file=sys.stderr)
+        result = self.decision_callback(request)
+        permission = str((result or {}).get("permission") or "").strip().lower()
+        if permission == "allow":
+            return json.dumps({"permission": "allow"})
+        return json.dumps({"permission": "deny"})
+
+    def run_controlled(
+        self,
+        *,
+        command: list[str],
+        cwd: str | Path,
+        timeout_s: int,
+        on_started: Any = None,
+    ) -> dict[str, Any]:
+        """Spawn Claude, verify init receipt, then stream the prompt/events.
+
+        Only sends the user message after the official ``init`` receipt matches
+        the pre-allocated session id.  ``can_use_tool`` lines are answered with
+        allow/deny through the decision callback.  Returns the captured
+        ``{returncode, stdout, stderr, init_verified}`` facts for the executor.
+        """
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            text=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if on_started is not None:
+            on_started()
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+        init_verified = False
+        user_message_sent = False
+        try:
+            if process.stdout is not None:
+                for raw_line in process.stdout:
+                    line = raw_line.rstrip("\n")
+                    stdout_lines.append(line)
+                    parsed = _parse_stream_json_line(line)
+                    if (
+                        not init_verified
+                        and isinstance(parsed, dict)
+                        and parsed.get("type") == "system"
+                        and parsed.get("subtype") == _STREAM_INIT_SUBTYPE
+                    ):
+                        init_verified = self._verify_init_receipt(parsed)
+                        if not init_verified:
+                            raise ABCError(
+                                "claude_init_receipt_mismatch",
+                                "Claude init receipt does not match the pre-allocated session id",
+                            )
+                    if init_verified and not user_message_sent:
+                        user_message_sent = True
+                        if process.stdin is not None:
+                            process.stdin.write("\n")
+                            process.stdin.flush()
+                    if isinstance(parsed, dict) and self._is_can_use_tool(parsed):
+                        response = self.handle_request_line(json.dumps(parsed))
+                        if process.stdin is not None:
+                            process.stdin.write(response + "\n")
+                            process.stdin.flush()
+            process.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            raise
+        finally:
+            if process.stdin is not None:
+                try:
+                    process.stdin.close()
+                except OSError:
+                    pass
+            if process.stdout is not None:
+                try:
+                    process.stdout.close()
+                except OSError:
+                    pass
+            if process.stderr is not None:
+                for line in process.stderr:
+                    stderr_lines.append(line.rstrip("\n"))
+                try:
+                    process.stderr.close()
+                except OSError:
+                    pass
+        return {
+            "returncode": process.returncode,
+            "stdout": "\n".join(stdout_lines),
+            "stderr": "\n".join(stderr_lines),
+            "init_verified": init_verified,
+        }
+
+    def _verify_init_receipt(self, receipt: dict[str, Any]) -> bool:
+        received = str(receipt.get("session_id") or "").strip()
+        return bool(self.session_id) and received == self.session_id
+
+    @staticmethod
+    def _is_can_use_tool(parsed: dict[str, Any]) -> bool:
+        event_type = str(parsed.get("type") or "").strip()
+        if event_type == "can_use_tool":
+            return True
+        if str(parsed.get("subtype") or "").strip() == "can_use_tool":
+            return True
+        return (
+            event_type == "tool_permission"
+            or "can_use_tool" in str(parsed.get("event_type") or "")
+        )
+
+
+def _parse_stream_json_line(line: str) -> dict[str, Any] | None:
+    if not line or not line.strip():
+        return None
+    try:
+        parsed = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _claude_cleanup_request_error(request: SessionCleanupRequest) -> str:
