@@ -1,11 +1,12 @@
 # AgentBC 1.0.3A 需求开发清单
 
 > 制定日期：2026-08-11  
-> 最近整理：2026-08-15
-> 状态：范围已整理、尚未开始实现
+> 最近整理：2026-08-16
+> 状态：开发进行中；Phase 0～1 已完成，Phase 2 进行中
 > 目标版本：`v1.0.3A`  
 > 来源基线：`1.0.2A` 开发截止代码 `b8af2f3a0a1f56814854e3f46056dd8ab9cf55d7`
 > 计划开发起点：`private/integration@fc2f3f19d18d1c23890ee02a4ee9600c36456a60`
+> 当前集成快照：`private/integration@ef8dd4f817e506cbb0ef39ebb00b4836981f25ea`
 > 前置条件：`1.0.2A` 最终发布身份与双机 Gate 完成；Phase 0 只读契约盘点可提前进行
 > 架构依据：`AGENTBC_ALPHA_DEVELOPMENT_HANDBOOK.md`
 
@@ -65,6 +66,27 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 | `PROTO-104-001` | 延期至 1.0.4A | Executor argv/help/output fixture 更新仍分散 | 1.0.2A 多次因真实 CLI 输出漂移补丁修复 | 与局部重构一起建立完整版本化 fixture matrix；1.0.3A 只补定向 fixture |
 | `ARCH-104-001` | 延期至 1.0.4A | Service/Runner/CLI/Setup 继续过度集中 | 1.0.2A 收口时共享文件修改风险高 | 在完整 characterization/fixture 保护下进行局部重构 |
 | `FLOW-104-001` | 延期至 1.0.4A | handoff 固定只声明一个 step，但自由文本可包含多段 Step 编号 | `XCKX-002`、`76MG-002` 实现与测试完成后因 callback 返回未声明的 Step 2～4 被 fail closed | 为 handoff 增加结构化多 steps 合同、预检和跨 Executor callback 一致性测试 |
+
+### 1.4 当前开发进度（2026-08-16）
+
+| ID | 状态 | 已完成证据 / 剩余边界 |
+| --- | --- | --- |
+| `PERM-103-001` | 已完成 | `79b5706`：统一 permission registry、配置事务、默认 `inherit` 和公共视图已合入 |
+| `PERM-103-002` | 已完成 | `79b5706`：三 Executor 映射与 fail-closed capability probe 已合入；Hermes ACP 实际控制链计入 `003/004` |
+| `PERM-103-003` | 进行中 | `87a7dc1`、`330168f`、`ce5e4e9`：Core、Codex、Claude 精确动作审批已完成；Hermes `session/request_permission` 待 Task 6 接入 |
+| `PERM-103-004` | 进行中 | Codex、Claude early receipt 已完成；Hermes 仍需在 prompt 前从 ACP `session/new` 取得并持久化官方 session ID |
+| `PERM-103-005` | 已完成 | `330168f`、`bb58e50`：严格 cutover、维护模式、历史只读投影和 update preflight 已合入 |
+| `PERM-103-006` | 下一项 | Task 7：极简权限弹窗、脱敏详情展开和绝对超时 |
+| `PERM-103-007` | 排队 | 待 Phase 2/3 公共接口稳定后实施 Claude 文件级 capability |
+| `FLOW-103-001` | 排队 | Task 6/7 合入后的首个串行任务：Runner/Core 权威 progress receipt |
+| `UPD-103-001` | 部分完成 | 已有 cutover preflight；自动 check、`y/N` 升级事务和失败保留旧版本尚未实现 |
+| `PKG-103-001` | 未开始 | 等待 update 事务稳定后建设 Homebrew Gate |
+| `PROTO-104-001` / `ARCH-104-001` / `FLOW-104-001` | 已延期 | 保持 `1.0.4A` 边界，本版不实现 |
+
+Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 于 2026-08-16 明确取消，
+未伪造 completed callback；实现提交 `87a7dc1` 已在 integration 独立复验。收尾时另发现并合入
+`3aa105c` 的 task-scoped control root fail-closed 修复，10 项定向测试通过；合入前 integration
+全量基线为 1125 项通过。
 
 ## 2. P0：统一 Agent 权限设置（`PERM-103-001`）
 
@@ -292,15 +314,15 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 
 ### 9.2 目标日程
 
-| 日期 | 阶段 | 退出门禁 |
-| --- | --- | --- |
-| 2026-08-17～08-19 | Phase 0 | `fc2f3f1` 基线、权限/approval/session/progress 合同与最小定向 fixture 冻结 |
-| 2026-08-20～08-28 | Phase 1 | `inherit|safe|full` registry、配置事务、既有继承逻辑、公共视图和迁移通过 |
-| 2026-08-29～09-06 | Phase 2 | 三 Executor early session 与 approval transport；Hermes unsupported 路径可行动且 fail closed |
-| 2026-09-07～09-13 | Phase 3 | Approve/Deny、同 session resume、极简弹窗与单调 progress receipt 通过 |
-| 2026-09-14～09-20 | Phase 4 | Claude 文件级 capability、路径攻击矩阵、旧任务兼容与三 Executor canary 通过 |
-| 2026-09-21～09-24 | Phase 5 | `agentbc update` 自动 check/`y/N` 升级及 Homebrew 安装、升级、卸载、迁移通过 |
-| 2026-09-25～09-27 | Phase 6 | 全量、Python/双机、真实 Executor、失败注入与发布身份 Gate 通过 |
+| 日期 | 阶段 | 当前状态 | 退出门禁 |
+| --- | --- | --- | --- |
+| 2026-08-17～08-19 | Phase 0 | 已提前完成 | `fc2f3f1` 基线、权限/approval/session/progress 合同与最小定向 fixture 冻结 |
+| 2026-08-20～08-28 | Phase 1 | 已提前完成 | `inherit|safe|full` registry、配置事务、既有继承逻辑、公共视图和迁移通过 |
+| 2026-08-29～09-06 | Phase 2 | 进行中 | 三 Executor early session 与 approval transport；Hermes unsupported 路径可行动且 fail closed |
+| 2026-09-07～09-13 | Phase 3 | 部分基础已完成 | Approve/Deny、同 session resume、极简弹窗与单调 progress receipt 通过 |
+| 2026-09-14～09-20 | Phase 4 | 未开始 | Claude 文件级 capability、路径攻击矩阵、旧任务兼容与三 Executor canary 通过 |
+| 2026-09-21～09-24 | Phase 5 | update preflight 已完成 | `agentbc update` 自动 check/`y/N` 升级及 Homebrew 安装、升级、卸载、迁移通过 |
+| 2026-09-25～09-27 | Phase 6 | 未开始 | 全量、Python/双机、真实 Executor、失败注入与发布身份 Gate 通过 |
 
 目标发布窗口为 `2026-09-27`；若 Hermes early approval/session capability 或 Claude 文件级
 capability 无法由当前上游 CLI 精确表达，本版按既定 fail-closed 合同交付，不以危险近似
