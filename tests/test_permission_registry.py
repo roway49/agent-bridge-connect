@@ -491,7 +491,7 @@ class ExecutorCapabilityMappingTests(unittest.TestCase):
 
 
 class HermesACPCapabilityProbeTests(unittest.TestCase):
-    def test_acp_probe_success_reserves_request_permission(self) -> None:
+    def test_acp_probe_success_binds_request_permission(self) -> None:
         with mock.patch(
             "agent_bridge_connect.permission_registry.subprocess.run",
             side_effect=[FAKE_ACP_CHECK, FAKE_ACP_VERSION],
@@ -505,7 +505,8 @@ class HermesACPCapabilityProbeTests(unittest.TestCase):
         self.assertEqual(report["evidence"], ["acp_check_ok"])
         self.assertEqual(report["details"]["version"], "0.20.1")
         session = report["details"]["session_request_permission"]
-        self.assertEqual(session["state"], "reserved_task2")
+        self.assertEqual(session["state"], "bound")
+        self.assertEqual(session["decisions"], ["allow_once", "deny"])
         self.assertEqual(
             session["capability_id"], HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID
         )
@@ -634,7 +635,8 @@ class HermesExecutorACPMetadataTests(unittest.TestCase):
         self.assertEqual(acp["capability_id"], HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID)
         self.assertTrue(acp["check"]["ok"])
         self.assertEqual(acp["check"]["version"], "0.20.1")
-        self.assertEqual(acp["request_permission"]["state"], "reserved_task2")
+        self.assertEqual(acp["request_permission"]["state"], "bound")
+        self.assertEqual(acp["request_permission"]["decisions"], ["allow_once", "deny"])
         self.assertEqual(
             acp["request_permission"]["capability_id"],
             HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID,

@@ -9,9 +9,9 @@ This narrow module is the single source of truth for:
   legacy top-level ``permission_mode`` dual-read,
 * the executor capability mapping (Codex / Claude / Hermes x inherit / safe
   / full) and the capability probes, and
-* the frozen Hermes ACP capability (``transport=hermes-acp`` and reserved
-  capability IDs; the Runner control loop that binds them is wired by a
-  later task).
+* the frozen Hermes ACP capability (``transport=hermes-acp`` with the
+  session/request_permission capability bound by the Task 6 narrow ACP
+  transport; only the exact ``allow_once`` / ``deny`` outcomes are exposed).
 
 Setup, CLI, executors and tests route every permission decision through this
 module and :mod:`permission_modes`; no other module keeps its own permission
@@ -59,12 +59,19 @@ SUPPORTED_EXECUTORS = ("codex", "claude", "hermes")
 TRANSPORT_HERMES_ACP = "hermes-acp"
 TRANSPORT_CLI = "cli"
 
-# Reserved Hermes ACP capability IDs.  The ACP session control loop is wired
-# by a later task; AgentBC only freezes the capability surface here.
+# Reserved Hermes ACP capability IDs.  Task 6 binds the session and
+# request_permission capabilities through the narrow ``hermes_acp`` transport
+# (``transport=hermes-acp``); AgentBC freezes the capability surface here and
+# exposes only the exact allow_once/deny outcomes.
 HERMES_ACP_CHECK_CAPABILITY_ID = "hermes.acp.check"
 HERMES_ACP_SESSION_CAPABILITY_ID = "hermes.acp.session"
 HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID = "hermes.acp.session.request_permission"
 HERMES_ACP_FULL_YOLO_ENV_CAPABILITY_ID = "hermes.acp.full.yolo_env"
+
+# The only native permission outcomes AgentBC may expose on the Hermes ACP
+# transport.  ``allow_once`` authorizes exactly one action; ``deny`` is the
+# cancelled outcome.  allow_session/allow_always/deny_always are never issued.
+HERMES_ACP_ALLOWED_DECISIONS = ("allow_once", "deny")
 
 # Subprocess-scoped Hermes full-mode override.  May only be applied to the
 # spawned Hermes ACP subprocess environment, never to the user's global
@@ -359,11 +366,13 @@ def probe_executor_capability(
                     "capability_id": HERMES_ACP_SESSION_CAPABILITY_ID,
                 },
                 "session_request_permission": {
-                    # The exact session-level binding is verified at session
-                    # init by the Runner control loop (later task); AgentBC
-                    # freezes the reserved capability surface here.
-                    "state": "reserved_task2",
+                    # Bound by the Task 6 ACP transport at session init: the
+                    # exact session-level capability bridges into the frozen
+                    # approval receipt and ControlPlane with only the
+                    # allow_once/deny outcome surface.
+                    "state": "bound",
                     "capability_id": HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID,
+                    "decisions": list(HERMES_ACP_ALLOWED_DECISIONS),
                 },
             },
         }
