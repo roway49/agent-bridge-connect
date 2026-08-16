@@ -4,7 +4,12 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from .approval import APPROVAL_SCOPE
+from .approval import (
+    APPROVAL_EXTENSION_KEY,
+    APPROVAL_SCOPE,
+    validate_approval_receipt,
+)
+from .protocol import ABCError
 from .execution_policy import execution_policy_view
 from .notifiers.dialog import DialogNotifier
 from .notifiers.file import FileNotifier
@@ -197,7 +202,10 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         command = f"agentbc task respond {task_id} --input {input_id} --message \"<response>\""
     workspace = task.workspace or {}
     blocked_step = request.get("blocked_step_id", "")
-    summary = compact_notification_text(str(request.get("summary") or ""), 240)
+    summary = compact_notification_text(
+        str(request.get("reason_summary") or request.get("summary") or ""),
+        240,
+    )
     if input_type == "choice":
         reason = compact_notification_text(str(request.get("reason") or summary), 240)
         if is_resource_decision and not option_descriptions:
@@ -266,6 +274,19 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         and request.get("scope") == APPROVAL_SCOPE
         and bool(str(request.get("request_id") or "").strip())
     )
+    # The bounded detail is read from the durable approval receipt, never from
+    # the input request, so report/status projections of ``agentbc.input`` keep
+    # exposing only the short summary by default.
+    reason_detail = ""
+    if is_single_action_approval:
+        receipt_value = (task.extensions or {}).get(APPROVAL_EXTENSION_KEY)
+        if isinstance(receipt_value, dict):
+            try:
+                reason_detail = str(
+                    validate_approval_receipt(receipt_value).get("reason_detail") or ""
+                )
+            except ABCError:
+                reason_detail = ""
     return {
         "task_id": task_id,
         "event_type": "task.input_required",
@@ -280,6 +301,8 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         "input_kind": input_kind,
         "response_protocol": response_protocol,
         "input_reason": str(request.get("reason") or ""),
+        "reason_summary": str(request.get("reason_summary") or request.get("summary") or ""),
+        "reason_detail": reason_detail,
         "input_options": input_options,
         "input_option_descriptions": option_descriptions,
         "permission_grant": permission_grant,
