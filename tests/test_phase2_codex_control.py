@@ -521,6 +521,24 @@ class CodexControlPlaneTests(unittest.TestCase):
         )
         self.assertEqual(status["control"]["status"], "approval_responded")
 
+    def test_explicit_control_root_requires_exact_task_scope(self) -> None:
+        task_id = "CDEX-ROOT-001"
+        valid = control_root_for_task(task_id, board_root=self.board)
+        self.assertEqual(
+            control_root_for_task(task_id, explicit_root=valid),
+            valid,
+        )
+        with self.assertRaisesRegex(ValueError, "not task scoped"):
+            control_root_for_task(
+                task_id,
+                explicit_root=valid.parent / "CDEX-OTHER-001",
+            )
+        with self.assertRaisesRegex(ValueError, "not task scoped"):
+            control_root_for_task(
+                task_id,
+                explicit_root=valid.parent.parent / task_id,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

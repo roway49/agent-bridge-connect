@@ -101,7 +101,7 @@ def control_root_for_task(
     safe_task_id = _safe_identifier(task_id, field="task_id")
     if explicit_root is not None:
         root = Path(explicit_root).expanduser().resolve()
-        if root.name != safe_task_id and root.parent.name != ".agentbc-control":
+        if root.name != safe_task_id or root.parent.name != ".agentbc-control":
             raise ValueError("explicit control root is not task scoped")
         return root
     if board_root is None:
