@@ -75,8 +75,8 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 | --- | --- | --- |
 | `PERM-103-001` | 已完成 | `79b5706`：统一 permission registry、配置事务、默认 `inherit` 和公共视图已合入 |
 | `PERM-103-002` | 已完成 | `79b5706`：三 Executor 映射与 fail-closed capability probe 已合入；Hermes ACP 实际控制链计入 `003/004` |
-| `PERM-103-003` | 进行中 | `87a7dc1`、`330168f`、`ce5e4e9`：Core、Claude 精确动作审批已完成；Codex app-server 控制代码已存在但尚未接入生产 registry，转 `PERM-103-009` 评估；Hermes `session/request_permission` 待 Task 6 接入 |
-| `PERM-103-004` | 进行中 | Codex、Claude early receipt 已完成；Hermes 仍需在 prompt 前从 ACP `session/new` 取得并持久化官方 session ID |
+| `PERM-103-003` | 进行中 | `87a7dc1`、`330168f`、`ce5e4e9`、`791e3b8`、`a64f5a5`：Core、Claude 与 Hermes 精确动作审批已完成并合入；Codex app-server 控制代码已存在但尚未接入生产 registry，转 `PERM-103-009` 完成生产链 |
+| `PERM-103-004` | 已完成 | Codex、Claude early receipt 已完成；`791e3b8`、`a64f5a5` 已合入 Hermes ACP `session/new` prompt 前官方 session receipt、显式 resume 与 fail-closed 校验；合入后 120 项 Hermes/registry/lifecycle 定向测试通过 |
 | `PERM-103-005` | 已完成 | `330168f`、`bb58e50`：严格 cutover、维护模式、历史只读投影和 update preflight 已合入 |
 | `PERM-103-006` | 已完成 | `ce4f366`～`c09fa18`、`1dbe97e`、`a383bcf`：极简权限弹窗、脱敏详情、绝对超时与普通说明语义保持已合入；74 项重点回归、1168 项全量和隔离 wheel smoke 通过 |
 | `PERM-103-007` | 排队 | 待 Phase 2/3 公共接口稳定后实施 Claude 文件级 capability |
