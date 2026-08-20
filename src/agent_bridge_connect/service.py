@@ -12,8 +12,11 @@ from typing import Any
 from .approval import (
     APPROVAL_EXTENSION_KEY,
     APPROVAL_SCOPE,
+    approval_public_projection,
     build_approval_receipt,
+    normalize_reason_summary,
     record_approval_decision,
+    sanitize_reason_detail,
     validate_approval_receipt,
 )
 from .config import DEFAULT_BOARD_ROOT, get_executor_config, init_board
@@ -1424,6 +1427,8 @@ class TaskService:
         executor: str,
         operation: str,
         summary: str = "",
+        reason: str = "",
+        reason_detail: str = "",
         blocked_step_id: int | None = None,
     ) -> dict[str, Any]:
         """Block the first incomplete step for one structured native approval request.
@@ -1433,8 +1438,11 @@ class TaskService:
         bounded summary, persists the approval receipt under
         ``agentbc.approval``, and creates an ``input_required(type=permission)``
         request that only Approve / Deny can answer through
-        :func:`notify_input_required`.  No safe-to-full grant is issued and the
-        task ``effective_mode`` is never changed.
+        :func:`notify_input_required`.  The optional ``reason`` is normalized to
+        a Core single-line ``reason_summary`` (at most 120 characters) and the
+        optional ``reason_detail`` is persisted only after redaction,
+        control-character removal and a 2000-character bound.  No safe-to-full
+        grant is issued and the task ``effective_mode`` is never changed.
         """
         from .approval import (
             APPROVAL_SCOPE,
@@ -1503,6 +1511,12 @@ class TaskService:
                 executor=normalized_executor,
                 operation=clean_operation,
             )
+        clean_reason_summary = normalize_reason_summary(
+            reason,
+            executor=normalized_executor,
+            operation=clean_operation,
+        )
+        clean_reason_detail = sanitize_reason_detail(reason_detail)
 
         receipt = build_approval_receipt(
             task_id=task_id,
@@ -1514,6 +1528,8 @@ class TaskService:
             kind="permission",
             operation=clean_operation,
             summary=str(redact_secrets(clean_summary)),
+            reason_summary=clean_reason_summary,
+            reason_detail=clean_reason_detail,
             scope=APPROVAL_SCOPE,
         )
 
@@ -1538,6 +1554,7 @@ class TaskService:
             "request_fingerprint": clean_fingerprint,
             "operation": clean_operation,
             "summary": receipt["summary"],
+            "reason_summary": clean_reason_summary,
             "created_at": now,
             "deadline_at": deadline_at,
             "status": "waiting",
@@ -3418,6 +3435,17 @@ def task_to_status(task: TaskModel) -> dict[str, Any]:
         PERMISSION_EXTENSION_KEY,
         permission_record_from_extensions(extensions),
     )
+    # Public status exposes only the sanitized approval projection: the bounded
+    # summary, decision and timestamps.  Binding identifiers and the optional
+    # bounded detail are internal and never projected.
+    approval_value = extensions.get(APPROVAL_EXTENSION_KEY)
+    if approval_value is not None:
+        try:
+            extensions[APPROVAL_EXTENSION_KEY] = approval_public_projection(
+                approval_value
+            )
+        except ABCError:
+            extensions.pop(APPROVAL_EXTENSION_KEY, None)
     data["extensions"] = extensions
     if raw_status != data["status"]:
         extensions = dict(data.get("extensions") or {})

@@ -36,6 +36,8 @@ APPROVAL_DECISION_SOURCES = frozenset(
     {"user", "timeout", "dialog_closed", "close", "stale", "crash", "fail_closed"}
 )
 APPROVAL_SUMMARY_LIMIT = 120
+APPROVAL_REASON_SUMMARY_LIMIT = 120
+APPROVAL_REASON_DETAIL_LIMIT = 2000
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$")
 _OPERATION_RE = re.compile(r"^[^\x00-\x1f]{1,120}$")
@@ -60,8 +62,130 @@ _FORBIDDEN_FIELD_PARTS = frozenset(
         "flags",
     }
 )
+_SECRET_LABEL_PATTERN = (
+    r"(?:access(?:\s+|[-_])token|api\s*[-_]?\s*key|bearer|password|passwd|"
+    r"token|secret|credential|authorization)"
+)
 _SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)(?:password|passwd|token|api[_-]?key|secret|authorization)\s*[:=]"
+    rf"(?i)(?<![A-Za-z0-9]){_SECRET_LABEL_PATTERN}(?![A-Za-z0-9])\s*[:=]"
+)
+_SECRET_VALUE_RE = re.compile(
+    rf"(?i)(?<![A-Za-z0-9]){_SECRET_LABEL_PATTERN}(?![A-Za-z0-9])"
+    r"\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+)
+# A space-separated sensitive label is safe only when its immediate next word
+# is an explicitly allowlisted ordinary explanation word.  This is deliberate
+# grammar, not credential entropy/length/character heuristics: ``token is`` is
+# prose, while ``token huntertwo`` is sensitive regardless of its shape.
+_SECRET_SPACE_ALLOWED_WORDS = frozenset(
+    {
+        "also",
+        "and",
+        "are",
+        "as",
+        "at",
+        "auth",
+        "authn",
+        "authentication",
+        "be",
+        "been",
+        "by",
+        "can",
+        "could",
+        "configuration",
+        "configurations",
+        "credential",
+        "credentials",
+        "endpoint",
+        "file",
+        "for",
+        "from",
+        "header",
+        "in",
+        "is",
+        "may",
+        "might",
+        "management",
+        "must",
+        "name",
+        "needed",
+        "not",
+        "of",
+        "on",
+        "only",
+        "or",
+        "path",
+        "pairs",
+        "pair",
+        "policy",
+        "provider",
+        "required",
+        "rotation",
+        "scheme",
+        "service",
+        "settings",
+        "should",
+        "store",
+        "stored",
+        "the",
+        "to",
+        "token",
+        "tokens",
+        "type",
+        "use",
+        "used",
+        "using",
+        "value",
+        "was",
+        "were",
+        "will",
+        "without",
+        "with",
+        "would",
+    }
+)
+_SECRET_SPACE_ALLOWED_WORD_PATTERN = "|".join(
+    re.escape(word)
+    for word in sorted(_SECRET_SPACE_ALLOWED_WORDS, key=lambda item: (-len(item), item))
+)
+_SECRET_SPACE_RE = re.compile(
+    rf"(?i)(?<![A-Za-z0-9]){_SECRET_LABEL_PATTERN}(?![A-Za-z0-9])\s+"
+    rf"(?!(?:{_SECRET_SPACE_ALLOWED_WORD_PATTERN})\b)[^\s,;]+"
+)
+# Fail-closed markers for unprocessed executor material that must never be
+# persisted inside ``reason_detail``: private/database paths, argv/command
+# lines, raw output, and secret flags.  These are deliberately conservative.
+_DB_FILE_RE = re.compile(
+    r"(?i)(?:^|[\s('\"])[A-Za-z0-9_.-]*\.(?:db|db3|sqlite|sqlite3|sqlite2|sqlite-wal|sqlite-shm)"
+    r"(?:$|[\s)'\"])"
+)
+_PRIVATE_HOME_RE = re.compile(r"(?i)(?:^|[\s('\"])/Users/[A-Za-z0-9_.-]+(?:[/\s]|$)")
+_HOME_TILDE_RE = re.compile(r"(?i)(?:^|[\s('\"])~/")
+_PRIVATE_SYSTEM_DIR_RE = re.compile(r"(?i)(?:/private/|/Users/|/home/|/etc/|/var/|/root/)")
+_HIDDEN_CONFIG_DIR_RE = re.compile(
+    r"(?i)(?:^|[/\s('\"])\.(?:hermes|claude|codex|config|aws|ssh|gnupg|azure|gradle|npm)"
+    r"(?:[/\s.'\"]|$)"
+)
+_ARGV_MARKER_RE = re.compile(
+    r"(?i)(?:^|\s)(?:argv|args?|cmd|command[- ]?line|shell|exec|spawn|bash|zsh|fish|sh\s+-[a-z]*c)"
+    r"\s*[:=(]"
+)
+_RAW_OUTPUT_MARKER_RE = re.compile(
+    r"(?i)(?:^|\s)(?:stdout|stderr|raw[- ]?output|output|result)\s*[:=]"
+)
+_SECRET_FLAG_RE = re.compile(
+    r"(?i)(?:^|\s)(?:--|/)(?:token|secret|password|passwd|api[-_]?key|authorization|credential)\b"
+)
+_DETAIL_FORBIDDEN_MATCHERS = (
+    _DB_FILE_RE,
+    _PRIVATE_HOME_RE,
+    _HOME_TILDE_RE,
+    _PRIVATE_SYSTEM_DIR_RE,
+    _HIDDEN_CONFIG_DIR_RE,
+    _ARGV_MARKER_RE,
+    _RAW_OUTPUT_MARKER_RE,
+    _SECRET_FLAG_RE,
+    _SECRET_SPACE_RE,
 )
 
 
@@ -76,10 +200,19 @@ def build_approval_receipt(
     kind: str = APPROVAL_KIND,
     operation: str = "",
     summary: str = "",
+    reason_summary: str = "",
+    reason_detail: str = "",
     created_at: str | None = None,
     scope: str = APPROVAL_SCOPE,
 ) -> dict[str, Any]:
-    """Build one pending v1 approval receipt, fail closed."""
+    """Build one pending v1 approval receipt, fail closed.
+
+    The optional ``reason_summary`` is Core-normalized to a single redacted line
+    of at most :data:`APPROVAL_REASON_SUMMARY_LIMIT` characters, and
+    ``reason_detail`` is persisted only after secret redaction,
+    control-character removal and a :data:`APPROVAL_REASON_DETAIL_LIMIT`
+    character bound.  Receipts without either field remain valid (legacy).
+    """
     envelope: dict[str, Any] = {
         "version": APPROVAL_VERSION,
         "task_id": task_id,
@@ -100,6 +233,16 @@ def build_approval_receipt(
             "decided_at": "",
         },
     }
+    clean_reason_summary = normalize_reason_summary(
+        reason_summary,
+        executor=executor,
+        operation=operation,
+    )
+    clean_reason_detail = sanitize_reason_detail(reason_detail)
+    if clean_reason_summary:
+        envelope["reason_summary"] = clean_reason_summary
+    if clean_reason_detail:
+        envelope["reason_detail"] = clean_reason_detail
     return validate_approval_receipt(envelope)
 
 
@@ -150,6 +293,8 @@ def validate_approval_receipt(
     session_id = _require_identifier(receipt.get("session_id"), "session_id")
     _require_operation(receipt.get("operation"))
     _require_summary(receipt.get("summary"))
+    _require_reason_summary(receipt.get("reason_summary"))
+    _require_reason_detail(receipt.get("reason_detail"))
 
     executor_name = str(receipt.get("executor") or "").strip().lower()
     if not executor_name:
@@ -326,6 +471,8 @@ def approval_public_projection(value: Any) -> dict[str, Any]:
         "state": state["status"],
         "created_at": receipt["created_at"],
     }
+    if receipt.get("reason_summary"):
+        projection["reason_summary"] = receipt["reason_summary"]
     if state["status"] == "answered":
         projection["decision"] = decision["type"]
         projection["decision_source"] = decision["source"]
@@ -382,6 +529,66 @@ def core_bounded_summary(
     else:
         text = f"{name} needs one-time approval for: {op}"
     return _bound_text(text, APPROVAL_SUMMARY_LIMIT)
+
+
+def normalize_reason_summary(
+    value: Any,
+    *,
+    executor: str = "",
+    operation: str = "",
+) -> str:
+    """Generate or normalize the single-line reason summary Core persists.
+
+    The summary is redacted, stripped of control characters, collapsed to one
+    line and bounded to :data:`APPROVAL_REASON_SUMMARY_LIMIT` characters.  When
+    no usable reason is supplied, Core falls back to the structured
+    Executor/operation summary so the minimal dialog view always has text.
+    """
+    from .reports import redact_secrets
+
+    raw = str(value or "")
+    # Whitespace-separated credentials (``token abc123``, ``Bearer abc123``)
+    # must be redacted before the generic redactor can mask the label while
+    # leaving the real value orphaned in the persisted summary.
+    text = _SECRET_SPACE_RE.sub("[REDACTED]", raw)
+    text = str(redact_secrets(text) or "")
+    text = _SECRET_VALUE_RE.sub("[REDACTED]", text)
+    text = _remove_control_characters(text)
+    text = " ".join(text.split()).strip()
+    if not text:
+        return core_bounded_summary(executor=executor, operation=operation)
+    return _bound_text(text, APPROVAL_REASON_SUMMARY_LIMIT)
+
+
+def sanitize_reason_detail(value: Any) -> str:
+    """Return the bounded, redacted, control-character-free reason detail.
+
+    Core persists the detail only after secret redaction, control-character
+    removal and a :data:`APPROVAL_REASON_DETAIL_LIMIT` character bound.  The
+    whole detail is dropped fail-closed when it contains private or database
+    paths, unprocessed argv/command lines, raw output, or secret flags
+    anywhere in the string -- not just at the very start.  The fail-closed
+    markers are checked on the raw input before redaction can mask them, and
+    again on the redacted result.  An empty result is omitted from the receipt
+    so existing receipts without a detail remain valid.
+    """
+    from .reports import redact_secrets
+
+    raw = str(value or "")
+    if _detail_contains_forbidden(raw):
+        return ""
+    # Redact whitespace-separated credentials before the generic redactor can
+    # mask the label while leaving the real value orphaned in the result.
+    text = _SECRET_SPACE_RE.sub("[REDACTED]", raw)
+    text = str(redact_secrets(text) or "")
+    text = _SECRET_VALUE_RE.sub("[REDACTED]", text)
+    text = _remove_control_characters(text)
+    text = " ".join(text.split()).strip()
+    if _detail_contains_forbidden(text):
+        return ""
+    if len(text) > APPROVAL_REASON_DETAIL_LIMIT:
+        text = text[:APPROVAL_REASON_DETAIL_LIMIT].rstrip()
+    return text
 
 
 def approval_receipt_pending(value: Any) -> bool:
@@ -513,6 +720,62 @@ def _require_summary(value: Any) -> str:
     return clean
 
 
+def _require_reason_summary(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        _invalid(
+            "approval_reason_summary_invalid",
+            "Approval receipt reason_summary must be a non-empty string",
+        )
+    clean = value.strip()
+    if len(clean) > APPROVAL_REASON_SUMMARY_LIMIT:
+        _invalid(
+            "approval_reason_summary_invalid",
+            "Approval receipt reason_summary must be a single line of at most "
+            f"{APPROVAL_REASON_SUMMARY_LIMIT} characters",
+        )
+    if any(ord(char) < 32 for char in clean):
+        _invalid(
+            "approval_reason_summary_invalid",
+            "Approval receipt reason_summary must be a single line without control characters",
+        )
+    if _summary_contains_credential(clean):
+        _invalid(
+            "approval_sensitive_field",
+            "Approval receipt reason_summary cannot persist credential content",
+        )
+    return clean
+
+
+def _require_reason_detail(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        _invalid(
+            "approval_reason_detail_invalid",
+            "Approval receipt reason_detail must be a non-empty string",
+        )
+    clean = value.strip()
+    if len(clean) > APPROVAL_REASON_DETAIL_LIMIT:
+        _invalid(
+            "approval_reason_detail_invalid",
+            "Approval receipt reason_detail must be at most "
+            f"{APPROVAL_REASON_DETAIL_LIMIT} characters",
+        )
+    if any(ord(char) < 32 or ord(char) == 127 for char in clean):
+        _invalid(
+            "approval_reason_detail_invalid",
+            "Approval receipt reason_detail contains control characters",
+        )
+    if _detail_contains_forbidden(clean):
+        _invalid(
+            "approval_sensitive_field",
+            "Approval receipt reason_detail cannot persist sensitive content",
+        )
+    return clean
+
+
 def _require_timestamp(value: Any, field: str) -> datetime:
     if not isinstance(value, str) or not value.strip():
         _invalid("approval_invalid", f"Approval receipt {field} is required")
@@ -523,6 +786,26 @@ def _require_timestamp(value: Any, field: str) -> datetime:
     if parsed.tzinfo is None:
         _invalid("approval_invalid", f"Approval receipt {field} must include a timezone")
     return parsed.astimezone(timezone.utc)
+
+
+def _detail_contains_forbidden(value: str) -> bool:
+    """Return whether a detail string still contains fail-closed content.
+
+    The checks mirror :data:`_DETAIL_FORBIDDEN_MATCHERS`: private/database
+    paths and unprocessed argv/raw output anywhere in the string (not just at
+    the start) invalidate the detail before it can be persisted.
+    """
+    return any(pattern.search(value) for pattern in _DETAIL_FORBIDDEN_MATCHERS)
+
+
+def _summary_contains_credential(value: str) -> bool:
+    """Return whether a reason summary still contains a real credential value.
+
+    The single-line summary only admits the space-separated credential forms;
+    private-path / argv / raw-output markers are detail-specific and would
+    over-reject legitimate one-line summaries.
+    """
+    return _SECRET_SPACE_RE.search(value) is not None
 
 
 def _reject_sensitive_additions(value: Any, *, key_path: tuple[str, ...] = ()) -> None:
@@ -541,11 +824,26 @@ def _reject_sensitive_additions(value: Any, *, key_path: tuple[str, ...] = ()) -
             _reject_sensitive_additions(item, key_path=(*key_path, str(index)))
     elif isinstance(value, str):
         clean = value.strip()
-        if clean.startswith(("/", "~/")) or _SECRET_ASSIGNMENT_RE.search(clean):
+        if (
+            clean.startswith(("/", "~/"))
+            or _SECRET_ASSIGNMENT_RE.search(clean)
+            or _SECRET_SPACE_RE.search(clean)
+        ):
             _invalid(
                 "approval_sensitive_field",
                 f"Approval receipt cannot persist sensitive content at: {'.'.join(key_path)}",
             )
+
+
+def _remove_control_characters(value: str) -> str:
+    # Replace control characters with a normal space so adjacent words never get
+    # glued together; callers collapse runs of whitespace afterwards.
+    return "".join(" " if _is_control_character(char) else char for char in value)
+
+
+def _is_control_character(char: str) -> bool:
+    code = ord(char)
+    return code < 32 or code == 127
 
 
 def _bound_text(value: str, limit: int) -> str:
