@@ -1,12 +1,12 @@
 # AgentBC 1.0.3A 需求开发清单
 
 > 制定日期：2026-08-11  
-> 最近整理：2026-08-16
+> 最近整理：2026-08-20
 > 状态：开发进行中；Phase 0～1 已完成，Phase 2 进行中
 > 目标版本：`v1.0.3A`  
 > 来源基线：`1.0.2A` 开发截止代码 `b8af2f3a0a1f56814854e3f46056dd8ab9cf55d7`
 > 计划开发起点：`private/integration@fc2f3f19d18d1c23890ee02a4ee9600c36456a60`
-> 当前集成快照：`private/integration@ef8dd4f817e506cbb0ef39ebb00b4836981f25ea`
+> 当前集成快照：`private/integration@a383bcfc70fe4dabbb96303c729bd25cc69821df`
 > 前置条件：`1.0.2A` 最终发布身份与双机 Gate 完成；Phase 0 只读契约盘点可提前进行
 > 架构依据：`AGENTBC_ALPHA_DEVELOPMENT_HANDBOOK.md`
 
@@ -60,6 +60,8 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 | `PERM-103-001`～`005` | P0 | 权限来源、映射、审批事件、早期 session 与迁移不统一 | 三 Executor 一次性 full canary 已通过，但依赖 Agent marker | 建立统一 registry 与原生控制平面 |
 | `PERM-103-006` | P0 | 权限弹窗 reason 过长 | `E4S2-001` 超长 reason 曾阻断弹窗 | 极简首屏，详情独立展开 |
 | `PERM-103-007` | P0 | Claude 临时工程写权限仍依赖 Prompt 约束 | `KXNX-001` 曾把交付物写入临时 cwd | 文件级 capability 与 Artifact root 分权 |
+| `PERM-103-008` | P1，条件性补全 | permission/session 合同失败被折叠为同一错误，难以区分 mode、receipt、run、lease、chain 与 resume 原因 | `R8KP-004` 的 `inherit` mode gate 与后续缺失 session resume 使用了相近的 session unavailable 表述 | 拆分稳定错误类型、详情与回归断言；不改变现有权限语义 |
+| `PERM-103-009` | P1，条件性补全 | Codex single-action 控制代码尚未成为生产默认路径，CLI transport 仍会回退到 continuation/full 模型 | `R8KP-004` 在 linked worktree commit 阻塞后无法形成可恢复的原生单动作审批 | 评估并打通 Codex app-server single-action 生产链；未完成时继续使用 1.0.3A 一次性 full 兜底 |
 | `FLOW-103-001` | P0 | 系统资源耗尽覆盖 callback 时低估已完成 step | `BTCN-001` 实际完成 2 个 step，终态报告显示 `0/4` | Runner/Core 权威 progress receipt 与单调合并 |
 | `UPD-103-001` | P1 | Alpha 缺少低心智负担的更新入口 | 1.0.2A 依赖手工 bundle 替换 | `agentbc update` 自动检查并以 `y/N` 确认升级；不提供 rollback 命令 |
 | `PKG-103-001` | P1 | Homebrew 尚无正式 formula/cask Gate | 1.0.2A 只有 wheel/sdist/local bundle | 可验证安装、升级、卸载与迁移 |
@@ -73,11 +75,12 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 | --- | --- | --- |
 | `PERM-103-001` | 已完成 | `79b5706`：统一 permission registry、配置事务、默认 `inherit` 和公共视图已合入 |
 | `PERM-103-002` | 已完成 | `79b5706`：三 Executor 映射与 fail-closed capability probe 已合入；Hermes ACP 实际控制链计入 `003/004` |
-| `PERM-103-003` | 进行中 | `87a7dc1`、`330168f`、`ce5e4e9`：Core、Codex、Claude 精确动作审批已完成；Hermes `session/request_permission` 待 Task 6 接入 |
+| `PERM-103-003` | 进行中 | `87a7dc1`、`330168f`、`ce5e4e9`：Core、Claude 精确动作审批已完成；Codex app-server 控制代码已存在但尚未接入生产 registry，转 `PERM-103-009` 评估；Hermes `session/request_permission` 待 Task 6 接入 |
 | `PERM-103-004` | 进行中 | Codex、Claude early receipt 已完成；Hermes 仍需在 prompt 前从 ACP `session/new` 取得并持久化官方 session ID |
 | `PERM-103-005` | 已完成 | `330168f`、`bb58e50`：严格 cutover、维护模式、历史只读投影和 update preflight 已合入 |
-| `PERM-103-006` | 下一项 | Task 7：极简权限弹窗、脱敏详情展开和绝对超时 |
+| `PERM-103-006` | 已完成 | `ce4f366`～`c09fa18`、`1dbe97e`、`a383bcf`：极简权限弹窗、脱敏详情、绝对超时与普通说明语义保持已合入；74 项重点回归、1168 项全量和隔离 wheel smoke 通过 |
 | `PERM-103-007` | 排队 | 待 Phase 2/3 公共接口稳定后实施 Claude 文件级 capability |
+| `PERM-103-008` / `PERM-103-009` | P1 候选 | 先以既有一次性 full continuation 作为 1.0.3A 稳定兜底；在 1.0.3A 收口门禁按剩余节奏决定追加开发，未进入实现则整体迁移至 `1.0.4A` |
 | `FLOW-103-001` | 排队 | Task 6/7 合入后的首个串行任务：Runner/Core 权威 progress receipt |
 | `UPD-103-001` | 部分完成 | 已有 cutover preflight；自动 check、`y/N` 升级事务和失败保留旧版本尚未实现 |
 | `PKG-103-001` | 未开始 | 等待 update 事务稳定后建设 Homebrew Gate |
@@ -235,6 +238,23 @@ Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 
   重放、乱序、重复 receipt、旧任务无 receipt 和任务/session 漂移。
 
 ## 8. P1：更新、分发与延期边界
+
+### 8.0 条件性权限补全（`PERM-103-008` / `PERM-103-009`）
+
+- `1.0.3A` 的发布兜底继续使用已经验证的一次性 `safe -> full` continuation，不在收口阶段
+  以未完成的 Codex single-action 链替换稳定路径；`full` grant 仍必须绑定当前 Task、官方
+  session 和下一次 run，一次消费，失败或恢复时撤销；
+- `PERM-103-008` 只拆分 permission/session 失败原因和公共诊断，不修改 permission mode、
+  grant、resume 或审批决策语义。至少区分 mode 不支持、receipt 缺失/不匹配、run/session
+  不匹配、RunLease 状态、stale chain head 和 resume session 缺失；
+- `PERM-103-009` 只在 Codex app-server transport、首次审批前官方 session receipt、同进程
+  request/response、Runner registry 配置和真实 Codex canary 能在剩余窗口内一起完成时进入
+  `1.0.3A`；不得只启用 Adapter 中已有的半条控制链；
+- go/no-go 门禁：不挤占剩余 P0、不会改变默认 `inherit`/handoff 继承、定向与全量回归有
+  足够窗口、隔离升级包和 Runner identity 可复验。任一条件不满足，两个 P1 项不做半成品
+  合入，整体转入 `1.0.4A`；
+- 不新增 linked-worktree Git 预检或专用提交阶段。权限审批应覆盖真实运行中出现的动作阻塞，
+  不通过穷举路径和命令场景扩大前置流程。
 
 ### 8.1 交互式自更新（`UPD-103-001`）
 
