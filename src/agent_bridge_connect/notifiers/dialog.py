@@ -159,6 +159,16 @@ class DialogNotifier:
         deadline_at = str(clean.get("deadline_at") or "")
         while True:
             give_up_s = self._permission_give_up_seconds(deadline_at, dialog_timeout_s)
+            if give_up_s <= 0:
+                # The absolute deadline is already reached or has less than one
+                # second left: fail closed before showing (or re-showing) any
+                # decision/detail view.
+                return DeliveryResult(
+                    True,
+                    "permission dialog timed out; request denied",
+                    f"dialog:{_INPUT_EVENT}",
+                    {"action": "deny", "decision_source": "timeout"},
+                )
             decision_script = self._permission_decision_script(give_up_s, has_detail)
             decision = self._run_script(
                 title,
@@ -207,6 +217,16 @@ class DialogNotifier:
                 continue
             # Non-decision View Details: show the bounded read-only detail view.
             detail_give_up_s = self._permission_give_up_seconds(deadline_at, dialog_timeout_s)
+            if detail_give_up_s <= 0:
+                # Reaching the total deadline while the decision view is showing
+                # (or before re-showing a detail view) must fail closed before
+                # any further dialog is displayed.
+                return DeliveryResult(
+                    True,
+                    "permission dialog timed out; request denied",
+                    f"dialog:{_INPUT_EVENT}",
+                    {"action": "deny", "decision_source": "timeout"},
+                )
             detail_script = self._permission_detail_script(detail_give_up_s)
             detail_view = self._run_script(
                 title,
@@ -317,7 +337,9 @@ class DialogNotifier:
 
         The dialog never exceeds its own input timeout and never outlives the
         total deadline, so the ``View Details`` flow cannot reset the original
-        countdown.
+        countdown.  An expired deadline (or one with less than one full second
+        remaining) returns ``0`` so the caller can fail closed before showing or
+        re-showing any decision/detail view.
         """
         from datetime import datetime, timezone
 
@@ -330,7 +352,10 @@ class DialogNotifier:
         if deadline.tzinfo is None:
             deadline = deadline.replace(tzinfo=timezone.utc)
         remaining_s = (deadline - datetime.now(timezone.utc)).total_seconds()
-        return max(min(int(remaining_s), dialog_timeout_s), 1)
+        bounded = min(int(remaining_s), dialog_timeout_s)
+        if bounded < 1:
+            return 0
+        return bounded
 
     def _dialog_script(self, event_type: str, input_type: str, timeout_s: int) -> str:
         if event_type == _INPUT_EVENT and input_type == "permission":

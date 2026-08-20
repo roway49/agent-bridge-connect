@@ -143,6 +143,56 @@ class ReasonContractTests(unittest.TestCase):
         self.assertEqual(sanitize_reason_detail("~/private/session.db"), "")
         self.assertEqual(sanitize_reason_detail("run tests in /tmp/sandbox"), "run tests in /tmp/sandbox")
 
+    def test_reason_detail_embedded_private_path_fails_closed(self) -> None:
+        # A private database path embedded mid-string (not just at the start)
+        # must never be persisted.
+        self.assertEqual(
+            sanitize_reason_detail("Reason: inspect /Users/alice/.hermes/state.db"),
+            "",
+        )
+        self.assertEqual(
+            sanitize_reason_detail("see ~/private/session.db for the schema"),
+            "",
+        )
+
+    def test_reason_detail_argv_and_raw_output_fail_closed(self) -> None:
+        # Unprocessed argv/command lines and raw output anywhere in the detail
+        # are rejected fail-closed even after secret redaction.
+        self.assertEqual(
+            sanitize_reason_detail("argv: hermes --token secret-value --cwd /private/tmp/x"),
+            "",
+        )
+        self.assertEqual(sanitize_reason_detail("command: ls -la /Users/me"), "")
+        self.assertEqual(sanitize_reason_detail("stdout: hello world"), "")
+        self.assertEqual(sanitize_reason_detail("raw output: see /tmp/log"), "")
+
+    def test_reason_detail_secret_flag_fails_closed(self) -> None:
+        self.assertEqual(sanitize_reason_detail("run with --token secret-value"), "")
+        self.assertEqual(sanitize_reason_detail("--password hunter2 passed"), "")
+
+    def test_reason_detail_legitimate_short_text_still_usable(self) -> None:
+        detail = sanitize_reason_detail(
+            "Requested operation: run the focused unit tests in the workspace"
+        )
+        self.assertEqual(
+            detail,
+            "Requested operation: run the focused unit tests in the workspace",
+        )
+        self.assertLessEqual(len(detail), APPROVAL_REASON_DETAIL_LIMIT)
+
+    def test_validation_rejects_embedded_sensitive_detail_fail_closed(self) -> None:
+        # A hand-crafted receipt carrying an embedded private database path or
+        # argv line is rejected fail closed before it can be persisted.
+        receipt = _receipt(reason_detail="safe")
+        receipt["reason_detail"] = "Reason: inspect /Users/alice/.hermes/state.db"
+        with self.assertRaises(ABCError) as exc:
+            validate_approval_receipt(receipt)
+        self.assertEqual(exc.exception.code, "approval_sensitive_field")
+        receipt["reason_detail"] = "argv: hermes --token secret-value"
+        with self.assertRaises(ABCError) as exc:
+            validate_approval_receipt(receipt)
+        self.assertEqual(exc.exception.code, "approval_sensitive_field")
+
     def test_build_receipt_persists_reason_fields(self) -> None:
         receipt = _receipt(
             reason_summary="Run the requested tests",
@@ -362,6 +412,89 @@ class PermissionDialogTests(unittest.TestCase):
             )
         self.assertEqual(result.details, {"action": "deny", "decision_source": "timeout"})
 
+    def test_expired_deadline_does_not_start_approvable_dialog(self) -> None:
+        notifier = DialogNotifier()
+        expired = (
+            dt.datetime.now(dt.timezone.utc) - dt.timedelta(milliseconds=5)
+        ).isoformat().replace("+00:00", "Z")
+        with mock.patch("agent_bridge_connect.notifiers.dialog.subprocess.run") as run:
+            run.return_value = mock.Mock(
+                returncode=0,
+                stdout="button returned:Approve, gave up:false",
+                stderr="",
+            )
+            result = notifier.send(
+                {
+                    "event_type": "task.input_required",
+                    "message": "short summary",
+                    "reason_summary": "short summary",
+                    "input_type": "permission",
+                    "deadline_at": expired,
+                }
+            )
+        self.assertEqual(result.details, {"action": "deny", "decision_source": "timeout"})
+        # A mock approving at an expired deadline must never be reached.
+        run.assert_not_called()
+
+    def test_critical_sub_second_deadline_cannot_cross_deadline(self) -> None:
+        # A deadline less than one full second away (e.g. 0.9s) must not force
+        # a 1-second dialog: the dialog countdown is 0 and the request fails
+        # closed immediately.
+        notifier = DialogNotifier()
+        critical = (
+            dt.datetime.now(dt.timezone.utc) + dt.timedelta(milliseconds=900)
+        ).isoformat().replace("+00:00", "Z")
+        with mock.patch("agent_bridge_connect.notifiers.dialog.subprocess.run") as run:
+            run.return_value = mock.Mock(
+                returncode=0,
+                stdout="button returned:Approve, gave up:false",
+                stderr="",
+            )
+            result = notifier.send(
+                {
+                    "event_type": "task.input_required",
+                    "message": "short summary",
+                    "reason_summary": "short summary",
+                    "input_type": "permission",
+                    "deadline_at": critical,
+                }
+            )
+        self.assertEqual(result.details, {"action": "deny", "decision_source": "timeout"})
+        run.assert_not_called()
+
+    def test_view_details_loop_keeps_absolute_deadline(self) -> None:
+        # The View Details/Back loop re-computes the countdown from the same
+        # absolute deadline each iteration; once the deadline is reached while
+        # returning to the decision view the dialog fails closed and never
+        # approves.
+        notifier = DialogNotifier()
+        far_future = (
+            dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1)
+        ).isoformat().replace("+00:00", "Z")
+        with mock.patch.object(
+            DialogNotifier, "_permission_give_up_seconds"
+        ) as countdown:
+            countdown.side_effect = [5, 5, 0]
+            with mock.patch("agent_bridge_connect.notifiers.dialog.subprocess.run") as run:
+                run.side_effect = [
+                    mock.Mock(returncode=0, stdout="button returned:View Details, gave up:false", stderr=""),
+                    mock.Mock(returncode=0, stdout="button returned:Back, gave up:false", stderr=""),
+                    # The loop returns to the decision view and re-checks the
+                    # deadline before showing it again.
+                ]
+                result = notifier.send(
+                    {
+                        "event_type": "task.input_required",
+                        "message": "short summary",
+                        "reason_summary": "short summary",
+                        "reason_detail": "The bounded detail",
+                        "input_type": "permission",
+                        "deadline_at": far_future,
+                    }
+                )
+        self.assertEqual(result.details, {"action": "deny", "decision_source": "timeout"})
+        self.assertEqual(len(run.call_args_list), 2)
+
     def test_unknown_button_auto_denies_with_fail_closed_source(self) -> None:
         notifier = DialogNotifier()
         with mock.patch("agent_bridge_connect.notifiers.dialog.subprocess.run") as run:
@@ -386,6 +519,8 @@ class PermissionDialogTests(unittest.TestCase):
 
     def test_deadline_bounds_dialog_countdown_and_never_resets(self) -> None:
         notifier = DialogNotifier()
+        # An expired absolute deadline must fail closed before any decision view
+        # is shown: no osascript runs and the result is a timeout deny.
         past = (
             dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=1)
         ).isoformat().replace("+00:00", "Z")
@@ -395,7 +530,7 @@ class PermissionDialogTests(unittest.TestCase):
                 stdout="button returned:Deny, gave up:false",
                 stderr="",
             )
-            notifier.send(
+            result = notifier.send(
                 {
                     "event_type": "task.input_required",
                     "message": "short summary",
@@ -405,7 +540,8 @@ class PermissionDialogTests(unittest.TestCase):
                     "deadline_at": past,
                 }
             )
-        self.assertIn("giving up after 1", run.call_args.kwargs["input"])
+        self.assertEqual(result.details, {"action": "deny", "decision_source": "timeout"})
+        run.assert_not_called()
         # The countdown is bounded by the input timeout, never extended past it.
         far_future = (
             dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=1)

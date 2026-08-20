@@ -69,6 +69,40 @@ _SECRET_VALUE_RE = re.compile(
     r"(?i)(?:password|passwd|token|api[_-]?key|secret|authorization)"
     r"\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
 )
+# Fail-closed markers for unprocessed executor material that must never be
+# persisted inside ``reason_detail``: private/database paths, argv/command
+# lines, raw output, and secret flags.  These are deliberately conservative.
+_DB_FILE_RE = re.compile(
+    r"(?i)(?:^|[\s('\"])[A-Za-z0-9_.-]*\.(?:db|db3|sqlite|sqlite3|sqlite2|sqlite-wal|sqlite-shm)"
+    r"(?:$|[\s)'\"])"
+)
+_PRIVATE_HOME_RE = re.compile(r"(?i)(?:^|[\s('\"])/Users/[A-Za-z0-9_.-]+(?:[/\s]|$)")
+_HOME_TILDE_RE = re.compile(r"(?i)(?:^|[\s('\"])~/")
+_PRIVATE_SYSTEM_DIR_RE = re.compile(r"(?i)(?:/private/|/Users/|/home/|/etc/|/var/|/root/)")
+_HIDDEN_CONFIG_DIR_RE = re.compile(
+    r"(?i)(?:^|[/\s('\"])\.(?:hermes|claude|codex|config|aws|ssh|gnupg|azure|gradle|npm)"
+    r"(?:[/\s.'\"]|$)"
+)
+_ARGV_MARKER_RE = re.compile(
+    r"(?i)(?:^|\s)(?:argv|args?|cmd|command[- ]?line|shell|exec|spawn|bash|zsh|fish|sh\s+-[a-z]*c)"
+    r"\s*[:=(]"
+)
+_RAW_OUTPUT_MARKER_RE = re.compile(
+    r"(?i)(?:^|\s)(?:stdout|stderr|raw[- ]?output|output|result)\s*[:=]"
+)
+_SECRET_FLAG_RE = re.compile(
+    r"(?i)(?:^|\s)(?:--|/)(?:token|secret|password|passwd|api[-_]?key|authorization|credential)\b"
+)
+_DETAIL_FORBIDDEN_MATCHERS = (
+    _DB_FILE_RE,
+    _PRIVATE_HOME_RE,
+    _HOME_TILDE_RE,
+    _PRIVATE_SYSTEM_DIR_RE,
+    _HIDDEN_CONFIG_DIR_RE,
+    _ARGV_MARKER_RE,
+    _RAW_OUTPUT_MARKER_RE,
+    _SECRET_FLAG_RE,
+)
 
 
 def build_approval_receipt(
@@ -441,21 +475,27 @@ def sanitize_reason_detail(value: Any) -> str:
     """Return the bounded, redacted, control-character-free reason detail.
 
     Core persists the detail only after secret redaction, control-character
-    removal and a :data:`APPROVAL_REASON_DETAIL_LIMIT` character bound.  A
-    leading private path (``/`` or ``~/``) is treated as unprocessed argv or raw
-    output and dropped entirely; an empty result is omitted from the receipt so
-    existing receipts without a detail remain valid.
+    removal and a :data:`APPROVAL_REASON_DETAIL_LIMIT` character bound.  The
+    whole detail is dropped fail-closed when it contains private or database
+    paths, unprocessed argv/command lines, raw output, or secret flags
+    anywhere in the string -- not just at the very start.  The fail-closed
+    markers are checked on the raw input before redaction can mask them, and
+    again on the redacted result.  An empty result is omitted from the receipt
+    so existing receipts without a detail remain valid.
     """
     from .reports import redact_secrets
 
-    text = str(redact_secrets(str(value or "")) or "")
+    raw = str(value or "")
+    if _detail_contains_forbidden(raw):
+        return ""
+    text = str(redact_secrets(raw) or "")
     text = _SECRET_VALUE_RE.sub("[REDACTED]", text)
     text = _remove_control_characters(text)
     text = " ".join(text.split()).strip()
+    if _detail_contains_forbidden(text):
+        return ""
     if len(text) > APPROVAL_REASON_DETAIL_LIMIT:
         text = text[:APPROVAL_REASON_DETAIL_LIMIT].rstrip()
-    if text.startswith(("/", "~/")):
-        return ""
     return text
 
 
@@ -631,6 +671,11 @@ def _require_reason_detail(value: Any) -> str | None:
             "approval_reason_detail_invalid",
             "Approval receipt reason_detail contains control characters",
         )
+    if _detail_contains_forbidden(clean):
+        _invalid(
+            "approval_sensitive_field",
+            "Approval receipt reason_detail cannot persist sensitive content",
+        )
     return clean
 
 
@@ -644,6 +689,16 @@ def _require_timestamp(value: Any, field: str) -> datetime:
     if parsed.tzinfo is None:
         _invalid("approval_invalid", f"Approval receipt {field} must include a timezone")
     return parsed.astimezone(timezone.utc)
+
+
+def _detail_contains_forbidden(value: str) -> bool:
+    """Return whether a detail string still contains fail-closed content.
+
+    The checks mirror :data:`_DETAIL_FORBIDDEN_MATCHERS`: private/database
+    paths and unprocessed argv/raw output anywhere in the string (not just at
+    the start) invalidate the detail before it can be persisted.
+    """
+    return any(pattern.search(value) for pattern in _DETAIL_FORBIDDEN_MATCHERS)
 
 
 def _reject_sensitive_additions(value: Any, *, key_path: tuple[str, ...] = ()) -> None:
