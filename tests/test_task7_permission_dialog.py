@@ -112,12 +112,15 @@ class ReasonContractTests(unittest.TestCase):
 
     def test_reason_summary_redacts_secrets(self) -> None:
         summary = normalize_reason_summary(
-            "token: abc123def password=hunter2",
+            "token: abc123def password=hunter2 credential=secretword "
+            "access token: alphakey",
             executor="claude",
             operation="Bash",
         )
         self.assertNotIn("abc123def", summary)
         self.assertNotIn("hunter2", summary)
+        self.assertNotIn("secretword", summary)
+        self.assertNotIn("alphakey", summary)
         self.assertIn("[REDACTED]", summary)
 
     def test_reason_detail_is_bounded_to_2000(self) -> None:
@@ -126,13 +129,16 @@ class ReasonContractTests(unittest.TestCase):
 
     def test_reason_detail_redacts_and_strips_control_characters(self) -> None:
         detail = sanitize_reason_detail(
-            "First line\npassword=hunter2 token: abc123\tsecond\x00third"
+            "First line\npassword=hunter2 token: abc123\tsecond\x00third "
+            "credential=secretword access token: alphakey"
         )
         self.assertNotIn("\n", detail)
         self.assertNotIn("\t", detail)
         self.assertNotIn("\x00", detail)
         self.assertNotIn("hunter2", detail)
         self.assertNotIn("abc123", detail)
+        self.assertNotIn("secretword", detail)
+        self.assertNotIn("alphakey", detail)
         self.assertIn("First line", detail)
         self.assertIn("[REDACTED]", detail)
         self.assertIn("second", detail)
@@ -229,6 +235,11 @@ class ReasonContractTests(unittest.TestCase):
         # or ``=``) must never be persisted.  Both the Core sanitizer and the
         # strict receipt validator reject them fail closed.
         samples = [
+            "token huntertwo",
+            "Authorization hunter",
+            "password letmein",
+            "credential secretword",
+            "api key alphakey",
             "Bearer abc123",
             "Authorization abc123",
             "Authorization: Bearer abc123",
@@ -257,13 +268,14 @@ class ReasonContractTests(unittest.TestCase):
 
     def test_reason_detail_case_variants_fail_closed(self) -> None:
         samples = [
-            "TOKEN abc123",
-            "Bearer ABC123",
-            "Access Token abc123",
-            "API Key abc123",
-            "Password HUNTER2",
-            "Credential abc123",
-            "AUTHORIZATION abc123",
+            "TOKEN huntertwo",
+            "BEARER hunter",
+            "Access Token alphakey",
+            "API Key secretword",
+            "Password LETMEIN",
+            "PASSWD passphrase",
+            "Credential secretword",
+            "AUTHORIZATION hunter",
         ]
         for sample in samples:
             with self.subTest(sample=sample):
@@ -281,11 +293,12 @@ class ReasonContractTests(unittest.TestCase):
     def test_reason_detail_embedded_credentials_fail_closed(self) -> None:
         # A credential embedded in otherwise-innocent prose is still rejected.
         samples = [
-            "The access token abc123 is required",
-            "Use token abc123 for this action",
-            "mixed text Bearer abc123 end",
-            "pass the password hunter2 please",
-            "see credential abc123, then proceed",
+            "The access token huntertwo is required",
+            "Use token letmein for this action",
+            "mixed text Bearer hunter end",
+            "pass the password secretword please",
+            "see credential alphakey, then proceed",
+            "The api key hunter is used here",
         ]
         for sample in samples:
             with self.subTest(sample=sample):
@@ -339,12 +352,12 @@ class ReasonContractTests(unittest.TestCase):
         # ``build_approval_receipt``, the resulting receipt must not carry the
         # real value anywhere -- the detail is dropped fail closed and the
         # summary redacts it.
-        for sample in (
-            "The access token abc123 is required",
-            "Bearer abc123",
-            "api key abc123",
-            "password hunter2",
-            "credential abc123",
+        for sample, credential in (
+            ("The access token huntertwo is required", "huntertwo"),
+            ("Bearer hunter", "hunter"),
+            ("api key alphakey", "alphakey"),
+            ("password letmein", "letmein"),
+            ("credential secretword", "secretword"),
         ):
             with self.subTest(sample=sample):
                 receipt = build_approval_receipt(
@@ -359,18 +372,19 @@ class ReasonContractTests(unittest.TestCase):
                     reason_detail=sample,
                 )
                 serialized = json.dumps(receipt)
-                self.assertNotIn("abc123", serialized)
-                self.assertNotIn("hunter2", serialized)
+                self.assertNotIn(credential, serialized)
                 self.assertNotIn("reason_detail", receipt)
 
     def test_reason_summary_space_separated_credentials_redacted(self) -> None:
         # The single-line summary Core persists must also never expose a real
         # whitespace-separated credential value.
-        for sample in (
-            "token abc123",
-            "Bearer abc123",
-            "The access token abc123 is required",
-            "password hunter2",
+        for sample, credential in (
+            ("token huntertwo", "huntertwo"),
+            ("Authorization hunter", "hunter"),
+            ("The access token alphakey is required", "alphakey"),
+            ("api key secretword", "secretword"),
+            ("password letmein", "letmein"),
+            ("credential passphrase", "passphrase"),
         ):
             with self.subTest(sample=sample):
                 summary = normalize_reason_summary(
@@ -378,17 +392,45 @@ class ReasonContractTests(unittest.TestCase):
                     executor="claude",
                     operation="Bash",
                 )
-                self.assertNotIn("abc123", summary)
-                self.assertNotIn("hunter2", summary)
+                self.assertNotIn(credential, summary)
+                self.assertIn("[REDACTED]", summary)
+
+    def test_build_receipt_redacts_summary_and_detail_credentials(self) -> None:
+        for sample, credential in (
+            ("token huntertwo", "huntertwo"),
+            ("Authorization hunter", "hunter"),
+            ("password letmein", "letmein"),
+            ("credential secretword", "secretword"),
+            ("api key alphakey", "alphakey"),
+        ):
+            with self.subTest(sample=sample):
+                receipt = build_approval_receipt(
+                    task_id=TASK_ID,
+                    executor_run_id=RUN_ID,
+                    executor="claude",
+                    session_id=SESSION_ID,
+                    request_id="approval-request-1",
+                    request_fingerprint="fp-" + "a" * 40,
+                    operation="Bash",
+                    summary="claude needs one-time permission for: Bash",
+                    reason_summary=sample,
+                    reason_detail=sample,
+                )
+                serialized = json.dumps(receipt)
+                self.assertNotIn(credential, serialized)
+                self.assertNotIn("reason_detail", receipt)
+                self.assertIn("[REDACTED]", receipt["reason_summary"])
 
     def test_validation_rejects_credential_in_manual_summary(self) -> None:
         # A hand-crafted receipt carrying a credential value in the persisted
         # single-line summary is rejected fail closed before it can survive.
         for sample in (
-            "token abc123",
-            "Bearer abc123",
-            "The access token abc123 is required",
-            "password hunter2",
+            "token huntertwo",
+            "Authorization hunter",
+            "The access token alphakey is required",
+            "api key secretword",
+            "password letmein",
+            "credential passphrase",
         ):
             with self.subTest(sample=sample):
                 receipt = _receipt(reason_summary="safe")

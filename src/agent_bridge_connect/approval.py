@@ -62,51 +62,95 @@ _FORBIDDEN_FIELD_PARTS = frozenset(
         "flags",
     }
 )
+_SECRET_LABEL_PATTERN = (
+    r"(?:access(?:\s+|[-_])token|api\s*[-_]?\s*key|bearer|password|passwd|"
+    r"token|secret|credential|authorization)"
+)
 _SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)(?:password|passwd|token|api[_-]?key|secret|authorization)\s*[:=]"
+    rf"(?i)(?<![A-Za-z0-9]){_SECRET_LABEL_PATTERN}(?![A-Za-z0-9])\s*[:=]"
 )
 _SECRET_VALUE_RE = re.compile(
-    r"(?i)(?:password|passwd|token|api[_-]?key|secret|authorization)"
+    rf"(?i)(?<![A-Za-z0-9]){_SECRET_LABEL_PATTERN}(?![A-Za-z0-9])"
     r"\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
 )
-# A credential label immediately followed by whitespace then an opaque-looking
-# value (e.g. ``token abc123``, ``Bearer abc123``, ``api key hunter2``) in any
-# case.  These space-separated forms are not caught by the assignment regexes,
-# so without a dedicated check ``sanitize_reason_detail`` would persist the
-# real value verbatim.  A value is treated as credential-shaped when it is
-# quoted, contains a digit, or contains a non-alphanumeric character (dash,
-# underscore, dot, slash, ...).  Ordinary prose such as ``token is required``,
-# ``access token for the api``, ``tokenization`` or ``api key rotation`` never
-# matches: the ``(?<![A-Za-z0-9])``/``(?![A-Za-z0-9])`` boundaries exclude label
-# substrings of larger unrelated words and the ``(?!...)`` lookahead excludes
-# common English continuations.
-_SECRET_SPACE_RE = re.compile(
-    r"(?i)(?<![A-Za-z0-9])"
-    r"(?:access\s+token|api\s*[-_]?\s*key|bearer|password|passwd|"
-    r"token|secret|credential|authorization)"
-    r"(?![A-Za-z0-9])\s+(?!the\b|of\b|is\b|are\b|was\b|were\b|be\b|been\b|"
-    r"for\b|to\b|in\b|on\b|at\b|by\b|from\b|with\b|without\b|and\b|or\b|"
-    r"as\b|not\b|only\b|also\b|will\b|would\b|can\b|could\b|should\b|"
-    r"must\b|may\b|might\b|using\b|used\b|use\b|required\b|needed\b|"
-    r"header\b|value\b|policy\b|name\b|file\b|path\b|settings\b|rotation\b|"
-    r"management\b|store\b|stored\b|pair\b|pairs\b|endpoint\b|service\b|"
-    r"configuration\b|provider\b)"
-    r"(?:\"[^\"]*\"|'[^']*'|"
-    r"(?=[^\s,;]*(?:\d|[^A-Za-z0-9\s,;]))[^\s,;]+|"
-    r"(?=[^\s,;]{16,})[^\s,;]+)"
+# A space-separated sensitive label is safe only when its immediate next word
+# is an explicitly allowlisted ordinary explanation word.  This is deliberate
+# grammar, not credential entropy/length/character heuristics: ``token is`` is
+# prose, while ``token huntertwo`` is sensitive regardless of its shape.
+_SECRET_SPACE_ALLOWED_WORDS = frozenset(
+    {
+        "also",
+        "and",
+        "are",
+        "as",
+        "at",
+        "auth",
+        "authn",
+        "authentication",
+        "be",
+        "been",
+        "by",
+        "can",
+        "could",
+        "configuration",
+        "configurations",
+        "credential",
+        "credentials",
+        "endpoint",
+        "file",
+        "for",
+        "from",
+        "header",
+        "in",
+        "is",
+        "may",
+        "might",
+        "management",
+        "must",
+        "name",
+        "needed",
+        "not",
+        "of",
+        "on",
+        "only",
+        "or",
+        "path",
+        "pairs",
+        "pair",
+        "policy",
+        "provider",
+        "required",
+        "rotation",
+        "scheme",
+        "service",
+        "settings",
+        "should",
+        "store",
+        "stored",
+        "the",
+        "to",
+        "token",
+        "tokens",
+        "type",
+        "use",
+        "used",
+        "using",
+        "value",
+        "was",
+        "were",
+        "will",
+        "without",
+        "with",
+        "would",
+    }
 )
-# ``Bearer`` is an HTTP auth scheme whose payload is always a credential, so a
-# ``Bearer`` value is treated as sensitive even when it is a short
-# alphanumeric-only opaque string (e.g. a JWT header fragment).  Known prose
-# continuations such as ``Bearer token`` / ``Bearer auth`` stay allowed.
-_BEARER_CREDENTIAL_RE = re.compile(
-    r"(?i)(?<![A-Za-z0-9])bearer(?![A-Za-z0-9])\s+"
-    r"(?!token\b|tokens\b|auth\b|authn\b|authentication\b|scheme\b|"
-    r"credentials\b|credential\b|header\b|type\b|the\b|of\b|is\b|for\b|"
-    r"to\b|in\b|on\b|at\b|by\b|with\b|without\b|and\b|or\b|as\b|not\b|"
-    r"using\b|used\b|use\b|required\b|needed\b|value\b|policy\b|name\b|"
-    r"file\b|path\b)"
-    r"(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+_SECRET_SPACE_ALLOWED_WORD_PATTERN = "|".join(
+    re.escape(word)
+    for word in sorted(_SECRET_SPACE_ALLOWED_WORDS, key=lambda item: (-len(item), item))
+)
+_SECRET_SPACE_RE = re.compile(
+    rf"(?i)(?<![A-Za-z0-9]){_SECRET_LABEL_PATTERN}(?![A-Za-z0-9])\s+"
+    rf"(?!(?:{_SECRET_SPACE_ALLOWED_WORD_PATTERN})\b)[^\s,;]+"
 )
 # Fail-closed markers for unprocessed executor material that must never be
 # persisted inside ``reason_detail``: private/database paths, argv/command
@@ -142,7 +186,6 @@ _DETAIL_FORBIDDEN_MATCHERS = (
     _RAW_OUTPUT_MARKER_RE,
     _SECRET_FLAG_RE,
     _SECRET_SPACE_RE,
-    _BEARER_CREDENTIAL_RE,
 )
 
 
@@ -508,7 +551,6 @@ def normalize_reason_summary(
     # must be redacted before the generic redactor can mask the label while
     # leaving the real value orphaned in the persisted summary.
     text = _SECRET_SPACE_RE.sub("[REDACTED]", raw)
-    text = _BEARER_CREDENTIAL_RE.sub("[REDACTED]", text)
     text = str(redact_secrets(text) or "")
     text = _SECRET_VALUE_RE.sub("[REDACTED]", text)
     text = _remove_control_characters(text)
@@ -538,7 +580,6 @@ def sanitize_reason_detail(value: Any) -> str:
     # Redact whitespace-separated credentials before the generic redactor can
     # mask the label while leaving the real value orphaned in the result.
     text = _SECRET_SPACE_RE.sub("[REDACTED]", raw)
-    text = _BEARER_CREDENTIAL_RE.sub("[REDACTED]", text)
     text = str(redact_secrets(text) or "")
     text = _SECRET_VALUE_RE.sub("[REDACTED]", text)
     text = _remove_control_characters(text)
@@ -764,9 +805,7 @@ def _summary_contains_credential(value: str) -> bool:
     private-path / argv / raw-output markers are detail-specific and would
     over-reject legitimate one-line summaries.
     """
-    return _SECRET_SPACE_RE.search(value) is not None or _BEARER_CREDENTIAL_RE.search(
-        value
-    ) is not None
+    return _SECRET_SPACE_RE.search(value) is not None
 
 
 def _reject_sensitive_additions(value: Any, *, key_path: tuple[str, ...] = ()) -> None:
@@ -789,7 +828,6 @@ def _reject_sensitive_additions(value: Any, *, key_path: tuple[str, ...] = ()) -
             clean.startswith(("/", "~/"))
             or _SECRET_ASSIGNMENT_RE.search(clean)
             or _SECRET_SPACE_RE.search(clean)
-            or _BEARER_CREDENTIAL_RE.search(clean)
         ):
             _invalid(
                 "approval_sensitive_field",
