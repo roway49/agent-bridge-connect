@@ -32,6 +32,20 @@ from agent_bridge_connect.session import (
 SCHEMA_FIXTURE = Path(__file__).parent / "fixtures" / "executor_runtime" / "codex_app_server_protocol.v2.schema.json"
 
 
+def _app_server_capability_override() -> dict:
+    """A pre-verified App Server capability report for fake-transport tests."""
+    return {
+        "ok": True,
+        "transport": "app-server",
+        "protocol_version": 2,
+        "version": "0.146.0",
+        "version_parsed": [0, 146, 0],
+        "schema_missing": [],
+        "evidence": ["version_gate", "schema_methods_verified"],
+        "schema_summary": "CodexAppServerProtocol",
+    }
+
+
 class BlockingFakeTransport:
     def __init__(self, root: Path, task_id: str) -> None:
         self.root = root
@@ -321,6 +335,7 @@ class CodexControlPlaneTests(unittest.TestCase):
             transport_factory=lambda **_: fake,
             approval_timeout_s=2,
         )
+        executor._app_server_capability_override = _app_server_capability_override()
         packet = self._packet()
         with (
             mock.patch.object(executor, "_start_run_lease"),
@@ -374,6 +389,7 @@ class CodexControlPlaneTests(unittest.TestCase):
             transport_factory=lambda **_: fake,
             approval_timeout_s=2,
         )
+        executor._app_server_capability_override = _app_server_capability_override()
         with (
             mock.patch.object(executor, "_start_run_lease"),
             mock.patch.object(executor, "_suspend_run"),
@@ -423,6 +439,7 @@ class CodexControlPlaneTests(unittest.TestCase):
             transport_factory=lambda **_: fake,
             approval_timeout_s=3,
         )
+        executor._app_server_capability_override = _app_server_capability_override()
         with (
             mock.patch.object(executor, "_start_run_lease"),
             mock.patch.object(executor, "_suspend_run"),

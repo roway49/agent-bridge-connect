@@ -48,6 +48,11 @@ from .permission_modes import (
     validate_permission_record,
 )
 from .protocol import ABCError
+from .codex_app_server import (
+    CODEX_APP_SERVER_CLIENT_METHODS,
+    CODEX_APP_SERVER_NOTIFICATIONS,
+    CODEX_APP_SERVER_REQUEST_METHODS,
+)
 
 PERMISSION_SCHEMA_VERSION = 2
 
@@ -58,6 +63,13 @@ SUPPORTED_EXECUTORS = ("codex", "claude", "hermes")
 
 TRANSPORT_HERMES_ACP = "hermes-acp"
 TRANSPORT_CLI = "cli"
+TRANSPORT_CODEX_APP_SERVER = "app-server"
+
+# Canonical Codex transport values accepted by the registry and Runner.
+# ``app-server`` is the only value that enables the same-process
+# single-action approval chain; everything else (including the legacy
+# aliases) is rejected so the frozen contract can be verified.
+CODEX_TRANSPORT_VALUES = frozenset({TRANSPORT_CLI, TRANSPORT_CODEX_APP_SERVER})
 
 # Reserved Hermes ACP capability IDs.  Task 6 binds the session and
 # request_permission capabilities through the narrow ``hermes_acp`` transport
@@ -212,6 +224,17 @@ def executor_permission_mapping(
                     {"executor": executor, "permission_mode": selected, "transport": transport},
                 )
             entry["transport"] = transport
+        elif executor == "codex":
+            if transport in CODEX_TRANSPORT_VALUES:
+                entry["transport"] = transport
+            elif transport in {"direct"}:
+                entry["transport"] = TRANSPORT_CLI
+            else:
+                raise ABCError(
+                    "permission_capability_unsupported",
+                    f"Transport {transport!r} cannot express Codex permission mode {selected}.",
+                    {"executor": executor, "permission_mode": selected, "transport": transport},
+                )
         else:
             if transport not in {TRANSPORT_CLI, "direct"}:
                 raise ABCError(
@@ -374,6 +397,47 @@ def probe_executor_capability(
                     "capability_id": HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID,
                     "decisions": list(HERMES_ACP_ALLOWED_DECISIONS),
                 },
+            },
+        }
+    if executor == "codex" and entry["transport"] == TRANSPORT_CODEX_APP_SERVER:
+        from .codex_app_server import (
+            CODEX_APP_SERVER_TRANSPORT,
+            assert_codex_app_server_capability,
+        )
+
+        try:
+            probe = assert_codex_app_server_capability(
+                executable, transport=CODEX_APP_SERVER_TRANSPORT
+            )
+        except ABCError as exc:
+            raise ABCError(
+                "permission_capability_unsupported",
+                exc.message,
+                {
+                    **dict(exc.details or {}),
+                    "executor": executor,
+                    "permission_mode": selected,
+                    "transport": TRANSPORT_CODEX_APP_SERVER,
+                    "capability_id": entry["capability_id"],
+                },
+            ) from exc
+        return {
+            "executor": executor,
+            "mode": selected,
+            "transport": TRANSPORT_CODEX_APP_SERVER,
+            "supported": True,
+            "capability_id": entry["capability_id"],
+            "evidence": list(probe["evidence"]),
+            "details": {
+                "version": probe["version"],
+                "version_parsed": probe["version_parsed"],
+                "protocol_version": probe["protocol_version"],
+                "schema_summary": probe["schema_summary"],
+                "client_methods": sorted(CODEX_APP_SERVER_CLIENT_METHODS),
+                "request_methods": sorted(CODEX_APP_SERVER_REQUEST_METHODS),
+                "notifications": sorted(CODEX_APP_SERVER_NOTIFICATIONS),
+                "decisions": ["accept", "decline"],
+                "scope": "single_action",
             },
         }
     try:
