@@ -69,6 +69,45 @@ _SECRET_VALUE_RE = re.compile(
     r"(?i)(?:password|passwd|token|api[_-]?key|secret|authorization)"
     r"\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
 )
+# A credential label immediately followed by whitespace then an opaque-looking
+# value (e.g. ``token abc123``, ``Bearer abc123``, ``api key hunter2``) in any
+# case.  These space-separated forms are not caught by the assignment regexes,
+# so without a dedicated check ``sanitize_reason_detail`` would persist the
+# real value verbatim.  A value is treated as credential-shaped when it is
+# quoted, contains a digit, or contains a non-alphanumeric character (dash,
+# underscore, dot, slash, ...).  Ordinary prose such as ``token is required``,
+# ``access token for the api``, ``tokenization`` or ``api key rotation`` never
+# matches: the ``(?<![A-Za-z0-9])``/``(?![A-Za-z0-9])`` boundaries exclude label
+# substrings of larger unrelated words and the ``(?!...)`` lookahead excludes
+# common English continuations.
+_SECRET_SPACE_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9])"
+    r"(?:access\s+token|api\s*[-_]?\s*key|bearer|password|passwd|"
+    r"token|secret|credential|authorization)"
+    r"(?![A-Za-z0-9])\s+(?!the\b|of\b|is\b|are\b|was\b|were\b|be\b|been\b|"
+    r"for\b|to\b|in\b|on\b|at\b|by\b|from\b|with\b|without\b|and\b|or\b|"
+    r"as\b|not\b|only\b|also\b|will\b|would\b|can\b|could\b|should\b|"
+    r"must\b|may\b|might\b|using\b|used\b|use\b|required\b|needed\b|"
+    r"header\b|value\b|policy\b|name\b|file\b|path\b|settings\b|rotation\b|"
+    r"management\b|store\b|stored\b|pair\b|pairs\b|endpoint\b|service\b|"
+    r"configuration\b|provider\b)"
+    r"(?:\"[^\"]*\"|'[^']*'|"
+    r"(?=[^\s,;]*(?:\d|[^A-Za-z0-9\s,;]))[^\s,;]+|"
+    r"(?=[^\s,;]{16,})[^\s,;]+)"
+)
+# ``Bearer`` is an HTTP auth scheme whose payload is always a credential, so a
+# ``Bearer`` value is treated as sensitive even when it is a short
+# alphanumeric-only opaque string (e.g. a JWT header fragment).  Known prose
+# continuations such as ``Bearer token`` / ``Bearer auth`` stay allowed.
+_BEARER_CREDENTIAL_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9])bearer(?![A-Za-z0-9])\s+"
+    r"(?!token\b|tokens\b|auth\b|authn\b|authentication\b|scheme\b|"
+    r"credentials\b|credential\b|header\b|type\b|the\b|of\b|is\b|for\b|"
+    r"to\b|in\b|on\b|at\b|by\b|with\b|without\b|and\b|or\b|as\b|not\b|"
+    r"using\b|used\b|use\b|required\b|needed\b|value\b|policy\b|name\b|"
+    r"file\b|path\b)"
+    r"(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+)
 # Fail-closed markers for unprocessed executor material that must never be
 # persisted inside ``reason_detail``: private/database paths, argv/command
 # lines, raw output, and secret flags.  These are deliberately conservative.
@@ -102,6 +141,8 @@ _DETAIL_FORBIDDEN_MATCHERS = (
     _ARGV_MARKER_RE,
     _RAW_OUTPUT_MARKER_RE,
     _SECRET_FLAG_RE,
+    _SECRET_SPACE_RE,
+    _BEARER_CREDENTIAL_RE,
 )
 
 
@@ -462,7 +503,13 @@ def normalize_reason_summary(
     """
     from .reports import redact_secrets
 
-    text = str(redact_secrets(str(value or "")) or "")
+    raw = str(value or "")
+    # Whitespace-separated credentials (``token abc123``, ``Bearer abc123``)
+    # must be redacted before the generic redactor can mask the label while
+    # leaving the real value orphaned in the persisted summary.
+    text = _SECRET_SPACE_RE.sub("[REDACTED]", raw)
+    text = _BEARER_CREDENTIAL_RE.sub("[REDACTED]", text)
+    text = str(redact_secrets(text) or "")
     text = _SECRET_VALUE_RE.sub("[REDACTED]", text)
     text = _remove_control_characters(text)
     text = " ".join(text.split()).strip()
@@ -488,7 +535,11 @@ def sanitize_reason_detail(value: Any) -> str:
     raw = str(value or "")
     if _detail_contains_forbidden(raw):
         return ""
-    text = str(redact_secrets(raw) or "")
+    # Redact whitespace-separated credentials before the generic redactor can
+    # mask the label while leaving the real value orphaned in the result.
+    text = _SECRET_SPACE_RE.sub("[REDACTED]", raw)
+    text = _BEARER_CREDENTIAL_RE.sub("[REDACTED]", text)
+    text = str(redact_secrets(text) or "")
     text = _SECRET_VALUE_RE.sub("[REDACTED]", text)
     text = _remove_control_characters(text)
     text = " ".join(text.split()).strip()
@@ -648,6 +699,11 @@ def _require_reason_summary(value: Any) -> str | None:
             "approval_reason_summary_invalid",
             "Approval receipt reason_summary must be a single line without control characters",
         )
+    if _summary_contains_credential(clean):
+        _invalid(
+            "approval_sensitive_field",
+            "Approval receipt reason_summary cannot persist credential content",
+        )
     return clean
 
 
@@ -701,6 +757,18 @@ def _detail_contains_forbidden(value: str) -> bool:
     return any(pattern.search(value) for pattern in _DETAIL_FORBIDDEN_MATCHERS)
 
 
+def _summary_contains_credential(value: str) -> bool:
+    """Return whether a reason summary still contains a real credential value.
+
+    The single-line summary only admits the space-separated credential forms;
+    private-path / argv / raw-output markers are detail-specific and would
+    over-reject legitimate one-line summaries.
+    """
+    return _SECRET_SPACE_RE.search(value) is not None or _BEARER_CREDENTIAL_RE.search(
+        value
+    ) is not None
+
+
 def _reject_sensitive_additions(value: Any, *, key_path: tuple[str, ...] = ()) -> None:
     if isinstance(value, dict):
         for raw_key, item in value.items():
@@ -717,7 +785,12 @@ def _reject_sensitive_additions(value: Any, *, key_path: tuple[str, ...] = ()) -
             _reject_sensitive_additions(item, key_path=(*key_path, str(index)))
     elif isinstance(value, str):
         clean = value.strip()
-        if clean.startswith(("/", "~/")) or _SECRET_ASSIGNMENT_RE.search(clean):
+        if (
+            clean.startswith(("/", "~/"))
+            or _SECRET_ASSIGNMENT_RE.search(clean)
+            or _SECRET_SPACE_RE.search(clean)
+            or _BEARER_CREDENTIAL_RE.search(clean)
+        ):
             _invalid(
                 "approval_sensitive_field",
                 f"Approval receipt cannot persist sensitive content at: {'.'.join(key_path)}",

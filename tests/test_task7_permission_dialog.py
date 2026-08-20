@@ -224,6 +224,183 @@ class ReasonContractTests(unittest.TestCase):
             validate_approval_receipt(receipt)
         self.assertEqual(exc.exception.code, "approval_sensitive_field")
 
+    def test_reason_detail_space_separated_credentials_fail_closed(self) -> None:
+        # Credential labels followed by a whitespace-separated value (no colon
+        # or ``=``) must never be persisted.  Both the Core sanitizer and the
+        # strict receipt validator reject them fail closed.
+        samples = [
+            "Bearer abc123",
+            "Authorization abc123",
+            "Authorization: Bearer abc123",
+            "token abc123",
+            "access token abc123",
+            "api key abc123",
+            "password hunter2",
+            "credential abc123",
+        ]
+        for sample in samples:
+            with self.subTest(sample=sample):
+                self.assertEqual(
+                    sanitize_reason_detail(sample),
+                    "",
+                    f"sanitize_reason_detail leaked {sample!r}",
+                )
+                receipt = _receipt(reason_detail="safe")
+                receipt["reason_detail"] = sample
+                with self.assertRaises(ABCError) as exc:
+                    validate_approval_receipt(receipt)
+                self.assertEqual(
+                    exc.exception.code,
+                    "approval_sensitive_field",
+                    f"validate_approval_receipt leaked {sample!r}",
+                )
+
+    def test_reason_detail_case_variants_fail_closed(self) -> None:
+        samples = [
+            "TOKEN abc123",
+            "Bearer ABC123",
+            "Access Token abc123",
+            "API Key abc123",
+            "Password HUNTER2",
+            "Credential abc123",
+            "AUTHORIZATION abc123",
+        ]
+        for sample in samples:
+            with self.subTest(sample=sample):
+                self.assertEqual(
+                    sanitize_reason_detail(sample),
+                    "",
+                    f"case variant leaked {sample!r}",
+                )
+                receipt = _receipt(reason_detail="safe")
+                receipt["reason_detail"] = sample
+                with self.assertRaises(ABCError) as exc:
+                    validate_approval_receipt(receipt)
+                self.assertEqual(exc.exception.code, "approval_sensitive_field")
+
+    def test_reason_detail_embedded_credentials_fail_closed(self) -> None:
+        # A credential embedded in otherwise-innocent prose is still rejected.
+        samples = [
+            "The access token abc123 is required",
+            "Use token abc123 for this action",
+            "mixed text Bearer abc123 end",
+            "pass the password hunter2 please",
+            "see credential abc123, then proceed",
+        ]
+        for sample in samples:
+            with self.subTest(sample=sample):
+                self.assertEqual(
+                    sanitize_reason_detail(sample),
+                    "",
+                    f"embedded credential leaked {sample!r}",
+                )
+
+    def test_reason_detail_prose_does_not_false_positive(self) -> None:
+        # Unrelated substrings and ordinary prose that merely mentions a label
+        # must remain usable, so legitimate short details are never dropped.
+        samples = [
+            "Requested operation: run the focused unit tests in the workspace",
+            "The access token is required for the endpoint",
+            "token is required",
+            "tokenization is performed by the pipeline",
+            "the token for the api is sent over tls",
+            "api key rotation completed",
+            "run tests in /tmp/sandbox",
+            "password policy requires rotation",
+            "credential store is sealed",
+            "authorization header is set",
+        ]
+        for sample in samples:
+            with self.subTest(sample=sample):
+                self.assertNotEqual(
+                    sanitize_reason_detail(sample),
+                    "",
+                    f"legitimate prose was dropped: {sample!r}",
+                )
+                self.assertLessEqual(
+                    len(sanitize_reason_detail(sample)),
+                    APPROVAL_REASON_DETAIL_LIMIT,
+                )
+
+    def test_reason_detail_bearer_jwt_fragment_fails_closed(self) -> None:
+        # A Bearer auth payload is always a credential even when the fragment is
+        # a short alphanumeric-only opaque string (e.g. a JWT header).
+        for sample in ("Bearer eyJhbGciOi", "Authorization: Bearer eyJhbGciOi"):
+            with self.subTest(sample=sample):
+                self.assertEqual(sanitize_reason_detail(sample), "")
+                receipt = _receipt(reason_detail="safe")
+                receipt["reason_detail"] = sample
+                with self.assertRaises(ABCError) as exc:
+                    validate_approval_receipt(receipt)
+                self.assertEqual(exc.exception.code, "approval_sensitive_field")
+
+    def test_build_approval_receipt_never_persists_credential(self) -> None:
+        # Even when a caller passes a credential directly to
+        # ``build_approval_receipt``, the resulting receipt must not carry the
+        # real value anywhere -- the detail is dropped fail closed and the
+        # summary redacts it.
+        for sample in (
+            "The access token abc123 is required",
+            "Bearer abc123",
+            "api key abc123",
+            "password hunter2",
+            "credential abc123",
+        ):
+            with self.subTest(sample=sample):
+                receipt = build_approval_receipt(
+                    task_id=TASK_ID,
+                    executor_run_id=RUN_ID,
+                    executor="claude",
+                    session_id=SESSION_ID,
+                    request_id="approval-request-1",
+                    request_fingerprint="fp-" + "a" * 40,
+                    operation="Bash",
+                    summary="claude needs one-time permission for: Bash",
+                    reason_detail=sample,
+                )
+                serialized = json.dumps(receipt)
+                self.assertNotIn("abc123", serialized)
+                self.assertNotIn("hunter2", serialized)
+                self.assertNotIn("reason_detail", receipt)
+
+    def test_reason_summary_space_separated_credentials_redacted(self) -> None:
+        # The single-line summary Core persists must also never expose a real
+        # whitespace-separated credential value.
+        for sample in (
+            "token abc123",
+            "Bearer abc123",
+            "The access token abc123 is required",
+            "password hunter2",
+        ):
+            with self.subTest(sample=sample):
+                summary = normalize_reason_summary(
+                    sample,
+                    executor="claude",
+                    operation="Bash",
+                )
+                self.assertNotIn("abc123", summary)
+                self.assertNotIn("hunter2", summary)
+
+    def test_validation_rejects_credential_in_manual_summary(self) -> None:
+        # A hand-crafted receipt carrying a credential value in the persisted
+        # single-line summary is rejected fail closed before it can survive.
+        for sample in (
+            "token abc123",
+            "Bearer abc123",
+            "The access token abc123 is required",
+            "password hunter2",
+        ):
+            with self.subTest(sample=sample):
+                receipt = _receipt(reason_summary="safe")
+                receipt["reason_summary"] = sample
+                with self.assertRaises(ABCError) as exc:
+                    validate_approval_receipt(receipt)
+                self.assertEqual(
+                    exc.exception.code,
+                    "approval_sensitive_field",
+                    f"manual summary leaked {sample!r}",
+                )
+
 
 class PublicProjectionTests(unittest.TestCase):
     def test_approval_public_projection_exposes_only_summary(self) -> None:
