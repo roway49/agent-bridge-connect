@@ -152,6 +152,10 @@ _SECRET_SPACE_RE = re.compile(
     rf"(?i)(?<![A-Za-z0-9]){_SECRET_LABEL_PATTERN}(?![A-Za-z0-9])\s+"
     rf"(?!(?:{_SECRET_SPACE_ALLOWED_WORD_PATTERN})\b)[^\s,;]+"
 )
+_SECRET_PROSE_LABEL_RE = re.compile(
+    rf"(?i)(?<![A-Za-z0-9]){_SECRET_LABEL_PATTERN}(?![A-Za-z0-9])"
+    rf"(?=\s+(?:{_SECRET_SPACE_ALLOWED_WORD_PATTERN})\b)"
+)
 # Fail-closed markers for unprocessed executor material that must never be
 # persisted inside ``reason_detail``: private/database paths, argv/command
 # lines, raw output, and secret flags.  These are deliberately conservative.
@@ -531,6 +535,22 @@ def core_bounded_summary(
     return _bound_text(text, APPROVAL_SUMMARY_LIMIT)
 
 
+def _redact_reason_text(value: str) -> str:
+    """Redact credentials while preserving explicitly allowlisted prose labels."""
+    from .reports import redact_secrets
+
+    text = _SECRET_SPACE_RE.sub("[REDACTED]", value)
+    text = _SECRET_VALUE_RE.sub("[REDACTED]", text)
+    parts: list[str] = []
+    offset = 0
+    for match in _SECRET_PROSE_LABEL_RE.finditer(text):
+        parts.append(str(redact_secrets(text[offset : match.start()]) or ""))
+        parts.append(match.group(0))
+        offset = match.end()
+    parts.append(str(redact_secrets(text[offset:]) or ""))
+    return "".join(parts)
+
+
 def normalize_reason_summary(
     value: Any,
     *,
@@ -544,15 +564,8 @@ def normalize_reason_summary(
     no usable reason is supplied, Core falls back to the structured
     Executor/operation summary so the minimal dialog view always has text.
     """
-    from .reports import redact_secrets
-
     raw = str(value or "")
-    # Whitespace-separated credentials (``token abc123``, ``Bearer abc123``)
-    # must be redacted before the generic redactor can mask the label while
-    # leaving the real value orphaned in the persisted summary.
-    text = _SECRET_SPACE_RE.sub("[REDACTED]", raw)
-    text = str(redact_secrets(text) or "")
-    text = _SECRET_VALUE_RE.sub("[REDACTED]", text)
+    text = _redact_reason_text(raw)
     text = _remove_control_characters(text)
     text = " ".join(text.split()).strip()
     if not text:
@@ -572,16 +585,10 @@ def sanitize_reason_detail(value: Any) -> str:
     again on the redacted result.  An empty result is omitted from the receipt
     so existing receipts without a detail remain valid.
     """
-    from .reports import redact_secrets
-
     raw = str(value or "")
     if _detail_contains_forbidden(raw):
         return ""
-    # Redact whitespace-separated credentials before the generic redactor can
-    # mask the label while leaving the real value orphaned in the result.
-    text = _SECRET_SPACE_RE.sub("[REDACTED]", raw)
-    text = str(redact_secrets(text) or "")
-    text = _SECRET_VALUE_RE.sub("[REDACTED]", text)
+    text = _redact_reason_text(raw)
     text = _remove_control_characters(text)
     text = " ".join(text.split()).strip()
     if _detail_contains_forbidden(text):

@@ -325,10 +325,14 @@ class ReasonContractTests(unittest.TestCase):
         ]
         for sample in samples:
             with self.subTest(sample=sample):
-                self.assertNotEqual(
-                    sanitize_reason_detail(sample),
-                    "",
-                    f"legitimate prose was dropped: {sample!r}",
+                self.assertEqual(sanitize_reason_detail(sample), sample)
+                self.assertEqual(
+                    normalize_reason_summary(
+                        sample,
+                        executor="claude",
+                        operation="Bash",
+                    ),
+                    sample,
                 )
                 self.assertLessEqual(
                     len(sanitize_reason_detail(sample)),
