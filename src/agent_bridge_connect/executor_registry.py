@@ -104,7 +104,7 @@ def get_executor(name: str, config: dict | None = None) -> ExecutorPort:
         )
 
         transport = str(runtime_config["transport"]).strip().lower()
-        if transport not in CODEX_APP_SERVER_TRANSPORT_ALIASES | {"cli", "direct"}:
+        if transport not in CODEX_APP_SERVER_TRANSPORT_ALIASES | {"auto", "cli", "direct"}:
             raise ValueError(
                 f"Unsupported codex executor config transport: {runtime_config['transport']}"
             )

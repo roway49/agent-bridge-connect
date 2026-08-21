@@ -18,6 +18,7 @@ from agent_bridge_connect.permission_modes import (
     configured_permission_mode,
     legacy_permission_record,
     permission_flags,
+    permission_runtime_policy,
     validate_permission_command,
 )
 from agent_bridge_connect.protocol import ABCError
@@ -29,6 +30,39 @@ class PermissionContractTests(unittest.TestCase):
         self.assertEqual(CANONICAL_PERMISSION_MODES, ("inherit", "safe", "full"))
         self.assertEqual(configured_permission_mode({}), ("inherit", "inherit_default"))
         self.assertEqual(legacy_permission_record()["effective_mode"], "safe")
+
+    def test_inherit_is_runtime_selection_not_a_third_access_level(self) -> None:
+        inherited = build_permission_record(config={"permission_mode": "inherit"})
+        self.assertEqual(inherited["selection_strategy"], "inherit")
+        self.assertEqual(inherited["resolved_base_mode"], "native")
+        self.assertEqual(inherited["resolution_state"], "runtime")
+        self.assertEqual(inherited["approval_policy"], "on_block")
+        self.assertEqual(
+            permission_runtime_policy(inherited),
+            {
+                "selection_strategy": "inherit",
+                "base_mode": "native",
+                "resolution_state": "runtime",
+                "approval_policy": "on_block",
+                "approval_on_block": True,
+            },
+        )
+
+        full = build_permission_record(explicit_mode="full", config={})
+        self.assertEqual(full["resolved_base_mode"], "full")
+        self.assertFalse(permission_runtime_policy(full)["approval_on_block"])
+
+        # Legacy v1 records must derive their concrete base rather than
+        # accidentally treating historical full tasks as runtime-inherit.
+        self.assertFalse(
+            permission_runtime_policy(
+                {
+                    "requested_mode": "full",
+                    "effective_mode": "full",
+                    "selection_source": "legacy_task",
+                }
+            )["approval_on_block"]
+        )
 
     def test_explicit_mode_overrides_configured_default(self) -> None:
         record = build_permission_record(
@@ -53,6 +87,15 @@ class PermissionContractTests(unittest.TestCase):
     def test_unknown_mode_is_rejected(self) -> None:
         with self.assertRaisesRegex(ABCError, "Unknown permission mode"):
             build_permission_record(explicit_mode="root")
+
+    def test_runtime_policy_fields_cannot_relabel_full_as_approvable(self) -> None:
+        record = build_permission_record(explicit_mode="full", config={})
+        record["resolved_base_mode"] = "native"
+        record["resolution_state"] = "runtime"
+        record["approval_policy"] = "on_block"
+        with self.assertRaises(ABCError) as raised:
+            permission_runtime_policy(record)
+        self.assertEqual(raised.exception.code, "invalid_permission_mode")
 
     def test_cli_uses_one_consistent_task_option(self) -> None:
         parser = build_parser()

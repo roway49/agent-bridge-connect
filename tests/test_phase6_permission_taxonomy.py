@@ -210,8 +210,11 @@ class PermissionFailureTaxonomyTests(unittest.TestCase):
     def test_table_driven_contract_gates_are_specific_and_fail_closed(self) -> None:
         def mode(harness, context):
             record = dict(context["task"].extensions[PERMISSION_EXTENSION_KEY])
-            record["requested_mode"] = "inherit"
-            record["effective_mode"] = "inherit"
+            record["requested_mode"] = "full"
+            record["effective_mode"] = "full"
+            record["resolved_base_mode"] = "full"
+            record["resolution_state"] = "frozen"
+            record["approval_policy"] = "none"
             context["task"].extensions[PERMISSION_EXTENSION_KEY] = record
 
         def malformed_input(harness, context):
@@ -261,7 +264,7 @@ class PermissionFailureTaxonomyTests(unittest.TestCase):
             context["task"].extensions[SESSION_EXTENSION_KEY]["run_ids"] = ["old-run"]
 
         cases = [
-            ("unsupported effective mode", PERMISSION_MODE_UNSUPPORTED, mode),
+            ("non-escalatable full base", PERMISSION_MODE_UNSUPPORTED, mode),
             ("malformed permission input", PERMISSION_INPUT_INVALID, malformed_input),
             ("requested scope", PERMISSION_REQUESTED_SCOPE_INVALID, requested_scope),
             (

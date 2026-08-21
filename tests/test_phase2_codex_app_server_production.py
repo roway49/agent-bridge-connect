@@ -10,8 +10,8 @@ Covers the PERM-103-009 freeze:
   late responses and transport death,
 * the executor-neutral exact-action receipt (accept/decline only) and the
   same-process App Server flow that returns the decision to the live session,
-* the ``inherit`` default unchanged and the existing CLI/one-time full
-  continuation fallback unchanged.
+* ``inherit`` preserving native settings while using App Server for trusted
+  runtime-block detection, plus the existing CLI/one-time full fallback.
 """
 
 from __future__ import annotations
@@ -200,14 +200,14 @@ class CapabilityGateTests(unittest.TestCase):
         self.assertEqual(report["details"]["scope"], "single_action")
         self.assertIn("item/commandExecution/requestApproval", report["details"]["request_methods"])
 
-    def test_executor_capability_gate_requires_safe_mode(self) -> None:
+    def test_executor_capability_gate_accepts_inherit_and_rejects_full(self) -> None:
         executor = CodexExecutor(command=sys.executable, transport="app-server")
         executor._app_server_capability_override = capability_override()
-        for mode in ("inherit", "full"):
-            with self.subTest(mode=mode):
-                with self.assertRaises(ABCError) as raised:
-                    executor._freeze_app_server_capability({"effective_mode": mode})
-                self.assertEqual(raised.exception.code, "permission_capability_unsupported")
+        report = executor._freeze_app_server_capability({"effective_mode": "inherit"})
+        self.assertTrue(report["ok"])
+        with self.assertRaises(ABCError) as raised:
+            executor._freeze_app_server_capability({"effective_mode": "full"})
+        self.assertEqual(raised.exception.code, "permission_capability_unsupported")
 
     def test_executor_capability_gate_accepts_safe_with_verified_report(self) -> None:
         executor = CodexExecutor(command=sys.executable, transport="app-server")
@@ -662,7 +662,12 @@ class RunnerCapabilityValidationTests(unittest.TestCase):
 
     TASK_ID = "AB7C-001"
 
-    def _packet(self, *, transport: str | None = "app-server") -> dict:
+    def _packet(
+        self,
+        *,
+        mode: str = "safe",
+        transport: str | None = "app-server",
+    ) -> dict:
         session = build_session_snapshot(
             "codex",
             retain=False,
@@ -670,7 +675,7 @@ class RunnerCapabilityValidationTests(unittest.TestCase):
             session_state="active",
             run_ids=["prior-run"],
         )
-        permission = build_permission_record(explicit_mode="safe")
+        permission = build_permission_record(explicit_mode=mode)
         mapping = dict(permission.get("mapping") or {})
         codex_entry = dict(mapping.get("codex") or {})
         if transport is not None:
@@ -779,6 +784,23 @@ class RunnerCapabilityValidationTests(unittest.TestCase):
         self.assertTrue(result["authorized"])
         self.assertEqual(result["effective_permission_mode"], "safe")
 
+    def test_runner_accepts_inherit_app_server_without_permission_override(self) -> None:
+        persisted = self._persisted_task(mode="inherit")
+        packet = self._packet(mode="inherit")
+        packet["task_id"] = persisted["id"]
+        packet["workspace"] = persisted["workspace"]
+        packet["extensions"] = persisted["extensions"]
+        packet["task_board"] = {"root": str(self.board)}
+        result = self.state.authorize_command(
+            "codex",
+            [str(self.codex), "app-server", "--stdio"],
+            str(self.root),
+            packet,
+            executor_run_id="codex-runner-inherit",
+        )
+        self.assertTrue(result["authorized"])
+        self.assertEqual(result["effective_permission_mode"], "inherit")
+
     def test_runner_rejects_cli_frozen_transport_on_app_server_command(self) -> None:
         persisted = self._persisted_task(transport="cli")
         packet = self._packet(transport="cli")
@@ -815,9 +837,9 @@ class RunnerCapabilityValidationTests(unittest.TestCase):
 
 
 class InheritAndFallbackTests(unittest.TestCase):
-    def test_inherit_mapping_adds_no_app_server_override(self) -> None:
+    def test_inherit_mapping_uses_app_server_without_permission_override(self) -> None:
         entry = executor_permission_mapping("codex", "inherit")
-        self.assertEqual(entry["transport"], "cli")
+        self.assertEqual(entry["transport"], "app-server")
         self.assertEqual(entry["args"], [])
         self.assertEqual(entry["direct_args"], [])
         self.assertEqual(entry["env"], {})
@@ -831,6 +853,27 @@ class InheritAndFallbackTests(unittest.TestCase):
             entry["args"], ["--dangerously-bypass-approvals-and-sandbox"]
         )
         self.assertTrue(entry["overrides_native"])
+
+    def test_auto_transport_uses_receipted_runtime_for_inherit_and_safe_only(self) -> None:
+        executor = CodexExecutor(command=sys.executable)
+        inherit_packet = {
+            "extensions": {
+                "agentbc.permission": build_permission_record(explicit_mode="inherit")
+            }
+        }
+        safe_packet = {
+            "extensions": {
+                "agentbc.permission": build_permission_record(explicit_mode="safe")
+            }
+        }
+        full_packet = {
+            "extensions": {
+                "agentbc.permission": build_permission_record(explicit_mode="full")
+            }
+        }
+        self.assertTrue(executor._uses_app_server_transport(inherit_packet))
+        self.assertTrue(executor._uses_app_server_transport(safe_packet))
+        self.assertFalse(executor._uses_app_server_transport(full_packet))
 
     def test_executor_cli_path_never_selects_app_server(self) -> None:
         executor = CodexExecutor(command=sys.executable, transport="cli")

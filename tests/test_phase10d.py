@@ -2758,7 +2758,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
             stdout='{"type":"agent_message","text":"done"}\n',
             stderr="",
         )
-        executor = CodexExecutor(command=str(codex_binary))
+        executor = CodexExecutor(command=str(codex_binary), transport="cli")
         result = executor.start(
             {
                 "task_id": self.task.id,
@@ -2805,7 +2805,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         }
         run.return_value = mock.Mock(returncode=0, stdout='{"type":"agent_message","text":"done"}\n', stderr="")
 
-        result = CodexExecutor(command=str(codex_binary)).start(packet)
+        result = CodexExecutor(command=str(codex_binary), transport="cli").start(packet)
 
         self.assertTrue(result.ok)
         command = run.call_args.args[0]

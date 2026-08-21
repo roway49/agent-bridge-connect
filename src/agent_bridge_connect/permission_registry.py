@@ -97,7 +97,7 @@ HERMES_YOLO_ENV = {"HERMES_YOLO_MODE": "1"}
 _EXECUTOR_CAPABILITY_MAPPING: dict[str, dict[str, dict[str, Any]]] = {
     "codex": {
         "inherit": {
-            "transport": TRANSPORT_CLI,
+            "transport": TRANSPORT_CODEX_APP_SERVER,
             "capability_id": "codex.inherit",
             "args": [],
             "env": {},
@@ -105,7 +105,7 @@ _EXECUTOR_CAPABILITY_MAPPING: dict[str, dict[str, dict[str, Any]]] = {
             "overrides_native": False,
         },
         "safe": {
-            "transport": TRANSPORT_CLI,
+            "transport": TRANSPORT_CODEX_APP_SERVER,
             "capability_id": "codex.sandbox_workspace_write",
             "args": ["--sandbox", "workspace-write"],
             "env": {},
@@ -345,8 +345,11 @@ def probe_executor_capability(
     """
     entry = executor_permission_mapping(executor, mode, transport=transport)
     selected = entry["mode"]
-    if selected == "inherit":
-        # inherit adds no overrides and is always exactly expressible.
+    if selected == "inherit" and not (
+        executor == "codex" and entry["transport"] == TRANSPORT_CODEX_APP_SERVER
+    ):
+        # Non-Codex inherit transports add no AgentBC override and require no
+        # permission capability probe.
         return {
             "executor": executor,
             "mode": selected,

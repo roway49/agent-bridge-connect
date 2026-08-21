@@ -52,7 +52,7 @@ PERMISSION_WAIT_REASON_CODES = frozenset(
 )
 
 _DIAGNOSTICS = {
-    PERMISSION_MODE_UNSUPPORTED: "effective permission mode is not safe",
+    PERMISSION_MODE_UNSUPPORTED: "resolved permission base does not allow escalation",
     PERMISSION_INPUT_INVALID: "permission input is malformed",
     PERMISSION_REQUESTED_SCOPE_INVALID: "permission requested scope is not full",
     PERMISSION_BLOCKED_STEP_CARDINALITY_INVALID: (

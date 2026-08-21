@@ -76,6 +76,7 @@ from .permission_modes import (
     assert_executor_permission_supported,
     build_permission_record,
     permission_record_from_extensions,
+    permission_runtime_policy,
 )
 from .protocol import ABCError, PreflightResult, TaskModel, task_step_text
 from .schema import validate_task
@@ -1159,11 +1160,12 @@ class TaskService:
         """Return one stable reason when a permission wait cannot be persisted.
 
         The wait is executor-neutral for codex, claude and hermes.  A permission
-        request may only be persisted when the base task permission is safe, the
-        executor asked for full, exactly one declared step is blocked, the task is
-        the unique current chain head, a suspended/closed RunLease matches the run,
-        and the authoritative ``agentbc.session`` snapshot carries a non-empty
-        session id whose latest run entry is the callback run.
+        request may only be persisted after a trusted runtime block. ``inherit``
+        is a selection strategy and remains approval-capable; a concrete full
+        base is the only non-escalatable state. The executor must ask for full,
+        exactly one declared step must be blocked, the task must be the unique
+        current chain head, the RunLease must match, and the authoritative
+        session snapshot must bind the latest run.
         """
         from .run_lease import RunLeaseState, load_lease
 
@@ -1202,11 +1204,11 @@ class TaskService:
             return permission_wait_failure(PERMISSION_INPUT_INVALID, field="permission")
         if not isinstance(permission, dict):
             return permission_wait_failure(PERMISSION_INPUT_INVALID, field="permission")
-        effective_mode = str(permission.get("effective_mode") or "").strip().lower()
-        if effective_mode != "safe":
+        runtime_policy = permission_runtime_policy(permission)
+        if runtime_policy["approval_on_block"] is not True:
             return permission_wait_failure(
                 PERMISSION_MODE_UNSUPPORTED,
-                effective_mode=effective_mode,
+                effective_mode=str(permission.get("effective_mode") or ""),
             )
 
         raw_input = callback.get("input") if isinstance(callback, dict) else None
@@ -2395,12 +2397,20 @@ class TaskService:
                     "permission_input_invalid",
                     "Permission input is missing the authoritative executor session",
                 )
+            base_permission = permission_record_from_extensions(extensions)
+            runtime_policy = permission_runtime_policy(base_permission)
+            if runtime_policy["approval_on_block"] is not True:
+                raise ABCError(
+                    "permission_input_invalid",
+                    "Permission input cannot escalate an already-full permission base",
+                )
             extensions[PERMISSION_GRANT_EXTENSION_KEY] = build_permission_grant(
                 executor=task.assignee,
                 task_id=task.id,
                 input_id=current_input_id,
                 session_id=session_id,
                 source_run_id=str(request.get("executor_run_id") or ""),
+                base_mode=str(runtime_policy["base_mode"]),
                 issued_at=now,
             )
         else:

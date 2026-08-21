@@ -68,7 +68,7 @@ class CodexExecutor(CLIExecutorBase):
         timeout_s: int = SAFETY_TIMEOUT_S,
         command: str | None = None,
         *,
-        transport: str | Any = "cli",
+        transport: str | Any = "auto",
         transport_factory: Any | None = None,
         approval_timeout_s: float = 300.0,
     ) -> None:
@@ -241,7 +241,7 @@ class CodexExecutor(CLIExecutorBase):
         if not root.is_dir():
             return StartResult(ok=False, run_id="", message=f"workspace not found: {root}")
 
-        if self._uses_app_server_transport():
+        if self._uses_app_server_transport(task_packet):
             return self._start_app_server(task_packet, root)
 
         run_id = f"codex-{task_packet.get('task_id', 'unknown')}-{uuid.uuid4().hex[:8]}"
@@ -362,7 +362,7 @@ class CodexExecutor(CLIExecutorBase):
         self._close_run_lease(run_id)
         return StartResult(ok=True, run_id=run_id, message=f"codex execution {status}")
 
-    def _uses_app_server_transport(self) -> bool:
+    def _uses_app_server_transport(self, task_packet: dict[str, Any] | None = None) -> bool:
         if not isinstance(self.transport_mode, str):
             # Injected fake transport objects in tests are always App Server.
             return True
@@ -370,17 +370,36 @@ class CodexExecutor(CLIExecutorBase):
             CODEX_APP_SERVER_TRANSPORT_ALIASES,
         )
 
-        return self.transport_mode.strip().lower() in CODEX_APP_SERVER_TRANSPORT_ALIASES
+        transport = self.transport_mode.strip().lower()
+        if transport in {"cli", "direct"}:
+            return False
+        from agent_bridge_connect.permission_grants import permission_grant_from_extensions
+
+        extensions = (task_packet or {}).get("extensions")
+        grant = permission_grant_from_extensions(
+            extensions if isinstance(extensions, dict) else {}
+        )
+        if grant is not None and grant["state"]["status"] != "revoked":
+            # A compatibility full continuation is an explicit CLI run even
+            # when the task's inherited/safe base normally uses App Server.
+            return False
+        permission = permission_record_from_extensions(
+            extensions,
+            allow_legacy=True,
+        )
+        # Full remains the explicit non-interactive CLI path.  Inherit and safe
+        # use App Server when transport is auto/app-server so runtime approval
+        # is driven by an authenticated native request, not by a mode-name gate.
+        if permission["effective_mode"] == "full":
+            return False
+        return transport == "auto" or transport in CODEX_APP_SERVER_TRANSPORT_ALIASES
 
     def _freeze_app_server_capability(self, permission: dict[str, Any]) -> dict[str, Any]:
-        """Verify and freeze the App Server capability for one safe-mode run.
+        """Verify App Server for a runtime-approvable inherit/safe run.
 
-        ``inherit`` never selects the App Server (it adds no AgentBC override);
-        ``full`` keeps the existing CLI continuation fallback.  Only ``safe``
-        may use the native single-action chain, and only when the configured
-        executable actually supports the frozen methods/schema.  The verified
-        transport/capability is cached per instance and recorded in run
-        metadata for every App Server run.
+        Inherit supplies no sandbox or approval override; App Server only adds
+        the structured transport needed to identify a real blocked action and
+        resume the same official session. Full remains the CLI path.
         """
         from agent_bridge_connect.codex_app_server import (
             CODEX_APP_SERVER_TRANSPORT,
@@ -388,11 +407,12 @@ class CodexExecutor(CLIExecutorBase):
         )
 
         mode = str(permission.get("effective_mode") or "").strip().lower()
-        if mode != "safe":
+        if mode not in {"inherit", "safe"}:
             raise ABCError(
                 "permission_capability_unsupported",
                 (
-                    f"Codex App Server single-action chain requires safe mode; "
+                    "Codex App Server single-action chain requires a runtime-"
+                    "approvable inherit or safe base; "
                     f"got {mode or 'inherit'}."
                 ),
                 {
@@ -443,10 +463,9 @@ class CodexExecutor(CLIExecutorBase):
             assert_executor_permission_supported(
                 "codex", permission["effective_mode"], self.agent_bin
             )
-            # Capability gate: the App Server single-action chain may only be
-            # selected for safe mode when the configured executable is verified
-            # against the frozen schema contract.  inherit adds no override and
-            # never selects the App Server; full keeps the existing CLI fallback.
+            # Capability gate is transport- and receipt-based. Inherit keeps
+            # native permission settings, safe supplies the conservative
+            # workspace policy, and full keeps the CLI fallback.
             self._freeze_app_server_capability(permission)
             resumed, explicit_session_id = _codex_resume_context(task_packet)
             command = self._build_app_server_command()

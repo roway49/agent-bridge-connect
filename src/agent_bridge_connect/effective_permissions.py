@@ -5,12 +5,10 @@ the only place outside Core that interprets a task packet as permission for a
 specific run.  Adapters and Runner therefore agree on the same fail-closed
 binding rules without teaching each executor about grant fields.
 
-PERM-103-005: the ``safe -> full`` one-shot grant path below is legacy and is
-kept read-only for terminal history and the cutover gate.  New-channel tasks
-never carry grants (the approval control plane records ``agentbc.approval``
-receipts instead of issuing grants), so the new-task/new-runtime paths do not
-depend on grant issuance or consumption; an issued grant on a dispatched task
-is a cutover-blocking legacy state, not a live upgrade.
+PERM-103-005: the one-shot fallback does not rewrite the frozen task snapshot.
+For an inherited executor policy, ``native`` records the runtime-resolved base;
+``inherit`` remains only the selection strategy. Native single-action receipts
+are preferred, while this bounded grant preserves the 1.0.3 full fallback.
 """
 
 from __future__ import annotations
@@ -18,7 +16,11 @@ from __future__ import annotations
 from typing import Any
 
 from .permission_grants import permission_grant_from_extensions
-from .permission_modes import PERMISSION_EXTENSION_KEY, permission_record_from_extensions
+from .permission_modes import (
+    PERMISSION_EXTENSION_KEY,
+    permission_record_from_extensions,
+    permission_runtime_policy,
+)
 from .protocol import ABCError
 
 
@@ -72,7 +74,7 @@ def resolve_effective_permission(
         "requested_mode": "full",
         "effective_mode": "full",
         "selection_source": "one_shot_permission_grant",
-        "base_mode": "safe",
+        "base_mode": str(grant.get("transition", {}).get("from") or ""),
         "temporary": True,
         "executor_run_id": str(executor_run_id).strip(),
         "grant_status": grant["state"]["status"],
@@ -118,10 +120,12 @@ def validate_temporary_permission_context(
             "permission_grant_base_mismatch",
             "A one-shot permission grant requires an explicit persisted base permission.",
         )
-    if base["effective_mode"] != "safe":
+    grant_base_mode = str(grant.get("transition", {}).get("from") or "").strip().lower()
+    runtime_base_mode = str(permission_runtime_policy(base)["base_mode"])
+    if runtime_base_mode not in {"native", "safe"} or runtime_base_mode != grant_base_mode:
         raise ABCError(
             "permission_grant_base_mismatch",
-            "A one-shot permission grant requires persisted base mode safe.",
+            "A one-shot permission grant must match an approval-capable persisted base.",
         )
     target_run_id = str(executor_run_id or "").strip()
     if not target_run_id:

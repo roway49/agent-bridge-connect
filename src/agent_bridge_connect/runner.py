@@ -2329,9 +2329,10 @@ class RunnerState:
                 raise RunnerError(
                     "runner_session_argument_mismatch: Codex App Server requires explicit RPC session IDs"
                 )
-            # Capability gate: the App Server single-action chain is only
-            # authorized for a safe-mode task.  inherit/full keep the CLI
-            # transport and must never be authorized on the App Server path.
+            # App Server is authorized for inherit and safe. Inherit changes no
+            # native permission setting; it only supplies the structured
+            # transport needed to identify and answer a real blocked action.
+            # Full remains the explicit non-interactive CLI path.
             # If the persisted mapping explicitly froze a non-App-Server
             # transport, the task was not selected for the App Server chain
             # and the command must be rejected.
@@ -2351,9 +2352,9 @@ class RunnerState:
                 codex_mapping = mapping.get("codex")
                 if isinstance(codex_mapping, dict):
                     transport = str(codex_mapping.get("transport") or "").strip().lower()
-            if mode != "safe":
+            if mode not in {"inherit", "safe"}:
                 raise RunnerError(
-                    "runner_capability_mismatch: Codex App Server requires a frozen safe permission"
+                    "runner_capability_mismatch: Codex App Server requires an inherit or safe permission base"
                 )
             if transport and transport != "app-server":
                 raise RunnerError(
@@ -2614,7 +2615,7 @@ class RunnerState:
                 )
             # The persisted task's permission mapping must not freeze a
             # conflicting CLI transport for an App Server run.  The App Server
-            # chain is only valid for safe mode; inherit/full keep the CLI path.
+            # chain is valid for inherit/safe; full keeps the CLI path.
             extensions = extensions or {}
             try:
                 frozen_permission = permission_record_from_extensions(
@@ -2631,9 +2632,9 @@ class RunnerState:
                     frozen_transport = str(
                         codex_mapping.get("transport") or ""
                     ).strip().lower()
-            if frozen_mode != "safe":
+            if frozen_mode not in {"inherit", "safe"}:
                 raise RunnerError(
-                    "runner_capability_mismatch: Codex App Server run requires safe permission"
+                    "runner_capability_mismatch: Codex App Server run requires inherit or safe permission"
                 )
             if frozen_transport and frozen_transport != "app-server":
                 raise RunnerError(

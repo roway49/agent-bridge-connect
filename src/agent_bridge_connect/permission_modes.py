@@ -13,6 +13,8 @@ DEFAULT_PERMISSION_MODE = "inherit"
 LEGACY_PERMISSION_MODE = "safe"
 PERMISSION_SCHEMA_VERSION = 2
 PERMISSION_SNAPSHOT_SCOPE = "task"
+PERMISSION_APPROVAL_ON_BLOCK = "on_block"
+PERMISSION_APPROVAL_NONE = "none"
 
 _FULL_PERMISSION_FLAGS = {
     "codex": "--dangerously-bypass-approvals-and-sandbox",
@@ -175,6 +177,15 @@ def build_permission_record(
     configured_mode, _ = configured_permission_mode(config)
     from .permission_registry import permission_mapping_view
 
+    selection_strategy = "explicit" if task_override in {"safe", "full"} else "inherit"
+    resolved_base_mode = mode if mode in {"safe", "full"} else "native"
+    resolution_state = "frozen" if resolved_base_mode != "native" else "runtime"
+    approval_policy = (
+        PERMISSION_APPROVAL_NONE
+        if resolved_base_mode == "full"
+        else PERMISSION_APPROVAL_ON_BLOCK
+    )
+
     return {
         "version": PERMISSION_SCHEMA_VERSION,
         "configured_mode": configured_mode,
@@ -183,6 +194,13 @@ def build_permission_record(
         "requested_mode": mode,
         "effective_mode": mode,
         "selection_source": source,
+        # ``inherit`` is a selection strategy, not a third access level.
+        # The legacy requested/effective fields remain for v2 compatibility;
+        # runtime approval decisions use the orthogonal fields below.
+        "selection_strategy": selection_strategy,
+        "resolved_base_mode": resolved_base_mode,
+        "resolution_state": resolution_state,
+        "approval_policy": approval_policy,
         "scope": str(scope or PERMISSION_SNAPSHOT_SCOPE),
         "mapping": permission_mapping_view(mode),
         "permission_args": [],
@@ -280,6 +298,68 @@ def validate_permission_record(record: Any) -> dict[str, Any]:
             "invalid_permission_mode",
             "v2 permission extension permission_args must be a list of strings.",
         )
+    selection_strategy = str(record.get("selection_strategy") or "").strip().lower()
+    if not selection_strategy:
+        selection_strategy = (
+            "explicit" if task_override in {"safe", "full"} else "inherit"
+        )
+    if selection_strategy not in {"inherit", "explicit"}:
+        raise ABCError(
+            "invalid_permission_mode",
+            "v2 permission selection_strategy must be inherit or explicit.",
+        )
+    resolved_base_mode = str(record.get("resolved_base_mode") or "").strip().lower()
+    if not resolved_base_mode:
+        resolved_base_mode = effective if effective in {"safe", "full"} else "native"
+    if resolved_base_mode not in {"native", "safe", "full"}:
+        raise ABCError(
+            "invalid_permission_mode",
+            "v2 resolved_base_mode must be native, safe, or full.",
+        )
+    resolution_state = str(record.get("resolution_state") or "").strip().lower()
+    if not resolution_state:
+        resolution_state = "runtime" if resolved_base_mode == "native" else "frozen"
+    if resolution_state not in {"runtime", "frozen"}:
+        raise ABCError(
+            "invalid_permission_mode",
+            "v2 resolution_state must be runtime or frozen.",
+        )
+    approval_policy = str(record.get("approval_policy") or "").strip().lower()
+    if not approval_policy:
+        approval_policy = (
+            PERMISSION_APPROVAL_NONE
+            if resolved_base_mode == "full"
+            else PERMISSION_APPROVAL_ON_BLOCK
+        )
+    if approval_policy not in {PERMISSION_APPROVAL_ON_BLOCK, PERMISSION_APPROVAL_NONE}:
+        raise ABCError(
+            "invalid_permission_mode",
+            "v2 approval_policy must be on_block or none.",
+        )
+    expected_base_mode = effective if effective in {"safe", "full"} else "native"
+    expected_resolution_state = (
+        "runtime" if expected_base_mode == "native" else "frozen"
+    )
+    expected_approval_policy = (
+        PERMISSION_APPROVAL_NONE
+        if expected_base_mode == "full"
+        else PERMISSION_APPROVAL_ON_BLOCK
+    )
+    if (
+        resolved_base_mode != expected_base_mode
+        or resolution_state != expected_resolution_state
+        or approval_policy != expected_approval_policy
+    ):
+        raise ABCError(
+            "invalid_permission_mode",
+            "v2 runtime permission policy is inconsistent with its frozen selection snapshot.",
+            {
+                "effective_mode": effective,
+                "resolved_base_mode": resolved_base_mode,
+                "resolution_state": resolution_state,
+                "approval_policy": approval_policy,
+            },
+        )
     return {
         "version": PERMISSION_SCHEMA_VERSION,
         "configured_mode": configured,
@@ -288,9 +368,37 @@ def validate_permission_record(record: Any) -> dict[str, Any]:
         "requested_mode": requested,
         "effective_mode": effective,
         "selection_source": source,
+        "selection_strategy": selection_strategy,
+        "resolved_base_mode": resolved_base_mode,
+        "resolution_state": resolution_state,
+        "approval_policy": approval_policy,
         "scope": scope,
         "mapping": mapping,
         "permission_args": list(args) if args else [],
+    }
+
+
+def permission_runtime_policy(record: Any) -> dict[str, str | bool]:
+    """Project a task snapshot into the runtime approval decision contract.
+
+    ``inherit`` is deliberately treated as a source strategy.  A trusted
+    native permission-blocked event may therefore request approval while the
+    inherited base is resolved at runtime.  Only a concrete full base disables
+    escalation because no broader AgentBC permission exists.
+    """
+    permission = validate_permission_record(record)
+    effective = str(permission.get("effective_mode") or "inherit")
+    base_mode = str(
+        permission.get("resolved_base_mode")
+        or (effective if effective in {"safe", "full"} else "native")
+    )
+    policy = str(permission.get("approval_policy") or PERMISSION_APPROVAL_ON_BLOCK)
+    return {
+        "selection_strategy": str(permission.get("selection_strategy") or "inherit"),
+        "base_mode": base_mode,
+        "resolution_state": str(permission.get("resolution_state") or "runtime"),
+        "approval_policy": policy,
+        "approval_on_block": policy == PERMISSION_APPROVAL_ON_BLOCK and base_mode != "full",
     }
 
 
