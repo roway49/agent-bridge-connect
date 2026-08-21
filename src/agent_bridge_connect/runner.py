@@ -2329,6 +2329,37 @@ class RunnerState:
                 raise RunnerError(
                     "runner_session_argument_mismatch: Codex App Server requires explicit RPC session IDs"
                 )
+            # Capability gate: the App Server single-action chain is only
+            # authorized for a safe-mode task.  inherit/full keep the CLI
+            # transport and must never be authorized on the App Server path.
+            # If the persisted mapping explicitly froze a non-App-Server
+            # transport, the task was not selected for the App Server chain
+            # and the command must be rejected.
+            try:
+                persisted_permission = permission_record_from_extensions(
+                    persisted_task.get("extensions")
+                    if isinstance(persisted_task, dict)
+                    else {},
+                    allow_legacy=False,
+                )
+            except ABCError as exc:
+                raise RunnerError(f"{exc.code}: {exc}") from exc
+            mode = str(persisted_permission.get("effective_mode") or "").strip().lower()
+            mapping = persisted_permission.get("mapping")
+            transport = ""
+            if isinstance(mapping, dict):
+                codex_mapping = mapping.get("codex")
+                if isinstance(codex_mapping, dict):
+                    transport = str(codex_mapping.get("transport") or "").strip().lower()
+            if mode != "safe":
+                raise RunnerError(
+                    "runner_capability_mismatch: Codex App Server requires a frozen safe permission"
+                )
+            if transport and transport != "app-server":
+                raise RunnerError(
+                    "runner_capability_mismatch: Codex App Server command does not match "
+                    "the frozen permission transport"
+                )
             return
         required_subcommand = rules.get("required_subcommand")
         if required_subcommand and required_subcommand not in command:
@@ -2580,6 +2611,34 @@ class RunnerState:
             ):
                 raise RunnerError(
                     "runner_session_argument_mismatch: Codex App Server must use stdio"
+                )
+            # The persisted task's permission mapping must not freeze a
+            # conflicting CLI transport for an App Server run.  The App Server
+            # chain is only valid for safe mode; inherit/full keep the CLI path.
+            extensions = extensions or {}
+            try:
+                frozen_permission = permission_record_from_extensions(
+                    extensions, allow_legacy=False
+                )
+            except ABCError as exc:
+                raise RunnerError(f"{exc.code}: {exc}") from exc
+            frozen_mode = str(frozen_permission.get("effective_mode") or "").strip().lower()
+            frozen_mapping = frozen_permission.get("mapping")
+            frozen_transport = ""
+            if isinstance(frozen_mapping, dict):
+                codex_mapping = frozen_mapping.get("codex")
+                if isinstance(codex_mapping, dict):
+                    frozen_transport = str(
+                        codex_mapping.get("transport") or ""
+                    ).strip().lower()
+            if frozen_mode != "safe":
+                raise RunnerError(
+                    "runner_capability_mismatch: Codex App Server run requires safe permission"
+                )
+            if frozen_transport and frozen_transport != "app-server":
+                raise RunnerError(
+                    "runner_capability_mismatch: Codex App Server run does not match "
+                    "the frozen permission transport"
                 )
             return
 

@@ -1,0 +1,4930 @@
+{
+ "definitions": {
+  "ClientRequest": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "description": "Request from the client to the server.",
+   "oneOf": [
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "initialize"
+       ],
+       "title": "InitializeRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/InitializeParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "InitializeRequest",
+     "type": "object"
+    },
+    {
+     "description": "NEW APIs",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/start"
+       ],
+       "title": "Thread/startRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadStartParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/startRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/resume"
+       ],
+       "title": "Thread/resumeRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadResumeParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/resumeRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/fork"
+       ],
+       "title": "Thread/forkRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadForkParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/forkRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/archive"
+       ],
+       "title": "Thread/archiveRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadArchiveParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/archiveRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/delete"
+       ],
+       "title": "Thread/deleteRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadDeleteParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/deleteRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/unsubscribe"
+       ],
+       "title": "Thread/unsubscribeRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadUnsubscribeParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/unsubscribeRequest",
+     "type": "object"
+    },
+    {
+     "description": "Increment the thread-local out-of-band elicitation counter.\n\nThis is used by external helpers to pause timeout accounting while a user approval or other elicitation is pending outside the app-server request flow.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/increment_elicitation"
+       ],
+       "title": "Thread/incrementElicitationRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadIncrementElicitationParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/incrementElicitationRequest",
+     "type": "object"
+    },
+    {
+     "description": "Decrement the thread-local out-of-band elicitation counter.\n\nWhen the count reaches zero, timeout accounting resumes for the thread.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/decrement_elicitation"
+       ],
+       "title": "Thread/decrementElicitationRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadDecrementElicitationParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/decrementElicitationRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/name/set"
+       ],
+       "title": "Thread/name/setRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadSetNameParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/name/setRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/goal/set"
+       ],
+       "title": "Thread/goal/setRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadGoalSetParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/goal/setRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/goal/get"
+       ],
+       "title": "Thread/goal/getRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadGoalGetParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/goal/getRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/goal/clear"
+       ],
+       "title": "Thread/goal/clearRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadGoalClearParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/goal/clearRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/metadata/update"
+       ],
+       "title": "Thread/metadata/updateRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadMetadataUpdateParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/metadata/updateRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/section/move"
+       ],
+       "title": "Thread/section/moveRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadSectionMoveParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/section/moveRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/settings/update"
+       ],
+       "title": "Thread/settings/updateRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadSettingsUpdateParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/settings/updateRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/memoryMode/set"
+       ],
+       "title": "Thread/memoryMode/setRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadMemoryModeSetParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/memoryMode/setRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "memory/reset"
+       ],
+       "title": "Memory/resetRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "type": "null"
+      }
+     },
+     "required": [
+      "id",
+      "method"
+     ],
+     "title": "Memory/resetRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/unarchive"
+       ],
+       "title": "Thread/unarchiveRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadUnarchiveParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/unarchiveRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/compact/start"
+       ],
+       "title": "Thread/compact/startRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadCompactStartParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/compact/startRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/shellCommand"
+       ],
+       "title": "Thread/shellCommandRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadShellCommandParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/shellCommandRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/approveGuardianDeniedAction"
+       ],
+       "title": "Thread/approveGuardianDeniedActionRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadApproveGuardianDeniedActionParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/approveGuardianDeniedActionRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/backgroundTerminals/clean"
+       ],
+       "title": "Thread/backgroundTerminals/cleanRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadBackgroundTerminalsCleanParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/backgroundTerminals/cleanRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/backgroundTerminals/list"
+       ],
+       "title": "Thread/backgroundTerminals/listRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadBackgroundTerminalsListParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/backgroundTerminals/listRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/backgroundTerminals/terminate"
+       ],
+       "title": "Thread/backgroundTerminals/terminateRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadBackgroundTerminalsTerminateParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/backgroundTerminals/terminateRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/rollback"
+       ],
+       "title": "Thread/rollbackRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadRollbackParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/rollbackRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/list"
+       ],
+       "title": "Thread/listRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadListParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/listRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "threadSection/list"
+       ],
+       "title": "ThreadSection/listRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadSectionListParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "ThreadSection/listRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "threadSection/create"
+       ],
+       "title": "ThreadSection/createRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadSectionCreateParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "ThreadSection/createRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "threadSection/update"
+       ],
+       "title": "ThreadSection/updateRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadSectionUpdateParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "ThreadSection/updateRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "threadSection/delete"
+       ],
+       "title": "ThreadSection/deleteRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadSectionDeleteParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "ThreadSection/deleteRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/search"
+       ],
+       "title": "Thread/searchRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadSearchParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/searchRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/searchOccurrences"
+       ],
+       "title": "Thread/searchOccurrencesRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadSearchOccurrencesParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/searchOccurrencesRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/loaded/list"
+       ],
+       "title": "Thread/loaded/listRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadLoadedListParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/loaded/listRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/read"
+       ],
+       "title": "Thread/readRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadReadParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/readRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/turns/list"
+       ],
+       "title": "Thread/turns/listRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadTurnsListParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/turns/listRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/items/list"
+       ],
+       "title": "Thread/items/listRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadItemsListParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/items/listRequest",
+     "type": "object"
+    },
+    {
+     "description": "Append raw Responses API items to the thread history without starting a user turn.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/inject_items"
+       ],
+       "title": "Thread/injectItemsRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadInjectItemsParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/injectItemsRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "skills/list"
+       ],
+       "title": "Skills/listRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/SkillsListParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Skills/listRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "skills/extraRoots/set"
+       ],
+       "title": "Skills/extraRoots/setRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/SkillsExtraRootsSetParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Skills/extraRoots/setRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "hooks/list"
+       ],
+       "title": "Hooks/listRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/HooksListParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Hooks/listRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "marketplace/add"
+       ],
+       "title": "Marketplace/addRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/MarketplaceAddParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Marketplace/addRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "marketplace/remove"
+       ],
+       "title": "Marketplace/removeRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/MarketplaceRemoveParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Marketplace/removeRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "marketplace/upgrade"
+       ],
+       "title": "Marketplace/upgradeRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/MarketplaceUpgradeParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Marketplace/upgradeRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "plugin/list"
+       ],
+       "title": "Plugin/listRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/PluginListParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Plugin/listRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "plugin/search"
+       ],
+       "title": "Plugin/searchRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/PluginSearchParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Plugin/searchRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "plugin/installed"
+       ],
+       "title": "Plugin/installedRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/PluginInstalledParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Plugin/installedRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "plugin/read"
+       ],
+       "title": "Plugin/readRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/PluginReadParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Plugin/readRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "plugin/skill/read"
+       ],
+       "title": "Plugin/skill/readRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/PluginSkillReadParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Plugin/skill/readRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "plugin/share/save"
+       ],
+       "title": "Plugin/share/saveRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/PluginShareSaveParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Plugin/share/saveRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "plugin/share/updateTargets"
+       ],
+       "title": "Plugin/share/updateTargetsRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/PluginShareUpdateTargetsParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Plugin/share/updateTargetsRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "plugin/share/list"
+       ],
+       "title": "Plugin/share/listRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/PluginShareListParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Plugin/share/listRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "plugin/share/checkout"
+       ],
+       "title": "Plugin/share/checkoutRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/PluginShareCheckoutParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Plugin/share/checkoutRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "plugin/share/delete"
+       ],
+       "title": "Plugin/share/deleteRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/PluginShareDeleteParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Plugin/share/deleteRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "app/read"
+       ],
+       "title": "App/readRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/AppsReadParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "App/readRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "app/list"
+       ],
+       "title": "App/listRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/AppsListParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "App/listRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "app/installed"
+       ],
+       "title": "App/installedRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/AppsInstalledParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "App/installedRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "fs/readFile"
+       ],
+       "title": "Fs/readFileRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/FsReadFileParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Fs/readFileRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "fs/writeFile"
+       ],
+       "title": "Fs/writeFileRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/FsWriteFileParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Fs/writeFileRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "fs/createDirectory"
+       ],
+       "title": "Fs/createDirectoryRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/FsCreateDirectoryParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Fs/createDirectoryRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "fs/getMetadata"
+       ],
+       "title": "Fs/getMetadataRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/FsGetMetadataParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Fs/getMetadataRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "fs/readDirectory"
+       ],
+       "title": "Fs/readDirectoryRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/FsReadDirectoryParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Fs/readDirectoryRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "fs/remove"
+       ],
+       "title": "Fs/removeRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/FsRemoveParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Fs/removeRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "fs/copy"
+       ],
+       "title": "Fs/copyRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/FsCopyParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Fs/copyRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "fs/watch"
+       ],
+       "title": "Fs/watchRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/FsWatchParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Fs/watchRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "fs/unwatch"
+       ],
+       "title": "Fs/unwatchRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/FsUnwatchParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Fs/unwatchRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "skills/config/write"
+       ],
+       "title": "Skills/config/writeRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/SkillsConfigWriteParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Skills/config/writeRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "plugin/install"
+       ],
+       "title": "Plugin/installRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/PluginInstallParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Plugin/installRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "plugin/uninstall"
+       ],
+       "title": "Plugin/uninstallRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/PluginUninstallParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Plugin/uninstallRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "turn/start"
+       ],
+       "title": "Turn/startRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/TurnStartParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Turn/startRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "turn/steer"
+       ],
+       "title": "Turn/steerRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/TurnSteerParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Turn/steerRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "turn/interrupt"
+       ],
+       "title": "Turn/interruptRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/TurnInterruptParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Turn/interruptRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/realtime/start"
+       ],
+       "title": "Thread/realtime/startRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadRealtimeStartParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/realtime/startRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/realtime/appendAudio"
+       ],
+       "title": "Thread/realtime/appendAudioRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadRealtimeAppendAudioParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/realtime/appendAudioRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/realtime/appendText"
+       ],
+       "title": "Thread/realtime/appendTextRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadRealtimeAppendTextParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/realtime/appendTextRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/realtime/appendSpeech"
+       ],
+       "title": "Thread/realtime/appendSpeechRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadRealtimeAppendSpeechParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/realtime/appendSpeechRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/realtime/stop"
+       ],
+       "title": "Thread/realtime/stopRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadRealtimeStopParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/realtime/stopRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "thread/realtime/listVoices"
+       ],
+       "title": "Thread/realtime/listVoicesRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadRealtimeListVoicesParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Thread/realtime/listVoicesRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "review/start"
+       ],
+       "title": "Review/startRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ReviewStartParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Review/startRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "model/list"
+       ],
+       "title": "Model/listRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ModelListParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Model/listRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "modelProvider/capabilities/read"
+       ],
+       "title": "ModelProvider/capabilities/readRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ModelProviderCapabilitiesReadParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "ModelProvider/capabilities/readRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "experimentalFeature/list"
+       ],
+       "title": "ExperimentalFeature/listRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ExperimentalFeatureListParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "ExperimentalFeature/listRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "permissionProfile/list"
+       ],
+       "title": "PermissionProfile/listRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/PermissionProfileListParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "PermissionProfile/listRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "experimentalFeature/enablement/set"
+       ],
+       "title": "ExperimentalFeature/enablement/setRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ExperimentalFeatureEnablementSetParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "ExperimentalFeature/enablement/setRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "remoteControl/enable"
+       ],
+       "title": "RemoteControl/enableRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "anyOf": [
+        {
+         "$ref": "#/definitions/v2/RemoteControlEnableParams"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "required": [
+      "id",
+      "method"
+     ],
+     "title": "RemoteControl/enableRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "remoteControl/disable"
+       ],
+       "title": "RemoteControl/disableRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "anyOf": [
+        {
+         "$ref": "#/definitions/v2/RemoteControlDisableParams"
+        },
+        {
+         "type": "null"
+        }
+       ]
+      }
+     },
+     "required": [
+      "id",
+      "method"
+     ],
+     "title": "RemoteControl/disableRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "remoteControl/status/read"
+       ],
+       "title": "RemoteControl/status/readRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "type": "null"
+      }
+     },
+     "required": [
+      "id",
+      "method"
+     ],
+     "title": "RemoteControl/status/readRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "remoteControl/pairing/start"
+       ],
+       "title": "RemoteControl/pairing/startRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/RemoteControlPairingStartParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "RemoteControl/pairing/startRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "remoteControl/pairing/status"
+       ],
+       "title": "RemoteControl/pairing/statusRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/RemoteControlPairingStatusParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "RemoteControl/pairing/statusRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "remoteControl/client/list"
+       ],
+       "title": "RemoteControl/client/listRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/RemoteControlClientsListParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "RemoteControl/client/listRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "remoteControl/client/revoke"
+       ],
+       "title": "RemoteControl/client/revokeRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/RemoteControlClientsRevokeParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "RemoteControl/client/revokeRequest",
+     "type": "object"
+    },
+    {
+     "description": "Lists collaboration mode presets.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "collaborationMode/list"
+       ],
+       "title": "CollaborationMode/listRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/CollaborationModeListParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "CollaborationMode/listRequest",
+     "type": "object"
+    },
+    {
+     "description": "Test-only method used to validate experimental gating.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "mock/experimentalMethod"
+       ],
+       "title": "Mock/experimentalMethodRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/MockExperimentalMethodParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Mock/experimentalMethodRequest",
+     "type": "object"
+    },
+    {
+     "description": "Adds or replaces a remote environment by id for later selection.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "environment/add"
+       ],
+       "title": "Environment/addRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/EnvironmentAddParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Environment/addRequest",
+     "type": "object"
+    },
+    {
+     "description": "Reads information from a configured execution environment.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "environment/info"
+       ],
+       "title": "Environment/infoRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/EnvironmentInfoParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Environment/infoRequest",
+     "type": "object"
+    },
+    {
+     "description": "Reads the current status of a configured execution environment.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "environment/status"
+       ],
+       "title": "Environment/statusRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/EnvironmentStatusParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Environment/statusRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "mcpServer/oauth/login"
+       ],
+       "title": "McpServer/oauth/loginRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/McpServerOauthLoginParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "McpServer/oauth/loginRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "config/mcpServer/reload"
+       ],
+       "title": "Config/mcpServer/reloadRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "type": "null"
+      }
+     },
+     "required": [
+      "id",
+      "method"
+     ],
+     "title": "Config/mcpServer/reloadRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "mcpServerStatus/list"
+       ],
+       "title": "McpServerStatus/listRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ListMcpServerStatusParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "McpServerStatus/listRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "mcpServer/resource/read"
+       ],
+       "title": "McpServer/resource/readRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/McpResourceReadParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "McpServer/resource/readRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "mcpServer/tool/call"
+       ],
+       "title": "McpServer/tool/callRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/McpServerToolCallParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "McpServer/tool/callRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "windowsSandbox/setupStart"
+       ],
+       "title": "WindowsSandbox/setupStartRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/WindowsSandboxSetupStartParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "WindowsSandbox/setupStartRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "windowsSandbox/readiness"
+       ],
+       "title": "WindowsSandbox/readinessRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "type": "null"
+      }
+     },
+     "required": [
+      "id",
+      "method"
+     ],
+     "title": "WindowsSandbox/readinessRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "account/login/start"
+       ],
+       "title": "Account/login/startRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/LoginAccountParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Account/login/startRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "account/login/cancel"
+       ],
+       "title": "Account/login/cancelRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/CancelLoginAccountParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Account/login/cancelRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "account/logout"
+       ],
+       "title": "Account/logoutRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "type": "null"
+      }
+     },
+     "required": [
+      "id",
+      "method"
+     ],
+     "title": "Account/logoutRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "account/rateLimits/read"
+       ],
+       "title": "Account/rateLimits/readRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "type": "null"
+      }
+     },
+     "required": [
+      "id",
+      "method"
+     ],
+     "title": "Account/rateLimits/readRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "account/rateLimitResetCredit/consume"
+       ],
+       "title": "Account/rateLimitResetCredit/consumeRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ConsumeAccountRateLimitResetCreditParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Account/rateLimitResetCredit/consumeRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "account/usage/read"
+       ],
+       "title": "Account/usage/readRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "type": "null"
+      }
+     },
+     "required": [
+      "id",
+      "method"
+     ],
+     "title": "Account/usage/readRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "account/workspaceMessages/read"
+       ],
+       "title": "Account/workspaceMessages/readRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "type": "null"
+      }
+     },
+     "required": [
+      "id",
+      "method"
+     ],
+     "title": "Account/workspaceMessages/readRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "account/sendAddCreditsNudgeEmail"
+       ],
+       "title": "Account/sendAddCreditsNudgeEmailRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/SendAddCreditsNudgeEmailParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Account/sendAddCreditsNudgeEmailRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "feedback/upload"
+       ],
+       "title": "Feedback/uploadRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/FeedbackUploadParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Feedback/uploadRequest",
+     "type": "object"
+    },
+    {
+     "description": "Execute a standalone command (argv vector) under the server's sandbox.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "command/exec"
+       ],
+       "title": "Command/execRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/CommandExecParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Command/execRequest",
+     "type": "object"
+    },
+    {
+     "description": "Write stdin bytes to a running `command/exec` session or close stdin.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "command/exec/write"
+       ],
+       "title": "Command/exec/writeRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/CommandExecWriteParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Command/exec/writeRequest",
+     "type": "object"
+    },
+    {
+     "description": "Terminate a running `command/exec` session by client-supplied `processId`.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "command/exec/terminate"
+       ],
+       "title": "Command/exec/terminateRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/CommandExecTerminateParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Command/exec/terminateRequest",
+     "type": "object"
+    },
+    {
+     "description": "Resize a running PTY-backed `command/exec` session by client-supplied `processId`.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "command/exec/resize"
+       ],
+       "title": "Command/exec/resizeRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/CommandExecResizeParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Command/exec/resizeRequest",
+     "type": "object"
+    },
+    {
+     "description": "Spawn a standalone process (argv vector) without a Codex sandbox.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "process/spawn"
+       ],
+       "title": "Process/spawnRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ProcessSpawnParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Process/spawnRequest",
+     "type": "object"
+    },
+    {
+     "description": "Write stdin bytes to a running `process/spawn` session or close stdin.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "process/writeStdin"
+       ],
+       "title": "Process/writeStdinRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ProcessWriteStdinParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Process/writeStdinRequest",
+     "type": "object"
+    },
+    {
+     "description": "Terminate a running `process/spawn` session by client-supplied `processHandle`.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "process/kill"
+       ],
+       "title": "Process/killRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ProcessKillParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Process/killRequest",
+     "type": "object"
+    },
+    {
+     "description": "Resize a running PTY-backed `process/spawn` session by client-supplied `processHandle`.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "process/resizePty"
+       ],
+       "title": "Process/resizePtyRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ProcessResizePtyParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Process/resizePtyRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "config/read"
+       ],
+       "title": "Config/readRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ConfigReadParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Config/readRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "externalAgentConfig/detect"
+       ],
+       "title": "ExternalAgentConfig/detectRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ExternalAgentConfigDetectParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "ExternalAgentConfig/detectRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "externalAgentConfig/import"
+       ],
+       "title": "ExternalAgentConfig/importRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ExternalAgentConfigImportParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "ExternalAgentConfig/importRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "externalAgentConfig/import/recordHistory"
+       ],
+       "title": "ExternalAgentConfig/import/recordHistoryRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ExternalAgentConfigImportHistoryRecordParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "ExternalAgentConfig/import/recordHistoryRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "externalAgentConfig/import/readHistories"
+       ],
+       "title": "ExternalAgentConfig/import/readHistoriesRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "type": "null"
+      }
+     },
+     "required": [
+      "id",
+      "method"
+     ],
+     "title": "ExternalAgentConfig/import/readHistoriesRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "config/value/write"
+       ],
+       "title": "Config/value/writeRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ConfigValueWriteParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Config/value/writeRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "config/batchWrite"
+       ],
+       "title": "Config/batchWriteRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ConfigBatchWriteParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Config/batchWriteRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "configRequirements/read"
+       ],
+       "title": "ConfigRequirements/readRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "type": "null"
+      }
+     },
+     "required": [
+      "id",
+      "method"
+     ],
+     "title": "ConfigRequirements/readRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "account/read"
+       ],
+       "title": "Account/readRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/GetAccountParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Account/readRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "fuzzyFileSearch"
+       ],
+       "title": "FuzzyFileSearchRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/FuzzyFileSearchParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "FuzzyFileSearchRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "fuzzyFileSearch/sessionStart"
+       ],
+       "title": "FuzzyFileSearch/sessionStartRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/FuzzyFileSearchSessionStartParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "FuzzyFileSearch/sessionStartRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "fuzzyFileSearch/sessionUpdate"
+       ],
+       "title": "FuzzyFileSearch/sessionUpdateRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/FuzzyFileSearchSessionUpdateParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "FuzzyFileSearch/sessionUpdateRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "fuzzyFileSearch/sessionStop"
+       ],
+       "title": "FuzzyFileSearch/sessionStopRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/FuzzyFileSearchSessionStopParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "FuzzyFileSearch/sessionStopRequest",
+     "type": "object"
+    }
+   ],
+   "title": "ClientRequest"
+  },
+  "ServerNotification": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "description": "Notification sent from the server to the client.",
+   "oneOf": [
+    {
+     "description": "NEW NOTIFICATIONS",
+     "properties": {
+      "method": {
+       "enum": [
+        "error"
+       ],
+       "title": "ErrorNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ErrorNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "ErrorNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/started"
+       ],
+       "title": "Thread/startedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadStartedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/startedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/status/changed"
+       ],
+       "title": "Thread/status/changedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadStatusChangedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/status/changedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/archived"
+       ],
+       "title": "Thread/archivedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadArchivedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/archivedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/deleted"
+       ],
+       "title": "Thread/deletedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadDeletedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/deletedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/unarchived"
+       ],
+       "title": "Thread/unarchivedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadUnarchivedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/unarchivedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/closed"
+       ],
+       "title": "Thread/closedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadClosedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/closedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "skills/changed"
+       ],
+       "title": "Skills/changedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/SkillsChangedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Skills/changedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/name/updated"
+       ],
+       "title": "Thread/name/updatedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadNameUpdatedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/name/updatedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/goal/updated"
+       ],
+       "title": "Thread/goal/updatedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadGoalUpdatedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/goal/updatedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/goal/cleared"
+       ],
+       "title": "Thread/goal/clearedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadGoalClearedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/goal/clearedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/environment/connected"
+       ],
+       "title": "Thread/environment/connectedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/EnvironmentConnectionNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/environment/connectedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/environment/disconnected"
+       ],
+       "title": "Thread/environment/disconnectedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/EnvironmentConnectionNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/environment/disconnectedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/settings/updated"
+       ],
+       "title": "Thread/settings/updatedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadSettingsUpdatedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/settings/updatedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/tokenUsage/updated"
+       ],
+       "title": "Thread/tokenUsage/updatedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadTokenUsageUpdatedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/tokenUsage/updatedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "turn/started"
+       ],
+       "title": "Turn/startedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/TurnStartedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Turn/startedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "hook/started"
+       ],
+       "title": "Hook/startedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/HookStartedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Hook/startedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "turn/completed"
+       ],
+       "title": "Turn/completedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/TurnCompletedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Turn/completedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "hook/completed"
+       ],
+       "title": "Hook/completedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/HookCompletedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Hook/completedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "turn/diff/updated"
+       ],
+       "title": "Turn/diff/updatedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/TurnDiffUpdatedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Turn/diff/updatedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "turn/plan/updated"
+       ],
+       "title": "Turn/plan/updatedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/TurnPlanUpdatedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Turn/plan/updatedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "item/started"
+       ],
+       "title": "Item/startedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ItemStartedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Item/startedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "item/autoApprovalReview/started"
+       ],
+       "title": "Item/autoApprovalReview/startedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ItemGuardianApprovalReviewStartedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Item/autoApprovalReview/startedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "item/autoApprovalReview/completed"
+       ],
+       "title": "Item/autoApprovalReview/completedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ItemGuardianApprovalReviewCompletedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Item/autoApprovalReview/completedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "item/completed"
+       ],
+       "title": "Item/completedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ItemCompletedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Item/completedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "item/agentMessage/delta"
+       ],
+       "title": "Item/agentMessage/deltaNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/AgentMessageDeltaNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Item/agentMessage/deltaNotification",
+     "type": "object"
+    },
+    {
+     "description": "EXPERIMENTAL - proposed plan streaming deltas for plan items.",
+     "properties": {
+      "method": {
+       "enum": [
+        "item/plan/delta"
+       ],
+       "title": "Item/plan/deltaNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/PlanDeltaNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Item/plan/deltaNotification",
+     "type": "object"
+    },
+    {
+     "description": "Stream base64-encoded stdout/stderr chunks for a running `command/exec` session.",
+     "properties": {
+      "method": {
+       "enum": [
+        "command/exec/outputDelta"
+       ],
+       "title": "Command/exec/outputDeltaNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/CommandExecOutputDeltaNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Command/exec/outputDeltaNotification",
+     "type": "object"
+    },
+    {
+     "description": "Stream base64-encoded stdout/stderr chunks for a running `process/spawn` session.",
+     "properties": {
+      "method": {
+       "enum": [
+        "process/outputDelta"
+       ],
+       "title": "Process/outputDeltaNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ProcessOutputDeltaNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Process/outputDeltaNotification",
+     "type": "object"
+    },
+    {
+     "description": "Final exit notification for a `process/spawn` session.",
+     "properties": {
+      "method": {
+       "enum": [
+        "process/exited"
+       ],
+       "title": "Process/exitedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ProcessExitedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Process/exitedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "item/commandExecution/outputDelta"
+       ],
+       "title": "Item/commandExecution/outputDeltaNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/CommandExecutionOutputDeltaNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Item/commandExecution/outputDeltaNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "item/commandExecution/terminalInteraction"
+       ],
+       "title": "Item/commandExecution/terminalInteractionNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/TerminalInteractionNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Item/commandExecution/terminalInteractionNotification",
+     "type": "object"
+    },
+    {
+     "description": "Deprecated legacy apply_patch output stream notification.",
+     "properties": {
+      "method": {
+       "enum": [
+        "item/fileChange/outputDelta"
+       ],
+       "title": "Item/fileChange/outputDeltaNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/FileChangeOutputDeltaNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Item/fileChange/outputDeltaNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "item/fileChange/patchUpdated"
+       ],
+       "title": "Item/fileChange/patchUpdatedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/FileChangePatchUpdatedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Item/fileChange/patchUpdatedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "serverRequest/resolved"
+       ],
+       "title": "ServerRequest/resolvedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ServerRequestResolvedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "ServerRequest/resolvedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "item/mcpToolCall/progress"
+       ],
+       "title": "Item/mcpToolCall/progressNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/McpToolCallProgressNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Item/mcpToolCall/progressNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "mcpServer/oauthLogin/completed"
+       ],
+       "title": "McpServer/oauthLogin/completedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/McpServerOauthLoginCompletedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "McpServer/oauthLogin/completedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "mcpServer/startupStatus/updated"
+       ],
+       "title": "McpServer/startupStatus/updatedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/McpServerStatusUpdatedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "McpServer/startupStatus/updatedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "account/updated"
+       ],
+       "title": "Account/updatedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/AccountUpdatedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Account/updatedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "account/rateLimits/updated"
+       ],
+       "title": "Account/rateLimits/updatedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/AccountRateLimitsUpdatedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Account/rateLimits/updatedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "app/list/updated"
+       ],
+       "title": "App/list/updatedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/AppListUpdatedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "App/list/updatedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "remoteControl/status/changed"
+       ],
+       "title": "RemoteControl/status/changedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/RemoteControlStatusChangedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "RemoteControl/status/changedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "externalAgentConfig/import/progress"
+       ],
+       "title": "ExternalAgentConfig/import/progressNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ExternalAgentConfigImportProgressNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "ExternalAgentConfig/import/progressNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "externalAgentConfig/import/completed"
+       ],
+       "title": "ExternalAgentConfig/import/completedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ExternalAgentConfigImportCompletedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "ExternalAgentConfig/import/completedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "fs/changed"
+       ],
+       "title": "Fs/changedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/FsChangedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Fs/changedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "item/reasoning/summaryTextDelta"
+       ],
+       "title": "Item/reasoning/summaryTextDeltaNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ReasoningSummaryTextDeltaNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Item/reasoning/summaryTextDeltaNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "item/reasoning/summaryPartAdded"
+       ],
+       "title": "Item/reasoning/summaryPartAddedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ReasoningSummaryPartAddedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Item/reasoning/summaryPartAddedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "item/reasoning/textDelta"
+       ],
+       "title": "Item/reasoning/textDeltaNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ReasoningTextDeltaNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Item/reasoning/textDeltaNotification",
+     "type": "object"
+    },
+    {
+     "description": "Deprecated: Use `ContextCompaction` item type instead.",
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/compacted"
+       ],
+       "title": "Thread/compactedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ContextCompactedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/compactedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "model/rerouted"
+       ],
+       "title": "Model/reroutedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ModelReroutedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Model/reroutedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "model/verification"
+       ],
+       "title": "Model/verificationNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ModelVerificationNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Model/verificationNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "turn/moderationMetadata"
+       ],
+       "title": "Turn/moderationMetadataNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/TurnModerationMetadataNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Turn/moderationMetadataNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "model/safetyBuffering/updated"
+       ],
+       "title": "Model/safetyBuffering/updatedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ModelSafetyBufferingUpdatedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Model/safetyBuffering/updatedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "warning"
+       ],
+       "title": "WarningNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/WarningNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "WarningNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "guardianWarning"
+       ],
+       "title": "GuardianWarningNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/GuardianWarningNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "GuardianWarningNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "deprecationNotice"
+       ],
+       "title": "DeprecationNoticeNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/DeprecationNoticeNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "DeprecationNoticeNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "configWarning"
+       ],
+       "title": "ConfigWarningNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ConfigWarningNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "ConfigWarningNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "fuzzyFileSearch/sessionUpdated"
+       ],
+       "title": "FuzzyFileSearch/sessionUpdatedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/FuzzyFileSearchSessionUpdatedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "FuzzyFileSearch/sessionUpdatedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "fuzzyFileSearch/sessionCompleted"
+       ],
+       "title": "FuzzyFileSearch/sessionCompletedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/FuzzyFileSearchSessionCompletedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "FuzzyFileSearch/sessionCompletedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/realtime/started"
+       ],
+       "title": "Thread/realtime/startedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadRealtimeStartedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/realtime/startedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/realtime/itemAdded"
+       ],
+       "title": "Thread/realtime/itemAddedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadRealtimeItemAddedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/realtime/itemAddedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/realtime/transcript/delta"
+       ],
+       "title": "Thread/realtime/transcript/deltaNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadRealtimeTranscriptDeltaNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/realtime/transcript/deltaNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/realtime/transcript/done"
+       ],
+       "title": "Thread/realtime/transcript/doneNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadRealtimeTranscriptDoneNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/realtime/transcript/doneNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/realtime/outputAudio/delta"
+       ],
+       "title": "Thread/realtime/outputAudio/deltaNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadRealtimeOutputAudioDeltaNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/realtime/outputAudio/deltaNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/realtime/sdp"
+       ],
+       "title": "Thread/realtime/sdpNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadRealtimeSdpNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/realtime/sdpNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/realtime/error"
+       ],
+       "title": "Thread/realtime/errorNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadRealtimeErrorNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/realtime/errorNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "thread/realtime/closed"
+       ],
+       "title": "Thread/realtime/closedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/ThreadRealtimeClosedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Thread/realtime/closedNotification",
+     "type": "object"
+    },
+    {
+     "description": "Notifies the user of world-writable directories on Windows, which cannot be protected by the sandbox.",
+     "properties": {
+      "method": {
+       "enum": [
+        "windows/worldWritableWarning"
+       ],
+       "title": "Windows/worldWritableWarningNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/WindowsWorldWritableWarningNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Windows/worldWritableWarningNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "windowsSandbox/setupCompleted"
+       ],
+       "title": "WindowsSandbox/setupCompletedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/WindowsSandboxSetupCompletedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "WindowsSandbox/setupCompletedNotification",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "method": {
+       "enum": [
+        "account/login/completed"
+       ],
+       "title": "Account/login/completedNotificationMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/v2/AccountLoginCompletedNotification"
+      }
+     },
+     "required": [
+      "method",
+      "params"
+     ],
+     "title": "Account/login/completedNotification",
+     "type": "object"
+    }
+   ],
+   "properties": {
+    "emittedAtMs": {
+     "description": "Unix timestamp (in milliseconds) when app-server emitted this notification.",
+     "format": "int64",
+     "type": "integer"
+    }
+   },
+   "title": "ServerNotification"
+  },
+  "ServerRequest": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "description": "Request initiated from the server and sent to the client.",
+   "oneOf": [
+    {
+     "description": "NEW APIs Sent when approval is requested for a specific command execution. This request is used for Turns started via turn/start.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "item/commandExecution/requestApproval"
+       ],
+       "title": "Item/commandExecution/requestApprovalRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/CommandExecutionRequestApprovalParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Item/commandExecution/requestApprovalRequest",
+     "type": "object"
+    },
+    {
+     "description": "Sent when approval is requested for a specific file change. This request is used for Turns started via turn/start.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "item/fileChange/requestApproval"
+       ],
+       "title": "Item/fileChange/requestApprovalRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/FileChangeRequestApprovalParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Item/fileChange/requestApprovalRequest",
+     "type": "object"
+    },
+    {
+     "description": "EXPERIMENTAL - Request input from the user for a tool call.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "item/tool/requestUserInput"
+       ],
+       "title": "Item/tool/requestUserInputRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/ToolRequestUserInputParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Item/tool/requestUserInputRequest",
+     "type": "object"
+    },
+    {
+     "description": "Request input for an MCP server elicitation.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "mcpServer/elicitation/request"
+       ],
+       "title": "McpServer/elicitation/requestRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/McpServerElicitationRequestParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "McpServer/elicitation/requestRequest",
+     "type": "object"
+    },
+    {
+     "description": "Request approval for additional permissions from the user.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "item/permissions/requestApproval"
+       ],
+       "title": "Item/permissions/requestApprovalRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/PermissionsRequestApprovalParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Item/permissions/requestApprovalRequest",
+     "type": "object"
+    },
+    {
+     "description": "Execute a dynamic tool call on the client.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "item/tool/call"
+       ],
+       "title": "Item/tool/callRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/DynamicToolCallParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Item/tool/callRequest",
+     "type": "object"
+    },
+    {
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "account/chatgptAuthTokens/refresh"
+       ],
+       "title": "Account/chatgptAuthTokens/refreshRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/ChatgptAuthTokensRefreshParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Account/chatgptAuthTokens/refreshRequest",
+     "type": "object"
+    },
+    {
+     "description": "Generate a fresh upstream attestation result on demand.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "attestation/generate"
+       ],
+       "title": "Attestation/generateRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/AttestationGenerateParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "Attestation/generateRequest",
+     "type": "object"
+    },
+    {
+     "description": "Read the current time from an external clock owned by the client.",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "currentTime/read"
+       ],
+       "title": "CurrentTime/readRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/CurrentTimeReadParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "CurrentTime/readRequest",
+     "type": "object"
+    },
+    {
+     "description": "DEPRECATED APIs below Request to approve a patch. This request is used for Turns started via the legacy APIs (i.e. SendUserTurn, SendUserMessage).",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "applyPatchApproval"
+       ],
+       "title": "ApplyPatchApprovalRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/ApplyPatchApprovalParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "ApplyPatchApprovalRequest",
+     "type": "object"
+    },
+    {
+     "description": "Request to exec a command. This request is used for Turns started via the legacy APIs (i.e. SendUserTurn, SendUserMessage).",
+     "properties": {
+      "id": {
+       "$ref": "#/definitions/v2/RequestId"
+      },
+      "method": {
+       "enum": [
+        "execCommandApproval"
+       ],
+       "title": "ExecCommandApprovalRequestMethod",
+       "type": "string"
+      },
+      "params": {
+       "$ref": "#/definitions/ExecCommandApprovalParams"
+      }
+     },
+     "required": [
+      "id",
+      "method",
+      "params"
+     ],
+     "title": "ExecCommandApprovalRequest",
+     "type": "object"
+    }
+   ],
+   "title": "ServerRequest"
+  }
+ },
+ "_fixture": {
+  "generated_from": "codex app-server generate-json-schema --experimental",
+  "codex_version": "0.147.0",
+  "protocol_version": 2
+ }
+}

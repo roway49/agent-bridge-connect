@@ -84,6 +84,11 @@ class CodexExecutor(CLIExecutorBase):
         self._run_metadata: dict[str, dict[str, Any]] = {}
         self._task_packets: dict[str, dict[str, Any]] = {}
         self._app_runs: dict[str, dict[str, Any]] = {}
+        self._app_server_capability: dict[str, Any] | None = None
+        # Test seam: an injected pre-verified App Server capability report
+        # (same shape as :func:`codex_app_server_contract`) replaces the
+        # subprocess schema probe.  Production always runs the real probe.
+        self._app_server_capability_override: dict[str, Any] | None = None
 
     def probe(self) -> ProbeResult:
         if self.agent_bin is None:
@@ -359,13 +364,63 @@ class CodexExecutor(CLIExecutorBase):
 
     def _uses_app_server_transport(self) -> bool:
         if not isinstance(self.transport_mode, str):
+            # Injected fake transport objects in tests are always App Server.
             return True
-        return self.transport_mode.strip().lower() in {
-            "app-server",
-            "app_server",
-            "stdio",
-            "codex-app-server",
-        }
+        from agent_bridge_connect.codex_app_server import (
+            CODEX_APP_SERVER_TRANSPORT_ALIASES,
+        )
+
+        return self.transport_mode.strip().lower() in CODEX_APP_SERVER_TRANSPORT_ALIASES
+
+    def _freeze_app_server_capability(self, permission: dict[str, Any]) -> dict[str, Any]:
+        """Verify and freeze the App Server capability for one safe-mode run.
+
+        ``inherit`` never selects the App Server (it adds no AgentBC override);
+        ``full`` keeps the existing CLI continuation fallback.  Only ``safe``
+        may use the native single-action chain, and only when the configured
+        executable actually supports the frozen methods/schema.  The verified
+        transport/capability is cached per instance and recorded in run
+        metadata for every App Server run.
+        """
+        from agent_bridge_connect.codex_app_server import (
+            CODEX_APP_SERVER_TRANSPORT,
+            assert_codex_app_server_capability,
+        )
+
+        mode = str(permission.get("effective_mode") or "").strip().lower()
+        if mode != "safe":
+            raise ABCError(
+                "permission_capability_unsupported",
+                (
+                    f"Codex App Server single-action chain requires safe mode; "
+                    f"got {mode or 'inherit'}."
+                ),
+                {
+                    "executor": "codex",
+                    "permission_mode": mode,
+                    "transport": CODEX_APP_SERVER_TRANSPORT,
+                },
+            )
+        if self._app_server_capability is None:
+            if self._app_server_capability_override is not None:
+                override = dict(self._app_server_capability_override)
+                if override.get("ok") is not True:
+                    raise ABCError(
+                        "permission_capability_unsupported",
+                        str(override.get("reason") or "App Server capability override failed"),
+                        {
+                            "executor": "codex",
+                            "permission_mode": mode,
+                            "transport": CODEX_APP_SERVER_TRANSPORT,
+                            "reason": override.get("reason"),
+                        },
+                    )
+                self._app_server_capability = override
+            else:
+                self._app_server_capability = assert_codex_app_server_capability(
+                    self.agent_bin, transport=CODEX_APP_SERVER_TRANSPORT
+                )
+        return dict(self._app_server_capability)
 
     def _build_app_server_command(self) -> list[str]:
         if self.agent_bin is None:
@@ -388,6 +443,11 @@ class CodexExecutor(CLIExecutorBase):
             assert_executor_permission_supported(
                 "codex", permission["effective_mode"], self.agent_bin
             )
+            # Capability gate: the App Server single-action chain may only be
+            # selected for safe mode when the configured executable is verified
+            # against the frozen schema contract.  inherit adds no override and
+            # never selects the App Server; full keeps the existing CLI fallback.
+            self._freeze_app_server_capability(permission)
             resumed, explicit_session_id = _codex_resume_context(task_packet)
             command = self._build_app_server_command()
             if task_packet.get("runner_authorization_required") is True:
@@ -902,6 +962,15 @@ class CodexExecutor(CLIExecutorBase):
         }
         if self._last_run_id is not None:
             metadata["last_run"] = self._run_metadata[self._last_run_id]
+        if self._app_server_capability is not None:
+            metadata["app_server_capability"] = {
+                "transport": str(self._app_server_capability.get("transport") or ""),
+                "ok": bool(self._app_server_capability.get("ok")),
+                "version": self._app_server_capability.get("version"),
+                "version_parsed": self._app_server_capability.get("version_parsed"),
+                "protocol_version": self._app_server_capability.get("protocol_version"),
+                "evidence": list(self._app_server_capability.get("evidence") or []),
+            }
         return {"executor": {"codex": metadata}}
 
     def _store_metadata(
@@ -924,6 +993,21 @@ class CodexExecutor(CLIExecutorBase):
             "events_seen": len(events),
             "returncode": returncode,
         }
+        app_run = self._app_runs.get(run_id)
+        if app_run is not None:
+            self._run_metadata[run_id]["transport"] = (
+                str(self._app_server_capability.get("transport") or "app-server")
+                if self._app_server_capability is not None
+                else "app-server"
+            )
+            self._run_metadata[run_id]["session_id"] = str(
+                app_run.get("session_id") or ""
+            )
+            self._run_metadata[run_id]["approval_events"] = sum(
+                1
+                for event in (app_run.get("events") or [])
+                if event.get("event_type") == "approval_requested"
+            )
 
 
 def _discover_codex_binary(command: str | None) -> dict[str, Any]:
