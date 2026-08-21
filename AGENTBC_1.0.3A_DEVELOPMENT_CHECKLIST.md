@@ -69,18 +69,18 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 | `ARCH-104-001` | 延期至 1.0.4A | Service/Runner/CLI/Setup 继续过度集中 | 1.0.2A 收口时共享文件修改风险高 | 在完整 characterization/fixture 保护下进行局部重构 |
 | `FLOW-104-001` | 延期至 1.0.4A | handoff 固定只声明一个 step，但自由文本可包含多段 Step 编号 | `XCKX-002`、`76MG-002` 实现与测试完成后因 callback 返回未声明的 Step 2～4 被 fail closed | 为 handoff 增加结构化多 steps 合同、预检和跨 Executor callback 一致性测试 |
 
-### 1.4 当前开发进度（2026-08-16）
+### 1.4 当前开发进度（2026-08-21）
 
 | ID | 状态 | 已完成证据 / 剩余边界 |
 | --- | --- | --- |
 | `PERM-103-001` | 已完成 | `79b5706`：统一 permission registry、配置事务、默认 `inherit` 和公共视图已合入 |
 | `PERM-103-002` | 已完成 | `79b5706`：三 Executor 映射与 fail-closed capability probe 已合入；Hermes ACP 实际控制链计入 `003/004` |
-| `PERM-103-003` | 进行中 | `87a7dc1`、`330168f`、`ce5e4e9`、`791e3b8`、`a64f5a5`：Core、Claude 与 Hermes 精确动作审批已完成并合入；Codex app-server 控制代码已存在但尚未接入生产 registry，转 `PERM-103-009` 完成生产链 |
+| `PERM-103-003` | 已完成 | `87a7dc1`、`330168f`、`ce5e4e9`、`791e3b8`、`a64f5a5`、`2b1bcbd`、`247c45b`：Core 与三 Executor 精确动作审批均已接入；Codex app-server production registry、Runner gate、官方 early receipt 与同进程单动作响应已合入 |
 | `PERM-103-004` | 已完成 | Codex、Claude early receipt 已完成；`791e3b8`、`a64f5a5` 已合入 Hermes ACP `session/new` prompt 前官方 session receipt、显式 resume 与 fail-closed 校验；合入后 120 项 Hermes/registry/lifecycle 定向测试通过 |
 | `PERM-103-005` | 已完成 | `330168f`、`bb58e50`：严格 cutover、维护模式、历史只读投影和 update preflight 已合入 |
 | `PERM-103-006` | 已完成 | `ce4f366`～`c09fa18`、`1dbe97e`、`a383bcf`：极简权限弹窗、脱敏详情、绝对超时与普通说明语义保持已合入；74 项重点回归、1168 项全量和隔离 wheel smoke 通过 |
 | `PERM-103-007` | 排队 | 待 Phase 2/3 公共接口稳定后实施 Claude 文件级 capability |
-| `PERM-103-008` / `PERM-103-009` | P1 候选 | 先以既有一次性 full continuation 作为 1.0.3A 稳定兜底；在 1.0.3A 收口门禁按剩余节奏决定追加开发，未进入实现则整体迁移至 `1.0.4A` |
+| `PERM-103-008` / `PERM-103-009` | 已完成 | `a993e94`、`4ef12eb`：permission/session 兼容总错误下新增 15 类稳定原因与脱敏诊断；`2b1bcbd`、`247c45b`：Codex app-server single-action 生产链已合入；既有一次性 full continuation 继续作为兼容兜底 |
 | `FLOW-103-001` | 排队 | Task 6/7 合入后的首个串行任务：Runner/Core 权威 progress receipt |
 | `UPD-103-001` | 部分完成 | 已有 cutover preflight；自动 check、`y/N` 升级事务和失败保留旧版本尚未实现 |
 | `PKG-103-001` | 未开始 | 等待 update 事务稳定后建设 Homebrew Gate |
