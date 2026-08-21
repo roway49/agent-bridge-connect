@@ -706,6 +706,17 @@ def public_extensions_view(extensions: Any) -> dict[str, Any]:
     if isinstance(session, dict):
         session.pop("project_path", None)
         session["cleanup"] = session_cleanup_view(session.get("cleanup"))
+    input_request = public.get("agentbc.input")
+    if isinstance(input_request, dict):
+        # Full-fallback detail is a local dialog affordance, not a public task
+        # projection.  The durable request remains available to Core's
+        # notification builder.
+        input_request.pop("reason_detail", None)
+    input_history = public.get("agentbc.input_history")
+    if isinstance(input_history, list):
+        for historical_request in input_history:
+            if isinstance(historical_request, dict):
+                historical_request.pop("reason_detail", None)
     grant = public.get(PERMISSION_GRANT_EXTENSION_KEY)
     if grant is not None:
         projected = permission_grant_view(grant)

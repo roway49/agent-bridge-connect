@@ -7,6 +7,9 @@ from typing import Any, Callable
 from .approval import (
     APPROVAL_EXTENSION_KEY,
     APPROVAL_SCOPE,
+    core_bounded_summary_details,
+    normalize_reason_summary_details,
+    sanitize_reason_detail,
     validate_approval_receipt,
 )
 from .protocol import ABCError
@@ -202,10 +205,43 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         command = f"agentbc task respond {task_id} --input {input_id} --message \"<response>\""
     workspace = task.workspace or {}
     blocked_step = request.get("blocked_step_id", "")
-    summary = compact_notification_text(
-        str(request.get("reason_summary") or request.get("summary") or ""),
-        240,
+    is_single_action_approval = (
+        input_type == "permission"
+        and request.get("scope") == APPROVAL_SCOPE
+        and bool(str(request.get("request_id") or "").strip())
     )
+    summary_truncated = False
+    if input_type == "permission":
+        stored_summary = str(request.get("reason_summary") or "").strip()
+        if stored_summary:
+            summary, compacted = normalize_reason_summary_details(
+                stored_summary,
+                executor=str(task.assignee or ""),
+                operation=str(request.get("operation") or "full permission")
+                if is_single_action_approval
+                else "full permission",
+            )
+        else:
+            raw_reason = str(
+                request.get("reason") or request.get("summary") or ""
+            ).strip()
+            if raw_reason and sanitize_reason_detail(raw_reason):
+                summary, compacted = normalize_reason_summary_details(
+                    raw_reason,
+                    executor=str(task.assignee or ""),
+                    operation="full permission",
+                )
+            else:
+                summary, compacted = core_bounded_summary_details(
+                    executor=str(task.assignee or ""),
+                    operation="full permission",
+                )
+        summary_truncated = bool(request.get("summary_truncated") is True or compacted)
+    else:
+        summary = compact_notification_text(
+            str(request.get("reason_summary") or request.get("summary") or ""),
+            240,
+        )
     if input_type == "choice":
         reason = compact_notification_text(str(request.get("reason") or summary), 240)
         if is_resource_decision and not option_descriptions:
@@ -235,10 +271,6 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
             "Why this is blocked:",
             summary,
         ]
-        is_single_action_approval = (
-            input_type == "permission"
-            and request.get("scope") == "single_action"
-        )
         if input_type == "permission" and is_single_action_approval:
             operation = compact_notification_text(
                 str(request.get("operation") or ""), 120
@@ -269,11 +301,6 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
             body_lines.append("Enter your response below to resume this same task.")
     body = "\n".join(body_lines)
     permission_grant = execution_policy_view(task.extensions).get("permission_grant")
-    is_single_action_approval = (
-        input_type == "permission"
-        and request.get("scope") == APPROVAL_SCOPE
-        and bool(str(request.get("request_id") or "").strip())
-    )
     # The bounded detail is read from the durable approval receipt, never from
     # the input request, so report/status projections of ``agentbc.input`` keep
     # exposing only the short summary by default.
@@ -287,6 +314,10 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
                 )
             except ABCError:
                 reason_detail = ""
+    elif input_type == "permission":
+        # Full-fallback detail is carried by the current structured input only.
+        # Never reconstruct it from input history, reports or a truncated marker.
+        reason_detail = sanitize_reason_detail(request.get("reason_detail"))
     return {
         "task_id": task_id,
         "event_type": "task.input_required",
@@ -300,8 +331,14 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         "input_type": input_type,
         "input_kind": input_kind,
         "response_protocol": response_protocol,
-        "input_reason": str(request.get("reason") or ""),
-        "reason_summary": str(request.get("reason_summary") or request.get("summary") or ""),
+        "input_reason": (
+            summary
+            if input_type == "permission"
+            else str(request.get("reason") or "")
+        ),
+        "summary": summary,
+        "summary_truncated": summary_truncated,
+        "reason_summary": summary,
         "reason_detail": reason_detail,
         "input_options": input_options,
         "input_option_descriptions": option_descriptions,

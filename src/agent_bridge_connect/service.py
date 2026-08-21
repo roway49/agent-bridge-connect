@@ -743,6 +743,11 @@ class TaskService:
         task_id = task.id
         if _has_close_intent(task):
             return False
+        raw_input_details = (
+            dict(callback.get("input"))
+            if isinstance(callback, dict) and isinstance(callback.get("input"), dict)
+            else None
+        )
         validation = validate_callback_payload(callback, task_id, task.steps)
         if not validation.valid or validation.callback is None:
             permission_failure = self._permission_wait_failure_for_callback_validation(
@@ -775,10 +780,10 @@ class TaskService:
         if not summary:
             raise ABCError("invalid_agent_callback", "Agent callback summary is required")
         if final_state == "input_required":
-            raw_input_details = callback.get("input")
+            validated_input_details = callback.get("input")
             input_type = (
-                str(raw_input_details.get("type") or "").strip().lower()
-                if isinstance(raw_input_details, dict)
+                str(validated_input_details.get("type") or "").strip().lower()
+                if isinstance(validated_input_details, dict)
                 else ""
             )
             if input_type == "permission":
@@ -812,7 +817,12 @@ class TaskService:
                     execution_session,
                     "input_required",
                 )
-            return self._suspend_task_for_input(task, callback, summary)
+            return self._suspend_task_for_input(
+                task,
+                callback,
+                summary,
+                raw_input_details=raw_input_details,
+            )
         if not report_file:
             raise ABCError("invalid_agent_callback", "Agent callback report_file is required")
         existing_callback = (task.extensions or {}).get("agentbc.final_callback")
@@ -1357,6 +1367,8 @@ class TaskService:
         task: TaskModel,
         callback: dict[str, Any],
         summary: str,
+        *,
+        raw_input_details: dict[str, Any] | None = None,
     ) -> bool:
         """Persist one actionable wait without creating terminal artifacts."""
         from .reports import redact_secrets
@@ -1376,8 +1388,12 @@ class TaskService:
             if isinstance(item, dict) and item.get("status") == "blocked"
         ]
         blocked_step_id = _safe_blocked_step_id(blocked_results)
-        raw_input_details = callback.get("input")
-        input_details = raw_input_details if isinstance(raw_input_details, dict) else {}
+        validated_input_details = callback.get("input")
+        input_details = (
+            validated_input_details
+            if isinstance(validated_input_details, dict)
+            else {}
+        )
         input_type = str(input_details.get("type") or "message").strip().lower() or "message"
         input_choices = (
             [dict(option) for option in input_details.get("options", []) if isinstance(option, dict)]
@@ -1416,12 +1432,62 @@ class TaskService:
             )
         self.revoke_permission_grant(task.id, "input_superseded", model=task)
         extensions = dict(task.extensions or {})
+        is_full_fallback_permission = input_type == "permission" and not (
+            input_details.get("scope") == APPROVAL_SCOPE
+            and bool(str(input_details.get("request_id") or "").strip())
+        )
+        fallback_reason_summary = ""
+        fallback_summary_truncated = False
+        fallback_reason_detail = ""
+        if is_full_fallback_permission:
+            from .approval import normalize_reason_summary_details
+
+            # The validated callback keeps the compatibility reason bounded to
+            # 240 characters.  A detail may only come from this current
+            # structured callback, never from input history, logs or executor
+            # session storage.  Sanitization is fail-closed for private paths,
+            # argv, raw output and credential-bearing material.
+            raw_reason = str(
+                (raw_input_details or {}).get("reason") or input_reason
+            ).strip()
+            raw_detail_marker = (raw_input_details or {}).get("reason_detail")
+            if raw_detail_marker is not None:
+                fallback_reason_detail = sanitize_reason_detail(raw_detail_marker)
+            elif raw_reason and not (
+                len(raw_reason) == 240 and raw_reason.endswith("…")
+            ):
+                fallback_reason_detail = sanitize_reason_detail(raw_reason)
+
+            summary_source = input_reason or raw_reason
+            if summary_source and sanitize_reason_detail(summary_source):
+                (
+                    fallback_reason_summary,
+                    fallback_summary_truncated,
+                ) = normalize_reason_summary_details(
+                    summary_source,
+                    executor=task.assignee,
+                    operation="full permission",
+                )
+            else:
+                from .approval import core_bounded_summary_details
+
+                (
+                    fallback_reason_summary,
+                    fallback_summary_truncated,
+                ) = core_bounded_summary_details(
+                    executor=task.assignee,
+                    operation="full permission",
+                )
         request: dict[str, Any] = {
             "input_id": f"input-{uuid.uuid4().hex}",
             "executor_run_id": executor_run_id,
             "blocked_step_id": blocked_step_id,
             "type": input_type,
-            "summary": str(redact_secrets(summary)),
+            "summary": (
+                fallback_reason_summary
+                if is_full_fallback_permission
+                else str(redact_secrets(summary))
+            ),
             "created_at": created_at,
             "deadline_at": deadline_at,
             "status": "waiting",
@@ -1429,7 +1495,16 @@ class TaskService:
         if requested_permission:
             request["requested_permission"] = str(redact_secrets(requested_permission))
         if input_reason:
-            request["reason"] = str(redact_secrets(input_reason))
+            request["reason"] = (
+                fallback_reason_summary
+                if is_full_fallback_permission
+                else str(redact_secrets(input_reason))
+            )
+        if is_full_fallback_permission:
+            request["reason_summary"] = fallback_reason_summary
+            request["summary_truncated"] = fallback_summary_truncated
+            if fallback_reason_detail:
+                request["reason_detail"] = fallback_reason_detail
         if input_choices:
             request["options"] = [
                 str(redact_secrets(str(option.get("label") or "").strip()))
@@ -1821,6 +1896,7 @@ class TaskService:
             "operation": clean_operation,
             "summary": receipt["summary"],
             "reason_summary": clean_reason_summary,
+            "summary_truncated": bool(receipt.get("summary_truncated", False)),
             "created_at": now,
             "deadline_at": deadline_at,
             "status": "waiting",
