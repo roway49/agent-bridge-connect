@@ -25,7 +25,10 @@ class DialogNotifier:
         """Show a redacted macOS dialog and return its delivery result."""
         clean = redact_secrets(notification)
         event_type = str(clean.get("event_type", "notification"))
-        title = "Agent-Bridge-Connect"
+        # The compact bounded ``AgentBC · <Executor> · <Task ID>`` title travels
+        # only on the explicit ``dialog_title`` field so the generic payload
+        # ``title`` (if any) keeps being ignored exactly as before.
+        title = str(clean.get("dialog_title") or "Agent-Bridge-Connect")
         body = str(clean.get("message", ""))
         report_path = str(clean.get("report_path") or "").strip()
         input_type = str(clean.get("input_type") or "message").strip().lower()
@@ -145,18 +148,54 @@ class DialogNotifier:
     ) -> DeliveryResult:
         """Show the minimal Approve/Deny permission dialog with optional detail.
 
-        The decision view shows only the Core short summary.  ``View Details``
-        is a non-decision interaction: it opens a bounded read-only detail view
-        whose ``Back`` button returns to the decision view without responding,
-        changing input state, issuing a grant, or resetting the original
-        absolute deadline.  Closing either view or reaching the deadline
-        auto-denies with an auditable ``decision_source``; the default remains
-        Deny and no text response or third decision is introduced.
+        The decision view shows only the Core short summary plus sanitized
+        bounded identity facts: Task ID, bounded task title, Executor, blocked
+        step, and permission scope (``single_action`` or the ``full`` fallback).
+        ``View Details`` is a non-decision interaction: it opens a bounded
+        read-only detail view whose ``Back`` button returns to the decision view
+        without responding, changing input state, issuing a grant, or resetting
+        the original absolute deadline.  Closing either view or reaching the
+        deadline auto-denies with an auditable ``decision_source``; the default
+        remains Deny and no text response or third decision is introduced.
         """
         summary = str(clean.get("reason_summary") or clean.get("message") or "").strip()
         detail = str(clean.get("reason_detail") or "").strip()
         has_detail = bool(detail)
         deadline_at = str(clean.get("deadline_at") or "")
+        # Deterministic identity rendering: prefer the explicit sanitized bounded
+        # fields on the payload; fall back safely to the task id / generic facts
+        # so payloads carrying only identity context still show a readable view.
+        identity_task_id = str(clean.get("identity_task_id") or clean.get("task_id") or "").strip()
+        identity_title = str(clean.get("identity_task_title") or "").strip()
+        identity_executor = str(clean.get("identity_executor") or "").strip()
+        identity_blocked_step = str(clean.get("identity_blocked_step") or "").strip()
+        identity_scope = str(clean.get("identity_scope") or "").strip()
+        has_identity_context = bool(
+            identity_task_id or identity_title or identity_blocked_step or identity_scope
+        )
+        if has_identity_context:
+            if not identity_scope:
+                requested = str(clean.get("requested_permission") or "").strip().lower()
+                identity_scope = "full" if requested == "full" else "unknown"
+            if not identity_executor:
+                identity_executor = "unknown"
+            body_lines = []
+            if identity_task_id:
+                body_lines.append(f"Task: {identity_task_id}")
+            if identity_title:
+                body_lines.append(f"Title: {identity_title}")
+            if identity_blocked_step:
+                body_lines.append(f"Blocked step: {identity_blocked_step}")
+            if identity_scope:
+                body_lines.append(f"Permission scope: {identity_scope}")
+            body_lines.append(f"Executor: {identity_executor}")
+            body_lines.append("")
+            body_lines.append(summary)
+            decision_body = "\n".join(body_lines)
+        else:
+            # Keep the minimal legacy body byte-for-byte when the payload does
+            # not carry identity facts.
+            decision_body = summary
         while True:
             give_up_s = self._permission_give_up_seconds(deadline_at, dialog_timeout_s)
             if give_up_s <= 0:
@@ -172,7 +211,7 @@ class DialogNotifier:
             decision_script = self._permission_decision_script(give_up_s, has_detail)
             decision = self._run_script(
                 title,
-                summary,
+                decision_body,
                 decision_script,
                 give_up_s,
             )

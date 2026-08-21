@@ -287,10 +287,37 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
                 )
             except ABCError:
                 reason_detail = ""
+    # Sanitized bounded identity facts are carried explicitly on permission
+    # payloads so the macOS permission decision view can render them
+    # deterministically without querying private executor state.  Task ID, the
+    # bounded task title and the Executor label are all safe public facts; the
+    # scope distinguishes a single-action approval from the legacy full
+    # fallback continuation.  Non-permission inputs keep the generic title.
+    if input_type == "permission":
+        identity_task_id = compact_notification_text(task_id, 48)
+        identity_title = compact_notification_text(str(task.title or ""), 96)
+        executor_label = str(getattr(task, "assignee", "") or "").strip() or "unknown"
+        identity_blocked_step = compact_notification_text(
+            str(request.get("blocked_step_id") or ""), 24
+        )
+        if is_single_action_approval:
+            identity_scope = APPROVAL_SCOPE
+        elif str(request.get("requested_permission") or "").strip().lower() == "full":
+            identity_scope = "full"
+        else:
+            identity_scope = "unknown"
+        dialog_title = f"AgentBC · {executor_label} · {identity_task_id}"
+    else:
+        identity_task_id = ""
+        identity_title = ""
+        executor_label = ""
+        identity_blocked_step = ""
+        identity_scope = ""
+        dialog_title = "Agent-Bridge-Connect"
     return {
         "task_id": task_id,
         "event_type": "task.input_required",
-        "title": "Agent-Bridge-Connect",
+        "title": dialog_title,
         "level": "input",
         "message": body,
         "report_path": str(workspace.get("report_file") or ""),
@@ -324,6 +351,16 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         "approval_scope": (
             str(request.get("scope") or "") if is_single_action_approval else ""
         ),
+        # Sanitized bounded identity facts rendered deterministically by the
+        # macOS decision view.  These are safe public facts (never private paths,
+        # raw argv, tokens, or session content) and keep the generic-only title
+        # replaced by a compact ``AgentBC · <Executor> · <Task ID>`` title.
+        "dialog_title": dialog_title,
+        "identity_task_id": identity_task_id,
+        "identity_task_title": identity_title,
+        "identity_executor": executor_label,
+        "identity_blocked_step": identity_blocked_step,
+        "identity_scope": identity_scope,
     }
 
 
