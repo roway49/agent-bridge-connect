@@ -38,6 +38,7 @@ APPROVAL_DECISION_SOURCES = frozenset(
 APPROVAL_SUMMARY_LIMIT = 120
 APPROVAL_REASON_SUMMARY_LIMIT = 120
 APPROVAL_REASON_DETAIL_LIMIT = 2000
+SUMMARY_ELLIPSIS = "…"
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$")
 _OPERATION_RE = re.compile(r"^[^\x00-\x1f]{1,120}$")
@@ -227,7 +228,7 @@ def build_approval_receipt(
         "request_fingerprint": request_fingerprint,
         "kind": kind,
         "operation": operation,
-        "summary": summary,
+        "summary": "",
         "scope": scope,
         "created_at": created_at or _utc_now(),
         "state": {"status": "pending"},
@@ -237,12 +238,20 @@ def build_approval_receipt(
             "decided_at": "",
         },
     }
-    clean_reason_summary = normalize_reason_summary(
+    clean_summary, summary_was_truncated = _bounded_text_with_truncation(
+        summary,
+        APPROVAL_SUMMARY_LIMIT,
+    )
+    envelope["summary"] = clean_summary
+    clean_reason_summary, reason_summary_was_truncated = normalize_reason_summary_details(
         reason_summary,
         executor=executor,
         operation=operation,
     )
     clean_reason_detail = sanitize_reason_detail(reason_detail)
+    envelope["summary_truncated"] = bool(
+        summary_was_truncated or reason_summary_was_truncated
+    )
     if clean_reason_summary:
         envelope["reason_summary"] = clean_reason_summary
     if clean_reason_detail:
@@ -299,6 +308,12 @@ def validate_approval_receipt(
     _require_summary(receipt.get("summary"))
     _require_reason_summary(receipt.get("reason_summary"))
     _require_reason_detail(receipt.get("reason_detail"))
+    summary_truncated = receipt.get("summary_truncated")
+    if summary_truncated is not None and not isinstance(summary_truncated, bool):
+        _invalid(
+            "approval_summary_truncated_invalid",
+            "Approval receipt summary_truncated must be a boolean",
+        )
 
     executor_name = str(receipt.get("executor") or "").strip().lower()
     if not executor_name:
@@ -472,6 +487,7 @@ def approval_public_projection(value: Any) -> dict[str, Any]:
         "executor": receipt["executor"],
         "operation": receipt["operation"],
         "summary": receipt["summary"],
+        "summary_truncated": bool(receipt.get("summary_truncated", False)),
         "state": state["status"],
         "created_at": receipt["created_at"],
     }
@@ -524,15 +540,27 @@ def core_bounded_summary(
     and is intentionally short.  It never includes the permission prompt, the
     native tool input, command line, raw output, or secrets.
     """
+    return core_bounded_summary_details(
+        executor=executor,
+        operation=operation,
+        scope=scope,
+        kind=kind,
+    )[0]
+
+
+def _core_summary_text(
+    *,
+    executor: str,
+    operation: str,
+    kind: str,
+) -> str:
     name = str(executor or "").strip().lower() or "executor"
     op = str(operation or "").strip()
     if not op:
         op = "an action"
     if kind == APPROVAL_KIND:
-        text = f"{name} needs one-time permission for: {op}"
-    else:
-        text = f"{name} needs one-time approval for: {op}"
-    return _bound_text(text, APPROVAL_SUMMARY_LIMIT)
+        return f"{name} needs one-time permission for: {op}"
+    return f"{name} needs one-time approval for: {op}"
 
 
 def _redact_reason_text(value: str) -> str:
@@ -564,13 +592,28 @@ def normalize_reason_summary(
     no usable reason is supplied, Core falls back to the structured
     Executor/operation summary so the minimal dialog view always has text.
     """
+    return normalize_reason_summary_details(
+        value,
+        executor=executor,
+        operation=operation,
+    )[0]
+
+
+def normalize_reason_summary_details(
+    value: Any,
+    *,
+    executor: str = "",
+    operation: str = "",
+) -> tuple[str, bool]:
+    """Return the Core-compacted reason summary and its truncation state."""
     raw = str(value or "")
     text = _redact_reason_text(raw)
     text = _remove_control_characters(text)
     text = " ".join(text.split()).strip()
     if not text:
-        return core_bounded_summary(executor=executor, operation=operation)
-    return _bound_text(text, APPROVAL_REASON_SUMMARY_LIMIT)
+        fallback = core_bounded_summary_details(executor=executor, operation=operation)
+        return fallback
+    return _bounded_text_with_truncation(text, APPROVAL_REASON_SUMMARY_LIMIT)
 
 
 def sanitize_reason_detail(value: Any) -> str:
@@ -854,10 +897,35 @@ def _is_control_character(char: str) -> bool:
 
 
 def _bound_text(value: str, limit: int) -> str:
+    return _bounded_text_with_truncation(value, limit)[0]
+
+
+def _bounded_text_with_truncation(value: Any, limit: int) -> tuple[str, bool]:
+    """Normalize and bound one user-facing summary with explicit metadata."""
     text = " ".join(str(value or "").split())
     if len(text) <= limit:
-        return text
-    return text[: max(limit - 3, 0)].rstrip() + "..."
+        return text, False
+    if limit <= 0:
+        return "", True
+    if limit == 1:
+        return SUMMARY_ELLIPSIS, True
+    return text[: limit - 1].rstrip() + SUMMARY_ELLIPSIS, True
+
+
+def core_bounded_summary_details(
+    *,
+    executor: str,
+    operation: str,
+    scope: str = APPROVAL_SCOPE,
+    kind: str = APPROVAL_KIND,
+) -> tuple[str, bool]:
+    """Return the Core summary plus whether its bound removed content."""
+    text = _core_summary_text(
+        executor=executor,
+        operation=operation,
+        kind=kind,
+    )
+    return _bounded_text_with_truncation(text, APPROVAL_SUMMARY_LIMIT)
 
 
 def _invalid(code: str, message: str) -> None:
