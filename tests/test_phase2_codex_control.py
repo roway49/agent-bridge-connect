@@ -106,6 +106,31 @@ class BlockingFakeTransport:
                     }
                 )
             elif message.get("id") == 90:
+                callback = {
+                    "version": 1,
+                    "task_id": self.task_id,
+                    "final_state": "completed",
+                    "summary": "control-plane approval completed",
+                    "step_results": [{"id": 1, "status": "done"}],
+                }
+                self.queue.append(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": "thread-fake-1",
+                            "turnId": "turn-fake-1",
+                            "item": {
+                                "id": "item-agent-1",
+                                "type": "agentMessage",
+                                "text": (
+                                    "AGENTBC_FINAL_CALLBACK: "
+                                    + json.dumps(callback, separators=(",", ":"))
+                                ),
+                            },
+                        },
+                    }
+                )
                 self.queue.append(
                     {
                         "jsonrpc": "2.0",

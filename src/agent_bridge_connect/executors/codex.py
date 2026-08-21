@@ -719,7 +719,10 @@ class CodexExecutor(CLIExecutorBase):
         approval = {
             "type": "permission",
             "request_id": request_id,
+            "request_fingerprint": str(event.get("request_fingerprint") or ""),
             "kind": str(event.get("operation") or "permission"),
+            "operation": str(event.get("operation") or "permission"),
+            "summary": str(event.get("summary") or ""),
             "scope": "single_action",
             "session_id": str(event.get("session_id") or ""),
         }
@@ -855,7 +858,10 @@ class CodexExecutor(CLIExecutorBase):
             # App Server turn input.
             plane.gate.require_before_turn(official_thread_id)
             record["ready"].set()
-            prompt = _build_prompt(record["task_packet"])
+            prompt = _build_prompt(
+                record["task_packet"],
+                native_single_action=True,
+            )
             inputs: list[dict[str, Any]] = [
                 {"type": "localImage", "path": str(image)}
                 for image in task_image_paths(record["task_packet"])
@@ -875,16 +881,35 @@ class CodexExecutor(CLIExecutorBase):
             completed_turn = completed_params.get("turn") if isinstance(completed_params.get("turn"), dict) else {}
             turn_status = str(completed_turn.get("status") or "completed")
             plane.record_turn_completed(turn_id=str(completed_turn.get("id") or record.get("turn_id") or ""), status=turn_status)
+            agent_events = _app_server_agent_message_events(record["events"])
+            validation = extract_callback_validation_from_events(
+                agent_events,
+                record["task_packet"],
+                run_id,
+            )
+            terminal = route_executor_terminal(
+                validation,
+                0,
+                executor_name="codex",
+            )
             result = {
                 "events": list(record["events"]),
-                "summary": _extract_summary(record["events"]),
+                "summary": _extract_summary(agent_events),
                 "returncode": 0,
                 "execution_session": receipt,
+                "agent_callback": terminal.callback,
+                "marker_valid": validation.valid,
+                "marker_seen": validation.marker_seen,
+                "failure": terminal.failure,
                 "extensions": self.get_extensions(),
                 "control_events": plane.events(),
             }
             record["result"] = result
-            record["status"] = "completed" if turn_status in {"completed", "succeeded", "success"} else "failed"
+            record["status"] = (
+                terminal.status
+                if turn_status in {"completed", "succeeded", "success"}
+                else "failed"
+            )
             self._runs[run_id] = PollResult(
                 status=record["status"],
                 progress={"events_seen": len(record["events"])},
@@ -1152,8 +1177,22 @@ def _codex_writable_roots(task_packet: dict[str, Any], workspace_root: Path) -> 
     return roots
 
 
-def _build_prompt(task_packet: dict[str, Any]) -> str:
+def _build_prompt(
+    task_packet: dict[str, Any],
+    *,
+    native_single_action: bool = False,
+) -> str:
     """Build the Codex prompt: shared contract plus Codex platform notes."""
+    extra_rules: tuple[str, ...] = ()
+    if native_single_action:
+        extra_rules = (
+            "If an exact action explicitly declared by a task step is blocked by the native sandbox, "
+            "retry that identical command exactly once with the same cwd through Codex's native "
+            "sandbox_permissions=require_escalated single-action request. This does not change the "
+            "task permission mode and is not a full fallback. Never use it for progress updates, "
+            "diagnostics, an alternate command or path, persistent/session-wide access, or any "
+            "undeclared action; if the native request cannot be emitted, stop and report the blocker.",
+        )
     return build_prompt_contract(
         task_packet,
         PromptPlatformExtras(
@@ -1166,8 +1205,45 @@ def _build_prompt(task_packet: dict[str, Any]) -> str:
                 "return only prose or preview links."
             ),
             summary_line="After completing all steps, write a summary of what you did.",
+            extra_rules=extra_rules,
         ),
     )
+
+
+def _app_server_agent_message_events(
+    events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return only completed App Server agent messages for terminal parsing.
+
+    App Server also emits the user prompt as an item.  The prompt contains the
+    example final marker, so feeding every item into the generic callback
+    extractor creates a false duplicate.  ``item/completed`` is frozen in the
+    capability contract and supplies the authoritative full agent text.
+    """
+    selected: list[dict[str, Any]] = []
+    for event in events:
+        if str(event.get("event_type") or "") != "item/completed":
+            continue
+        payload = event.get("payload") if isinstance(event, dict) else None
+        item = payload.get("item") if isinstance(payload, dict) else None
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "").replace("_", "").lower()
+        text = item.get("text")
+        if item_type != "agentmessage" or not isinstance(text, str) or not text.strip():
+            continue
+        selected.append(
+            {
+                "event_type": "agent_message",
+                "source": "codex_app_server",
+                "sequence": len(selected) + 1,
+                "payload": {
+                    "type": "agent_message",
+                    "text": text,
+                },
+            }
+        )
+    return selected
 
 
 def _parse_jsonl(output: str | bytes) -> list[dict[str, Any]]:

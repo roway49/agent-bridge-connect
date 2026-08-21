@@ -1773,6 +1773,7 @@ class TaskService:
         reason: str = "",
         reason_detail: str = "",
         blocked_step_id: int | None = None,
+        execution_session: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Block the first incomplete step for one structured native approval request.
 
@@ -1799,6 +1800,13 @@ class TaskService:
 
         task = self.get_task(task_id)
         task_id = task.id
+        if execution_session is not None:
+            self._apply_executor_session_result(
+                task,
+                executor_run_id,
+                execution_session,
+                "input_required",
+            )
         chain = self.resolve_chain(task_id)
         if not chain.requested_is_head or len(chain.head_task_ids) != 1:
             raise ABCError(

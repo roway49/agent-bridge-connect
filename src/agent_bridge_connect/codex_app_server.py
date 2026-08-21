@@ -67,7 +67,7 @@ CODEX_APP_SERVER_CLIENT_METHODS = frozenset(
     {"initialize", "thread/start", "thread/resume", "turn/start"}
 )
 CODEX_APP_SERVER_REQUEST_METHODS = frozenset(APPROVAL_METHODS)
-CODEX_APP_SERVER_NOTIFICATIONS = frozenset({"turn/completed"})
+CODEX_APP_SERVER_NOTIFICATIONS = frozenset({"item/completed", "turn/completed"})
 
 # Schema-contract evidence, in the same order the generated bundle is checked.
 CODEX_APP_SERVER_SCHEMA_METHODS = frozenset(
@@ -81,6 +81,7 @@ CODEX_APP_SERVER_SCHEMA_METHODS = frozenset(
         "item/fileChange/requestApproval",
         "item/permissions/requestApproval",
         # v2 notifications (both versions)
+        "item/completed",
         "turn/completed",
     }
 )
@@ -185,11 +186,6 @@ def _schema_has_client_method(schema: dict[str, Any], method: str) -> bool:
     return False
 
 
-def _schema_has_turn_completed(schema: dict[str, Any]) -> bool:
-    """turn/completed lives under ServerNotification for both versions."""
-    return _schema_has_notification(schema, "turn/completed")
-
-
 def _schema_matches_contract(schema: dict[str, Any]) -> list[str]:
     """Return missing frozen surface names as a fail-closed reason list."""
     missing: list[str] = []
@@ -199,8 +195,9 @@ def _schema_matches_contract(schema: dict[str, Any]) -> list[str]:
     for method in CODEX_APP_SERVER_REQUEST_METHODS:
         if not _schema_has_request_method(schema, method):
             missing.append(method)
-    if not _schema_has_turn_completed(schema):
-        missing.append("turn/completed")
+    for method in CODEX_APP_SERVER_NOTIFICATIONS:
+        if not _schema_has_notification(schema, method):
+            missing.append(method)
     return missing
 
 

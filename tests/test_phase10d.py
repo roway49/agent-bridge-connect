@@ -2747,6 +2747,125 @@ class Phase10dIntegrationTests(unittest.TestCase):
         self.assertEqual(failed.errors[-1]["code"], "completion_marker_missing")
         self.assertNotIn("agentbc.final_callback", failed.extensions)
 
+    def test_worker_keeps_codex_native_approval_in_same_run(self):
+        from agent_bridge_connect.adapters import (
+            ExecutorCapabilities,
+            ExecutorLevel,
+            PollResult,
+            ProbeResult,
+            StartResult,
+        )
+        from agent_bridge_connect.adapters import ExecutorPort
+        from agent_bridge_connect.cli import command_worker_run
+
+        class NativeApprovalExecutor(ExecutorPort):
+            def __init__(self):
+                self.task_id = ""
+                self.approved = False
+                self.run_id = "codex-native-worker-run"
+                self.poll_run_ids: list[str] = []
+
+            def probe(self):
+                return ProbeResult(ok=True, message="ready")
+
+            def capabilities(self):
+                return ExecutorCapabilities(level=ExecutorLevel.L2)
+
+            def start(self, task_packet):
+                self.task_id = task_packet["task_id"]
+                return StartResult(ok=True, run_id=self.run_id, message="started")
+
+            def poll(self, run_id):
+                self.poll_run_ids.append(run_id)
+                receipt = {
+                    "version": 1,
+                    "executor": "codex",
+                    "session_id": "thread-native-worker-1",
+                    "resumed": False,
+                    "persistence": "persistent",
+                    "source": "jsonl_thread_started",
+                }
+                if not self.approved:
+                    return PollResult(
+                        status="input_required",
+                        result={
+                            "execution_session": receipt,
+                            "approval_request": {
+                                "type": "permission",
+                                "scope": "single_action",
+                                "request_id": "native-request-1",
+                                "request_fingerprint": "fp-" + "a" * 40,
+                                "session_id": "thread-native-worker-1",
+                                "operation": "command",
+                                "summary": "Command execution approval requested",
+                            },
+                        },
+                    )
+                return PollResult(
+                    status="completed",
+                    result={
+                        "execution_session": receipt,
+                        "returncode": 0,
+                        "summary": "same run completed",
+                        "agent_callback": {
+                            "version": 1,
+                            "task_id": self.task_id,
+                            "final_state": "completed",
+                            "summary": "same run completed",
+                            "step_results": [{"id": 1, "status": "done"}],
+                        },
+                    },
+                )
+
+        task = self.service.create_task(
+            "Codex native worker approval",
+            "codex",
+            [{"id": 1, "description": "approve once"}],
+            customer_dir=True,
+            customer_path=self.board.parent,
+            permission_mode="inherit",
+        )
+        executor = NativeApprovalExecutor()
+        notices: list[str] = []
+
+        def respond_in_process(service, task_id, **_kwargs):
+            current = service.get_task(task_id)
+            waiting = current.extensions["agentbc.input"]
+            service.respond_to_input(
+                task_id,
+                waiting["input_id"],
+                response_type="approve",
+            )
+            executor.approved = True
+            notices.append(str(waiting["request_id"]))
+            return {"dialog_action": "approve", "response": {"same_session": True}}
+
+        with (
+            mock.patch("agent_bridge_connect.cli.get_executor", return_value=executor),
+            mock.patch(
+                "agent_bridge_connect.cli._notify_input_required",
+                side_effect=respond_in_process,
+            ),
+        ):
+            code = command_worker_run(
+                mock.Mock(
+                    root=self.board,
+                    executor="codex",
+                    once=True,
+                    interval=0.01,
+                    config=None,
+                )
+            )
+        completed = self.service.get_task(task.id)
+        self.assertEqual(code, 0)
+        self.assertEqual(completed.status, "completed")
+        self.assertEqual(notices, ["native-request-1"])
+        self.assertEqual(set(executor.poll_run_ids), {executor.run_id})
+        self.assertEqual(
+            completed.extensions["agentbc.session"]["session_id"],
+            "thread-native-worker-1",
+        )
+
     @mock.patch("agent_bridge_connect.executors.codex.subprocess.run")
     def test_codex_allows_non_git_workspaces(self, run):
         from agent_bridge_connect.executors.codex import CodexExecutor

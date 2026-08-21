@@ -37,6 +37,7 @@ from agent_bridge_connect.control import (
     ApprovalControlPlane,
     ControlPlaneError,
     approval_response_payload,
+    normalize_approval_request,
 )
 from agent_bridge_connect.execution_policy import build_session_snapshot
 from agent_bridge_connect.executors.codex import CodexExecutor
@@ -124,6 +125,26 @@ class SchemaContractTests(unittest.TestCase):
         )
         self.assertFalse(result["ok"])
         self.assertIn("item/permissions/requestApproval", result["schema_missing"])
+
+    def test_missing_item_completed_fails_closed(self) -> None:
+        for version in ("0.146.0", "0.147.0"):
+            with self.subTest(version=version):
+                bundle = load_contract_fixture(version)
+                definitions = bundle["definitions"]
+                for name in list(definitions):
+                    if name.startswith("ServerNotification"):
+                        definitions[name] = json.loads(
+                            json.dumps(definitions[name]).replace(
+                                '"item/completed"', '"item/removed"'
+                            )
+                        )
+                result = codex_app_server_contract(
+                    "/tmp/fake-codex",
+                    version_output=f"codex-cli {version}",
+                    schema_bundle=bundle,
+                )
+                self.assertFalse(result["ok"])
+                self.assertIn("item/completed", result["schema_missing"])
 
     def test_malformed_bundle_fails_closed(self) -> None:
         result = codex_app_server_contract(
@@ -220,7 +241,14 @@ class CapabilityGateTests(unittest.TestCase):
 class BlockingFakeTransport:
     """Deterministic in-memory App Server transport for both version surfaces."""
 
-    def __init__(self, board: Path, task_id: str, *, version: str = "0.146.0") -> None:
+    def __init__(
+        self,
+        board: Path,
+        task_id: str,
+        *,
+        version: str = "0.146.0",
+        emit_callback: bool = True,
+    ) -> None:
         self.board = board
         self.task_id = task_id
         self.version = version
@@ -230,6 +258,7 @@ class BlockingFakeTransport:
         self.closed = False
         self.receipt_before_turn = False
         self.approval_count = 0
+        self.emit_callback = emit_callback
 
     def start(self) -> None:
         return None
@@ -270,6 +299,21 @@ class BlockingFakeTransport:
                 self.queue.append(
                     {
                         "jsonrpc": "2.0",
+                        "method": "item/completed",
+                        "params": {
+                            "threadId": "thread-fake-1",
+                            "turnId": "turn-fake-1",
+                            "item": {
+                                "id": "item-user-1",
+                                "type": "userMessage",
+                                "text": "AGENTBC_FINAL_CALLBACK: prompt example only",
+                            },
+                        },
+                    }
+                )
+                self.queue.append(
+                    {
+                        "jsonrpc": "2.0",
                         "id": 90,
                         "method": "item/commandExecution/requestApproval",
                         "params": {
@@ -282,6 +326,32 @@ class BlockingFakeTransport:
                 )
             elif message.get("id") == 90:
                 self.approval_count += 1
+                if self.emit_callback:
+                    callback = {
+                        "version": 1,
+                        "task_id": self.task_id,
+                        "final_state": "completed",
+                        "summary": "app server callback accepted",
+                        "step_results": [{"id": 1, "status": "done"}],
+                    }
+                    self.queue.append(
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "item/completed",
+                            "params": {
+                                "threadId": "thread-fake-1",
+                                "turnId": "turn-fake-1",
+                                "item": {
+                                    "id": "item-agent-1",
+                                    "type": "agentMessage",
+                                    "text": (
+                                        "done\nAGENTBC_FINAL_CALLBACK: "
+                                        + json.dumps(callback, separators=(",", ":"))
+                                    ),
+                                },
+                            },
+                        }
+                    )
                 self.queue.append(
                     {
                         "jsonrpc": "2.0",
@@ -433,6 +503,92 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
         )
         self.assertEqual(result.result["execution_session"]["session_id"], "thread-fake-1")
         self.assertFalse(result.result["execution_session"]["resumed"])
+        self.assertTrue(result.result["marker_valid"])
+        self.assertEqual(
+            result.result["agent_callback"]["summary"],
+            "app server callback accepted",
+        )
+
+    def test_completed_turn_without_agent_marker_fails(self) -> None:
+        fake = BlockingFakeTransport(
+            self.board,
+            self.task_id,
+            emit_callback=False,
+        )
+        executor = self._executor(fake)
+        with (
+            mock.patch.object(executor, "_start_run_lease"),
+            mock.patch.object(executor, "_suspend_run"),
+            mock.patch.object(executor, "_resume_run"),
+            mock.patch.object(executor, "_close_run_lease"),
+        ):
+            started = executor.start(self._packet())
+            self.assertEqual(
+                self._wait_status(executor, started.run_id, {"input_required"}),
+                "input_required",
+            )
+            approval = executor.poll(started.run_id).result["approval_request"]
+            self._plane(started.run_id).respond_approval(
+                self.task_id,
+                started.run_id,
+                "thread-fake-1",
+                approval["request_id"],
+                "decline",
+            )
+            status = self._wait_status(
+                executor,
+                started.run_id,
+                {"completed", "needs_recovery", "failed"},
+            )
+            result = executor.poll(started.run_id)
+        self.assertEqual(status, "failed")
+        self.assertEqual(
+            result.result["failure"]["kind"],
+            "completion_marker_missing",
+        )
+
+    def test_native_request_fingerprint_is_content_derived_and_redacted(self) -> None:
+        first = normalize_approval_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "item/commandExecution/requestApproval",
+                "params": {
+                    "threadId": "thread-fake-1",
+                    "turnId": "turn-1",
+                    "itemId": "item-1",
+                    "command": ["git", "switch", "-c", "probe-a"],
+                    "reason": "write /private/secret/path using token=raw-secret",
+                },
+            },
+            task_id=self.task_id,
+            executor_run_id="run-1",
+            session_id="thread-fake-1",
+        )
+        second = normalize_approval_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 8,
+                "method": "item/commandExecution/requestApproval",
+                "params": {
+                    "threadId": "thread-fake-1",
+                    "turnId": "turn-1",
+                    "itemId": "item-2",
+                    "command": ["git", "switch", "-c", "probe-b"],
+                },
+            },
+            task_id=self.task_id,
+            executor_run_id="run-1",
+            session_id="thread-fake-1",
+        )
+        self.assertNotEqual(first.request_fingerprint, second.request_fingerprint)
+        persisted = json.dumps(first.to_dict())
+        self.assertNotIn("probe-a", persisted)
+        self.assertNotIn('"params"', persisted)
+        self.assertNotIn('"argv"', persisted)
+        self.assertNotIn('"switch"', persisted)
+        self.assertNotIn("/private/secret/path", persisted)
+        self.assertNotIn("raw-secret", persisted)
 
     def test_deny_returns_decision_to_same_session(self) -> None:
         fake = BlockingFakeTransport(self.board, self.task_id)
@@ -661,6 +817,94 @@ class RunnerCapabilityValidationTests(unittest.TestCase):
         )
 
     TASK_ID = "AB7C-001"
+
+    def test_single_action_response_keeps_live_worker_and_session(self) -> None:
+        service = TaskService(
+            self.board,
+            config={"workspace_root": str(self.root), "permission_mode": "inherit"},
+        )
+        task = service.create_task(
+            "native response bridge",
+            "codex",
+            [{"id": 1, "description": "request one action"}],
+            customer_dir=True,
+            customer_path=self.root,
+            permission_mode="inherit",
+        )
+        run_id = "codex-native-run-1"
+        service.start_task_run(task.id, "codex")
+        service.record_executor_run_started(task.id, run_id)
+        receipt = {
+            "version": 1,
+            "executor": "codex",
+            "session_id": "thread-native-1",
+            "resumed": False,
+            "persistence": "persistent",
+            "source": "jsonl_thread_started",
+        }
+        plane = ApprovalControlPlane(
+            control_root_for_task(task.id, board_root=self.board),
+            task_id=task.id,
+            executor_run_id=run_id,
+            session_id="thread-native-1",
+        )
+        plane.record_session_started(receipt)
+        event = plane.request_approval(
+            {
+                "jsonrpc": "2.0",
+                "id": 77,
+                "method": "item/commandExecution/requestApproval",
+                "params": {
+                    "threadId": "thread-native-1",
+                    "turnId": "turn-native-1",
+                    "itemId": "item-native-1",
+                    "command": ["git", "switch", "-c", "probe"],
+                },
+            }
+        )
+        blocked = service.block_task_for_approval(
+            task.id,
+            executor_run_id=run_id,
+            session_id="thread-native-1",
+            request_id="77",
+            request_fingerprint=str(event["request_fingerprint"]),
+            executor="codex",
+            operation="command",
+            execution_session=receipt,
+        )
+        with (
+            mock.patch(
+                "agent_bridge_connect.config.load_config",
+                return_value={
+                    "workspace_root": str(self.root),
+                    "permission_mode": "inherit",
+                },
+            ),
+            mock.patch.object(self.state, "dispatch_worker") as dispatch_worker,
+        ):
+            result = self.state.respond_and_dispatch(
+                {
+                    "task_id": task.id,
+                    "input_id": blocked["input_id"],
+                    "response_type": "approve",
+                    "message": "",
+                    "board_root": str(self.board),
+                    "config_path": "",
+                    "interval_s": 0.01,
+                }
+            )
+        dispatch_worker.assert_not_called()
+        self.assertFalse(result["dispatch_required"])
+        self.assertTrue(result["same_session"])
+        self.assertEqual(result["native_response"]["decision"], "accept")
+        response = plane.wait_for_decision("77", 0.1)
+        self.assertEqual(response["decision"], "accept")
+        resumed = service.get_task(task.id)
+        self.assertEqual(resumed.status, "running")
+        self.assertEqual(
+            resumed.extensions["agentbc.session"]["session_id"],
+            "thread-native-1",
+        )
 
     def _packet(
         self,

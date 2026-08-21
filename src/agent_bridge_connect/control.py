@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
+from .approval import compute_request_fingerprint
 from .session import (
     SessionFirstGate,
     SessionRecoveryRequired,
@@ -111,6 +112,7 @@ class ControlEvent:
 @dataclass(frozen=True)
 class ApprovalRequest:
     request_id: str
+    request_fingerprint: str
     rpc_id: Any
     task_id: str
     executor_run_id: str
@@ -127,6 +129,7 @@ class ApprovalRequest:
     def to_dict(self) -> dict[str, Any]:
         value: dict[str, Any] = {
             "request_id": self.request_id,
+            "request_fingerprint": self.request_fingerprint,
             "task_id": self.task_id,
             "executor_run_id": self.executor_run_id,
             "session_id": self.session_id,
@@ -176,12 +179,22 @@ def normalize_approval_request(
         default_summary = "File change approval requested"
     else:
         default_summary = "Permission profile approval requested"
-    summary = _bounded_text(params.get("reason") or params.get("message") or default_summary)
+    # The App Server reason/message may embed argv, absolute paths or other
+    # tool input.  Raw params participate only in the request fingerprint;
+    # durable/public state gets an operation-level summary.
+    summary = default_summary
     requested = params.get("permissions") if operation == "permissions" else {}
     if not isinstance(requested, dict):
         requested = {}
     return ApprovalRequest(
         request_id=request_id,
+        request_fingerprint=compute_request_fingerprint(
+            executor="codex",
+            session_id=str(session_id),
+            tool_name=operation,
+            tool_input=params,
+            extra={"method": method},
+        ),
         rpc_id=message.get("id"),
         task_id=str(task_id),
         executor_run_id=str(executor_run_id),
@@ -438,6 +451,7 @@ class ApprovalControlPlane:
                         "kind": request.kind,
                         "operation": request.operation,
                         "scope": "single_action",
+                        "request_fingerprint": request.request_fingerprint,
                         "summary": request.summary,
                         "turn_id": request.turn_id,
                         "item_id": request.item_id,

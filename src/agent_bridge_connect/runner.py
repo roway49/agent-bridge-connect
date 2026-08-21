@@ -1683,6 +1683,20 @@ class RunnerState:
                 )
                 self._refresh_task_list_dashboard(board)
                 raise RunnerError(f"input deadline expired for task {task_id}")
+            waiting_task = service.get_task(task_id)
+            waiting_extensions = (
+                waiting_task.extensions
+                if isinstance(waiting_task.extensions, dict)
+                else {}
+            )
+            waiting_input = waiting_extensions.get(PHASE6_INPUT_EXTENSION_KEY)
+            native_approval = (
+                waiting_input
+                if isinstance(waiting_input, dict)
+                and waiting_input.get("scope") == "single_action"
+                and bool(str(waiting_input.get("request_id") or "").strip())
+                else None
+            )
             try:
                 result = service.respond_to_input(
                     task_id,
@@ -1692,6 +1706,77 @@ class RunnerState:
                 )
             except ABCError as exc:
                 raise RunnerError(f"{exc.code}: {exc}") from exc
+            if native_approval is not None:
+                resumed_task = service.get_task(task_id)
+                resumed_extensions = (
+                    resumed_task.extensions
+                    if isinstance(resumed_task.extensions, dict)
+                    else {}
+                )
+                session = resumed_extensions.get(SESSION_EXTENSION_KEY)
+                session_id = (
+                    str(session.get("session_id") or "")
+                    if isinstance(session, dict)
+                    else ""
+                )
+                executor_run_id = str(
+                    native_approval.get("executor_run_id") or ""
+                )
+                decision = (
+                    "accept"
+                    if str(result.get("approval_decision") or "") == "approve"
+                    else "decline"
+                )
+                try:
+                    native_response = self.respond_approval(
+                        {
+                            "task_id": task_id,
+                            "executor": resumed_task.assignee,
+                            "executor_run_id": executor_run_id,
+                            "session_id": session_id,
+                            "request_id": str(
+                                native_approval.get("request_id") or ""
+                            ),
+                            "decision": decision,
+                            "board_root": str(board),
+                        }
+                    )
+                except RunnerError as exc:
+                    service.mark_task_needs_recovery(
+                        task_id,
+                        "approval_control_response_failed",
+                        str(exc),
+                        {
+                            "input_id": result.get("input_id", ""),
+                            "request_id": native_approval.get("request_id", ""),
+                            "executor": resumed_task.assignee,
+                            "phase": "same_process_response",
+                        },
+                        executor_run_id=executor_run_id,
+                    )
+                    write_report_files(task_id, board)
+                    notify_terminal(
+                        service,
+                        task_id,
+                        "task.recovery_required",
+                        "warning",
+                        f"Native approval response failed: {exc}",
+                    )
+                    self._refresh_task_list_dashboard(board)
+                    raise
+                self._ensure_task_list_dashboard(board, task_id=task_id)
+                return {
+                    **result,
+                    "task_id": task_id,
+                    "status": "running",
+                    "same_task": True,
+                    "same_session": True,
+                    "dispatch_required": False,
+                    "native_response": {
+                        "request_id": str(native_response.get("request_id") or ""),
+                        "decision": str(native_response.get("decision") or decision),
+                    },
+                }
             if not result.get("dispatch_required"):
                 if result.get("resource_terminated"):
                     failure = result.get("failure") or {}

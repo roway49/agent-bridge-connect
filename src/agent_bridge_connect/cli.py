@@ -1513,13 +1513,127 @@ def command_worker_run(args: argparse.Namespace) -> int:
             executor_started = True
             service.update_execution_metadata(task.id, {"executor_run_id": start.run_id})
 
+            notified_approval_requests: set[str] = set()
+            execution_session: dict[str, Any] | None = None
             while True:
                 poll = executor.poll(start.run_id)
-                if poll.status in ("completed", "cancelled", "input_required", "needs_recovery", "failed", "needs_review"):
-                    break
-                time.sleep(max(args.interval, 0.1))
+                terminal_statuses = {
+                    "completed",
+                    "cancelled",
+                    "input_required",
+                    "needs_recovery",
+                    "failed",
+                    "needs_review",
+                }
+                if poll.status not in terminal_statuses:
+                    time.sleep(max(args.interval, 0.1))
+                    continue
 
-            execution_session = poll.result.get("execution_session")
+                execution_session = poll.result.get("execution_session")
+                if manages_executor_session:
+                    try:
+                        execution_session = service.validate_executor_session_result(
+                            task.id,
+                            start.run_id,
+                            execution_session,
+                        )
+                    except ABCError as exc:
+                        recovery_marked = service.mark_task_needs_recovery(
+                            task.id,
+                            exc.code,
+                            str(exc),
+                            {"executor": args.executor, "phase": "session_receipt"},
+                        )
+                        if recovery_marked:
+                            _write_terminal_report(task.id, service.board_root)
+                            _notify_terminal(
+                                service,
+                                task.id,
+                                "task.recovery_required",
+                                "warning",
+                                str(exc),
+                            )
+                        _request_task_list_refresh(service.board_root)
+                        print(f"worker_error: executor session receipt failed for {task.id}: {exc}")
+                        return 1
+                else:
+                    execution_session = None
+
+                approval_request = poll.result.get("approval_request")
+                is_native_approval = (
+                    poll.status == "input_required"
+                    and isinstance(approval_request, dict)
+                    and approval_request.get("scope") == "single_action"
+                    and bool(str(approval_request.get("request_id") or "").strip())
+                )
+                if is_native_approval:
+                    request_id = str(approval_request.get("request_id") or "").strip()
+                    if request_id not in notified_approval_requests:
+                        try:
+                            blocked = service.block_task_for_approval(
+                                task.id,
+                                executor_run_id=start.run_id,
+                                session_id=str(approval_request.get("session_id") or ""),
+                                request_id=request_id,
+                                request_fingerprint=str(
+                                    approval_request.get("request_fingerprint") or ""
+                                ),
+                                executor=args.executor,
+                                operation=str(
+                                    approval_request.get("operation")
+                                    or approval_request.get("kind")
+                                    or "permission"
+                                ),
+                                summary=str(approval_request.get("summary") or ""),
+                                reason=str(approval_request.get("summary") or ""),
+                                reason_detail=str(approval_request.get("summary") or ""),
+                                execution_session=execution_session,
+                            )
+                        except ABCError as exc:
+                            recovery_marked = service.mark_task_needs_recovery(
+                                task.id,
+                                exc.code,
+                                str(exc),
+                                {
+                                    "executor": args.executor,
+                                    "phase": "native_approval_block",
+                                    "request_id": request_id,
+                                },
+                                executor_run_id=start.run_id,
+                                execution_session=execution_session,
+                            )
+                            if recovery_marked:
+                                _write_terminal_report(task.id, service.board_root)
+                                _notify_terminal(
+                                    service,
+                                    task.id,
+                                    "task.recovery_required",
+                                    "warning",
+                                    str(exc),
+                                )
+                            _request_task_list_refresh(service.board_root)
+                            print(f"worker_error: native approval failed for {task.id}: {exc}")
+                            return 1
+                        notified_approval_requests.add(request_id)
+                        _notify_input_required(
+                            service,
+                            task.id,
+                            config_path=getattr(args, "config", None),
+                            interval_s=getattr(args, "interval", 2),
+                        )
+                        _request_task_list_refresh(service.board_root)
+                        print(
+                            f"input_required: {task.id} "
+                            f"request={blocked.get('request_id', request_id)}"
+                        )
+                    # The App Server thread remains alive while the same native
+                    # request waits.  A dialog or CLI response writes the
+                    # accept/decline decision through Runner; never finalize or
+                    # launch a second worker from this transient poll state.
+                    time.sleep(max(args.interval, 0.1))
+                    continue
+                break
+
             if manages_executor_session:
                 try:
                     execution_session = service.validate_executor_session_result(
