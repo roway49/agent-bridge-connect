@@ -6,6 +6,9 @@ This page contains only the Public Alpha deployment flow. Task, Runner,
 recovery, and uninstall commands are documented in the
 [User Guide](USER_GUIDE.md).
 
+The internal development candidate is **1.0.3A** (Python package `1.0.3a1`).
+The published installation commands below intentionally remain on 1.0.2A.
+
 ## 1. Check Requirements
 
 - macOS on Apple Silicon or Intel;

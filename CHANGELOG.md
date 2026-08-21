@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.0.3A - 2026-08-21
+
+> Python package `1.0.3a1` is an internal development candidate. The public
+> current release remains `1.0.2A` until the full publication gates pass.
+
+### Added
+
+- Unified permission registry and capability mapping for Codex, Claude, and
+  Hermes while preserving `inherit` as the default behavior.
+- Structured single-action approval receipts, bounded permission details, and
+  official early-session handshakes across the three supported executors.
+- Production-gated Codex app-server approval transport for the verified
+  `0.146.0` and `0.147.0` protocol surfaces, with the existing one-time full
+  continuation retained as a compatibility fallback.
+- Stable permission/session failure taxonomy carried inside the compatible
+  `permission_resume_session_unavailable` envelope.
+
+### Changed
+
+- Permission dialogs use a minimal summary with separately bounded, redacted
+  details; close and timeout continue to deny.
+- Legacy permission cutover and supported-update preflight remain fail closed
+  when old-channel tasks require recovery.
+
+### Validation
+
+- Mac mini Integration: 110 focused permission regressions and 1229 full tests
+  passed with Ruff, compileall, and `git diff --check`.
+- Intel MacBook source gate: package smoke, 140 focused permission regressions,
+  and 1229 full tests passed on Python 3.10 using an isolated HOME.
+
 ## 1.0.2A - 2026-08-14
 
 > Development is closed for Python package `1.0.2a1`. Publication remains

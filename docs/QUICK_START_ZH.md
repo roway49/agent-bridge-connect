@@ -5,6 +5,9 @@
 本文只保留 Public Alpha 的基础部署流程。任务、Runner、恢复和卸载命令统一见
 [用户指南](USER_GUIDE_ZH.md)。
 
+内部开发候选为 **1.0.3A**（Python 包 `1.0.3a1`）；下方公开安装命令仍有意固定在
+1.0.2A。
+
 ## 1. 检查环境要求
 
 - Apple Silicon 或 Intel 芯片的 macOS；
