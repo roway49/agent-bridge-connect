@@ -527,14 +527,15 @@ mock 通过不能替代真实 CLI；真实任务成功也不能替代源码、�
 - setup 默认权限 `inherit`、retention `false`；
 - `task delete` 内置 `y/N` 确认并保护 customer project。
 
-### 1.0.3A：剩余开发主线
+### 1.0.3A：剩余发布验收主线
 
 - 权限设置、三 Executor approval/session、弹窗与 Claude 临时工程文件级能力已经收口；默认
   `inherit`、已有配置保留和 handoff 继承逻辑保持不变；
-- `agentbc update` 自动检查版本并在发现新版后以 `y/N` 询问升级；Alpha 不提供公开 rollback
-  命令；
-- Homebrew 安装、升级、卸载与现有 PyPI/local bundle 迁移；
-- 只补 update/Homebrew 所需的定向测试和发布证据，不再扩大本版权限与 progress 代码范围。
+- `agentbc update` 的 manifest/hash 校验、`y/N`、受管 venv 原子切换、Runner/Skill identity 复验
+  与内部失败恢复已实现；Alpha 不提供公开 rollback 命令；
+- Homebrew Formula 生成与发布资产接线已实现；剩余真实 release 资产升级故障注入，以及 Apple
+  Silicon/Intel 的安装、升级、卸载、services、PATH 和现有 PyPI/local bundle 迁移；
+- 只补 RC 所需的可复现发布证据，不再扩大本版权限、progress、update 或 packaging 功能范围。
 
 详细合同只在 `AGENTBC_1.0.3A_DEVELOPMENT_CHECKLIST.md` 维护，避免手册再次复制 Phase 计划。
 
