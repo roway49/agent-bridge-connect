@@ -101,6 +101,16 @@ class ClaudeControlCommandTests(unittest.TestCase):
         self.root = Path(self.temporary.name).resolve()
         self.project = self.root / "customer"
         self.project.mkdir()
+        self.claude_project = (
+            self.root
+            / "workspace"
+            / "tasks"
+            / "artifacts"
+            / "2026-08-10"
+            / "ABCD"
+            / "ABCD-001"
+            / "claude"
+        )
         self.session_id = str(uuid.uuid4())
 
     def _packet(self) -> dict:
@@ -114,7 +124,7 @@ class ClaudeControlCommandTests(unittest.TestCase):
                 "root": str(self.project),
                 "project_root": str(self.project),
                 "default_path": str(self.project),
-                "executor_project_root": str(self.project / "claude"),
+                "executor_project_root": str(self.claude_project),
                 "agentbc_root": str(self.root / "workspace"),
                 "artifact_root": str(self.project),
                 "report_root": str(self.root / "workspace" / "tasks" / "report"),
@@ -139,7 +149,7 @@ class ClaudeControlCommandTests(unittest.TestCase):
                     "session_id": self.session_id,
                     "session_state": "pending",
                     "project_mode": "ephemeral",
-                    "project_path": str(self.project / "claude"),
+                    "project_path": str(self.claude_project),
                     "run_ids": [],
                 },
                 "agentbc.permission": {

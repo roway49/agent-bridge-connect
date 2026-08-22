@@ -24,6 +24,7 @@ from .effective_permissions import (
     validate_temporary_permission_context,
 )
 from .control import ApprovalControlPlane, ControlPlaneError, normalize_decision
+from .claude_path_capability import assert_claude_path_capability_command
 from .execution_policy import (
     RESOURCE_EXTENSION_KEY,
     SESSION_EXTENSION_KEY,
@@ -2464,7 +2465,24 @@ class RunnerState:
                 f"{executor} runner requires one of: {', '.join(sorted(required_any))}"
             )
         try:
-            validate_permission_command(executor, command, permission)
+            claude_capability = None
+            if executor == "claude":
+                claude_capability = assert_claude_path_capability_command(
+                    command,
+                    persisted_task,
+                    execution_root=cwd,
+                )
+            validate_permission_command(
+                executor,
+                command,
+                permission,
+                authorized_claude_settings=(
+                    str(claude_capability["settings_json"])
+                    if claude_capability is not None
+                    else None
+                ),
+                authorized_claude_add_dir=claude_capability is not None,
+            )
         except ABCError as exc:
             raise RunnerError(f"{exc.code}: {exc}") from exc
 

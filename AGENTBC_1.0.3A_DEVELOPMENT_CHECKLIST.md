@@ -1,12 +1,12 @@
 # AgentBC 1.0.3A 需求开发清单
 
 > 制定日期：2026-08-11  
-> 最近整理：2026-08-20
-> 状态：开发进行中；Phase 0～1 已完成，Phase 2 进行中
+> 最近整理：2026-08-22
+> 状态：权限开发已收口；`FLOW-103-001` 等四项已延期，当前主线转入 update 与 Homebrew
 > 目标版本：`v1.0.3A`  
 > 来源基线：`1.0.2A` 开发截止代码 `b8af2f3a0a1f56814854e3f46056dd8ab9cf55d7`
 > 计划开发起点：`private/integration@fc2f3f19d18d1c23890ee02a4ee9600c36456a60`
-> 当前集成快照：`private/integration@a383bcfc70fe4dabbb96303c729bd25cc69821df`
+> 当前集成基线：`private/integration@fb96101`；`PERM-103-007` 收尾提交待本轮回归后记录
 > 前置条件：`1.0.2A` 最终发布身份与双机 Gate 完成；Phase 0 只读契约盘点可提前进行
 > 架构依据：`AGENTBC_ALPHA_DEVELOPMENT_HANDBOOK.md`
 
@@ -21,11 +21,11 @@ Task 的冻结权限，同 Task retry/recover/input resume 继续使用原快照
 事件；不能继续依赖 Agent 在最终自然语言中主动填写 marker，也不能因为 Executor 没有
 TTY 而等待 60/120 秒后静默拒绝。
 
-版本边界已冻结：权限映射与审计、权限审批弹窗及其 Adapter/Core/Runner 协议、资源耗尽时
-权威 step progress、交互式 update 和 Homebrew 由 `1.0.3A` 承担，不再回填已截止的
+版本边界已冻结：权限映射与审计、权限审批弹窗及其 Adapter/Core/Runner 协议、交互式
+update 和 Homebrew 由 `1.0.3A` 承担，不再回填已截止的
 `1.0.2A`。“在首次工具审批前交付 session receipt”的早期 handshake 仍属于本版。完整
-Executor 协议 fixture matrix 与模块局部重构延期到 `1.0.4A`，本版只保留支撑新增合同所需
-的定向 fixture 和 characterization tests。
+Executor 协议 fixture matrix、模块局部重构、资源耗尽权威 progress receipt 和审批机械判定
+延期到 `1.0.4A`，本版只保留支撑已交付合同所需的定向 fixture 和 characterization tests。
 
 ## 1. 当前问题与责任边界
 
@@ -62,12 +62,13 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 | `PERM-103-007` | P0 | Claude 临时工程写权限仍依赖 Prompt 约束 | `KXNX-001` 曾把交付物写入临时 cwd | 文件级 capability 与 Artifact root 分权 |
 | `PERM-103-008` | P1，条件性补全 | permission/session 合同失败被折叠为同一错误，难以区分 mode、receipt、run、lease、chain 与 resume 原因 | `R8KP-004` 的 `inherit` mode gate 与后续缺失 session resume 使用了相近的 session unavailable 表述 | 拆分稳定错误类型、详情与回归断言；不改变现有权限语义 |
 | `PERM-103-009` | P1，条件性补全 | Codex single-action 控制代码尚未成为生产默认路径，CLI transport 仍会回退到 continuation/full 模型 | `R8KP-004` 在 linked worktree commit 阻塞后无法形成可恢复的原生单动作审批 | 评估并打通 Codex app-server single-action 生产链；未完成时继续使用 1.0.3A 一次性 full 兜底 |
-| `FLOW-103-001` | P0 | 系统资源耗尽覆盖 callback 时低估已完成 step | `BTCN-001` 实际完成 2 个 step，终态报告显示 `0/4` | Runner/Core 权威 progress receipt 与单调合并 |
+| `FLOW-103-001` | 延期至 1.0.4A | 系统资源耗尽覆盖 callback 时低估已完成 step | `BTCN-001` 实际完成 2 个 step，终态报告显示 `0/4` | 与结构化多 steps 和局部重构一并实现 Runner/Core 权威 progress receipt；1.0.3A 不修改状态机 |
 | `UPD-103-001` | P1 | Alpha 缺少低心智负担的更新入口 | 1.0.2A 依赖手工 bundle 替换 | `agentbc update` 自动检查并以 `y/N` 确认升级；不提供 rollback 命令 |
 | `PKG-103-001` | P1 | Homebrew 尚无正式 formula/cask Gate | 1.0.2A 只有 wheel/sdist/local bundle | 可验证安装、升级、卸载与迁移 |
 | `PROTO-104-001` | 延期至 1.0.4A | Executor argv/help/output fixture 更新仍分散 | 1.0.2A 多次因真实 CLI 输出漂移补丁修复 | 与局部重构一起建立完整版本化 fixture matrix；1.0.3A 只补定向 fixture |
 | `ARCH-104-001` | 延期至 1.0.4A | Service/Runner/CLI/Setup 继续过度集中 | 1.0.2A 收口时共享文件修改风险高 | 在完整 characterization/fixture 保护下进行局部重构 |
 | `FLOW-104-001` | 延期至 1.0.4A | handoff 固定只声明一个 step，但自由文本可包含多段 Step 编号 | `XCKX-002`、`76MG-002` 实现与测试完成后因 callback 返回未声明的 Step 2～4 被 fail closed | 为 handoff 增加结构化多 steps 合同、预检和跨 Executor callback 一致性测试 |
+| `PERM-104-001` | 延期至 1.0.4A | native single-action Deny 后，Agent 仍可能依据通用 Prompt 请求兼容 full fallback，审批渠道选择依赖语言模型遵循互相冲突的文字规则 | `YYN5-001` 用户依次选择 Approve、Deny、Approve；前两次 native request 在同 run/session 中正确记录，但 Deny 后 Agent 又输出 full fallback，触发第二 worker 才完成 | 审批资格、通知类型、Deny 后状态和 fallback eligibility 全部由 Core 根据可信 transport event 与持久化控制面历史机械判定；Prompt/Agent callback 不得成为审批判断依据 |
 
 ### 1.4 当前开发进度（2026-08-21）
 
@@ -79,12 +80,13 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 | `PERM-103-004` | 已完成 | Codex、Claude early receipt 已完成；`791e3b8`、`a64f5a5` 已合入 Hermes ACP `session/new` prompt 前官方 session receipt、显式 resume 与 fail-closed 校验；合入后 120 项 Hermes/registry/lifecycle 定向测试通过 |
 | `PERM-103-005` | 已完成 | `330168f`、`bb58e50`：严格 cutover、维护模式、历史只读投影和 update preflight 已合入 |
 | `PERM-103-006` | 已完成 | `ce4f366`～`c09fa18`、`1dbe97e`、`a383bcf`：极简权限弹窗、脱敏详情、绝对超时与普通说明语义保持已合入；74 项重点回归、1168 项全量和隔离 wheel smoke 通过 |
-| `PERM-103-007` | 排队 | 待 Phase 2/3 公共接口稳定后实施 Claude 文件级 capability |
+| `PERM-103-007` | 已完成，待提交号回填 | Claude 2.1.216～2.1.x 版本/平台/help gate、任务级 `claude.ephemeral_project_isolation.v1`、Artifact-only `--add-dir`、内建 Edit deny、OS sandbox `allowWrite/denyWrite`、禁用 unsandboxed retry 与 Runner 精确 argv/settings 重建校验已实现；本机 2.1.233 probe 通过 |
 | `PERM-103-008` / `PERM-103-009` | 已完成 | `a993e94`、`4ef12eb`：permission/session 兼容总错误下新增 15 类稳定原因与脱敏诊断；`2b1bcbd`、`247c45b`：Codex app-server single-action 生产链已合入；既有一次性 full continuation 继续作为兼容兜底 |
-| `FLOW-103-001` | 排队 | Task 6/7 合入后的首个串行任务：Runner/Core 权威 progress receipt |
+| `FLOW-103-001` | 已延期 | 与 `FLOW-104-001` 的结构化多 steps、`PROTO-104-001` fixtures 和 `ARCH-104-001` 局部重构一起进入 1.0.4A |
 | `UPD-103-001` | 部分完成 | 已有 cutover preflight；自动 check、`y/N` 升级事务和失败保留旧版本尚未实现 |
 | `PKG-103-001` | 未开始 | 等待 update 事务稳定后建设 Homebrew Gate |
-| `PROTO-104-001` / `ARCH-104-001` / `FLOW-104-001` | 已延期 | 保持 `1.0.4A` 边界，本版不实现 |
+| `REL-103-CANDIDATE` | 候选包与双机安装 smoke 已完成 | `89dc0b0` 已形成 `1.0.3a1` 内部候选；Mac mini 110 项权限定向与 1229 项全量、Intel MacBook 140 项权限定向与 1229 项全量通过；隔离 wheel smoke `F47F-001`、MacBook 安装态 `X977-001`、Mac mini 安装态 `CQBA-001` 通过，双机 CLI/Runner/三平台 Skill identity 一致；尚未关闭真实三 Executor 权限审批 canary 与最终发布 Gate |
+| `FLOW-103-001` / `PROTO-104-001` / `ARCH-104-001` / `FLOW-104-001` / `PERM-104-001` | 已延期 | 保持 `1.0.4A` 边界，本版不实现；当前开发顺序固定为 `UPD-103-001 -> PKG-103-001` |
 
 Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 于 2026-08-16 明确取消，
 未伪造 completed callback；实现提交 `87a7dc1` 已在 integration 独立复验。收尾时另发现并合入
@@ -218,11 +220,11 @@ Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 
   历史任务；新根任务才在未显式覆盖时读取当前配置默认；
 - User Guide、三 Executor skills、setup/help/doctor/status/report 同步统一术语。
 
-## 7. P0：资源耗尽与终态进度权威化（`FLOW-103-001`）
+## 7. 延期至 1.0.4A：资源耗尽与终态进度权威化（`FLOW-103-001`）
 
 `BTCN-001` 证明原生 Hermes 耗尽必须高于 Agent 普通/choice callback，否则会绕过资源状态
-机；同时也证明“整体丢弃 callback”会把真实完成进度降为 `0/4`。本版不能通过恢复 choice
-优先级解决，而应增加 Executor 无关的 progress receipt：
+机；同时也证明“整体丢弃 callback”会把真实完成进度降为 `0/4`。该问题不在 1.0.3A
+继续修改；以下合同冻结后整体转入 1.0.4A，并与结构化多 steps 和局部重构一并实施：
 
 - progress receipt 至少绑定 `task_id`、`executor_run_id`、官方 `session_id`、step ID、
   单调状态、证据来源和序号；由 Runner/Core 补齐已知身份，Agent 不重抄内部路径；
@@ -241,18 +243,18 @@ Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 
 
 ### 8.0 条件性权限补全（`PERM-103-008` / `PERM-103-009`）
 
-- `1.0.3A` 的发布兜底继续使用已经验证的一次性 `safe -> full` continuation，不在收口阶段
-  以未完成的 Codex single-action 链替换稳定路径；`full` grant 仍必须绑定当前 Task、官方
-  session 和下一次 run，一次消费，失败或恢复时撤销；
-- `PERM-103-008` 只拆分 permission/session 失败原因和公共诊断，不修改 permission mode、
-  grant、resume 或审批决策语义。至少区分 mode 不支持、receipt 缺失/不匹配、run/session
-  不匹配、RunLease 状态、stale chain head 和 resume session 缺失；
-- `PERM-103-009` 只在 Codex app-server transport、首次审批前官方 session receipt、同进程
-  request/response、Runner registry 配置和真实 Codex canary 能在剩余窗口内一起完成时进入
-  `1.0.3A`；不得只启用 Adapter 中已有的半条控制链；
-- go/no-go 门禁：不挤占剩余 P0、不会改变默认 `inherit`/handoff 继承、定向与全量回归有
-  足够窗口、隔离升级包和 Runner identity 可复验。任一条件不满足，两个 P1 项不做半成品
-  合入，整体转入 `1.0.4A`；
+- `PERM-103-008` 已在兼容总错误下拆分 15 类 permission/session 稳定原因与脱敏诊断，不修改
+  permission mode、grant、resume 或审批决策语义；mode 不支持、receipt 缺失/不匹配、
+  run/session 不匹配、RunLease 状态、stale chain head 和 resume session 缺失均有独立断言；
+- `PERM-103-009` 已把 Codex app-server transport、首次审批前官方 session receipt、同进程
+  request/response 与 Runner production registry 一起接入；支持的 Codex 协议面优先使用
+  `single_action`，不再把已合入实现描述为实验性半链；
+- 已验证的一次性 `safe -> full` continuation 继续作为不支持原生 single-action transport 时的
+  兼容兜底。`full` grant 仍必须绑定当前 Task、官方 session 和下一次 run，一次消费，失败、
+  recovery、reassign、handoff 或终态时撤销；不得因 fallback 可用而把 single-action canary
+  判定为通过；
+- 发布 go/no-go 仍要求默认 `inherit`/handoff 继承无漂移、定向与全量回归通过、隔离升级包和
+  Runner identity 可复验，并完成下方三 Executor 真实审批 canary；
 - 不新增 linked-worktree Git 预检或专用提交阶段。权限审批应覆盖真实运行中出现的动作阻塞，
   不通过穷举路径和命令场景扩大前置流程。
 
@@ -306,6 +308,29 @@ Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 
 - 继续保留当前严格 fail-closed 校验：callback 出现未知、重复、缺失或非完成 step 时不得
   静默归并或猜测映射。
 
+### 8.6 审批通知机械判定（延期到 `1.0.4A / PERM-104-001`）
+
+- `1.0.3A` 不继续优化该路径，保留现有 native single-action 与一次性 full compatibility
+  fallback；`YYN5-001` 的 Git 产物、弹窗信息和三次用户选择均有有效证据，但因第二次 native
+  Deny 后又进入 full fallback 并启动第二 worker，只能证明用户面符合预期，不能作为纯原生
+  single-action 链通过证据；
+- `1.0.4A` 不再让 Prompt、Agent 自述、普通 stderr、退出码或 callback 文案判断是否需要审批、
+  选择 `single_action`/`full`、生成 fallback 或改变 Deny 后状态。Agent 只描述当前动作和执行
+  结果，不拥有审批渠道选择权；
+- Core 只接受受支持 Adapter 的可信结构化 permission-block event，并机械核对 task、executor
+  run、官方 session、request ID、fingerprint、operation、blocked declared step、chain head 和
+  RunLease 后生成 `agentbc.approval`、`input_required` 与通知投影；UI/CLI 仅响应该持久化状态，
+  不从 Prompt 重新解释原因；
+- native `decline` 必须成为同一 request/fingerprint 的单调终态：精确动作不得执行，也不得把
+  同一阻塞自动转换为 full fallback。后续是否允许新动作或 compatibility fallback，必须由 Core
+  预先持久化的 capability/policy matrix 明确允许，并产生新的绑定事实；
+- full fallback eligibility 仅在目标 transport 没有受支持的 native single-action 能力、且任务
+  冻结策略明确允许 compatibility path 时由 Core 生成。Agent 输出 `requested_permission=full`
+  只能作为不可信请求输入，不能直接触发弹窗或 permission grant；
+- 回归必须覆盖 Approve→Deny→Approve、重复/乱序/跨 request 响应、native Deny 后伪造 full
+  callback、transport lost、session/run/fingerprint 漂移和 UI/CLI 双入口，要求通知次数与控制面
+  决策一一对应、Deny 后零执行、无第二 worker、无权限模式漂移。
+
 ## 9. 实施阶段与依赖
 
 1. **Phase 0：现状审计与契约冻结**——从 `fc2f3f1` 建基线；冻结 permission registry、
@@ -314,10 +339,10 @@ Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 
    capability mapping、公共视图与迁移；
 3. **Phase 2：Runner/Adapter 控制平面**——早期 session handshake、approval transport、
    canonical argv、Runner fail-closed 校验；
-4. **Phase 3：Core input 与 progress**——精确动作 Approve/Deny、关闭/超时自动 Deny、同 session resume、
-   `FLOW-103-001` 单调进度合并、极简弹窗和报告投影；
-5. **Phase 4：权限细分与 Claude 临时工程**——`PERM-103-007`、路径攻击矩阵、三 Executor
-   safe/full 和旧任务兼容 canary；
+4. **Phase 3：Core input**——精确动作 Approve/Deny、关闭/超时自动 Deny、同 session resume、
+   极简弹窗和报告投影；`FLOW-103-001` 不再属于本版 Phase 3；
+5. **Phase 4：权限细分与 Claude 临时工程**——`PERM-103-007` 已收口；三 Executor 真实
+   canary 继续作为发布验收，不再扩大权限代码范围；
 6. **Phase 5：交互式 update 与 Homebrew**——自动 check、`y/N` 升级、失败保持旧版本、安装/
    升级/卸载/迁移；不实现 rollback 命令、完整 fixture matrix 或主动模块拆分；
 7. **Phase 6：集成与发布**——安装升级、Python/双机、三 Executor、失败注入、发布身份。
@@ -338,15 +363,70 @@ Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 
 | --- | --- | --- | --- |
 | 2026-08-17～08-19 | Phase 0 | 已提前完成 | `fc2f3f1` 基线、权限/approval/session/progress 合同与最小定向 fixture 冻结 |
 | 2026-08-20～08-28 | Phase 1 | 已提前完成 | `inherit|safe|full` registry、配置事务、既有继承逻辑、公共视图和迁移通过 |
-| 2026-08-29～09-06 | Phase 2 | 进行中 | 三 Executor early session 与 approval transport；Hermes unsupported 路径可行动且 fail closed |
-| 2026-09-07～09-13 | Phase 3 | 部分基础已完成 | Approve/Deny、同 session resume、极简弹窗与单调 progress receipt 通过 |
-| 2026-09-14～09-20 | Phase 4 | 未开始 | Claude 文件级 capability、路径攻击矩阵、旧任务兼容与三 Executor canary 通过 |
-| 2026-09-21～09-24 | Phase 5 | update preflight 已完成 | `agentbc update` 自动 check/`y/N` 升级及 Homebrew 安装、升级、卸载、迁移通过 |
-| 2026-09-25～09-27 | Phase 6 | 未开始 | 全量、Python/双机、真实 Executor、失败注入与发布身份 Gate 通过 |
+| 2026-08-29～09-06 | Phase 2 | 已提前完成 | 三 Executor early session 与 approval transport 已合入；Hermes unsupported 路径可行动且 fail closed |
+| 2026-09-07～09-13 | Phase 3 | 已完成；progress 延期 | Approve/Deny、同 session resume 与极简弹窗已合入；`FLOW-103-001` 转入 1.0.4A |
+| 2026-09-14～09-20 | Phase 4 | `PERM-103-007` 已完成 | Claude 文件级 capability 与 Runner fail-closed 校验通过；真实 canary 归发布验收 |
+| 2026-09-21～09-24 | Phase 5 | 当前主线 | 先完成 `agentbc update` 自动 check/`y/N` 升级，再建设 Homebrew 安装、升级、卸载与迁移 Gate |
+| 2026-09-25～09-27 | Phase 6 | 候选包与双机安装 smoke 已提前完成 | 剩余真实三 Executor 权限 canary、故障注入、P0/P1 收口复验和最终发布身份 Gate |
 
 目标发布窗口为 `2026-09-27`；若 Hermes early approval/session capability 或 Claude 文件级
 capability 无法由当前上游 CLI 精确表达，本版按既定 fail-closed 合同交付，不以危险近似
 实现换取日期。
+
+### 9.3 权限审批测试任务流程（`PERM-TEST-103`）
+
+测试只使用当前候选包和独立 canary 根，不在 AgentBC 源码 worktree、用户真实项目、Executor
+私有 session 目录或现有任务链内制造权限阻塞。每个真实 Executor canary 使用新根 Task、显式
+`--permission-mode safe` 和独立 customer path；不得从旧 Task handoff，以免继承权限、session
+或 recovery 状态污染结论。真实弹窗决策必须由验收人执行，控制器不得自动批准，也不得把
+`accepted`、进程退出码或聊天总结当完成证据。
+
+| 测试任务 | 执行方式 | 核心动作 | 退出门禁 |
+| --- | --- | --- | --- |
+| `PERM-TEST-103-00` 身份与隔离预检 | 串行，只读 | 固定候选 commit、wheel/manifest hash、CLI/Runner/Skill identity、三 Executor capability、空 canary 根和无 active blocker | package/Runner/三 Skill 同版本同 provenance；Runner `ready`；若目标 Executor unsupported 或存在 blocker，停止真实 canary |
+| `PERM-TEST-103-01` 自动合同回归 | 串行门禁 | 运行 registry、mode、approval receipt、dialog、lifecycle、taxonomy、Codex app-server、Claude control、Hermes ACP 与 legacy cutover 定向测试 | 全部通过；15 类稳定原因、request fingerprint、single-action scope、close/timeout Deny、replay/cross-task/cross-run fail-closed 均有断言；不得用真实 full 权限做故障注入 |
+| `PERM-TEST-103-CODEX` | 与另两个真实 canary 并行 | Codex app-server 在同一 Task 内依次请求两个无害终端动作：首个 Approve 后创建 `approved.txt`；第二个必须生成新 request，Deny 后不得创建 `denied.txt` | 首次工具动作前已有官方 thread receipt；等待时 RunLease `SUSPENDED`；Approve 只响应同 request/fingerprint，按同 session 恢复且不改变 Task `safe` 快照；第二动作不能继承授权；最终 callback/report/lease/cleanup 完整，且 transport 证据为 production app-server，不以 full fallback 代替 |
+| `PERM-TEST-103-CLAUDE` | 与另两个真实 canary 并行 | Claude permission-prompt tool 执行与 Codex 相同的 Approve→新 request→Deny 无害文件 canary | preallocated 官方 session receipt、同进程 request/response、单动作不泄漏、Deny 后产物不存在；临时工程无越界交付物；最终证据要求同上 |
+| `PERM-TEST-103-HERMES` | 与另两个真实 canary 并行 | Hermes ACP `session/new` 后执行相同的 Approve→新 request→Deny 无害文件 canary | 首次 prompt/tool 前已有 ACP session receipt；无 TTY 超时等待；Approve/Deny 经同一 ACP session 返回；无 `--yolo` 注入；最终证据要求同上 |
+| `PERM-TEST-103-02` 故障注入 | 三 canary 后串行 | 使用 fake/fixture transport 注入 receipt 缺失、session/run/request/fingerprint 不匹配、重复响应、transport death、stale lease/chain、close 与 timeout | 每项进入精确稳定错误或自动 Deny；grant 撤销，不能执行动作、猜 session、恢复到 `full` 或泄露 raw argv/session/token；status/report/doctor 使用同一脱敏 projection |
+| `PERM-TEST-103-03` 兼容与继承 | 串行 | 验证默认 `inherit`、显式 `safe`、handoff 继承、同 Task retry/recover/respond 冻结；对不支持 single-action 的 fixture 验证一次性 full continuation 兼容兜底 | 新根读取当前默认，handoff/retry/recover 不漂移；fallback 只消费一次并绑定 Task/session/run，不能被普通文本、native dangerous config 或新 Task 复用 |
+| `PERM-TEST-103-04` 双机安装态复验 | 可并行 | Mac mini 与 Intel MacBook 分别从同一 wheel 运行 package smoke、doctor、Runner refresh 和三 Skill identity 检查，再执行至少一个真实 Executor approval canary | 两机 build identity、hash、Runner 与 Skill 一致；配置/record/report/artifact/customer project 未变化；本轮已完成安装 smoke，仍需补真实 approval canary 后关闭 |
+| `PERM-TEST-103-05` 最终人工验收 | 串行收口 | 逐项读取每个 Task 的 status/report/callback、RunLease、approval/session receipt、logs、artifact 与测试输出 | 三 Executor分别标记 accepted/needs correction/blocked；只有三条真实链、故障注入和兼容门禁全部通过才关闭权限工作流；不得自动合并、发布或升级用户权限 |
+
+真实 canary 的每个 Executor Task 固定声明三个结构化 step：①触发第一个无害动作并等待
+Approve；②确认 `approved.txt` 后触发第二个独立动作并等待 Deny，确认 `denied.txt` 不存在；
+③输出脱敏验收摘要并以合法 callback 收口。控制器在每次 `input_required` 时先核对 task/run/
+session/request/fingerprint、blocked step、RunLease 与弹窗内容，再把决策留给验收人。任何一步
+出现 fallback、receipt 缺失、自动授权、跨 request 响应或权限快照变化，立即停止该 Executor
+链并按精确错误证据修复，不继续用其他 Executor 的成功结果覆盖失败。
+
+控制器为三个 Executor 分别生成一份 steps 文件，内容固定为以下合同；若目标版本没有产生
+原生 approval event，Executor 必须停止并报告 `approval_not_triggered`，不得自行模拟
+`input_required` 或改用 full：
+
+```yaml
+steps:
+  - id: 1
+    description: "通过当前 Executor 的原生审批 transport 请求一个 single_action 权限，只执行无害命令创建 approved.txt；等待验收人 Approve 后确认文件内容，不得请求或使用 task full 权限"
+  - id: 2
+    description: "请求第二个独立 single_action 权限以创建 denied.txt；该请求必须使用新的 request ID，等待验收人 Deny，并确认 denied.txt 不存在且第一项授权未泄漏"
+  - id: 3
+    description: "核对 Task 权限快照仍为 safe、session ID 未漂移、审批与 RunLease 证据完整，输出脱敏测试摘要并按声明的三个 step 生成唯一合法 final callback"
+```
+
+在创建任务前为 Codex、Claude、Hermes 分别建立空的绝对 canary root，并将下方占位符替换为
+实际路径；三个根不得复用。控制器机械核对 `--assignee` 后才允许并行 dispatch：
+
+```bash
+agentbc task create --title "PERM-TEST-103 <executor> single-action canary" \
+  --assignee <codex|claude|hermes> \
+  --steps /tmp/perm-test-103-<executor>.yaml \
+  --source-platform codex \
+  --customer-path <absolute-isolated-canary-root> \
+  --permission-mode safe \
+  --dispatch \
+  --config ~/.abc/config.toml
+```
 
 ## 10. 验收门禁
 
@@ -359,7 +439,9 @@ capability 无法由当前上游 CLI 精确表达，本版按既定 fail-closed 
 - approve 只执行精确授权动作，deny 有明确结果；权限弹窗无 Later/文本输入，关闭和超时
   自动 Deny 并记录来源；
 - 缺失 receipt、伪造 permission argv、native dangerous config、safe→full 注入全部 fail closed；
-- 资源/权限等待前已经确认的 step progress 不回退、不重复计数，旧任务无 receipt 时不伪造；
+- `PERM-TEST-103` 的三条真实 Executor canary 必须分别证明首次审批前官方 receipt、
+  `single_action` Approve、下一动作重新询问、Deny 不执行、同 session resume 与终态 cleanup；
+  自动化 fixture、旧版 full canary 或任一 Executor 的通过不能替代另外两条真实链；
 - `agentbc update` 自动 check；无更新零写入，有更新以 `y/N` 确认，升级成功后 CLI、Runner 与
   三平台 Skill identity 一致，失败时旧版本仍可启动；配置、record、report、artifact 和
   customer project 均保持；Homebrew 与 PyPI/local bundle 迁移有可复现证据；
@@ -372,10 +454,14 @@ capability 无法由当前上游 CLI 精确表达，本版按既定 fail-closed 
 - 不把 Hermes `--yolo` 当作 safe 的临时修复；
 - 不允许普通 input 文本修改权限快照；
 - 不从自然语言或被系统覆盖的 callback 猜测已完成 step；
+- 不在 `1.0.3A` 实现 `FLOW-103-001`；资源耗尽权威 progress receipt 与结构化多 steps、协议
+  fixtures 和局部重构一起进入 `1.0.4A`；
 - Alpha 不提供 `agentbc update rollback` 或其他用户主动回滚命令；
 - 不在 `1.0.3A` 建设完整 Executor fixture matrix 或主动拆分共享模块；二者随局部重构进入
   `1.0.4A`；
 - 不在 `1.0.3A` 改造 handoff 单 step 合同；结构化多 steps、预检与 Executor 一致性测试进入
   `1.0.4A / FLOW-104-001`；
+- 不在 `1.0.3A` 继续调整 native Deny 与 full fallback 衔接；审批通知机械判定、Deny 单调终态
+  和 Core-owned fallback eligibility 进入 `1.0.4A / PERM-104-001`，不得以强化 Prompt 代替；
 - 不用 update 静默覆盖用户 Skill 或配置；
 - 不在 `1.0.2A` 临时回填这一协议级改造。

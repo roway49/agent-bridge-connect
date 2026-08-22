@@ -502,6 +502,9 @@ def validate_permission_command(
     executor: str,
     command: list[str],
     record: dict[str, Any],
+    *,
+    authorized_claude_settings: str | None = None,
+    authorized_claude_add_dir: bool = False,
 ) -> None:
     permission = validate_permission_record(record)
     mode = permission["effective_mode"]
@@ -513,7 +516,11 @@ def validate_permission_command(
             f"Executor {executor!r} has no permission authorization schema.",
             {"executor": executor, "permission_mode": mode},
         )
-    analysis = _permission_analysis(executor, command)
+    analysis = _permission_analysis(
+        executor,
+        command,
+        authorized_claude_settings=authorized_claude_settings,
+    )
     actual_semantics = analysis["semantics"]
     violations = [
         name
@@ -543,7 +550,8 @@ def validate_permission_command(
             },
         )
     if (
-        mode != "safe"
+        not authorized_claude_add_dir
+        and mode != "safe"
         and executor in {"codex", "claude"}
         and _command_has_option(command, "--add-dir")
     ):
@@ -554,7 +562,12 @@ def validate_permission_command(
         )
 
 
-def _permission_analysis(executor: str, command: list[str]) -> dict[str, Any]:
+def _permission_analysis(
+    executor: str,
+    command: list[str],
+    *,
+    authorized_claude_settings: str | None = None,
+) -> dict[str, Any]:
     known = _PERMISSION_OPTIONS.get(executor, {})
     semantics: dict[str, str | bool] = {}
     redacted_semantics: dict[str, str | bool] = {}
@@ -585,6 +598,14 @@ def _permission_analysis(executor: str, command: list[str]) -> dict[str, Any]:
                 malformed.append(alias)
         elif used_inline:
             malformed.append(alias)
+        if (
+            executor == "claude"
+            and alias == "--settings"
+            and authorized_claude_settings is not None
+            and value == authorized_claude_settings
+        ):
+            index += 1
+            continue
         display_value = "<redacted>" if sensitive and takes_value else value
         arguments.append(alias if not takes_value else f"{alias}={display_value}")
         if semantic in semantics:

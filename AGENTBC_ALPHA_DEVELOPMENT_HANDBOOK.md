@@ -466,7 +466,7 @@ git diff --check
 1. 纯合同与状态机；
 2. Service/Store/Runner 事务和竞态；
 3. fake Executor 与 fixture；
-4. wheel/sdist、clean install、upgrade/rollback；
+4. wheel/sdist、clean install、upgrade 与 failed-upgrade recovery；
 5. 真实 Codex/Claude/Hermes canary。
 
 mock 通过不能替代真实 CLI；真实任务成功也不能替代源码、包或发布矩阵。
@@ -478,7 +478,7 @@ mock 通过不能替代真实 CLI；真实任务成功也不能替代源码、�
 - checkout 与公开树干净、内部文件排除；
 - 支持的 Python 与目标架构矩阵；
 - Ruff、compileall、shell syntax、Twine 与 manifest/checksum；
-- clean install、upgrade、rollback 和 CLI smoke；
+- clean install、upgrade、failed-upgrade recovery 和 CLI smoke；
 - Runner/package/Skill identity 一致；
 - 真实 Executor 关键路径；
 - 不可变 tag、GitHub Release、Actions Trusted Publishing 和 PyPI 公网页面；
@@ -527,17 +527,27 @@ mock 通过不能替代真实 CLI；真实任务成功也不能替代源码、�
 - setup 默认权限 `inherit`、retention `false`；
 - `task delete` 内置 `y/N` 确认并保护 customer project。
 
-### 1.0.3A：下一阶段核心目标
+### 1.0.3A：剩余开发主线
 
-- 一个统一 AgentBC 权限设置和 Executor capability registry；
-- 三 Executor 结构化 approval event 与首次审批前 session handshake；
-- permission 弹窗最短摘要、完整原因展开和精确动作授权；
-- Hermes safe 能力在派发前 fail closed；
-- Claude 临时工程文件级最小权限；
-- 资源耗尽与 final callback 的权威 progress receipt 合并；
-- 自更新/回退、Homebrew、协议 fixtures 和巨型模块机械拆分。
+- 权限设置、三 Executor approval/session、弹窗与 Claude 临时工程文件级能力已经收口；默认
+  `inherit`、已有配置保留和 handoff 继承逻辑保持不变；
+- `agentbc update` 自动检查版本并在发现新版后以 `y/N` 询问升级；Alpha 不提供公开 rollback
+  命令；
+- Homebrew 安装、升级、卸载与现有 PyPI/local bundle 迁移；
+- 只补 update/Homebrew 所需的定向测试和发布证据，不再扩大本版权限与 progress 代码范围。
 
 详细合同只在 `AGENTBC_1.0.3A_DEVELOPMENT_CHECKLIST.md` 维护，避免手册再次复制 Phase 计划。
+
+### 1.0.4A：已确定延期项
+
+- `FLOW-103-001`：资源耗尽与 final callback 的权威、单调 progress receipt；
+- `PERM-104-001`：审批资格、通知类型、Deny 终态和 fallback eligibility 由 Core 机械判定；
+- 建立三 Executor 完整、版本化的 version/help/argv/output/session/approval/resource fixture
+  matrix 与未知能力组合 fail-closed probe（`PROTO-104-001`）；
+- 在上述 fixtures 和 characterization tests 保护下进行局部重构，优先拆分 permission
+  registry、approval transport、Doctor collectors、Runner IPC handlers 和 update service
+  （`ARCH-104-001`）；
+- 重构提交与状态机、schema、CLI 文案和权限语义变更严格分离。
 
 ### 中期方向
 

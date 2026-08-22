@@ -39,6 +39,11 @@ from agent_bridge_connect.execution_contract import (
     route_executor_terminal,
     strip_callback_line,
 )
+from agent_bridge_connect.claude_path_capability import (
+    assert_claude_path_capability_supported,
+    claude_ephemeral_path_capability,
+    claude_path_capability_args,
+)
 from agent_bridge_connect.effective_permissions import (
     SESSION_EXTENSION_KEY,
     resolve_effective_permission,
@@ -361,6 +366,11 @@ class ClaudeExecutor(CLIExecutorBase):
             execution_session = _claude_execution_session(task_packet)
         except (OSError, ValueError) as exc:
             return StartResult(ok=False, run_id="", message=f"invalid claude session: {exc}")
+        try:
+            if execution_session is not None and _claude_session_is_ephemeral(task_packet):
+                assert_claude_path_capability_supported(self.agent_bin)
+        except ABCError as exc:
+            return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
 
         run_id = f"claude-{task_packet.get('task_id', 'unknown')}-{uuid.uuid4().hex[:8]}"
         self._task_packets[run_id] = dict(task_packet)
@@ -540,6 +550,11 @@ class ClaudeExecutor(CLIExecutorBase):
             execution_session = _claude_execution_session(task_packet)
         except (OSError, ValueError) as exc:
             return StartResult(ok=False, run_id="", message=f"invalid claude session: {exc}")
+        try:
+            if execution_session is not None and _claude_session_is_ephemeral(task_packet):
+                assert_claude_path_capability_supported(self.agent_bin)
+        except ABCError as exc:
+            return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
 
         run_id = f"claude-{task_packet.get('task_id', 'unknown')}-{uuid.uuid4().hex[:8]}"
         self._task_packets[run_id] = dict(task_packet)
@@ -959,11 +974,17 @@ class ClaudeExecutor(CLIExecutorBase):
             session_flag = "--resume" if execution_session["resumed"] else "--session-id"
             command.extend([session_flag, execution_session["session_id"]])
         command.extend(["--output-format", "stream-json", "--verbose"])
+        capability = (
+            claude_ephemeral_path_capability(
+                task_packet,
+                execution_root=_claude_execution_root(task_packet, workspace_root),
+            )
+            if _claude_session_is_ephemeral(task_packet)
+            else None
+        )
+        command.extend(claude_path_capability_args(capability))
         if self.supports_permission_prompt_tool():
             command.extend([PERMISSION_PROMPT_TOOL_FLAG, broker.broker_command()])
-        if selected["effective_mode"] == "safe":
-            for writable_root in _claude_writable_roots(task_packet, workspace_root):
-                command.extend(["--add-dir", str(writable_root)])
         if self.model:
             command.extend(["--model", self.model])
         if self.effort:
@@ -1061,9 +1082,15 @@ class ClaudeExecutor(CLIExecutorBase):
         command.extend(["--output-format", self.output_format])
         if self.output_format == "stream-json":
             command.append("--verbose")
-        if selected["effective_mode"] == "safe":
-            for writable_root in _claude_writable_roots(task_packet, workspace_root):
-                command.extend(["--add-dir", str(writable_root)])
+        capability = (
+            claude_ephemeral_path_capability(
+                task_packet,
+                execution_root=_claude_execution_root(task_packet, workspace_root),
+            )
+            if _claude_session_is_ephemeral(task_packet)
+            else None
+        )
+        command.extend(claude_path_capability_args(capability))
         if self.model:
             command.extend(["--model", self.model])
         if self.effort:
@@ -1484,6 +1511,20 @@ def _claude_execution_root(task_packet: dict[str, Any], workspace_root: Path) ->
     return project_root
 
 
+def _claude_session_is_ephemeral(task_packet: dict[str, Any]) -> bool:
+    extensions = (
+        task_packet.get("extensions")
+        if isinstance(task_packet.get("extensions"), dict)
+        else {}
+    )
+    session = extensions.get("agentbc.session")
+    return (
+        isinstance(session, dict)
+        and session.get("project_mode") == "ephemeral"
+        and session.get("retain") is False
+    )
+
+
 def _build_prompt(task_packet: dict[str, Any]) -> str:
     """Build the Claude prompt: shared contract plus Claude Code rules."""
     return build_prompt_contract(
@@ -1514,29 +1555,18 @@ def _claude_writable_roots(
     task_packet: dict[str, Any],
     workspace_root: Path,
 ) -> list[Path]:
-    """Return only task deliverable and compact runtime-state write roots."""
-    workspace = task_packet.get("workspace") if isinstance(task_packet.get("workspace"), dict) else {}
-    task_board = task_packet.get("task_board") if isinstance(task_packet.get("task_board"), dict) else {}
-    candidates: list[str | Path | None] = [
-        workspace_root,
-        workspace.get("project_root"),
-        workspace.get("root"),
-        workspace.get("artifact_root"),
-        workspace.get("artifacts_dir"),
-        task_board.get("root"),
-    ]
-    roots: list[Path] = []
-    seen: set[str] = set()
-    for value in candidates:
-        if not value:
-            continue
-        path = Path(str(value)).expanduser().resolve()
-        text = str(path)
-        if text in seen:
-            continue
-        seen.add(text)
-        roots.append(path)
-    return roots
+    """Compatibility view of the one deliverable root.
+
+    PERM-103-007 intentionally excludes task-board, report and internal
+    project roots.  Runtime argv is generated by claude_path_capability.
+    """
+    workspace = (
+        task_packet.get("workspace")
+        if isinstance(task_packet.get("workspace"), dict)
+        else {}
+    )
+    value = workspace.get("artifact_root") or workspace_root
+    return [Path(str(value)).expanduser().resolve()]
 
 
 def _discover_claude_binary(configured_command: str | None = None) -> dict[str, Any]:

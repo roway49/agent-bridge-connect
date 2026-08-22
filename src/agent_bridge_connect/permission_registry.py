@@ -345,9 +345,7 @@ def probe_executor_capability(
     """
     entry = executor_permission_mapping(executor, mode, transport=transport)
     selected = entry["mode"]
-    if selected == "inherit" and not (
-        executor == "codex" and entry["transport"] == TRANSPORT_CODEX_APP_SERVER
-    ):
+    if selected == "inherit" and executor not in {"codex", "claude"}:
         # Non-Codex inherit transports add no AgentBC override and require no
         # permission capability probe.
         return {
@@ -443,6 +441,26 @@ def probe_executor_capability(
                 "scope": "single_action",
             },
         }
+    claude_path_capability = None
+    if executor == "claude":
+        from .claude_path_capability import assert_claude_path_capability_supported
+
+        try:
+            claude_path_capability = assert_claude_path_capability_supported(
+                executable or ""
+            )
+        except ABCError as exc:
+            raise ABCError(
+                "permission_capability_unsupported",
+                f"Claude task path capability is unavailable: {exc.message}",
+                {
+                    **dict(exc.details or {}),
+                    "executor": executor,
+                    "permission_mode": selected,
+                    "transport": entry["transport"],
+                    "path_capability_id": "claude.ephemeral_project_isolation.v1",
+                },
+            ) from exc
     try:
         assert_executor_permission_supported(executor, selected, executable)
     except ABCError as exc:
@@ -462,8 +480,19 @@ def probe_executor_capability(
         "transport": entry["transport"],
         "supported": True,
         "capability_id": entry["capability_id"],
-        "evidence": ["cli_help_verified"],
-        "details": {},
+        "evidence": [
+            "cli_help_verified",
+            *(
+                list(claude_path_capability["evidence"])
+                if claude_path_capability is not None
+                else []
+            ),
+        ],
+        "details": (
+            {"path_capability": claude_path_capability}
+            if claude_path_capability is not None
+            else {}
+        ),
     }
 
 

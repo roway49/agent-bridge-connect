@@ -2935,7 +2935,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         self.assertNotIn(str(report_root.resolve()), add_dirs)
         self.assertLess(command.index("--add-dir"), len(command) - 1)
 
-    def test_claude_limits_customer_project_writes_to_project_and_record(self):
+    def test_claude_limits_customer_project_writes_to_artifact_only(self):
         from agent_bridge_connect.executors.claude import _claude_writable_roots
 
         project = self.board.parent / "claude-customer-project"
@@ -2956,7 +2956,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         roots = [str(path) for path in _claude_writable_roots(packet, project)]
 
         self.assertIn(str(project.resolve()), roots)
-        self.assertIn(str(self.board.resolve()), roots)
+        self.assertNotIn(str(self.board.resolve()), roots)
         self.assertNotIn(str(agentbc_root.resolve()), roots)
         self.assertNotIn(str(report_root.resolve()), roots)
 
@@ -3273,7 +3273,7 @@ class Phase10dIntegrationTests(unittest.TestCase):
         self.assertNotIn("--no-session-persistence", command)
         self.assertEqual(command[command.index("--permission-mode") + 1], "acceptEdits")
         self.assertEqual(command[command.index("--output-format") + 1], "text")
-        self.assertIn("--add-dir", command)
+        self.assertNotIn("--add-dir", command)
         self.assertEqual(command[command.index("--tools") + 1], "Read,Write,Edit,Bash,BashOutput")
         self.assertEqual(command[command.index("--disallowedTools") + 1], "TaskCreate,TaskUpdate,TodoWrite")
         self.assertNotIn("bypassPermissions", command)
