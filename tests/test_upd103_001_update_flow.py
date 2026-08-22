@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -265,7 +267,8 @@ class UpdateFlowTests(unittest.TestCase):
             _require_post_update_identity(Path("agentbc"), "1.0.4a1")
         self.assertEqual(raised.exception.code, "update_skill_identity_mismatch")
 
-    def test_post_switch_failure_restores_old_cli_and_refreshes_old_skills(self) -> None:
+    def _run_transaction_failure(self, failure: str) -> ABCError:
+        """Exercise one post-stop failure and assert the transaction proof."""
         install_root = Path(self.temporary.name) / "install"
         bin_dir = Path(self.temporary.name) / "bin"
         old_cli = install_root / "venv" / "bin" / "agentbc"
@@ -274,6 +277,72 @@ class UpdateFlowTests(unittest.TestCase):
         bin_dir.mkdir()
         target = bin_dir / "agentbc"
         target.symlink_to(old_cli)
+        old_link = os.readlink(target)
+
+        skill_base = Path(self.temporary.name) / "skills"
+        codex_root = skill_base / "codex"
+        claude_root = skill_base / "claude"
+        hermes_home = skill_base / "hermes"
+        hermes_roots = [
+            hermes_home / "skills" / "agentbc",
+            hermes_home / "profiles" / "alpha" / "skills" / "agentbc",
+            hermes_home / "profiles" / "beta" / "skills" / "agentbc",
+        ]
+        skill_specs = [
+            ("codex", codex_root),
+            ("claude", claude_root),
+            *(('hermes', root) for root in hermes_roots),
+        ]
+        from agent_bridge_connect.setup import _current_skill_files
+        from agent_bridge_connect.skill_packages import (
+            MANIFEST_NAME,
+            build_skill_manifest,
+            serialize_skill_manifest,
+        )
+
+        def write_package(
+            root: Path,
+            platform: str,
+            version: str,
+            *,
+            target_version: bool,
+            write_manifest: bool = True,
+        ) -> None:
+            root.mkdir(parents=True, exist_ok=True)
+            base_files = _current_skill_files(platform)
+            files = {
+                relative_path: (
+                    f"target:{platform}:{relative_path}".encode()
+                    if target_version
+                    else content
+                )
+                for relative_path, content in base_files.items()
+            }
+            if target_version:
+                files["new-managed.txt"] = b"introduced-by-target"
+            manifest = build_skill_manifest(platform, version, files)
+            for relative_path, content in files.items():
+                path = root / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+            if write_manifest:
+                (root / MANIFEST_NAME).write_bytes(serialize_skill_manifest(manifest))
+
+        for platform, root in skill_specs:
+            write_package(root, platform, "1.0.3a1", target_version=False)
+            (root / "unrelated-user-file.txt").write_bytes(b"keep-me")
+        original_managed: dict[tuple[Path, str], tuple[bytes, str]] = {}
+        unrelated: dict[Path, bytes] = {}
+        for _platform, root in skill_specs:
+            for path in root.rglob("*"):
+                if path.is_file() and path.name != "unrelated-user-file.txt":
+                    content = path.read_bytes()
+                    original_managed[(root, str(path.relative_to(root)))] = (
+                        content,
+                        hashlib.sha256(content).hexdigest(),
+                    )
+            unrelated[root] = (root / "unrelated-user-file.txt").read_bytes()
+
         wheel_bytes = b"verified-wheel"
         release = {
             **_available(),
@@ -282,37 +351,197 @@ class UpdateFlowTests(unittest.TestCase):
                 "sha256": hashlib.sha256(wheel_bytes).hexdigest(),
             },
         }
+        current_identity = {
+            "package": {"version": "1.0.3a1", "status": "healthy"},
+            "runner": {"status": "ready", "identity": "match"},
+            "skills": {},
+        }
+        target_skill_query = {
+            "codex": {
+                "root": str(codex_root),
+                "files": sorted(
+                    set(_current_skill_files("codex"))
+                    | {"new-managed.txt", MANIFEST_NAME}
+                ),
+            },
+            "claude": {
+                "root": str(claude_root),
+                "files": sorted(
+                    set(_current_skill_files("claude"))
+                    | {"new-managed.txt", MANIFEST_NAME}
+                ),
+            },
+            "hermes": [
+                {
+                    "root": str(root),
+                    "files": sorted(
+                        set(_current_skill_files("hermes"))
+                        | {"new-managed.txt", MANIFEST_NAME}
+                    ),
+                }
+                for _platform, root in skill_specs
+                if _platform == "hermes"
+            ],
+        }
+        calls: list[list[str]] = []
+        events: list[str] = []
+        post_identity_calls: list[tuple[str, str]] = []
+
+        def write_target_skills(*, commit_manifest: bool = True) -> None:
+            for platform, root in skill_specs:
+                write_package(
+                    root,
+                    platform,
+                    "1.0.4a1",
+                    target_version=True,
+                    write_manifest=commit_manifest,
+                )
 
         def completed(args, **_kwargs):
+            command = [str(part) for part in args]
+            calls.append(command)
+            if len(command) > 1 and command[1] == "-c":
+                return mock.Mock(
+                    returncode=0,
+                    stdout=json.dumps(target_skill_query),
+                    args=args,
+                )
+            if "setup" in command:
+                if failure == "setup":
+                    raise subprocess.CalledProcessError(1, command)
+                write_target_skills(commit_manifest=failure != "setup_partial")
+                if failure == "setup_partial":
+                    raise subprocess.CalledProcessError(1, command)
+                return mock.Mock(returncode=0, stdout="", args=args)
+            if command[-2:] == ["runner", "start"]:
+                is_target = str(install_root / "versions") in command[0]
+                events.append("target_runner_start" if is_target else "old_runner_start")
+                if is_target and failure == "runner":
+                    raise subprocess.CalledProcessError(1, command)
+                return mock.Mock(returncode=0, stdout="", args=args)
             return mock.Mock(returncode=0, stdout="agentbc 1.0.4a1\n", args=args)
+
+        def post_identity(cli: Path, version: str) -> None:
+            post_identity_calls.append((str(cli), version))
+            is_target = str(install_root / "versions") in str(cli)
+            if is_target and failure in {"post_identity", "restore_identity"}:
+                raise ABCError("update_identity_mismatch", "simulated target identity failure")
+            if not is_target and failure == "restore_identity":
+                raise ABCError("update_identity_mismatch", "simulated old identity failure")
+
+        def stop_runner() -> dict[str, object]:
+            events.append("runner_stop")
+            return {"ok": True}
 
         environment = {
             "AGENTBC_ALPHA_HOME": str(install_root),
             "AGENTBC_BIN_DIR": str(bin_dir),
+            "AGENTBC_CODEX_SKILL_PATH": str(codex_root),
+            "AGENTBC_CLAUDE_SKILL_PATH": str(claude_root / "SKILL.md"),
+            "AGENTBC_HERMES_SKILL_PATH": "",
+            "HERMES_HOME": str(hermes_home),
         }
         with (
-            mock.patch.dict("os.environ", environment),
-            mock.patch("agent_bridge_connect.update._require_current_install_identity"),
-            mock.patch("agent_bridge_connect.update._fetch_bytes", return_value=wheel_bytes),
-            mock.patch("agent_bridge_connect.update.subprocess.run", side_effect=completed) as run,
+            mock.patch.dict("os.environ", environment, clear=False),
             mock.patch(
-                "agent_bridge_connect.update._require_post_update_identity",
-                side_effect=ABCError("update_identity_mismatch", "simulated"),
+                "agent_bridge_connect.update._require_current_install_identity",
+                return_value=current_identity,
             ),
+            mock.patch("agent_bridge_connect.update._fetch_bytes", return_value=wheel_bytes),
+            mock.patch("agent_bridge_connect.update.subprocess.run", side_effect=completed),
+            mock.patch("agent_bridge_connect.update._require_post_update_identity", side_effect=post_identity),
             mock.patch(
                 "agent_bridge_connect.runner.stop_runner_background",
-                return_value={"ok": True},
+                side_effect=stop_runner,
             ),
             self.assertRaises(ABCError) as raised,
         ):
             install_verified_release(release)
 
-        self.assertEqual(raised.exception.code, "update_install_failed")
+        expected_code = "update_rollback_incomplete" if failure == "restore_identity" else "update_install_failed"
+        self.assertEqual(raised.exception.code, expected_code)
+        self.assertEqual(os.readlink(target), old_link)
         self.assertEqual(target.resolve(), old_cli.resolve())
-        commands = [call.args[0] for call in run.call_args_list]
-        setup_commands = [command for command in commands if "setup" in command]
-        self.assertEqual(len(setup_commands), 2)
-        self.assertTrue(all("--update" in command for command in setup_commands))
+        self.assertEqual(events.count("runner_stop"), 2)
+        self.assertEqual(events[-1], "old_runner_start")
+        self.assertEqual(post_identity_calls[-1], (str(old_cli.resolve()), "1.0.3a1"))
+        if failure == "restore_identity":
+            self.assertNotIn("previous CLI, skills, and Runner were restored", raised.exception.message)
+        else:
+            self.assertIn("previous CLI, skills, and Runner were restored", raised.exception.message)
+        for (root, relative_path), (content, digest) in original_managed.items():
+            restored = (root / relative_path).read_bytes()
+            self.assertEqual(restored, content)
+            self.assertEqual(hashlib.sha256(restored).hexdigest(), digest)
+        for root, content in unrelated.items():
+            self.assertEqual((root / "unrelated-user-file.txt").read_bytes(), content)
+            self.assertFalse((root / "new-managed.txt").exists())
+        setup_commands = [command for command in calls if "setup" in command]
+        self.assertEqual(len(setup_commands), 1)
+        self.assertTrue("--update" in setup_commands[0])
+        old_runner_commands = [
+            command
+            for command in calls
+            if command[-2:] == ["runner", "start"] and str(install_root / "versions") not in command[0]
+        ]
+        self.assertEqual(len(old_runner_commands), 1)
+        return raised.exception
+
+    def test_installed_skill_drift_blocks_before_runner_stop_or_switch(self) -> None:
+        install_root = Path(self.temporary.name) / "install"
+        bin_dir = Path(self.temporary.name) / "bin"
+        old_cli = install_root / "venv" / "bin" / "agentbc"
+        old_cli.parent.mkdir(parents=True)
+        old_cli.write_text("old", encoding="utf-8")
+        bin_dir.mkdir()
+        target = bin_dir / "agentbc"
+        target.symlink_to(old_cli)
+        before_link = os.readlink(target)
+        report = {
+            "package": {"version": "1.0.3a1", "status": "healthy"},
+            "runner": {"status": "ready", "identity": "match"},
+            "skills": {
+                "codex": {"installed": True, "up_to_date": True},
+                "hermes": {
+                    "installed": True,
+                    "up_to_date": True,
+                    "profiles": [{"installed": True, "up_to_date": False}],
+                },
+            },
+        }
+        environment = {
+            "AGENTBC_ALPHA_HOME": str(install_root),
+            "AGENTBC_BIN_DIR": str(bin_dir),
+        }
+        with (
+            mock.patch.dict("os.environ", environment, clear=False),
+            mock.patch("agent_bridge_connect.update._doctor_report", return_value=report),
+            mock.patch("agent_bridge_connect.update._fetch_bytes") as fetch,
+            mock.patch("agent_bridge_connect.runner.stop_runner_background") as stop,
+            mock.patch("agent_bridge_connect.update.subprocess.run") as run,
+            self.assertRaises(ABCError) as raised,
+        ):
+            install_verified_release(_available())
+        self.assertEqual(raised.exception.code, "update_skill_identity_mismatch")
+        stop.assert_not_called()
+        fetch.assert_not_called()
+        run.assert_not_called()
+        self.assertEqual(os.readlink(target), before_link)
+
+    def test_setup_refresh_failure_restores_exact_transaction_snapshot(self) -> None:
+        self._run_transaction_failure("setup")
+
+    def test_partial_setup_failure_removes_unmanifested_target_managed_file(self) -> None:
+        self._run_transaction_failure("setup_partial")
+
+    def test_target_runner_start_failure_restores_exact_transaction_snapshot(self) -> None:
+        self._run_transaction_failure("runner")
+
+    def test_post_identity_failure_restores_exact_transaction_snapshot(self) -> None:
+        self._run_transaction_failure("post_identity")
+
+    def test_unverified_old_identity_returns_rollback_incomplete(self) -> None:
+        self._run_transaction_failure("restore_identity")
 
 
 if __name__ == "__main__":

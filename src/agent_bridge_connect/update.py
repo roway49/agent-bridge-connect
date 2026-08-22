@@ -43,7 +43,7 @@ import tempfile
 import urllib.request
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import __version__
@@ -75,6 +75,46 @@ _UPDATE_NOTE = (
     "create/dispatch blocked until the old channel is cleared and a "
     "supported update completes"
 )
+
+_TARGET_SKILL_PATH_QUERY = """\
+import json
+from pathlib import Path
+
+from agent_bridge_connect import setup
+from agent_bridge_connect.skill_packages import LEGACY_SKILL_FINGERPRINTS, MANIFEST_NAME
+
+
+def _root(value):
+    path = Path(value).expanduser()
+    if path.name in {"SKILL.md", ".agentbc-skill.json"}:
+        return path.parent
+    return path
+
+
+def _entry(platform, value):
+    files = set(setup._current_skill_files(platform))
+    files.update(LEGACY_SKILL_FINGERPRINTS[platform]["files"])
+    files.add(MANIFEST_NAME)
+    return {
+        "root": str(_root(value)),
+        "files": sorted(files),
+    }
+
+
+print(
+    json.dumps(
+        {
+            "codex": _entry("codex", setup._codex_skill_root()),
+            "claude": _entry("claude", setup._claude_skill_path()),
+            "hermes": [
+                _entry("hermes", value)
+                for value in setup._hermes_skill_destinations(all_profiles=True)
+            ],
+        },
+        sort_keys=True,
+    )
+)
+"""
 
 
 def update_preflight(service: Any) -> dict[str, Any]:
@@ -231,7 +271,7 @@ def run_update_flow(
 
 
 def install_verified_release(release: dict[str, Any]) -> dict[str, Any]:
-    """Install into a fresh managed venv and atomically switch the CLI link."""
+    """Install and cut over the managed CLI as one CLI/Skill/Runner transaction."""
     wheel = release["wheel"]
     strategy = _local_install_strategy()
     if strategy["method"] == "homebrew":
@@ -247,8 +287,13 @@ def install_verified_release(release: dict[str, Any]) -> dict[str, Any]:
     install_root = strategy["install_root"]
     bin_dir = strategy["bin_dir"]
     target = strategy["target"]
-    _require_current_install_identity(target, release)
+    current_identity = _require_current_install_identity(target, release)
     old_link = os.readlink(target) if target.is_symlink() else ""
+    old_version = str(release.get("current") or "")
+    if isinstance(current_identity, dict):
+        package = current_identity.get("package")
+        if isinstance(package, dict) and package.get("version"):
+            old_version = str(package["version"])
     version = str(release["latest"])
     transaction = uuid.uuid4().hex[:12]
     new_venv = install_root / "versions" / f"{version}-{transaction}"
@@ -280,10 +325,25 @@ def install_verified_release(release: dict[str, Any]) -> dict[str, Any]:
         raise ABCError("update_stage_failed", "Staged install failed; active CLI was not changed") from exc
     bin_dir.mkdir(parents=True, exist_ok=True)
     temporary_link = bin_dir / f".agentbc-update-{transaction}"
-    temporary_link.symlink_to(new_cli)
+    snapshot: dict[str, Any] | None = None
+    transaction_started = False
     try:
+        target_skill_specs = _target_managed_skill_specs(new_python)
+        snapshot = _capture_skill_snapshot(
+            current_identity,
+            target_skill_specs=target_skill_specs,
+        )
+        if temporary_link.exists() or temporary_link.is_symlink():
+            raise ABCError(
+                "update_transaction_unsafe",
+                f"Refusing to reuse an existing transaction link: {temporary_link}",
+            )
+        temporary_link.symlink_to(new_cli)
         from .runner import stop_runner_background
 
+        # From this point on a Runner stop may have happened even if the stop
+        # helper reports an error, so every exception must enter rollback.
+        transaction_started = True
         stopped = stop_runner_background()
         if not stopped.get("ok"):
             raise ABCError("update_runner_stop_failed", "The current Runner could not be stopped safely")
@@ -302,28 +362,24 @@ def install_verified_release(release: dict[str, Any]) -> dict[str, Any]:
         )
         _require_post_update_identity(new_cli, version)
     except Exception as exc:
-        temporary_link.unlink(missing_ok=True)
-        rollback_ok = False
-        if old_link:
-            rollback_link = bin_dir / f".agentbc-rollback-{transaction}"
-            rollback_link.symlink_to(old_link)
-            os.replace(rollback_link, target)
-            old_cli = target.resolve()
-            restored_setup = subprocess.run(
-                [str(old_cli), "setup", "--update", "--non-interactive"],
-                check=False,
-                text=True,
-                capture_output=True,
-            )
-            restored_runner = subprocess.run(
-                [str(old_cli), "runner", "start"],
-                check=False,
-                text=True,
-                capture_output=True,
-            )
-            rollback_ok = restored_setup.returncode == 0 and restored_runner.returncode == 0
-        else:
-            target.unlink(missing_ok=True)
+        if temporary_link.is_symlink():
+            temporary_link.unlink()
+        if not transaction_started or snapshot is None:
+            shutil.rmtree(new_venv, ignore_errors=True)
+            if isinstance(exc, ABCError):
+                raise
+            raise ABCError(
+                "update_transaction_prepare_failed",
+                "Update transaction could not be prepared; active CLI was not changed",
+            ) from exc
+        rollback_ok, _rollback_reason = _rollback_update_transaction(
+            target=target,
+            bin_dir=bin_dir,
+            old_link=old_link,
+            old_version=old_version,
+            snapshot=snapshot,
+            transaction=transaction,
+        )
         shutil.rmtree(new_venv, ignore_errors=True)
         if rollback_ok:
             raise ABCError(
@@ -352,7 +408,7 @@ def _fetch_bytes(url: str) -> bytes:
     return payload
 
 
-def _require_current_install_identity(target: Path, release: dict[str, Any]) -> None:
+def _require_current_install_identity(target: Path, release: dict[str, Any]) -> dict[str, Any]:
     report = _doctor_report(target)
     package = report.get("package") if isinstance(report.get("package"), dict) else {}
     runner = report.get("runner") if isinstance(report.get("runner"), dict) else {}
@@ -366,29 +422,456 @@ def _require_current_install_identity(target: Path, release: dict[str, Any]) -> 
             "update_identity_mismatch",
             "Current CLI and Runner identities must match before updating",
         )
+    drifted = _drifted_skill_identities(report)
+    if drifted:
+        raise ABCError(
+            "update_skill_identity_mismatch",
+            "Installed managed skills are not current for the active CLI: "
+            + ", ".join(drifted),
+        )
+    return report
 
 
 def _require_post_update_identity(target: Path, version: str) -> None:
     report = _doctor_report(target)
     package = report.get("package") if isinstance(report.get("package"), dict) else {}
     runner = report.get("runner") if isinstance(report.get("runner"), dict) else {}
-    skills = report.get("skills") if isinstance(report.get("skills"), dict) else {}
     if package.get("version") != version or package.get("status") == "unavailable":
         raise ABCError("update_identity_mismatch", "Updated CLI package identity is invalid")
     if runner.get("status") != "ready" or runner.get("identity") != "match":
         raise ABCError("update_identity_mismatch", "Updated CLI and Runner identities do not match")
-    drifted = [
-        platform
-        for platform in ("codex", "claude", "hermes")
-        if isinstance(skills.get(platform), dict)
-        and skills[platform].get("installed") is True
-        and skills[platform].get("up_to_date") is not True
-    ]
+    drifted = _drifted_skill_identities(report)
     if drifted:
         raise ABCError(
             "update_skill_identity_mismatch",
             "Updated managed skills are not version-matched: " + ", ".join(drifted),
         )
+
+
+def _drifted_skill_identities(report: dict[str, Any]) -> list[str]:
+    """Return every reported installed Skill that is not current.
+
+    Doctor versions may report Hermes profiles in addition to the aggregate
+    platform entry.  Walking the small identity tree keeps the update gate
+    compatible with both shapes without changing the doctor schema.
+    """
+    skills = report.get("skills") if isinstance(report.get("skills"), dict) else {}
+    drifted: list[str] = []
+    for path, entry in _iter_skill_identity_entries(skills):
+        if entry.get("installed") is True and entry.get("up_to_date") is not True:
+            drifted.append(path)
+    return drifted
+
+
+def _iter_skill_identity_entries(value: Any, path: str = "skills"):
+    if isinstance(value, dict):
+        if "installed" in value or "up_to_date" in value:
+            yield path, value
+        for key, child in value.items():
+            if isinstance(child, (dict, list, tuple)):
+                child_path = f"{path}.{key}"
+                yield from _iter_skill_identity_entries(child, child_path)
+    elif isinstance(value, (list, tuple)):
+        for index, child in enumerate(value):
+            if isinstance(child, (dict, list, tuple)):
+                yield from _iter_skill_identity_entries(child, f"{path}[{index}]")
+
+
+def _capture_skill_snapshot(
+    report: Any,
+    *,
+    target_skill_specs: list[tuple[str, Path, list[str]]] | None = None,
+) -> dict[str, Any]:
+    """Capture only AgentBC-managed Skill files before the CLI cutover."""
+    try:
+        specs = _managed_skill_specs(report)
+        target_paths: dict[tuple[str, str], set[str]] = {}
+        seen = {(platform, str(root)) for platform, root in specs}
+        for platform, root, paths in target_skill_specs or []:
+            if platform not in {"codex", "claude", "hermes"}:
+                raise ABCError("update_skill_snapshot_unsafe", "Unknown target Skill platform")
+            root = _absolute_skill_root(root)
+            _assert_safe_skill_root(root)
+            normalized = {
+                _validate_managed_relative_path(path)
+                for path in paths
+            }
+            key = (platform, str(root))
+            target_paths.setdefault(key, set()).update(normalized)
+            if key not in seen:
+                seen.add(key)
+                specs.append((platform, root))
+        entries: list[dict[str, Any]] = []
+        for platform, root in specs:
+            _assert_safe_skill_root(root)
+            paths = set(_managed_skill_paths(platform))
+            paths.update(target_paths.get((platform, str(root)), set()))
+            paths.update(_manifest_declared_paths(root, platform))
+            files: dict[str, bytes | None] = {}
+            for relative_path in sorted(paths):
+                path = _safe_skill_path(root, relative_path)
+                if path.exists():
+                    try:
+                        files[relative_path] = path.read_bytes()
+                    except OSError as exc:
+                        raise ABCError(
+                            "update_skill_snapshot_failed",
+                            f"Unable to snapshot managed Skill file: {path}",
+                        ) from exc
+                else:
+                    files[relative_path] = None
+            entries.append(
+                {
+                    "platform": platform,
+                    "root": str(root),
+                    "files": files,
+                }
+            )
+        return {"entries": entries}
+    except ABCError:
+        raise
+    except (OSError, TypeError, ValueError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ABCError(
+            "update_skill_snapshot_unsafe",
+            "Managed Skill paths could not be snapshotted safely",
+        ) from exc
+
+
+def _target_managed_skill_specs(target_python: Path) -> list[tuple[str, Path, list[str]]]:
+    """Read the staged release's complete managed Skill path set before setup."""
+    try:
+        completed = subprocess.run(
+            [str(target_python), "-c", _TARGET_SKILL_PATH_QUERY],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        payload = json.loads(completed.stdout)
+        if not isinstance(payload, dict) or set(payload) != {"codex", "claude", "hermes"}:
+            raise ValueError("target Skill path query returned an incomplete platform set")
+
+        specs: list[tuple[str, Path, list[str]]] = []
+        for platform in ("codex", "claude"):
+            values = payload[platform]
+            if not isinstance(values, dict):
+                raise ValueError("target Skill path query returned an invalid platform entry")
+            entries = [values]
+            for entry in entries:
+                root_value = entry.get("root")
+                files = entry.get("files")
+                if not isinstance(root_value, str) or not isinstance(files, list) or not files:
+                    raise ValueError("target Skill path query returned an invalid path set")
+                root = _absolute_skill_root(root_value)
+                if any(part in {".", ".."} for part in root.parts):
+                    raise ValueError("target Skill path query returned an unsafe root")
+                normalized = sorted(
+                    {_validate_managed_relative_path(path) for path in files}
+                )
+                _assert_safe_skill_root(root)
+                specs.append((platform, root, normalized))
+
+        hermes_values = payload["hermes"]
+        if not isinstance(hermes_values, list) or not hermes_values:
+            raise ValueError("target Skill path query returned no Hermes profiles")
+        for entry in hermes_values:
+            if not isinstance(entry, dict):
+                raise ValueError("target Skill path query returned an invalid Hermes profile")
+            root_value = entry.get("root")
+            files = entry.get("files")
+            if not isinstance(root_value, str) or not isinstance(files, list) or not files:
+                raise ValueError("target Skill path query returned an invalid profile path set")
+            root = _absolute_skill_root(root_value)
+            if any(part in {".", ".."} for part in root.parts):
+                raise ValueError("target Skill path query returned an unsafe profile root")
+            normalized = sorted(
+                {_validate_managed_relative_path(path) for path in files}
+            )
+            _assert_safe_skill_root(root)
+            specs.append(("hermes", root, normalized))
+        return specs
+    except ABCError as exc:
+        raise ABCError(
+            "update_skill_snapshot_unsafe",
+            "Target-version managed Skill paths could not be determined safely",
+        ) from exc
+    except (OSError, subprocess.SubprocessError, TypeError, UnicodeError, ValueError) as exc:
+        raise ABCError(
+            "update_skill_snapshot_unsafe",
+            "Target-version managed Skill paths could not be determined safely",
+        ) from exc
+
+
+def _managed_skill_specs(report: Any) -> list[tuple[str, Path]]:
+    from .setup import (
+        _claude_skill_path,
+        _codex_skill_root,
+        _hermes_skill_destinations,
+    )
+
+    specs: list[tuple[str, Path]] = [
+        ("codex", _skill_root(_codex_skill_root())),
+        ("claude", _skill_root(_claude_skill_path())),
+    ]
+    specs.extend(
+        ("hermes", _skill_root(path))
+        for path in _hermes_skill_destinations(all_profiles=True)
+    )
+
+    skills = report.get("skills") if isinstance(report, dict) else None
+    if isinstance(skills, dict):
+        for platform in ("codex", "claude", "hermes"):
+            if platform in skills:
+                for value in _reported_skill_paths(skills[platform]):
+                    specs.append((platform, _skill_root(value)))
+
+    unique: list[tuple[str, Path]] = []
+    seen: set[tuple[str, str]] = set()
+    for platform, root in specs:
+        absolute = _absolute_skill_root(root)
+        key = (platform, str(absolute))
+        if key not in seen:
+            seen.add(key)
+            unique.append((platform, absolute))
+    return unique
+
+
+def _absolute_skill_root(value: str | Path) -> Path:
+    root = _skill_root(value).expanduser()
+    if not root.is_absolute():
+        root = Path.cwd() / root
+    return root.absolute()
+
+
+def _reported_skill_paths(value: Any):
+    if isinstance(value, str):
+        yield value
+        return
+    if isinstance(value, dict):
+        for key in ("root", "path", "skill_path"):
+            candidate = value.get(key)
+            if isinstance(candidate, str):
+                yield candidate
+        for key in ("paths", "profiles", "roots", "profile_paths"):
+            child = value.get(key)
+            if isinstance(child, (dict, list, tuple)):
+                yield from _reported_skill_paths(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            yield from _reported_skill_paths(child)
+
+
+def _skill_root(value: str | Path) -> Path:
+    root = Path(value).expanduser()
+    if root.name in {"SKILL.md", ".agentbc-skill.json"}:
+        root = root.parent
+    return root
+
+
+def _managed_skill_paths(platform: str) -> list[str]:
+    from .setup import _current_skill_files
+    from .skill_packages import LEGACY_SKILL_FINGERPRINTS, MANIFEST_NAME
+
+    paths = set(_current_skill_files(platform))
+    paths.update(LEGACY_SKILL_FINGERPRINTS[platform]["files"])
+    paths.add(MANIFEST_NAME)
+    return sorted(_validate_managed_relative_path(path) for path in paths)
+
+
+def _validate_managed_relative_path(relative_path: str) -> str:
+    path = PurePosixPath(relative_path)
+    if (
+        not isinstance(relative_path, str)
+        or not relative_path
+        or "\\" in relative_path
+        or path.is_absolute()
+        or path.as_posix() != relative_path
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise ABCError("update_skill_snapshot_unsafe", f"Unsafe managed Skill path: {relative_path!r}")
+    return relative_path
+
+
+def _assert_safe_skill_root(root: Path) -> None:
+    if root.is_symlink():
+        raise ABCError("update_skill_snapshot_unsafe", f"Managed Skill root is a symlink: {root}")
+    if root.exists() and not root.is_dir():
+        raise ABCError("update_skill_snapshot_unsafe", f"Managed Skill root is not a directory: {root}")
+
+
+def _safe_skill_path(root: Path, relative_path: str) -> Path:
+    _validate_managed_relative_path(relative_path)
+    _assert_safe_skill_root(root)
+    current = root
+    parts = PurePosixPath(relative_path).parts
+    for component in parts[:-1]:
+        current = current / component
+        if current.is_symlink():
+            raise ABCError("update_skill_snapshot_unsafe", f"Managed Skill parent is a symlink: {current}")
+        if current.exists() and not current.is_dir():
+            raise ABCError(
+                "update_skill_snapshot_unsafe",
+                f"Managed Skill parent is not a directory: {current}",
+            )
+    path = root / relative_path
+    if path.is_symlink():
+        raise ABCError("update_skill_snapshot_unsafe", f"Managed Skill path is a symlink: {path}")
+    if path.exists() and not path.is_file():
+        raise ABCError("update_skill_snapshot_unsafe", f"Managed Skill path is not a file: {path}")
+    return path
+
+
+def _manifest_declared_paths(root: Path, platform: str) -> list[str]:
+    from .skill_packages import MANIFEST_NAME
+
+    manifest_path = _safe_skill_path(root, MANIFEST_NAME)
+    if not manifest_path.exists():
+        return []
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ABCError("update_skill_snapshot_unsafe", f"Managed Skill manifest is unreadable: {manifest_path}") from exc
+    if not isinstance(payload, dict) or payload.get("platform") != platform:
+        raise ABCError("update_skill_snapshot_unsafe", f"Managed Skill manifest has the wrong platform: {manifest_path}")
+    files = payload.get("files")
+    if not isinstance(files, dict):
+        raise ABCError("update_skill_snapshot_unsafe", f"Managed Skill manifest has invalid files: {manifest_path}")
+    return [_validate_managed_relative_path(path) for path in files]
+
+
+def _augment_snapshot_from_current_manifests(snapshot: dict[str, Any]) -> None:
+    """Include valid target-manifest paths so newly introduced managed files are removed."""
+    from .skill_packages import MANIFEST_NAME
+
+    for entry in snapshot.get("entries", []):
+        root = Path(entry["root"])
+        platform = str(entry["platform"])
+        paths = entry["files"]
+        _assert_safe_skill_root(root)
+        manifest_path = _safe_skill_path(root, MANIFEST_NAME)
+        if not manifest_path.exists():
+            continue
+        declared = _manifest_declared_paths(root, platform)
+        for relative_path in declared:
+            _safe_skill_path(root, relative_path)
+            paths.setdefault(relative_path, None)
+
+
+def _rollback_update_transaction(
+    *,
+    target: Path,
+    bin_dir: Path,
+    old_link: str,
+    old_version: str,
+    snapshot: dict[str, Any],
+    transaction: str,
+) -> tuple[bool, str]:
+    """Stop the target Runner, restore bytes/link, then prove the old identity."""
+    try:
+        from .runner import stop_runner_background
+
+        stopped = stop_runner_background()
+        if not stopped.get("ok"):
+            return False, "target Runner could not be stopped during rollback"
+        if not old_link:
+            return False, "the previous managed CLI link is unavailable"
+        _augment_snapshot_from_current_manifests(snapshot)
+        _restore_cli_link(target, bin_dir, old_link, transaction)
+        _restore_skill_snapshot(snapshot, transaction)
+        old_cli = target.resolve(strict=False)
+        restored_runner = subprocess.run(
+            [str(old_cli), "runner", "start"],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        if getattr(restored_runner, "returncode", None) != 0:
+            return False, "the previous Runner did not start successfully"
+        _verify_cli_link(target, old_link)
+        _verify_skill_snapshot(snapshot)
+        _require_post_update_identity(old_cli, old_version)
+        return True, ""
+    except Exception as exc:  # noqa: BLE001 - rollback must fail closed.
+        return False, str(exc)
+
+
+def _restore_cli_link(target: Path, bin_dir: Path, old_link: str, transaction: str) -> None:
+    if target.exists() and not target.is_symlink():
+        raise ABCError("update_rollback_incomplete", f"Managed CLI target is not a symlink: {target}")
+    rollback_link = bin_dir / f".agentbc-rollback-{transaction}"
+    if rollback_link.exists() or rollback_link.is_symlink():
+        raise ABCError("update_rollback_incomplete", f"Rollback link already exists: {rollback_link}")
+    rollback_link.symlink_to(old_link)
+    try:
+        os.replace(rollback_link, target)
+    finally:
+        rollback_link.unlink(missing_ok=True)
+
+
+def _verify_cli_link(target: Path, old_link: str) -> None:
+    if not target.is_symlink() or os.readlink(target) != old_link:
+        raise ABCError("update_rollback_incomplete", "The previous managed CLI link was not restored exactly")
+
+
+def _restore_skill_snapshot(snapshot: dict[str, Any], transaction: str) -> None:
+    for entry in snapshot.get("entries", []):
+        root = Path(entry["root"])
+        _assert_safe_skill_root(root)
+        files = entry.get("files") if isinstance(entry.get("files"), dict) else {}
+        for relative_path in sorted(files):
+            _safe_skill_path(root, relative_path)
+        for relative_path in sorted(files):
+            expected = files[relative_path]
+            path = _safe_skill_path(root, relative_path)
+            if expected is None:
+                if path.exists() or path.is_symlink():
+                    # ``_safe_skill_path`` has already rejected symlinks and
+                    # non-files, so this removes only a regular managed file
+                    # that did not exist in the pre-cutover snapshot.
+                    path.unlink()
+                continue
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(f".{path.name}.agentbc-restore-{transaction}")
+            if temporary.exists() or temporary.is_symlink():
+                raise ABCError("update_rollback_incomplete", f"Rollback file already exists: {temporary}")
+            try:
+                temporary.write_bytes(expected)
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        _prune_empty_skill_directories(root, files)
+
+
+def _prune_empty_skill_directories(root: Path, files: dict[str, bytes | None]) -> None:
+    parents: set[Path] = set()
+    for relative_path in files:
+        parent = (root / relative_path).parent
+        while parent != root and _is_relative_to(parent, root):
+            parents.add(parent)
+            parent = parent.parent
+    for parent in sorted(parents, key=lambda path: len(path.parts), reverse=True):
+        try:
+            parent.rmdir()
+        except OSError:
+            pass
+    try:
+        root.rmdir()
+    except OSError:
+        pass
+
+
+def _verify_skill_snapshot(snapshot: dict[str, Any]) -> None:
+    for entry in snapshot.get("entries", []):
+        root = Path(entry["root"])
+        _assert_safe_skill_root(root)
+        files = entry.get("files") if isinstance(entry.get("files"), dict) else {}
+        for relative_path, expected in files.items():
+            path = _safe_skill_path(root, relative_path)
+            if expected is None:
+                if path.exists() or path.is_symlink():
+                    raise ABCError("update_rollback_incomplete", f"Introduced managed Skill path remains: {path}")
+                continue
+            if not path.exists() or path.read_bytes() != expected:
+                raise ABCError("update_rollback_incomplete", f"Managed Skill bytes were not restored: {path}")
 
 
 def _doctor_report(target: Path) -> dict[str, Any]:
