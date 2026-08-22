@@ -2,7 +2,7 @@
 
 > 制定日期：2026-08-11  
 > 最近整理：2026-08-22
-> 状态：权限、update 与 Homebrew 代码已收口；延期项边界冻结，当前转入 RC 发布验收
+> 状态：权限、update 与 Homebrew 代码已收口；新增 E2E teardown / 派生会话清理 P1，待 update 与 Homebrew RC Gate 后补完
 > 目标版本：`v1.0.3A`  
 > 来源基线：`1.0.2A` 开发截止代码 `b8af2f3a0a1f56814854e3f46056dd8ab9cf55d7`
 > 计划开发起点：`private/integration@fc2f3f19d18d1c23890ee02a4ee9600c36456a60`
@@ -66,6 +66,8 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 | `FLOW-103-001` | 延期至 1.0.4A | 系统资源耗尽覆盖 callback 时低估已完成 step | `BTCN-001` 实际完成 2 个 step，终态报告显示 `0/4` | 与结构化多 steps 和局部重构一并实现 Runner/Core 权威 progress receipt；1.0.3A 不修改状态机 |
 | `UPD-103-001` | P1 | Alpha 缺少低心智负担的更新入口 | 1.0.2A 依赖手工 bundle 替换 | `agentbc update` 自动检查并以 `y/N` 确认升级；不提供 rollback 命令 |
 | `PKG-103-001` | P1 | Homebrew 尚无正式 formula/cask Gate | 1.0.2A 只有 wheel/sdist/local bundle | 可验证安装、升级、卸载与迁移 |
+| `SESSION-103-002` | P1，待开发 | E2E canary teardown 只结束进程和删除临时目录，没有关闭测试创建的官方 Executor 会话 | `WT3X-001` 的 raw Codex app-server canary 调用 `thread/start` 后仅 `terminate()` 并删除 `/tmp`，相关 Codex 对话继续保留 | 为真实 E2E helper 建立 receipt 驱动的 `try/finally` teardown；成功、拒绝、超时和进程异常均精确清理本次创建的会话 |
+| `SESSION-103-003` | P1，待开发 | AgentBC 只跟踪主 Executor 的单一 `agentbc.session`，由 Executor 派生的子 Executor 对话不在 cleanup ledger | `WT3X-001` 的 Claude 主会话已按 `retain=false` 清理，但其派生的 Codex threads 没有被登记或清理 | 增加 task/run scoped auxiliary session receipt 与 cleanup 状态；任务收尾覆盖主会话及全部已登记派生会话，禁止扫描私有会话库猜测 ID |
 | `PROTO-104-001` | 延期至 1.0.4A | Executor argv/help/output fixture 更新仍分散 | 1.0.2A 多次因真实 CLI 输出漂移补丁修复 | 与局部重构一起建立完整版本化 fixture matrix；1.0.3A 只补定向 fixture |
 | `ARCH-104-001` | 延期至 1.0.4A | Service/Runner/CLI/Setup 继续过度集中 | 1.0.2A 收口时共享文件修改风险高 | 在完整 characterization/fixture 保护下进行局部重构 |
 | `FLOW-104-001` | 延期至 1.0.4A | handoff 固定只声明一个 step，但自由文本可包含多段 Step 编号 | `XCKX-002`、`76MG-002` 实现与测试完成后因 callback 返回未声明的 Step 2～4 被 fail closed | 为 handoff 增加结构化多 steps 合同、预检和跨 Executor callback 一致性测试 |
@@ -86,6 +88,8 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 | `FLOW-103-001` | 已延期 | 与 `FLOW-104-001` 的结构化多 steps、`PROTO-104-001` fixtures 和 `ARCH-104-001` 局部重构一起进入 1.0.4A |
 | `UPD-103-001` | 代码已完成；RC Gate 待执行 | `26ccbb4`：GitHub release manifest/asset 双重 SHA-256 校验、current 零写入、`y/N`、旧任务 cutover、受管 venv staging、CLI 原子切换、Runner/已安装 Skill identity 复验及失败恢复已合入；Homebrew/pipx/非受管链接 fail closed。1280 项全量、Ruff、compileall、Shell 语法和 diff check 通过；仍需用真实新旧发布包执行成功升级与故障注入 |
 | `PKG-103-001` | 代码已完成；双架构 RC Gate 待执行 | `26ccbb4`：从同一 `release-manifest.json` 生成固定 sdist SHA-256/Python 3.13/Runner service 的 Formula，发布工作流生成并上传 `agentbc.rb`；Ruby 语法通过。仍需在 Tap 内完成 Apple Silicon + Intel 的 install/upgrade/uninstall/services/PATH/PyPI-local 迁移实测，未把静态生成误记为发布通过 |
+| `SESSION-103-002` | P1 待开发；等待 Update/Homebrew Gate | 修复 E2E helper 的 teardown 完整性；必须使用创建时捕获的官方 session receipt 精确删除，不得以结束进程、删除 canary root 或退出码代替 cleanup 成功 |
+| `SESSION-103-003` | P1 待开发；等待 Update/Homebrew Gate | 补齐派生 Executor 对话的登记、终态清理、失败重试、report/doctor blocker 与脱敏 cleanup receipt；完成前不再运行会产生持久化子对话的真实权限 E2E |
 | `REL-103-CANDIDATE` | 候选包与双机安装 smoke 已完成 | `89dc0b0` 已形成 `1.0.3a1` 内部候选；Mac mini 110 项权限定向与 1229 项全量、Intel MacBook 140 项权限定向与 1229 项全量通过；隔离 wheel smoke `F47F-001`、MacBook 安装态 `X977-001`、Mac mini 安装态 `CQBA-001` 通过，双机 CLI/Runner/三平台 Skill identity 一致；尚未关闭真实三 Executor 权限审批 canary 与最终发布 Gate |
 | `FLOW-103-001` / `PROTO-104-001` / `ARCH-104-001` / `FLOW-104-001` / `PERM-104-001` | 已延期 | 保持 `1.0.4A` 边界，本版不实现；1.0.3A 不再扩大功能范围，只执行 update/Homebrew 与三 Executor 的 RC 验收 |
 
@@ -280,6 +284,32 @@ Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 
 - Homebrew-owned Cellar/opt link 不进入 AgentBC 自更新事务；`agentbc update` 只提示
   `brew upgrade agentbc`，避免破坏 Homebrew receipt 与 service 所有权。
 
+### 8.2.1 E2E teardown 与派生会话清理（`SESSION-103-002` / `SESSION-103-003`）
+
+- 开发顺序固定为：先完成 `UPD-103-001` 真实新旧包升级/故障注入和 `PKG-103-001` 双架构
+  install/upgrade/uninstall/services/PATH/迁移 Gate，再补本节；两项 session P1 通过后才恢复
+  会创建真实 Executor 对话的权限 E2E 与最终发布 Gate；
+- `SESSION-103-002` 约束 AgentBC 自带 E2E/canary helper：每次创建 Executor 会话时立即捕获
+  官方 receipt，使用 `try/finally` 在成功、Deny、timeout、transport lost、进程异常和测试中断
+  路径执行精确 teardown，并等待官方删除结果；`process.terminate()`、删除 `/tmp` 或 customer
+  root、命令退出 0 均不能作为会话已清理证据；
+- `SESSION-103-003` 为任务增加 task/run scoped auxiliary session ledger。每条记录至少绑定
+  owner task、run、parent executor/session、child executor、官方 session ID、purpose、retain
+  快照和 cleanup state/attempts/receipt；`thread/start` / `session/new` 成功后必须先原子登记，
+  才能继续派生执行；
+- 终态 cleanup coordinator 同时处理主 `agentbc.session` 与全部 auxiliary sessions。任一
+  `retain=false` 派生会话未登记、缺失官方 receipt、清理失败或仍处于不确定状态时，report 和
+  doctor 必须产生稳定 blocker，不得把主会话清理成功投影为任务 cleanup 完成；
+- `input_required`、retry、recover 与同 session continuation 期间保留仍在使用的派生会话；
+  只有进入符合条件的终态后清理。显式 `retain=true` 必须冻结到每条 receipt，不能由子进程或
+  E2E helper 自行改变；
+- 禁止扫描 Codex/Claude/Hermes 私有数据库、目录或“最近会话”推断 ID；只能清理由当前任务
+  创建并通过官方 transport 捕获、已经登记的精确 receipt；公共 status/report/log 仅显示脱敏
+  session 引用和 cleanup 结果；
+- 回归覆盖 raw app-server canary、嵌套 Executor、成功、Approve/Deny、超时、崩溃、Runner
+  重启、cleanup 重试和 retain=true。验收要求没有新增遗留对话、每条 cleanup receipt 可审计、
+  重放删除幂等，且 dispatcher conversation 永远不进入清理集合。
+
 ### 8.3 协议 fixtures（延期到 `1.0.4A / PROTO-104-001`）
 
 - `1.0.3A` 不建设覆盖三 Executor 全部 version/help/argv/output/session/approval/resource 的完整
@@ -349,7 +379,11 @@ Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 
 6. **Phase 5：交互式 update 与 Homebrew**——代码已于 `26ccbb4` 收口；自动 check、`y/N`、
    失败恢复、Formula 生成和发布资产接线已完成，剩余真实安装/升级/卸载/迁移 RC Gate；不实现
    rollback 命令、完整 fixture matrix 或主动模块拆分；
-7. **Phase 6：集成与发布**——安装升级、Python/双机、三 Executor、失败注入、发布身份。
+7. **Phase 5.5：E2E/session P1 补完**——仅在 Phase 5 的 update 与 Homebrew RC Gate 全部通过后
+   开始 `SESSION-103-002` / `SESSION-103-003`；实现 teardown 和派生会话 ledger/cleanup，完成
+   定向、异常路径与零残留回归；
+8. **Phase 6：集成与发布**——Phase 5.5 通过后再执行三 Executor 权限 E2E、Python/双机、
+   失败注入与最终发布身份 Gate。
 
 ### 9.1 `1.0.3A` 开始前的人工过渡规则
 
@@ -371,11 +405,12 @@ Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 
 | 2026-09-07～09-13 | Phase 3 | 已完成；progress 延期 | Approve/Deny、同 session resume 与极简弹窗已合入；`FLOW-103-001` 转入 1.0.4A |
 | 2026-09-14～09-20 | Phase 4 | `PERM-103-007` 已完成 | Claude 文件级 capability 与 Runner fail-closed 校验通过；真实 canary 归发布验收 |
 | 2026-09-21～09-24 | Phase 5 | 代码已完成；RC Gate 待执行 | `26ccbb4` 已完成 update 事务与 Formula/发布接线；用真实 release 资产执行升级故障注入及双架构 Homebrew install/upgrade/uninstall/services/PATH/迁移 |
-| 2026-09-25～09-27 | Phase 6 | 候选包与双机安装 smoke 已提前完成 | 剩余真实三 Executor 权限 canary、故障注入、P0/P1 收口复验和最终发布身份 Gate |
+| Phase 5 Gate 后、Phase 6 前 | Phase 5.5 | P1 待开发 | 完成 `SESSION-103-002` E2E teardown 与 `SESSION-103-003` 派生会话 ledger/cleanup；异常路径、幂等删除、doctor blocker 与零新增遗留对话回归通过 |
+| Phase 5.5 通过后 | Phase 6 | 候选包与双机安装 smoke 已提前完成 | 重新出候选包，执行真实三 Executor 权限 canary、故障注入、P0/P1 收口复验和最终发布身份 Gate |
 
-目标发布窗口为 `2026-09-27`；若 Hermes early approval/session capability 或 Claude 文件级
-capability 无法由当前上游 CLI 精确表达，本版按既定 fail-closed 合同交付，不以危险近似
-实现换取日期。
+目标发布窗口仍以 `2026-09-27` 为基准，但不得越过 Phase 5.5 零残留门禁；若 session P1、
+Hermes early approval/session capability 或 Claude 文件级 capability 无法由当前上游 CLI
+精确表达，本版按既定 fail-closed 合同交付，不以危险近似实现换取日期。
 
 ### 9.3 权限审批测试任务流程（`PERM-TEST-103`）
 
@@ -449,6 +484,9 @@ agentbc task create --title "PERM-TEST-103 <executor> single-action canary" \
 - `agentbc update` 自动 check；无更新零写入，有更新以 `y/N` 确认，升级成功后 CLI、Runner 与
   三平台 Skill identity 一致，失败时旧版本仍可启动；配置、record、report、artifact 和
   customer project 均保持；Homebrew 与 PyPI/local bundle 迁移有可复现证据；
+- AgentBC 自带 E2E 和任务派生 Executor 会话均有 task/run scoped 官方 receipt；默认
+  `retain=false` 时，成功、Deny、timeout、transport lost、进程异常与 Runner 重启后都能定向、
+  幂等清理，report/doctor 不得把未登记或未清理的子会话误报为 cleanup 完成；
 - 单测、Runner 集成、真实 CLI canary、Ruff、compileall、`git diff --check` 和发布身份检查通过。
 
 ## 11. 明确不做
