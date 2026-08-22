@@ -14,6 +14,7 @@ from unittest import mock
 from agent_bridge_connect import __version__
 from agent_bridge_connect.skill_packages import (
     LEGACY_SKILL_FINGERPRINTS,
+    MANAGED_SKILL_FINGERPRINTS,
     aggregate_template_sha256,
     build_skill_manifest,
     classify_skill_package,
@@ -135,6 +136,138 @@ class SkillManifestTests(unittest.TestCase):
         self.assertEqual(
             LEGACY_SKILL_FINGERPRINTS["hermes"]["template_sha256"],
             "381b9926e7a26cfba2b45c03b3797bd0683de3a022ac2848c3de8954c972668a",
+        )
+
+    def test_managed_102a1_fingerprints_are_frozen_and_version_consistent(self):
+        fingerprints = MANAGED_SKILL_FINGERPRINTS["1.0.2a1"]
+        self.assertEqual(set(fingerprints), {"codex", "claude", "hermes"})
+        self.assertEqual(
+            fingerprints["codex"]["template_sha256"],
+            "bd6eebf95d63963eeafa4986705e010b92c41dde45878dbfb83ebb0bfc0c290e",
+        )
+        self.assertEqual(
+            fingerprints["claude"]["template_sha256"],
+            "891b95db10659920d5c3b9f5e013ddf5803c476458ce75e53d4e58a9a6b953b8",
+        )
+        self.assertEqual(
+            fingerprints["hermes"]["template_sha256"],
+            "bcfce4bfdc406d36670155256b48bd2ab1c32c83415b588a10da722f8bba26e1",
+        )
+        self.assertEqual(
+            fingerprints["codex"]["files"]["references/controller-contract.md"],
+            "370af89b528469368c75f49b9986f004951397b240a1d9721d6598057665c38d",
+        )
+        # The published 1.0.2a1 sdist shipped byte-identical Skill templates,
+        # so the trusted 1.0.2a1 -> 1.0.3a1 upgrade differs only in the
+        # manifest package_version and must classify as managed_outdated and
+        # refresh without any forced overwrite.
+        from agent_bridge_connect.setup import _current_skill_files, _expected_skill_manifest
+
+        for platform in ("codex", "claude", "hermes"):
+            current = _current_skill_files(platform)
+            for path, digest in fingerprints[platform]["files"].items():
+                self.assertEqual(digest, sha256_bytes(current[path]))
+            expected = _expected_skill_manifest(platform)
+            self.assertEqual(
+                fingerprints[platform]["template_sha256"],
+                expected["template_sha256"],
+            )
+            self.assertEqual(
+                set(fingerprints[platform]["files"]),
+                set(expected["files"]),
+            )
+
+    def _write_managed_package(
+        self,
+        platform: str,
+        root: Path,
+        files: dict[str, bytes],
+        package_version: str,
+    ) -> None:
+        for relative_path, content in files.items():
+            path = root / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        manifest = build_skill_manifest(platform, package_version, files)
+        (root / ".agentbc-skill.json").write_bytes(serialize_skill_manifest(manifest))
+
+    def _write_real_102a1_package(self, platform: str, root: Path) -> None:
+        from agent_bridge_connect.setup import _current_skill_files
+
+        self._write_managed_package(
+            platform,
+            root,
+            _current_skill_files(platform),
+            "1.0.2a1",
+        )
+
+    def test_managed_outdated_real_102a1_is_classified_and_refreshed_for_every_platform(self):
+        for platform in ("codex", "claude", "hermes"):
+            with self.subTest(platform=platform):
+                root = self.test_dir / f"managed-outdated-{platform}"
+                self._write_real_102a1_package(platform, root)
+                unrelated = root / "notes.txt"
+                unrelated.write_text("keep me", encoding="utf-8")
+
+                state = self._state(platform, root)
+                self.assertEqual(state["classification"], "managed_outdated")
+                self.assertTrue(state["installed"])
+                self.assertFalse(state["up_to_date"])
+                self.assertEqual(state["manifest"]["package_version"], "1.0.2a1")
+                result = self._install(platform, root)
+
+                self.assertEqual(result["previous_classification"], "managed_outdated")
+                self.assertEqual(result["classification"], "current")
+                self.assertEqual(self._state(platform, root)["classification"], "current")
+                self.assertEqual(self._state(platform, root)["manifest"]["package_version"], __version__)
+                self.assertEqual(unrelated.read_text(encoding="utf-8"), "keep me")
+
+    def test_forged_unknown_and_edited_managed_manifests_remain_modified(self):
+        from agent_bridge_connect.setup import _current_skill_files, install_codex_skill
+
+        root = self.test_dir / "managed-forged"
+        current_files = _current_skill_files("codex")
+
+        # Unknown version: a self-consistent manifest for a version AgentBC
+        # has never shipped must stay modified even though every hash agrees.
+        self._write_managed_package("codex", root, current_files, "0.0.0-unknown")
+        self.assertEqual(self._state("codex", root)["classification"], "modified")
+
+        # Forged 1.0.2a1 claim: a manifest claiming the trusted version but
+        # declaring an unregistered path that never shipped in the release.
+        unrelated = root / "notes.md"
+        unrelated.write_text("user-owned\n", encoding="utf-8")
+        forged = build_skill_manifest(
+            "codex",
+            "1.0.2a1",
+            {"notes.md": unrelated.read_bytes()},
+        )
+        manifest_path = root / ".agentbc-skill.json"
+        manifest_path.write_bytes(serialize_skill_manifest(forged))
+        state = self._state("codex", root)
+        self.assertEqual(state["classification"], "modified")
+        self.assertNotIn("notes.md", state["managed_paths"])
+        install_codex_skill(root, interactive=False, force=True)
+        self.assertEqual(unrelated.read_text(encoding="utf-8"), "user-owned\n")
+
+        # User edit: an intact 1.0.2a1 package with one file touched by the
+        # user must remain modified and refuse noninteractive refresh.
+        self._write_real_102a1_package("codex", root)
+        (root / "SKILL.md").write_bytes(b"user customization\n")
+        self.assertEqual(self._state("codex", root)["classification"], "modified")
+        refused = install_codex_skill(root, interactive=False)
+        self.assertEqual(refused["status"], "modified_requires_confirmation")
+        self.assertEqual((root / "SKILL.md").read_bytes(), b"user customization\n")
+
+        # Non-regular path: a directory replacing a managed file must remain
+        # modified and never be silently overwritten.
+        (root / "SKILL.md").unlink()
+        (root / "SKILL.md").mkdir()
+        (root / "SKILL.md" / "user.txt").write_text("preserve\n", encoding="utf-8")
+        self.assertEqual(self._state("codex", root)["classification"], "modified")
+        self.assertEqual(
+            (root / "SKILL.md" / "user.txt").read_text(encoding="utf-8"),
+            "preserve\n",
         )
 
     def test_recognized_legacy_is_upgraded_noninteractively_for_every_platform(self):
