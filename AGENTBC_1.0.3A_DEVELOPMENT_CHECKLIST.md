@@ -2,7 +2,7 @@
 
 > 制定日期：2026-08-11  
 > 最近整理：2026-08-22
-> 状态：权限、update 与 Homebrew 代码已收口；新增 E2E teardown / 派生会话清理 P1，待 update 与 Homebrew RC Gate 后补完
+> 状态：权限、update 与 Homebrew 代码已收口；2026-08-22 RC Gate 发现 update Skill 迁移阻断与 Intel Homebrew 环境阻断，Session P1 继续冻结
 > 目标版本：`v1.0.3A`  
 > 来源基线：`1.0.2A` 开发截止代码 `b8af2f3a0a1f56814854e3f46056dd8ab9cf55d7`
 > 计划开发起点：`private/integration@fc2f3f19d18d1c23890ee02a4ee9600c36456a60`
@@ -86,8 +86,8 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 | `PERM-103-007` | 已完成 | `0cfb492`：Claude 2.1.216～2.1.x 版本/平台/help gate、任务级 `claude.ephemeral_project_isolation.v1`、Artifact-only `--add-dir`、内建 Edit deny、OS sandbox `allowWrite/denyWrite`、禁用 unsandboxed retry 与 Runner 精确 argv/settings 重建校验已合入；本机 2.1.233 probe、1268 项全量、Ruff、compileall 与 diff check 通过 |
 | `PERM-103-008` / `PERM-103-009` | 已完成 | `a993e94`、`4ef12eb`：permission/session 兼容总错误下新增 15 类稳定原因与脱敏诊断；`2b1bcbd`、`247c45b`：Codex app-server single-action 生产链已合入；既有一次性 full continuation 继续作为兼容兜底 |
 | `FLOW-103-001` | 已延期 | 与 `FLOW-104-001` 的结构化多 steps、`PROTO-104-001` fixtures 和 `ARCH-104-001` 局部重构一起进入 1.0.4A |
-| `UPD-103-001` | 代码已完成；RC Gate 待执行 | `26ccbb4`：GitHub release manifest/asset 双重 SHA-256 校验、current 零写入、`y/N`、旧任务 cutover、受管 venv staging、CLI 原子切换、Runner/已安装 Skill identity 复验及失败恢复已合入；Homebrew/pipx/非受管链接 fail closed。1280 项全量、Ruff、compileall、Shell 语法和 diff check 通过；仍需用真实新旧发布包执行成功升级与故障注入 |
-| `PKG-103-001` | 代码已完成；双架构 RC Gate 待执行 | `26ccbb4`：从同一 `release-manifest.json` 生成固定 sdist SHA-256/Python 3.13/Runner service 的 Formula，发布工作流生成并上传 `agentbc.rb`；Ruby 语法通过。仍需在 Tap 内完成 Apple Silicon + Intel 的 install/upgrade/uninstall/services/PATH/PyPI-local 迁移实测，未把静态生成误记为发布通过 |
+| `UPD-103-001` | 代码已完成；RC Gate 阻断 | `52eb7fc` 候选的 current、`n`/空输入/EOF、manifest/tag/wheel、unmanaged/pipx fail-closed 均通过；但真实 `1.0.2a1 → 1.0.3a1` 在新 CLI 执行 `setup --update` 后把三平台 Skill 判为 `modified`/`1.0.2a1`，触发 `Updated managed skills are not version-matched` 并回滚。故障包同样只恢复 CLI/Runner，未恢复 Skill identity；不得标记 RC Gate 完成 |
+| `PKG-103-001` | 代码已完成；ARM Gate 通过、Intel Gate 阻断 | Mac mini ARM64 已完成 Tap clean install、`brew test`、`1.0.2a1 → 1.0.3a1`、双 PATH、Brew-owned update 引导和 uninstall，现有 Runner PID 未变化；Intel MacBook 在安装依赖前被 Xcode 14.2 过旧且缺少 Sonoma CLT 阻断，未执行 Cellar/service Gate。Mac mini 卸载需使用 `--force` 才能清除保留的旧 Cellar 版本，普通 uninstall 会触发 Homebrew autoremove，后续脚本必须冻结依赖快照并禁用/补偿自动清理 |
 | `SESSION-103-002` | P1 待开发；等待 Update/Homebrew Gate | 修复 E2E helper 的 teardown 完整性；必须使用创建时捕获的官方 session receipt 精确删除，不得以结束进程、删除 canary root 或退出码代替 cleanup 成功 |
 | `SESSION-103-003` | P1 待开发；等待 Update/Homebrew Gate | 补齐派生 Executor 对话的登记、终态清理、失败重试、report/doctor blocker 与脱敏 cleanup receipt；完成前不再运行会产生持久化子对话的真实权限 E2E |
 | `REL-103-CANDIDATE` | 候选包与双机安装 smoke 已完成 | `89dc0b0` 已形成 `1.0.3a1` 内部候选；Mac mini 110 项权限定向与 1229 项全量、Intel MacBook 140 项权限定向与 1229 项全量通过；隔离 wheel smoke `F47F-001`、MacBook 安装态 `X977-001`、Mac mini 安装态 `CQBA-001` 通过，双机 CLI/Runner/三平台 Skill identity 一致；尚未关闭真实三 Executor 权限审批 canary 与最终发布 Gate |
@@ -284,6 +284,18 @@ Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 
 - Homebrew-owned Cellar/opt link 不进入 AgentBC 自更新事务；`agentbc update` 只提示
   `brew upgrade agentbc`，避免破坏 Homebrew receipt 与 service 所有权。
 
+#### 8.2 RC Gate 复验记录（2026-08-22）
+
+- `integration@52eb7fc` 的 75 项 Update/Homebrew 定向测试、1280 项全量、Ruff、compileall、
+  Shell/Ruby 语法、Twine、manifest/hash、隔离 wheel smoke 均通过；测试资产没有进入正式发布；
+- Update 真实 E2E 的只读/拒绝/校验失败场景通过，但成功升级和故障恢复均被同一 Skill
+  migration 缺陷阻断：旧版受管 Skill 在新版本 `setup --update` 中被归类为 `modified`，因此不被
+  刷新；post-update identity 正确 fail closed，但当前恢复声明不成立；
+- Homebrew ARM64 install/upgrade/test/PATH/update guidance 通过，且 Mac mini 原 Runner 未停止；
+  Intel 安装在写入 AgentBC Cellar 前被本机 Xcode/CLT 前置条件阻断，`brew services` 未测试；
+- 本轮结论为 Phase 5 `blocked`，不是 RC accepted。先最小修复 Skill 跨版本刷新与失败回滚，更新
+  Intel 构建工具后重跑双机 Gate；`SESSION-103-002/003` 与重新出包继续保持冻结。
+
 ### 8.2.1 E2E teardown 与派生会话清理（`SESSION-103-002` / `SESSION-103-003`）
 
 - 开发顺序固定为：先完成 `UPD-103-001` 真实新旧包升级/故障注入和 `PKG-103-001` 双架构
@@ -376,9 +388,9 @@ Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 
    极简弹窗和报告投影；`FLOW-103-001` 不再属于本版 Phase 3；
 5. **Phase 4：权限细分与 Claude 临时工程**——`PERM-103-007` 已收口；三 Executor 真实
    canary 继续作为发布验收，不再扩大权限代码范围；
-6. **Phase 5：交互式 update 与 Homebrew**——代码已于 `26ccbb4` 收口；自动 check、`y/N`、
-   失败恢复、Formula 生成和发布资产接线已完成，剩余真实安装/升级/卸载/迁移 RC Gate；不实现
-   rollback 命令、完整 fixture matrix 或主动模块拆分；
+6. **Phase 5：交互式 update 与 Homebrew**——代码已于 `26ccbb4` 收口；2026-08-22 RC Gate
+   已执行但未通过：Update 被跨版本 Skill 刷新/回滚缺陷阻断，Homebrew ARM64 通过而 Intel 被
+   Xcode/CLT 前置条件阻断；不实现 rollback 命令、完整 fixture matrix 或主动模块拆分；
 7. **Phase 5.5：E2E/session P1 补完**——仅在 Phase 5 的 update 与 Homebrew RC Gate 全部通过后
    开始 `SESSION-103-002` / `SESSION-103-003`；实现 teardown 和派生会话 ledger/cleanup，完成
    定向、异常路径与零残留回归；
@@ -404,7 +416,7 @@ Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 
 | 2026-08-29～09-06 | Phase 2 | 已提前完成 | 三 Executor early session 与 approval transport 已合入；Hermes unsupported 路径可行动且 fail closed |
 | 2026-09-07～09-13 | Phase 3 | 已完成；progress 延期 | Approve/Deny、同 session resume 与极简弹窗已合入；`FLOW-103-001` 转入 1.0.4A |
 | 2026-09-14～09-20 | Phase 4 | `PERM-103-007` 已完成 | Claude 文件级 capability 与 Runner fail-closed 校验通过；真实 canary 归发布验收 |
-| 2026-09-21～09-24 | Phase 5 | 代码已完成；RC Gate 待执行 | `26ccbb4` 已完成 update 事务与 Formula/发布接线；用真实 release 资产执行升级故障注入及双架构 Homebrew install/upgrade/uninstall/services/PATH/迁移 |
+| 2026-09-21～09-24 | Phase 5 | 代码已完成；RC Gate blocked | 先修复跨版本 Skill 刷新/失败回滚；Intel 更新 Xcode/CLT 后重跑 install/upgrade/uninstall/services/PATH，ARM64 已通过的路径同时复验卸载自动清理边界 |
 | Phase 5 Gate 后、Phase 6 前 | Phase 5.5 | P1 待开发 | 完成 `SESSION-103-002` E2E teardown 与 `SESSION-103-003` 派生会话 ledger/cleanup；异常路径、幂等删除、doctor blocker 与零新增遗留对话回归通过 |
 | Phase 5.5 通过后 | Phase 6 | 候选包与双机安装 smoke 已提前完成 | 重新出候选包，执行真实三 Executor 权限 canary、故障注入、P0/P1 收口复验和最终发布身份 Gate |
 
