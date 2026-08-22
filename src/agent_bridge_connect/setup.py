@@ -492,10 +492,28 @@ def run_update(interactive: bool = True) -> dict[str, Any]:
         if interactive
         else [item for item in items if item["action"].startswith("install_")]
     )
-    actions = [
-        _apply_update_item(item, config, force=interactive)
-        for item in selected
-    ]
+    if interactive:
+        actions = [
+            _apply_update_item(item, config, force=True)
+            for item in selected
+        ]
+        truthful = True
+    else:
+        actions = []
+        truthful = True
+        for item in selected:
+            try:
+                action = _apply_update_item(item, config, force=False)
+            except Exception as exc:  # noqa: BLE001 - report install failures truthfully
+                action = {
+                    "item": item["id"],
+                    "status": "install_failed",
+                    "config_changed": False,
+                    "error": str(exc),
+                }
+            actions.append(action)
+            if not _update_skill_action_succeeded(item, action):
+                truthful = False
     if any(action.get("config_changed") for action in actions):
         selected_executors = [
             item for item in selected if item.get("action") == "update_executor"
@@ -516,7 +534,7 @@ def run_update(interactive: bool = True) -> dict[str, Any]:
 
         update_config_atomic(apply_updates, config_path)
     return {
-        "ok": True,
+        "ok": truthful,
         "mode": "update",
         "agents": agents,
         "workspace_root": workspace_root,
@@ -1571,6 +1589,29 @@ def _apply_update_item(
         result = install_codex_skill(path=item["path"], interactive=False, force=force)
         return {"item": item["id"], "status": result["status"], "config_changed": False, **result}
     raise AssertionError(action)
+
+
+def _update_skill_action_succeeded(item: dict[str, Any], action: dict[str, Any]) -> bool:
+    """True only when a non-interactive Skill update is current after the action.
+
+    A blocked modified Skill, an install failure, or any state that is still
+    not current after the action makes the whole update untruthful.
+    """
+    status = action.get("status")
+    if status == "modified_requires_confirmation":
+        return False
+    if status not in {"installed", "already_installed"}:
+        return False
+    action_name = item.get("action")
+    if action_name == "install_skill":
+        return _hermes_skill_state()["up_to_date"]
+    if action_name == "install_claude_skill":
+        root = Path(item["path"]).parent
+        return _classify_installed_skill(root, "claude")["classification"] == "current"
+    if action_name == "install_codex_skill":
+        root = Path(item["path"]).parent
+        return _classify_installed_skill(root, "codex")["classification"] == "current"
+    return False
 
 
 def _apply_clean_item(item: dict[str, Any]) -> dict[str, Any]:

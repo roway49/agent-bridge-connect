@@ -39,6 +39,50 @@ LEGACY_SKILL_FINGERPRINTS: dict[str, dict[str, Any]] = {
     },
 }
 
+# Frozen AgentBC-managed package fingerprints for historically released
+# manifest-era versions.  Like LEGACY_SKILL_FINGERPRINTS these hashes are
+# constants, not recomputed values: an installation is recognized as an
+# intact older managed package only when the installed manifest platform,
+# package version, protocol, path set, per-file hashes, aggregate hash, and
+# the on-disk file hashes all match a shipped release exactly.  The 1.0.2a1
+# fingerprints below were computed from the published 1.0.2a1 sdist
+# (the artifact Homebrew formula agentbc--1.0.2a1.tar.gz is built from).
+MANAGED_SKILL_FINGERPRINTS: dict[str, dict[str, dict[str, Any]]] = {
+    "1.0.2a1": {
+        "codex": {
+            "protocol_version": "1.0",
+            "completion_version": 1,
+            "template_sha256": "bd6eebf95d63963eeafa4986705e010b92c41dde45878dbfb83ebb0bfc0c290e",
+            "files": {
+                "SKILL.md": "a4793a20c5a9e079a3a26c31bdccca366be59f97b225f137bc90645d6f649ec0",
+                "agents/openai.yaml": "8f6cf84d2091c1ea1e895ec06f9d2321daceee34e5707cd9df3fc8a9142ca21a",
+                "references/agentbc-steps-yaml.md": "ec2d398a422e7ae4787b7321a66a29aa77e6442ad1ed27f5b835007bdf8880dc",
+                "references/controller-contract.md": "370af89b528469368c75f49b9986f004951397b240a1d9721d6598057665c38d",
+            },
+        },
+        "claude": {
+            "protocol_version": "1.0",
+            "completion_version": 1,
+            "template_sha256": "891b95db10659920d5c3b9f5e013ddf5803c476458ce75e53d4e58a9a6b953b8",
+            "files": {
+                "SKILL.md": "793e1c2c2ff04785f917f97d39decef3789a14a27d679f4ddf2789e598baf1db",
+                "references/agentbc-steps-yaml.md": "ec2d398a422e7ae4787b7321a66a29aa77e6442ad1ed27f5b835007bdf8880dc",
+                "references/controller-contract.md": "370af89b528469368c75f49b9986f004951397b240a1d9721d6598057665c38d",
+            },
+        },
+        "hermes": {
+            "protocol_version": "1.0",
+            "completion_version": 1,
+            "template_sha256": "bcfce4bfdc406d36670155256b48bd2ab1c32c83415b588a10da722f8bba26e1",
+            "files": {
+                "SKILL.md": "108723eb662cd22e78a475e48512dc2beae21fb079378be92fc3a26388521654",
+                "references/agentbc-steps-yaml.md": "ec2d398a422e7ae4787b7321a66a29aa77e6442ad1ed27f5b835007bdf8880dc",
+                "references/controller-contract.md": "370af89b528469368c75f49b9986f004951397b240a1d9721d6598057665c38d",
+            },
+        },
+    },
+}
+
 
 def sha256_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
@@ -99,7 +143,13 @@ def classify_skill_package(
     if manifest_path.exists() or manifest_path.is_symlink():
         installed_manifest, error = _read_manifest(manifest_path)
         if error is not None or installed_manifest != expected_manifest:
-            classification = "modified"
+            classification = (
+                "managed_outdated"
+                if error is None
+                and installed_manifest is not None
+                and _matches_managed_fingerprint(platform, installed_manifest, observed)
+                else "modified"
+            )
         elif any(observed.get(path) != digest for path, digest in installed_manifest["files"].items()):
             classification = (
                 "partial"
@@ -264,6 +314,44 @@ def remove_managed_skill_package(
     except OSError:
         pass
     return {**state, "removed": changed, "changed": changed}
+
+
+def _matches_managed_fingerprint(
+    platform: str,
+    manifest: Mapping[str, Any],
+    observed: Mapping[str, str | None],
+) -> bool:
+    """True only for an exact, unmodified, AgentBC-known historical release.
+
+    Every field of the installed manifest (platform, package version,
+    protocol, completion, aggregate hash, path set, and per-file hashes) and
+    every observed on-disk file hash must match the frozen fingerprint.
+    Forged, unknown, user-edited, symlinked, or non-regular installations
+    therefore remain ``modified`` and are never silently overwritten.
+    """
+    version = manifest.get("package_version")
+    fingerprints = MANAGED_SKILL_FINGERPRINTS.get(
+        str(version) if isinstance(version, str) else ""
+    )
+    if not fingerprints:
+        return False
+    fingerprint = fingerprints.get(platform)
+    if not fingerprint:
+        return False
+    if manifest.get("platform") != platform:
+        return False
+    if manifest.get("protocol_version") != fingerprint.get("protocol_version"):
+        return False
+    if manifest.get("completion_version") != fingerprint.get("completion_version"):
+        return False
+    if manifest.get("template_sha256") != fingerprint.get("template_sha256"):
+        return False
+    declared = manifest.get("files")
+    if not isinstance(declared, dict) or declared != fingerprint["files"]:
+        return False
+    return all(
+        observed.get(path) == digest for path, digest in fingerprint["files"].items()
+    )
 
 
 def _classification_result(

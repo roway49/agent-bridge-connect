@@ -1000,6 +1000,16 @@ def _collect_skill_entry(
         status = "healthy"
         reason = f"The {platform} Skill package is current."
         remediation = ""
+    elif classification == "managed_outdated":
+        status = "warning"
+        reason = (
+            f"The {platform} Skill package is an intact managed package from an "
+            f"older AgentBC version ({manifest.get('package_version') or 'unknown'}); "
+            "AgentBC-managed files were not modified."
+        )
+        remediation = (
+            f"Run agentbc setup --update to upgrade the {platform} Skill package."
+        )
     else:
         status = "warning"
         reason = (
