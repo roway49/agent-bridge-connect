@@ -6,7 +6,7 @@
 > 目标版本：`v1.0.3A`  
 > 来源基线：`1.0.2A` 开发截止代码 `b8af2f3a0a1f56814854e3f46056dd8ab9cf55d7`
 > 计划开发起点：`private/integration@fc2f3f19d18d1c23890ee02a4ee9600c36456a60`
-> 当前集成基线：`private/integration@fb96101`；`PERM-103-007` 收尾提交待本轮回归后记录
+> `PERM-103-007` 实现快照：`private/integration@0cfb492`
 > 前置条件：`1.0.2A` 最终发布身份与双机 Gate 完成；Phase 0 只读契约盘点可提前进行
 > 架构依据：`AGENTBC_ALPHA_DEVELOPMENT_HANDBOOK.md`
 
@@ -80,7 +80,7 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 | `PERM-103-004` | 已完成 | Codex、Claude early receipt 已完成；`791e3b8`、`a64f5a5` 已合入 Hermes ACP `session/new` prompt 前官方 session receipt、显式 resume 与 fail-closed 校验；合入后 120 项 Hermes/registry/lifecycle 定向测试通过 |
 | `PERM-103-005` | 已完成 | `330168f`、`bb58e50`：严格 cutover、维护模式、历史只读投影和 update preflight 已合入 |
 | `PERM-103-006` | 已完成 | `ce4f366`～`c09fa18`、`1dbe97e`、`a383bcf`：极简权限弹窗、脱敏详情、绝对超时与普通说明语义保持已合入；74 项重点回归、1168 项全量和隔离 wheel smoke 通过 |
-| `PERM-103-007` | 已完成，待提交号回填 | Claude 2.1.216～2.1.x 版本/平台/help gate、任务级 `claude.ephemeral_project_isolation.v1`、Artifact-only `--add-dir`、内建 Edit deny、OS sandbox `allowWrite/denyWrite`、禁用 unsandboxed retry 与 Runner 精确 argv/settings 重建校验已实现；本机 2.1.233 probe 通过 |
+| `PERM-103-007` | 已完成 | `0cfb492`：Claude 2.1.216～2.1.x 版本/平台/help gate、任务级 `claude.ephemeral_project_isolation.v1`、Artifact-only `--add-dir`、内建 Edit deny、OS sandbox `allowWrite/denyWrite`、禁用 unsandboxed retry 与 Runner 精确 argv/settings 重建校验已合入；本机 2.1.233 probe、1268 项全量、Ruff、compileall 与 diff check 通过 |
 | `PERM-103-008` / `PERM-103-009` | 已完成 | `a993e94`、`4ef12eb`：permission/session 兼容总错误下新增 15 类稳定原因与脱敏诊断；`2b1bcbd`、`247c45b`：Codex app-server single-action 生产链已合入；既有一次性 full continuation 继续作为兼容兜底 |
 | `FLOW-103-001` | 已延期 | 与 `FLOW-104-001` 的结构化多 steps、`PROTO-104-001` fixtures 和 `ARCH-104-001` 局部重构一起进入 1.0.4A |
 | `UPD-103-001` | 部分完成 | 已有 cutover preflight；自动 check、`y/N` 升级事务和失败保留旧版本尚未实现 |
