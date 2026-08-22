@@ -15,6 +15,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from agent_bridge_connect.cli import main
 from agent_bridge_connect.migration import (
@@ -242,18 +243,33 @@ class ManualBypassMaintenanceTests(unittest.TestCase):
 
 
 class UpdateCliTests(unittest.TestCase):
+    @staticmethod
+    def _available() -> dict:
+        from tests.test_upd103_001_update_flow import _available
+
+        return _available()
+
     def test_cli_update_blocked_returns_code_and_evidence(self) -> None:
         harness = _Harness()
         self.addCleanup(harness.close)
         harness.create(status="pending")
-        code = main(["update", "--root", str(harness.board)])
+        with (
+            mock.patch("agent_bridge_connect.update.check_for_update", side_effect=self._available),
+            mock.patch("builtins.input", return_value="y"),
+        ):
+            code = main(["update", "--root", str(harness.board)])
         self.assertEqual(code, 1)
         self.assertFalse((harness.board / CUTOVER_READY_FILE).is_file())
 
     def test_cli_update_cutover_ready(self) -> None:
         harness = _Harness()
         self.addCleanup(harness.close)
-        code = main(["update", "--root", str(harness.board)])
+        with (
+            mock.patch("agent_bridge_connect.update.check_for_update", side_effect=self._available),
+            mock.patch("agent_bridge_connect.update.install_verified_release", return_value={"version": "1.0.4a1"}),
+            mock.patch("builtins.input", return_value="y"),
+        ):
+            code = main(["update", "--root", str(harness.board)])
         self.assertEqual(code, 0)
         self.assertTrue((harness.board / CUTOVER_READY_FILE).is_file())
         stamp = cutover_ready_stamp(harness.service) or {}
@@ -289,7 +305,11 @@ class UpdateCliTests(unittest.TestCase):
         harness = _Harness()
         self.addCleanup(harness.close)
         harness.create(status="needs_recovery")
-        code = main(["update", "--root", str(harness.board)])
+        with (
+            mock.patch("agent_bridge_connect.update.check_for_update", side_effect=self._available),
+            mock.patch("builtins.input", return_value="y"),
+        ):
+            code = main(["update", "--root", str(harness.board)])
         self.assertEqual(code, 1)
         stamp = cutover_ready_stamp(harness.service)
         self.assertIsNone(stamp)

@@ -107,17 +107,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     update = sub.add_parser(
         "update",
-        help="Supported update preflight: cutover-ready or legacy_permission_cutover_blocked.",
+        help="Check the Alpha channel and confirm a verified in-place update.",
     )
     add_task_root(update)
     update.add_argument("--config", type=Path)
     update.add_argument(
         "--bypass",
         action="store_true",
-        help=(
-            "Manual wheel/bundle install bypass: enter cutover maintenance mode "
-            "(doctor/status/report and explicit termination only; create/dispatch blocked)."
-        ),
+        help=argparse.SUPPRESS,
     )
 
     init = sub.add_parser("init", help="Initialize the AgentBC runtime record directory.")
@@ -2476,8 +2473,8 @@ def command_permissions(action: str, mode: str | None = None) -> int:
 
 
 def command_update(args: argparse.Namespace) -> int:
-    """Run the supported PERM-103-005 update preflight or the bypass entry."""
-    from .update import manual_bypass_install, update_preflight
+    """Run the supported Alpha update flow or the internal bypass entry."""
+    from .update import manual_bypass_install, run_update_flow
 
     config_path = _optional_path_arg(getattr(args, "config", None))
     try:
@@ -2485,12 +2482,14 @@ def command_update(args: argparse.Namespace) -> int:
         if args.bypass:
             result = manual_bypass_install(service)
         else:
-            result = update_preflight(service)
+            result = run_update_flow(service)
     except (ABCError, OSError, ValueError, TypeError) as exc:
         print(f"update_error: {exc}")
         return 2
     print(json.dumps(result, indent=2, ensure_ascii=False))
-    return 0 if result.get("cutover_ready") else (0 if args.bypass else 1)
+    if args.bypass:
+        return 0
+    return 1 if result.get("state") == "legacy_permission_cutover_blocked" else 0
 
 
 def command_session_retention(action: str) -> int:
