@@ -13,6 +13,9 @@ The formula pins the release sdist SHA-256, installs into Homebrew's isolated
 Python virtualenv, exposes the Runner as a service, and never owns AgentBC
 configuration, records, reports, artifacts, customer projects, or executor
 skills. `agentbc setup` remains the explicit skill/config refresh step.
+It depends on Homebrew's unversioned `python` Formula; AgentBC's minimum Python
+version remains defined only by `requires-python` in `pyproject.toml`, so the
+Homebrew package does not create a conflicting interpreter-version contract.
 
 `agentbc update` never replaces a Homebrew Cellar link. Homebrew installations
 upgrade only through `brew upgrade agentbc`; this keeps Homebrew's receipt and

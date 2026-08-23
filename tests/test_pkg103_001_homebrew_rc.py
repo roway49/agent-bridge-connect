@@ -40,9 +40,9 @@ class HomebrewRcDriverTests(unittest.TestCase):
                 stdout = "/tmp\n"
             elif command[-2:] == ["/usr/bin/uname", "-m"]:
                 stdout = "arm64\n"
-            elif command[-2:] == ["--versions", "python@3.13"]:
+            elif command[-2:] == ["--versions", "python"]:
                 if self.dependency_ok:
-                    stdout = "python@3.13 3.13.7\n"
+                    stdout = "python@3.14 3.14.3_1\n"
                 else:
                     returncode = 1
             elif command[-2:] == ["--versions", "agentbc"]:
@@ -84,11 +84,11 @@ class HomebrewRcDriverTests(unittest.TestCase):
             formula = Path(temporary) / "agentbc.rb"
             formula.write_text(
                 'class Agentbc < Formula\n  version "1.0.3a1"\n'
-                '  depends_on "python@3.13"\nend\n',
+                '  depends_on "python"\nend\n',
                 encoding="utf-8",
             )
             self.assertEqual(MODULE.formula_version(formula), "1.0.3a1")
-            self.assertEqual(MODULE.formula_dependencies(formula), ["python@3.13"])
+            self.assertEqual(MODULE.formula_dependencies(formula), ["python"])
             self.assertLess(MODULE.version_key("1.0.2a1"), MODULE.version_key("1.0.10a1"))
 
     def test_stable_hash_ignores_runlease_heartbeat_but_semantics_do_not_drift(self) -> None:
@@ -178,11 +178,11 @@ class HomebrewRcDriverTests(unittest.TestCase):
             ca = root / "ca.pem"
             server = root / "server.pem"
             old.write_text(
-                'version "1.0.2a1"\ndepends_on "python@3.13"\n',
+                'version "1.0.2a1"\ndepends_on "python"\n',
                 encoding="utf-8",
             )
             new.write_text(
-                'version "1.0.3a1"\ndepends_on "python@3.13"\n',
+                'version "1.0.3a1"\ndepends_on "python"\n',
                 encoding="utf-8",
             )
             ca.write_text("test", encoding="utf-8")
@@ -222,7 +222,7 @@ class HomebrewRcDriverTests(unittest.TestCase):
             )
             self.assertFalse(result["ok"])
             self.assertIn("brew_doctor", result["blockers"])
-            self.assertIn("dependency_missing:python@3.13", result["blockers"])
+            self.assertIn("dependency_missing:python", result["blockers"])
 
     def test_preflight_rejects_incomplete_test_tls_pair(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

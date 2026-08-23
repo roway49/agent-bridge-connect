@@ -45,7 +45,7 @@ def generate_formula(manifest: dict, base_url: str) -> str:
   sha256 "{sha256}"
   license "MIT"
 
-  depends_on "python@3.13"
+  depends_on "python"
 
   def install
     virtualenv_install_with_resources
