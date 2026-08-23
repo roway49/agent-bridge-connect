@@ -88,7 +88,7 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 | `PERM-103-008` / `PERM-103-009` | 已完成 | `a993e94`、`4ef12eb`：permission/session 兼容总错误下新增 15 类稳定原因与脱敏诊断；`2b1bcbd`、`247c45b`：Codex app-server single-action 生产链已合入；既有一次性 full continuation 继续作为兼容兜底 |
 | `FLOW-103-001` | 已延期 | 与 `FLOW-104-001` 的结构化多 steps、`PROTO-104-001` fixtures 和 `ARCH-104-001` 局部重构一起进入 1.0.4A |
 | `UPD-103-001` | 修复已合入；等待真实 RC 复验 | `2656cef` 修复跨版本受管 Skill 识别，`b285a35` 补齐 CLI/Runner/Skill 事务回滚与 identity 校验，`eeb9c00` 增加隔离两版本 RC 驱动；合入后 Update/Homebrew 联合定向测试 88 项通过。真实成功升级与故障包恢复尚未按新实现重跑，不得标记 RC Gate 完成 |
-| `PKG-103-001` | RC 驱动已完成；双机环境 Gate 阻断 | `bf3c1e6` 增加默认只读、双重执行门禁的 install/upgrade/uninstall/service 驱动，冻结 Formula/Tap/service/trust/PATH/用户数据/RunLease 状态，禁用自动 update/cleanup/autoremove，并分别校验 CA SKI/AKI 与服务端 SAN/SKI/AKI。2026-08-23 Mac mini 只读复验确认 HTTPS curl/Python 与证书门禁通过，但被 `brew doctor` 不健康和缺失 `python@3.13` 阻断；未执行 Tap/Cellar 写入。Intel Xcode/CLT 阻断仍未解除 |
+| `PKG-103-001` | RC 驱动已完成；双机环境 Gate 阻断 | `bf3c1e6` 增加默认只读、双重执行门禁的 install/upgrade/uninstall/service 驱动；`4d21d31` 删除 Formula 的 `python@3.13` 硬编码，Homebrew 仅依赖通用 `python`，最低版本继续唯一服从项目 `requires-python >=3.10`。2026-08-24 Mac mini 只读复验中本机 `python@3.14` 正确满足依赖，HTTPS curl/Python 与证书门禁通过，当前仅被 `brew doctor` 不健康阻断；未执行 Tap/Cellar 写入。Intel Xcode/CLT 阻断仍未解除 |
 | `SESSION-103-002` | P1 待开发；等待 Update/Homebrew Gate | 修复 E2E helper 的 teardown 完整性；必须使用创建时捕获的官方 session receipt 精确删除，不得以结束进程、删除 canary root 或退出码代替 cleanup 成功 |
 | `SESSION-103-003` | P1 待开发；等待 Update/Homebrew Gate | 补齐派生 Executor 对话的登记、终态清理、失败重试、report/doctor blocker 与脱敏 cleanup receipt；完成前不再运行会产生持久化子对话的真实权限 E2E |
 | `REL-103-CANDIDATE` | 候选包与双机安装 smoke 已完成 | `89dc0b0` 已形成 `1.0.3a1` 内部候选；Mac mini 110 项权限定向与 1229 项全量、Intel MacBook 140 项权限定向与 1229 项全量通过；隔离 wheel smoke `F47F-001`、MacBook 安装态 `X977-001`、Mac mini 安装态 `CQBA-001` 通过，双机 CLI/Runner/三平台 Skill identity 一致；尚未关闭真实三 Executor 权限审批 canary 与最终发布 Gate |
@@ -306,11 +306,23 @@ Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 
   `AGENTBC_HOMEBREW_RC_RUN=1`；仅对精确 RC Formula 使用临时 trust，不关闭 Tap Trust，结束后
   必须恢复 Formula、Tap、service、trust、PATH、用户数据与稳定 RunLease 快照；
 - Mac mini 临时 HTTPS feed 的 curl 与 Python 双探测、CA/server 扩展校验均通过。预检在任何
-  Tap/install 之前因 `brew doctor` 非零与缺失 `python@3.13` 正确停止；证据为
+  Tap/install 之前因 `brew doctor` 非零与当时 Formula 固定的 `python@3.13` 依赖停止；证据为
   `/private/tmp/agentbc-homebrew-preflight-20260823.json`。不得为通过 Gate 自动执行 `sudo chown`、
   更新/删除 CLT、信任无关 Tap 或安装依赖；主机环境由用户确认修复后再执行破坏性 RC；
 - 当前结论仍为 Phase 5 `blocked`。Mac mini 与 Intel MacBook 的新驱动实跑、Update 真实成功/回滚
   复验全部通过后，才可解冻 `SESSION-103-002/003`。
+
+#### 8.2 Python 依赖合同纠正（2026-08-24）
+
+- `python@3.13` 是 `26ccbb4` 初始 Formula 中没有兼容性依据的打包硬编码，不是 AgentBC 的运行
+  合同；项目最低版本始终为 `pyproject.toml` 的 `requires-python >=3.10`；
+- `4d21d31` 将 Formula 改为 `depends_on "python"`，并增加不得生成 `depends_on "python@..."`
+  的回归断言。Homebrew 实际解释器版本只进入 RC 证据，不形成第二套产品兼容合同；
+- 系统 Python 3.9 与 Homebrew Python 3.14 分别通过 13 项 Homebrew 定向测试；88 项联合
+  Update/Homebrew 测试、两套重生成 Formula 的 Ruby 语法、Ruff 与 diff check 通过；
+- `/private/tmp/agentbc-homebrew-preflight-20260824.json` 证明 `dependency:python=0`、HTTPS 双探测
+  通过且无 Homebrew 写操作；2026-08-23 的 `dependency_missing:python@3.13` 现正式重分类为
+  Formula 缺陷证据，不再视为主机缺少 Python。
 
 ### 8.2.1 E2E teardown 与派生会话清理（`SESSION-103-002` / `SESSION-103-003`）
 
@@ -405,8 +417,8 @@ Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 
 5. **Phase 4：权限细分与 Claude 临时工程**——`PERM-103-007` 已收口；三 Executor 真实
    canary 继续作为发布验收，不再扩大权限代码范围；
 6. **Phase 5：交互式 update 与 Homebrew**——Update 修复已合入 `f7cbfbb`，Homebrew RC 驱动
-   已合入 `bf3c1e6`；88 项联合定向测试通过，但 2026-08-23 Mac mini 被 Homebrew ownership/
-   Doctor 与预装依赖门禁阻断，Intel 仍被 Xcode/CLT 阻断，故双机真实 RC 尚未通过；不实现
+   已合入 `bf3c1e6`，Python 依赖合同已由 `4d21d31` 纠正；88 项联合定向测试通过，但 Mac mini
+   仍被 Homebrew ownership/Doctor 门禁阻断，Intel 仍被 Xcode/CLT 阻断，故双机真实 RC 尚未通过；不实现
    rollback 命令、完整 fixture matrix 或主动模块拆分；
 7. **Phase 5.5：E2E/session P1 补完**——仅在 Phase 5 的 update 与 Homebrew RC Gate 全部通过后
    开始 `SESSION-103-002` / `SESSION-103-003`；实现 teardown 和派生会话 ledger/cleanup，完成
