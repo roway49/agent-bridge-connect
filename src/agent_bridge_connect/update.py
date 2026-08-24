@@ -229,6 +229,18 @@ def run_update_flow(
     """Check, confirm, preflight and atomically switch a managed install."""
     read_input = input_fn or input
     write_output = output_fn or print
+    strategy = _local_install_strategy() if installer is None else None
+    if strategy is not None and strategy["method"] == "homebrew":
+        write_output("Homebrew-managed install: run `brew upgrade agentbc`.")
+        return {
+            "state": "homebrew_update_required",
+            "code": "",
+            "channel": UPDATE_CHANNEL,
+            "current": __version__,
+            "source": "homebrew",
+            "updated": False,
+            "upgrade_command": "brew upgrade agentbc",
+        }
     available = (checker or check_for_update)()
     write_output(
         f"AgentBC update: current={available['current']} latest={available['latest']} "
@@ -239,15 +251,7 @@ def run_update_flow(
     if available.get("summary"):
         write_output(f"Summary: {available['summary']}")
     if installer is None:
-        strategy = _local_install_strategy()
-        if strategy["method"] == "homebrew":
-            write_output("Homebrew-managed install: run `brew upgrade agentbc`.")
-            return {
-                **available,
-                "state": "homebrew_update_required",
-                "updated": False,
-                "upgrade_command": "brew upgrade agentbc",
-            }
+        assert strategy is not None
         if strategy["method"] != "managed":
             raise ABCError("update_install_unsupported", str(strategy["reason"]))
     try:
@@ -916,6 +920,13 @@ def _local_install_strategy() -> dict[str, Any]:
     target = bin_dir / "agentbc"
     invoked = _invoked_cli_path()
     common = {"install_root": install_root, "bin_dir": bin_dir, "target": target}
+    runtime_python = Path(sys.executable).expanduser().resolve(strict=False)
+    if _is_homebrew_cellar_path(runtime_python):
+        return {
+            **common,
+            "method": "homebrew",
+            "reason": "Homebrew owns the running Python environment",
+        }
     if invoked is not None and _is_homebrew_cellar_path(invoked.resolve(strict=False)):
         return {**common, "method": "homebrew", "reason": "Homebrew owns the running CLI"}
     if target.exists() and not target.is_symlink():

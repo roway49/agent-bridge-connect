@@ -11,6 +11,7 @@ from unittest import mock
 
 from agent_bridge_connect.protocol import ABCError
 from agent_bridge_connect.service import TaskService
+from agent_bridge_connect import update as update_module
 from agent_bridge_connect.update import (
     check_for_update,
     install_verified_release,
@@ -151,22 +152,43 @@ class UpdateFlowTests(unittest.TestCase):
 
     def test_homebrew_route_does_not_prompt_or_write_cutover_stamp(self) -> None:
         before = sorted(str(path.relative_to(self.board)) for path in self.board.rglob("*"))
+        checker = mock.Mock(side_effect=AssertionError("must not check release index"))
         with mock.patch(
             "agent_bridge_connect.update._local_install_strategy",
             return_value={"method": "homebrew", "reason": "Homebrew owns the CLI"},
         ):
             result = run_update_flow(
                 self.service,
-                checker=_available,
+                checker=checker,
                 input_fn=lambda _prompt: self.fail("must not prompt"),
                 output_fn=lambda _line: None,
             )
+        checker.assert_not_called()
         self.assertEqual(result["state"], "homebrew_update_required")
         self.assertEqual(result["upgrade_command"], "brew upgrade agentbc")
+        self.assertEqual(result["source"], "homebrew")
         self.assertEqual(
             sorted(str(path.relative_to(self.board)) for path in self.board.rglob("*")),
             before,
         )
+
+    def test_homebrew_runtime_python_is_detected_without_cli_argv_receipt(self) -> None:
+        cellar_python = (
+            Path(self.temporary.name)
+            / "Cellar"
+            / "agentbc"
+            / "1.0.3a1"
+            / "libexec"
+            / "bin"
+            / "python"
+        )
+        with (
+            mock.patch.object(update_module.sys, "executable", str(cellar_python)),
+            mock.patch.object(update_module, "_invoked_cli_path", return_value=None),
+        ):
+            strategy = update_module._local_install_strategy()
+        self.assertEqual(strategy["method"], "homebrew")
+        self.assertIn("Python environment", strategy["reason"])
 
     def test_installer_refuses_unmanaged_cli_and_hash_failure_is_pre_switch(self) -> None:
         install_root = Path(self.temporary.name) / "install"
