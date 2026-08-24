@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import ssl
+import stat
 import subprocess
 import sys
 import tempfile
@@ -53,6 +54,19 @@ _VERSION_RE = re.compile(r'^\s*version\s+"([^"]+)"', re.MULTILINE)
 _DEPENDENCY_RE = re.compile(r'^\s*depends_on\s+"([^"]+)"', re.MULTILINE)
 _VERSION_VALUE_RE = re.compile(
     r"^(\d+)\.(\d+)\.(\d+)(?:(a|b|rc)(\d+))?$"
+)
+_DOCTOR_BLOCKING_PATTERNS = (
+    ("developer_tools_missing", r"No developer tools installed"),
+    ("xcode_too_outdated", r"Your Xcode .* is too outdated"),
+    ("clt_too_outdated", r"Your Command Line Tools are too outdated"),
+    ("xcode_needs_clt", r"Xcode alone is not sufficient"),
+    (
+        "clt_macos_unsupported",
+        r"Your Command Line Tools \(CLT\) does not support macOS",
+    ),
+    ("xcode_macos_unsupported", r"Your Xcode does not support macOS"),
+    ("clt_broken", r"Command Line Tools installation may be broken or incomplete"),
+    ("clt_incomplete", r"Command Line Tools installation may be incomplete"),
 )
 
 
@@ -154,6 +168,20 @@ def version_key(value: str) -> tuple[int, ...]:
     )
 
 
+def homebrew_dependency_versions(text: str) -> tuple[list[str], str]:
+    try:
+        payload = json.loads(text)
+        formulae = payload["formulae"]
+        formula = formulae[0]
+        installed = [str(item["version"]) for item in formula["installed"]]
+        current = str(formula["versions"]["stable"])
+    except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RcError("Homebrew dependency metadata is invalid") from exc
+    if not installed or not current:
+        raise RcError("Homebrew dependency metadata is incomplete")
+    return installed, current
+
+
 def _volatile(relative: Path) -> bool:
     return relative.name in VOLATILE_NAMES or relative.name.endswith(VOLATILE_SUFFIXES)
 
@@ -249,6 +277,47 @@ def server_extensions_present(text: str) -> bool:
     return all(item in text for item in required)
 
 
+def brew_doctor_blockers(text: str) -> list[str]:
+    """Return only Doctor findings that invalidate this Formula RC."""
+    return [
+        name
+        for name, pattern in _DOCTOR_BLOCKING_PATTERNS
+        if re.search(pattern, text, flags=re.IGNORECASE)
+    ]
+
+
+def nearest_existing_path(path: Path) -> Path | None:
+    candidate = path.expanduser()
+    while not candidate.exists():
+        parent = candidate.parent
+        if parent == candidate:
+            return None
+        candidate = parent
+    return candidate
+
+
+def path_has_posix_write_permission(
+    path: Path,
+    *,
+    uid: int | None = None,
+    gids: set[int] | None = None,
+) -> bool:
+    """Check host ownership/mode without inheriting sandbox write denials."""
+    anchor = nearest_existing_path(path)
+    if anchor is None:
+        return False
+    identity = os.geteuid() if uid is None else uid
+    groups = set(os.getgroups()) | {os.getegid()} if gids is None else gids
+    metadata = anchor.stat()
+    if identity == 0:
+        return False
+    if identity == metadata.st_uid:
+        return bool(metadata.st_mode & stat.S_IWUSR)
+    if metadata.st_gid in groups:
+        return bool(metadata.st_mode & stat.S_IWGRP)
+    return bool(metadata.st_mode & stat.S_IWOTH)
+
+
 def create_combined_ca_bundle(test_ca: Path, output: Path) -> Path:
     defaults = ssl.get_default_verify_paths()
     candidates = [Path(defaults.cafile)] if defaults.cafile else []
@@ -341,6 +410,7 @@ def _preflight(
     feed_url: str,
     ca_cert: Path | None,
     server_cert: Path | None,
+    home: Path,
     service: bool,
     min_free_gib: int,
 ) -> dict[str, Any]:
@@ -356,8 +426,11 @@ def _preflight(
 
     version = checked("brew_version", [brew, "--version"])
     config = checked("brew_config", [brew, "config"])
-    doctor = checked("brew_doctor", [brew, "doctor"])
+    doctor = checked("brew_doctor", [brew, "doctor"], strict=False)
     prefix_result = checked("brew_prefix", [brew, "--prefix"])
+    cellar_result = checked("brew_cellar", [brew, "--cellar"])
+    cache_result = checked("brew_cache", [brew, "--cache"])
+    repository_result = checked("brew_repository", [brew, "--repository"])
     checked("xcode_select", ["/usr/bin/xcode-select", "-p"])
     checked(
         "clt_receipt",
@@ -367,9 +440,14 @@ def _preflight(
     if arch.stdout.strip() not in {"arm64", "x86_64"}:
         blockers.append("unsupported_architecture")
 
+    doctor_text = doctor.stdout + "\n" + doctor.stderr
+    doctor_findings = brew_doctor_blockers(doctor_text)
+    blockers.extend(f"brew_doctor:{finding}" for finding in doctor_findings)
+
     if version_key(formula_version(old_formula)) >= version_key(formula_version(new_formula)):
         blockers.append("formula_version_order")
     dependencies = sorted(set(formula_dependencies(old_formula) + formula_dependencies(new_formula)))
+    dependency_versions: dict[str, dict[str, Any]] = {}
     for dependency in dependencies:
         result = checked(
             f"dependency:{dependency}",
@@ -378,6 +456,25 @@ def _preflight(
         )
         if not result.stdout.strip():
             blockers.append(f"dependency_missing:{dependency}")
+            continue
+        metadata = checked(
+            f"dependency_metadata:{dependency}",
+            [brew, "info", "--json=v2", dependency],
+            strict=False,
+        )
+        try:
+            installed_versions, current_version = homebrew_dependency_versions(
+                metadata.stdout
+            )
+        except RcError:
+            blockers.append(f"dependency_metadata_invalid:{dependency}")
+            continue
+        dependency_versions[dependency] = {
+            "installed": installed_versions,
+            "current": current_version,
+        }
+        if current_version not in installed_versions:
+            blockers.append(f"dependency_outdated:{dependency}")
 
     existing = checked(
         "agentbc_not_homebrew_owned",
@@ -388,6 +485,24 @@ def _preflight(
         blockers.append("agentbc_already_homebrew_owned")
 
     prefix = Path(prefix_result.stdout.strip()) if prefix_result.returncode == 0 else Path("/")
+    required_write_paths = {
+        "prefix": prefix,
+        "cellar": Path(cellar_result.stdout.strip()),
+        "cache": Path(cache_result.stdout.strip()),
+        "repository": Path(repository_result.stdout.strip()),
+        "locks": prefix / "var" / "homebrew" / "locks",
+        "logs": home / "Library" / "Logs" / "Homebrew",
+        "trust": home / ".homebrew" / "trust.json",
+    }
+    write_path_status: dict[str, bool] = {}
+    for label, path in required_write_paths.items():
+        writable = bool(str(path)) and path_has_posix_write_permission(path)
+        write_path_status[label] = writable
+        checks.append(
+            {"name": f"homebrew_write_path:{label}", "returncode": 0 if writable else 1}
+        )
+        if not writable:
+            blockers.append(f"homebrew_path_not_writable:{label}")
     if prefix.exists() and shutil.disk_usage(prefix).free < min_free_gib * 1024**3:
         blockers.append("insufficient_disk")
 
@@ -431,9 +546,13 @@ def _preflight(
         "blockers": sorted(set(blockers)),
         "checks": checks,
         "brew_version": version.stdout.splitlines()[0] if version.stdout else "",
+        "brew_doctor_status": "clean" if doctor.returncode == 0 else "warnings",
+        "brew_doctor_blocking_findings": doctor_findings,
         "brew_config_sha256": hashlib.sha256(config.stdout.encode()).hexdigest(),
-        "brew_doctor_sha256": hashlib.sha256(doctor.stdout.encode()).hexdigest(),
+        "brew_doctor_sha256": hashlib.sha256(doctor_text.encode()).hexdigest(),
         "dependencies": dependencies,
+        "dependency_versions": dependency_versions,
+        "homebrew_write_paths": write_path_status,
     }
 
 
@@ -545,6 +664,7 @@ def run(args: argparse.Namespace) -> int:
             feed_url=args.feed_url,
             ca_cert=ca_cert,
             server_cert=server_cert,
+            home=home,
             service=args.service,
             min_free_gib=args.min_free_gib,
         )

@@ -19,11 +19,22 @@ SPEC.loader.exec_module(MODULE)
 
 class HomebrewRcDriverTests(unittest.TestCase):
     class FakeRunner:
-        def __init__(self, *, doctor_ok: bool = True, dependency_ok: bool = True) -> None:
+        def __init__(
+            self,
+            *,
+            doctor_ok: bool = True,
+            doctor_output: str = "",
+            dependency_ok: bool = True,
+            dependency_installed: str = "3.14.3_1",
+            dependency_current: str = "3.14.3_1",
+        ) -> None:
             self.environment = {}
             self.commands: list[list[str]] = []
             self.doctor_ok = doctor_ok
+            self.doctor_output = doctor_output
             self.dependency_ok = dependency_ok
+            self.dependency_installed = dependency_installed
+            self.dependency_current = dependency_current
 
         def run(self, argv, **_kwargs):
             command = [str(part) for part in argv]
@@ -36,15 +47,29 @@ class HomebrewRcDriverTests(unittest.TestCase):
                 stdout = "HOMEBREW_PREFIX: /tmp\n"
             elif command[-1:] == ["doctor"]:
                 returncode = 0 if self.doctor_ok else 1
+                stdout = self.doctor_output
             elif command[-1:] == ["--prefix"]:
+                stdout = "/tmp\n"
+            elif command[-1:] in (["--cellar"], ["--cache"], ["--repository"]):
                 stdout = "/tmp\n"
             elif command[-2:] == ["/usr/bin/uname", "-m"]:
                 stdout = "arm64\n"
             elif command[-2:] == ["--versions", "python"]:
                 if self.dependency_ok:
-                    stdout = "python@3.14 3.14.3_1\n"
+                    stdout = f"python@3.14 {self.dependency_installed}\n"
                 else:
                     returncode = 1
+            elif command[-3:] == ["info", "--json=v2", "python"]:
+                stdout = json.dumps(
+                    {
+                        "formulae": [
+                            {
+                                "versions": {"stable": self.dependency_current},
+                                "installed": [{"version": self.dependency_installed}],
+                            }
+                        ]
+                    }
+                )
             elif command[-2:] == ["--versions", "agentbc"]:
                 returncode = 1
             elif "x509" in command:
@@ -90,6 +115,24 @@ class HomebrewRcDriverTests(unittest.TestCase):
             self.assertEqual(MODULE.formula_version(formula), "1.0.3a1")
             self.assertEqual(MODULE.formula_dependencies(formula), ["python"])
             self.assertLess(MODULE.version_key("1.0.2a1"), MODULE.version_key("1.0.10a1"))
+
+    def test_dependency_metadata_detects_current_and_outdated_versions(self) -> None:
+        current = json.dumps(
+            {
+                "formulae": [
+                    {
+                        "versions": {"stable": "3.14.7"},
+                        "installed": [{"version": "3.14.7"}],
+                    }
+                ]
+            }
+        )
+        self.assertEqual(
+            MODULE.homebrew_dependency_versions(current),
+            (["3.14.7"], "3.14.7"),
+        )
+        with self.assertRaises(MODULE.RcError):
+            MODULE.homebrew_dependency_versions("{}")
 
     def test_stable_hash_ignores_runlease_heartbeat_but_semantics_do_not_drift(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -145,6 +188,22 @@ class HomebrewRcDriverTests(unittest.TestCase):
         self.assertEqual(MODULE.GATE_ENV, "AGENTBC_HOMEBREW_RC_RUN")
         self.assertNotEqual(os.environ.get(MODULE.GATE_ENV), "1")
 
+    def test_doctor_gate_distinguishes_advisory_and_blocking_findings(self) -> None:
+        advisory = "Warning: You have unlinked kegs in your Cellar."
+        blocking = "Warning: Your Command Line Tools are too outdated."
+        self.assertEqual(MODULE.brew_doctor_blockers(advisory), [])
+        self.assertEqual(MODULE.brew_doctor_blockers(blocking), ["clt_too_outdated"])
+
+    def test_posix_write_gate_uses_owner_mode_not_dynamic_sandbox_access(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            writable = root / "writable"
+            read_only = root / "read-only"
+            writable.mkdir(mode=0o700)
+            read_only.mkdir(mode=0o500)
+            self.assertTrue(MODULE.path_has_posix_write_permission(writable))
+            self.assertFalse(MODULE.path_has_posix_write_permission(read_only))
+
     def test_default_preservation_includes_config_skills_and_workspace(self) -> None:
         paths = [str(path) for path in MODULE.default_preserve_paths(Path("/tmp/home"))]
         self.assertIn("/tmp/home/.abc", paths)
@@ -196,6 +255,7 @@ class HomebrewRcDriverTests(unittest.TestCase):
                 feed_url="https://example.test/",
                 ca_cert=ca,
                 server_cert=server,
+                home=root,
                 service=False,
                 min_free_gib=0,
             )
@@ -208,7 +268,11 @@ class HomebrewRcDriverTests(unittest.TestCase):
             self.assertIn("ssl.create_default_context(cafile=cafile)", python_probe[-1])
             self.assertNotIn(str(ca), python_probe[-1])
 
-            blocked = self.FakeRunner(doctor_ok=False, dependency_ok=False)
+            blocked = self.FakeRunner(
+                doctor_ok=False,
+                doctor_output="Warning: You have unlinked kegs in your Cellar.",
+                dependency_ok=False,
+            )
             result = MODULE._preflight(
                 blocked,
                 brew=Path("/opt/homebrew/bin/brew"),
@@ -217,12 +281,51 @@ class HomebrewRcDriverTests(unittest.TestCase):
                 feed_url="https://example.test/",
                 ca_cert=ca,
                 server_cert=server,
+                home=root,
                 service=False,
                 min_free_gib=0,
             )
             self.assertFalse(result["ok"])
-            self.assertIn("brew_doctor", result["blockers"])
+            self.assertNotIn("brew_doctor", result["blockers"])
+            self.assertEqual(result["brew_doctor_status"], "warnings")
+            self.assertEqual(result["brew_doctor_blocking_findings"], [])
             self.assertIn("dependency_missing:python", result["blockers"])
+
+            toolchain_blocked = self.FakeRunner(
+                doctor_ok=False,
+                doctor_output="Warning: Your Command Line Tools are too outdated.",
+            )
+            result = MODULE._preflight(
+                toolchain_blocked,
+                brew=Path("/opt/homebrew/bin/brew"),
+                old_formula=old,
+                new_formula=new,
+                feed_url="https://example.test/",
+                ca_cert=ca,
+                server_cert=server,
+                home=root,
+                service=False,
+                min_free_gib=0,
+            )
+            self.assertIn("brew_doctor:clt_too_outdated", result["blockers"])
+
+            outdated = self.FakeRunner(
+                dependency_installed="3.14.3_1",
+                dependency_current="3.14.7",
+            )
+            result = MODULE._preflight(
+                outdated,
+                brew=Path("/opt/homebrew/bin/brew"),
+                old_formula=old,
+                new_formula=new,
+                feed_url="https://example.test/",
+                ca_cert=ca,
+                server_cert=server,
+                home=root,
+                service=False,
+                min_free_gib=0,
+            )
+            self.assertIn("dependency_outdated:python", result["blockers"])
 
     def test_preflight_rejects_incomplete_test_tls_pair(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -241,6 +344,7 @@ class HomebrewRcDriverTests(unittest.TestCase):
                 feed_url="https://example.test/",
                 ca_cert=ca,
                 server_cert=None,
+                home=root,
                 service=False,
                 min_free_gib=0,
             )

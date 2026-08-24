@@ -29,12 +29,20 @@ and Intel macOS before publishing the tap update.
 Use `scripts/run_homebrew_rc_e2e.py` for the destructive RC phase. Its default
 mode is read-only preflight; a real run additionally requires `--execute` and
 `AGENTBC_HOMEBREW_RC_RUN=1`. The driver fails before tapping or installing when
-Homebrew Doctor, Xcode/CLT, architecture, disk space, preinstalled Formula
-dependencies, HTTPS CA/server-certificate extensions, existing Cellar
-ownership, or Runner/service isolation do not meet the gate. A private RC feed
-must supply the CA and server certificate together: the CA requires SKI/AKI,
-while the server certificate requires SAN/SKI/AKI. Neither certificate is
-written to the system keychain.
+blocking Homebrew Doctor toolchain findings, host POSIX write permissions,
+Xcode/CLT, architecture, disk space, preinstalled Formula dependencies, HTTPS
+CA/server-certificate extensions, existing Cellar ownership, or Runner/service
+isolation do not meet the gate. Doctor's unrelated PATH, keg, tap, and optional
+update warnings remain evidence but do not block this isolated Formula test.
+A private RC feed must supply the CA and server certificate together: the CA
+requires SKI/AKI, while the server certificate requires SAN/SKI/AKI. Neither
+certificate is written to the system keychain.
+
+Every declared Formula dependency must already be installed at Homebrew's
+current version before the destructive phase. This is an RC state-isolation
+gate, not an AgentBC Python-version requirement: it prevents `brew install`
+from silently upgrading an unrelated dependency and makes before/after state
+comparison exact.
 
 Every Homebrew command is executed with automatic update, install cleanup, and
 autoremove disabled. The driver snapshots Formula versions, taps, services,
