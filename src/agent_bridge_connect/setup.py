@@ -11,6 +11,7 @@ from . import __version__
 from .config import (
     DEFAULT_CLAUDE_MAX_BUDGET_USD,
     DEFAULT_HERMES_MAX_TURNS,
+    apply_permissions_setting,
     configured_claude_budget,
     configured_hermes_max_turns,
     configured_session_retention,
@@ -323,6 +324,8 @@ def run_show() -> dict[str, Any]:
         "workspace_root": workspace_root,
         "permission_mode": permission_mode,
         "permission_source": permission_source,
+        "permission_setting": "permissions.mode",
+        "permission_scope": "future_tasks",
         "resources": resources,
     }
 
@@ -337,13 +340,15 @@ def run_setup(
     agents = scan_all_agents()
     workspace_root = str(_effective_workspace_root(config))
     _print_scan_report(agents, workspace_root)
-    previous_permission = config.get("permission_mode")
+    previous_permission, _ = configured_permission_mode(config)
     selected_permission = _select_permission_mode(
         config,
         explicit_mode=permission_mode,
         interactive=interactive,
     )
-    permission_touched = previous_permission is None or selected_permission != previous_permission
+    permission_touched = _permission_setting_absent(config) or (
+        selected_permission != previous_permission
+    )
     enabled: list[str] = []
     skipped: list[str] = []
     executor_updates: dict[str, dict[str, Any]] = {}
@@ -381,7 +386,7 @@ def run_setup(
         latest.setdefault("workspace_root", str(_default_workspace_root()))
         latest.setdefault("board_root", str(_effective_workspace_root(latest) / "record"))
         if permission_touched:
-            latest["permission_mode"] = selected_permission
+            apply_permissions_setting(latest, selected_permission)
         executors = latest.setdefault("executors", {})
         for name, desired in executor_updates.items():
             current = executors.get(name)
@@ -487,10 +492,28 @@ def run_update(interactive: bool = True) -> dict[str, Any]:
         if interactive
         else [item for item in items if item["action"].startswith("install_")]
     )
-    actions = [
-        _apply_update_item(item, config, force=interactive)
-        for item in selected
-    ]
+    if interactive:
+        actions = [
+            _apply_update_item(item, config, force=True)
+            for item in selected
+        ]
+        truthful = True
+    else:
+        actions = []
+        truthful = True
+        for item in selected:
+            try:
+                action = _apply_update_item(item, config, force=False)
+            except Exception as exc:  # noqa: BLE001 - report install failures truthfully
+                action = {
+                    "item": item["id"],
+                    "status": "install_failed",
+                    "config_changed": False,
+                    "error": str(exc),
+                }
+            actions.append(action)
+            if not _update_skill_action_succeeded(item, action):
+                truthful = False
     if any(action.get("config_changed") for action in actions):
         selected_executors = [
             item for item in selected if item.get("action") == "update_executor"
@@ -511,7 +534,7 @@ def run_update(interactive: bool = True) -> dict[str, Any]:
 
         update_config_atomic(apply_updates, config_path)
     return {
-        "ok": True,
+        "ok": truthful,
         "mode": "update",
         "agents": agents,
         "workspace_root": workspace_root,
@@ -1568,6 +1591,29 @@ def _apply_update_item(
     raise AssertionError(action)
 
 
+def _update_skill_action_succeeded(item: dict[str, Any], action: dict[str, Any]) -> bool:
+    """True only when a non-interactive Skill update is current after the action.
+
+    A blocked modified Skill, an install failure, or any state that is still
+    not current after the action makes the whole update untruthful.
+    """
+    status = action.get("status")
+    if status == "modified_requires_confirmation":
+        return False
+    if status not in {"installed", "already_installed"}:
+        return False
+    action_name = item.get("action")
+    if action_name == "install_skill":
+        return _hermes_skill_state()["up_to_date"]
+    if action_name == "install_claude_skill":
+        root = Path(item["path"]).parent
+        return _classify_installed_skill(root, "claude")["classification"] == "current"
+    if action_name == "install_codex_skill":
+        root = Path(item["path"]).parent
+        return _classify_installed_skill(root, "codex")["classification"] == "current"
+    return False
+
+
 def _apply_clean_item(item: dict[str, Any]) -> dict[str, Any]:
     action = item["action"]
     if action == "remove_skill":
@@ -1644,14 +1690,25 @@ def _print_scan_report(agents: list[dict[str, Any]], workspace_root: str) -> Non
     print(f"workspace root: {workspace_root}")
 
 
+def _permission_setting_absent(config: dict[str, Any]) -> bool:
+    """True when neither the unified nor the legacy permission key exists."""
+    permissions = config.get("permissions")
+    return not (
+        (isinstance(permissions, dict) and "mode" in permissions)
+        or "permission_mode" in config
+    )
+
+
 def _print_permission_mode_help(selected: str) -> None:
     print()
     print("Execution permission modes:")
-    print("  inherit  use the executor's existing user/global permission settings")
     print("  safe     keep AgentBC's conservative executor behavior")
     print("  full     grant the executor its maximum documented noninteractive access")
+    print("  inherit  use the executor's existing user/global permission settings (legacy/advanced)")
     print("  WARNING: full is auditable per task and can bypass executor safety checks.")
     print(f"default permission mode: {selected}")
+    print("The setting affects future dispatched tasks only; it never changes active,")
+    print("input_required, needs_recovery tasks or the same-task resume path.")
 
 
 def _select_permission_mode(
@@ -1668,7 +1725,10 @@ def _select_permission_mode(
         return current
     while True:
         try:
-            answer = input(f"Default permission mode [inherit/safe/full] ({current}): ")
+            answer = input(
+                f"Permission mode for future tasks [safe/full] (current: {current}; "
+                f"'inherit' for legacy): "
+            )
         except (EOFError, KeyboardInterrupt):
             return current
         value = answer.strip().lower()

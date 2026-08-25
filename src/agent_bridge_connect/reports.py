@@ -109,7 +109,14 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
     wall_duration_s = timing["wall_duration_s"]
     waiting_duration_s = timing["waiting_duration_s"]
     execution_duration_s = timing["execution_duration_s"]
-    input_request = extensions.get("agentbc.input") if isinstance(extensions.get("agentbc.input"), dict) else {}
+    input_request = (
+        dict(extensions.get("agentbc.input"))
+        if isinstance(extensions.get("agentbc.input"), dict)
+        else {}
+    )
+    # Full-fallback detail is only for the local View Details interaction; the
+    # report/status input projection must remain summary-only.
+    input_request.pop("reason_detail", None)
     permission = permission_record_from_extensions(extensions)
 
     report = {

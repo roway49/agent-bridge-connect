@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -18,6 +21,7 @@ from agent_bridge_connect.adapters import (
     SessionCleanupResult,
     StartResult,
 )
+from agent_bridge_connect.control import ApprovalControlPlane, ControlPlaneError
 from agent_bridge_connect.execution_contract import (
     CallbackValidation,
     ExecutorTerminalResult,
@@ -29,14 +33,29 @@ from agent_bridge_connect.execution_contract import (
 )
 from agent_bridge_connect.effective_permissions import resolve_effective_permission
 from agent_bridge_connect.execution_policy import extract_hermes_session_id
+from agent_bridge_connect.hermes_acp import (
+    HermesAcpError,
+    HermesAcpTransport,
+    approval_outcome_for_decision,
+    build_approval_message,
+    validate_permission_request,
+)
 from agent_bridge_connect.media import task_image_paths
 from agent_bridge_connect.permission_modes import (
     assert_executor_permission_supported,
     permission_flags,
     permission_record_from_extensions,
 )
+from agent_bridge_connect.permission_registry import (
+    HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID,
+    TRANSPORT_HERMES_ACP,
+    build_permission_audit_payload,
+    executor_permission_mapping,
+    probe_hermes_acp,
+)
 from agent_bridge_connect.protocol import ABCError
 from agent_bridge_connect.prompt_contract import PromptPlatformExtras, build_prompt_contract
+from agent_bridge_connect.session import SessionRecoveryRequired
 
 from .base import CLIExecutorBase
 from ..path_provider import find_binary
@@ -57,6 +76,20 @@ _HERMES_SESSION_ABSENT_RE = re.compile(
 _HERMES_INITIALIZING_LINE_RE = re.compile(
     r"(?m)^[ \t]*Initializing agent\.\.\.[ \t]*\r?$"
 )
+# ACP ``stopReason`` values that mean the turn ran to a normal completion.
+_ACP_COMPLETED_STOP_REASONS = frozenset({"end_turn", "success", "completed"})
+
+
+def hermes_acp_yolo_env() -> dict[str, str]:
+    """Subprocess-scoped ``HERMES_YOLO_MODE=1`` override for Hermes full mode.
+
+    Returns a fresh environment mapping that MUST only be applied to the
+    spawned Hermes ACP subprocess environment.  It never mutates the user's
+    global environment.  The Runner control loop applies it per subprocess
+    and records the :func:`permission_audit` payload; AgentBC only freezes
+    the capability here (``transport=hermes-acp``).
+    """
+    return {"HERMES_YOLO_MODE": "1"}
 
 
 class HermesExecutor(CLIExecutorBase):
@@ -79,6 +112,7 @@ class HermesExecutor(CLIExecutorBase):
         transport: str = "auto",
         runner_spool: str | None = None,
         runner_token: str | None = None,
+        approval_timeout_s: float = 300.0,
     ) -> None:
         super().__init__()
         self.timeout_s = timeout_s
@@ -87,9 +121,10 @@ class HermesExecutor(CLIExecutorBase):
         self.model = _optional_text(model)
         self.max_turns = _validate_max_turns(max_turns)
         self.quiet = quiet
-        if transport not in {"auto", "direct", "runner"}:
+        if transport not in {"auto", "direct", "runner", "acp"}:
             raise ValueError(f"Unsupported Hermes transport: {transport}")
         self.transport = transport
+        self.approval_timeout_s = max(float(approval_timeout_s), 0.1)
         configured_command = _optional_text(command)
         self._discovery = _discover_hermes_binary(configured_command)
         resolved = configured_command or str(self._discovery.get("path") or "")
@@ -105,6 +140,11 @@ class HermesExecutor(CLIExecutorBase):
         self._runner_runs: set[str] = set()
         self._runner_closed: set[str] = set()
         self._runner_poll_errors: dict[str, int] = {}
+        self._acp_probe: dict[str, Any] | None = None
+        self._acp_runs: dict[str, dict[str, Any]] = {}
+        # Test seam: an injected fake ACP transport (same interface as
+        # HermesAcpTransport) replaces the spawned ``hermes acp`` subprocess.
+        self._acp_transport_override: Any = None
 
     def probe(self) -> ProbeResult:
         if self.agent_bin is None:
@@ -189,7 +229,7 @@ class HermesExecutor(CLIExecutorBase):
             structured_output=True,
             streaming_events=False,
             resume=True,
-            cancel=self.transport != "direct",
+            cancel=self.transport in {"runner", "acp"},
             input_required=False,
             model_selection=True,
             multimodal=True,
@@ -200,6 +240,18 @@ class HermesExecutor(CLIExecutorBase):
             parallelism=1,
             level=ExecutorLevel.L2,
         )
+
+    def acp_capability(self) -> dict[str, Any]:
+        """Frozen Hermes ACP capability probe (PERM-103-002).
+
+        Uses only the official ``hermes acp --check`` / ``hermes acp
+        --version`` CLI surface and caches the result per executor instance.
+        It never scans Hermes private session databases or logs, never reads
+        user configuration, and never modifies the global environment.
+        """
+        if self._acp_probe is None:
+            self._acp_probe = probe_hermes_acp(self.agent_bin)
+        return self._acp_probe
 
     def session_cleanup_capability(
         self,
@@ -340,6 +392,9 @@ class HermesExecutor(CLIExecutorBase):
         except ABCError as exc:
             return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
 
+        if self.transport == "acp":
+            return self._start_with_acp(task_packet, root, run_id, permission)
+
         if self._should_use_runner():
             return self._start_with_runner(task_packet, root, run_id, permission)
         if self.transport == "runner":
@@ -461,6 +516,16 @@ class HermesExecutor(CLIExecutorBase):
         return StartResult(ok=True, run_id=run_id, message=f"hermes execution {status}")
 
     def poll(self, run_id: str) -> PollResult:
+        acp_run = self._acp_runs.get(run_id)
+        if acp_run is not None:
+            return PollResult(
+                status=str(acp_run.get("status") or "running"),
+                progress={
+                    "events_seen": len(acp_run.get("events") or []),
+                    "control_root": str(acp_run["plane"].root),
+                },
+                result=dict(acp_run.get("result") or {}),
+            )
         if run_id not in self._runner_runs:
             return super().poll(run_id)
         try:
@@ -566,6 +631,22 @@ class HermesExecutor(CLIExecutorBase):
         return result
 
     def cancel(self, run_id: str) -> AdapterResult:
+        acp_run = self._acp_runs.get(run_id)
+        if acp_run is not None:
+            acp_run["cancelled"] = True
+            transport = acp_run.get("transport")
+            if transport is not None:
+                session_id = str(acp_run.get("session_id") or "")
+                if session_id:
+                    try:
+                        transport.cancel_session(session_id)
+                    except HermesAcpError:
+                        pass
+                try:
+                    transport.close()
+                except Exception:
+                    pass
+            return AdapterResult(True, "hermes ACP session cancellation requested")
         if run_id not in self._runner_runs:
             return super().cancel(run_id)
         try:
@@ -617,6 +698,368 @@ class HermesExecutor(CLIExecutorBase):
         )
         self._store_run(run_id, root, None, "runner")
         return StartResult(ok=True, run_id=run_id, message="hermes execution submitted to Runner")
+
+    # ---- Hermes ACP session-first transport (PERM-103-003/004) -------------
+
+    def _start_with_acp(
+        self,
+        task_packet: dict[str, Any],
+        root: Path | None,
+        run_id: str,
+        permission: dict[str, Any],
+    ) -> StartResult:
+        """Start the fail-closed ACP session-first run on a worker thread.
+
+        The worker owns one spawned ``hermes acp`` subprocess and the exact
+        task-scoped control plane.  The official session receipt is persisted
+        through the frozen ``SessionFirstGate`` before ``session/prompt`` is
+        ever sent; every transport failure lands in ``needs_recovery``.
+        """
+        resumed, explicit_session_id = _task_resume_session(task_packet)
+        self._task_packets[run_id] = dict(task_packet)
+        self._start_run_lease(task_packet, run_id, "hermes")
+        try:
+            plane = self._control_plane_for_run(
+                task_packet,
+                run_id,
+                expected_session_id=explicit_session_id if resumed else None,
+            )
+        except (ControlPlaneError, SessionRecoveryRequired) as exc:
+            self._close_run_lease(run_id)
+            return StartResult(
+                ok=False,
+                run_id="",
+                message=f"hermes ACP control unavailable: {exc}",
+            )
+        command = [str(self.agent_bin), "acp"]
+        if task_packet.get("runner_authorization_required") is True:
+            try:
+                self._runner_client.authorize_command(
+                    "hermes",
+                    command,
+                    root or Path.cwd(),
+                    task_packet,
+                    executor_run_id=run_id,
+                )
+            except RunnerError as exc:
+                self._close_run_lease(run_id)
+                return StartResult(
+                    ok=False,
+                    run_id="",
+                    message=f"Runner authorization failed: {exc}",
+                )
+        record: dict[str, Any] = {
+            "run_id": run_id,
+            "task_packet": dict(task_packet),
+            "root": root,
+            "permission": permission,
+            "resumed": resumed,
+            "explicit_session_id": explicit_session_id,
+            "plane": plane,
+            "status": "starting",
+            "events": [],
+            "result": {},
+            "ready": threading.Event(),
+            "started_at": time.time(),
+            "transport": None,
+            "cancelled": False,
+        }
+        self._acp_runs[run_id] = record
+        worker = threading.Thread(
+            target=self._run_acp_session,
+            args=(run_id,),
+            name=f"agentbc-hermes-acp-{run_id}",
+            daemon=True,
+        )
+        record["thread"] = worker
+        worker.start()
+        record["ready"].wait(timeout=min(max(self.timeout_s, 0.1), 10.0))
+        return StartResult(ok=True, run_id=run_id, message="hermes ACP session started")
+
+    def _make_acp_transport(self, record: dict[str, Any]) -> Any:
+        """Return the injected fake transport (tests) or ``None`` for the real one."""
+        return self._acp_transport_override
+
+    def _run_acp_session(self, run_id: str) -> None:
+        record = self._acp_runs[run_id]
+        plane: ApprovalControlPlane = record["plane"]
+        transport: Any = None
+        try:
+            mapping = executor_permission_mapping(
+                "hermes",
+                record["permission"]["effective_mode"],
+                transport=TRANSPORT_HERMES_ACP,
+            )
+            env = dict(os.environ)
+            env.update(mapping.get("env") or {})
+            transport = self._make_acp_transport(record)
+            if transport is None:
+                transport = HermesAcpTransport(
+                    self.agent_bin,
+                    cwd=record["root"] or Path.cwd(),
+                    env=env,
+                )
+            record["transport"] = transport
+            transport.start()
+            transport.initialize()
+            cwd = str(record["root"] or Path.cwd())
+            if record["resumed"]:
+                session_id = str(record["explicit_session_id"] or "").strip()
+                if not session_id:
+                    raise SessionRecoveryRequired(
+                        "missing_executor_session_id",
+                        "Explicit resume requires a task session ID.",
+                    )
+                session_id = transport.load_session(cwd, session_id)
+            else:
+                session_id = transport.new_session(cwd)
+            # Session-first: the official task/run-bound receipt is persisted
+            # (and the turn gate opened) before any prompt can enter the ACP
+            # session.  The source token is the frozen Hermes receipt channel
+            # value from the v1 contract; the ACP session id itself comes from
+            # the official protocol, never from scanning Hermes state.
+            receipt = {
+                "version": 1,
+                "executor": "hermes",
+                "session_id": session_id,
+                "resumed": bool(record["resumed"]),
+                "persistence": "persistent",
+                "source": "stderr_receipt",
+            }
+            session_event = plane.record_session_started(receipt)
+            record["execution_session"] = receipt
+            record["session_id"] = session_id
+            record["events"].append(
+                {
+                    "event_type": "session_started",
+                    "source": "agentbc.control",
+                    "sequence": len(record["events"]) + 1,
+                    "payload": session_event,
+                }
+            )
+            plane.gate.require_before_turn(session_id)
+            record["ready"].set()
+            prompt = _build_prompt(record["task_packet"])
+            blocks: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+            for image in task_image_paths(record["task_packet"])[:1]:
+                resolved = Path(image).expanduser().resolve()
+                blocks.append(
+                    {
+                        "type": "resource_link",
+                        "uri": resolved.as_uri(),
+                        "name": resolved.name,
+                    }
+                )
+            response = transport.prompt(
+                session_id,
+                blocks,
+                on_permission=lambda frame: self._handle_acp_permission(record, frame),
+                timeout_s=float(self.timeout_s),
+            )
+            stop_reason = str(
+                response.get("stopReason") or response.get("stop_reason") or "end_turn"
+            )
+            stderr = transport.stderr_evidence()
+            assistant_text = transport.message_text()
+            turn_status = "completed" if stop_reason in _ACP_COMPLETED_STOP_REASONS else stop_reason
+            plane.record_turn_completed(turn_id=session_id, status=turn_status)
+            final_response = _extract_final_response(assistant_text, record["task_packet"])
+            summary = _extract_summary(final_response)
+            validation = extract_callback_validation_from_output(
+                final_response,
+                record["task_packet"],
+                run_id,
+            )
+            terminal = _route_hermes_terminal(
+                validation,
+                0,
+                stderr=stderr,
+                failure=None,
+                iteration=_iteration_budget_diagnostics(assistant_text, stderr),
+                task_packet=record["task_packet"],
+            )
+            status = terminal.status
+            result_payload: dict[str, Any] = {
+                "stdout": assistant_text,
+                "stderr": stderr,
+                "returncode": 0,
+                "summary": summary,
+                "parsed": _parse_output(final_response),
+                "failure": terminal.failure,
+                "agent_callback": terminal.callback,
+                "marker_valid": validation.valid,
+                "marker_seen": validation.marker_seen,
+                "iteration": (
+                    _iteration_budget_diagnostics(assistant_text, stderr)
+                    if terminal.resource_exhaustion is None
+                    else terminal.resource_exhaustion
+                ),
+                "stop_reason": stop_reason,
+                "execution_session": receipt,
+                "control_events": plane.events(),
+                "extensions": self.get_extensions(),
+            }
+            record["result"] = result_payload
+            record["status"] = status
+            self._runs[run_id] = PollResult(
+                status=status,
+                progress={
+                    "steps_total": len(record["task_packet"].get("steps") or []),
+                    "stop_reason": stop_reason,
+                },
+                result=result_payload,
+            )
+            self._close_run_lease(run_id)
+        except (
+            ControlPlaneError,
+            SessionRecoveryRequired,
+            HermesAcpError,
+            TimeoutError,
+            OSError,
+            ABCError,
+            RunnerError,
+        ) as exc:
+            record["ready"].set()
+            pending = plane.status().get("pending_request")
+            pending_id = ""
+            if isinstance(pending, dict) and pending.get("status") == "pending":
+                pending_id = str(pending.get("request_id") or "")
+            try:
+                plane.record_transport_failed(
+                    str(exc) or "Hermes ACP transport failed",
+                    request_id=pending_id,
+                    evidence={"phase": str(record.get("status") or "starting")},
+                )
+            except Exception:
+                pass
+            if record.get("cancelled") is True:
+                status = "cancelled"
+                failure: dict[str, Any] = {
+                    "kind": "hermes_acp_cancelled",
+                    "layer": "executor",
+                    "message": "Hermes ACP execution was cancelled.",
+                    "retryable": True,
+                }
+            else:
+                status = "needs_recovery"
+                failure = {
+                    "kind": "hermes_acp_transport_failed",
+                    "layer": "executor",
+                    "message": str(exc),
+                    "retryable": True,
+                    "timeout_is_failure": isinstance(exc, TimeoutError),
+                }
+            result_payload = {
+                "stderr": transport.stderr_evidence() if transport is not None else "",
+                "failure": failure,
+                "execution_session": record.get("execution_session"),
+                "control_events": plane.events(),
+                "extensions": self.get_extensions(),
+            }
+            record["result"] = result_payload
+            record["status"] = status
+            self._runs[run_id] = PollResult(
+                status=status,
+                progress={"events_seen": len(record["events"])},
+                result=result_payload,
+            )
+        finally:
+            if transport is not None:
+                transport.close()
+
+    def _handle_acp_permission(
+        self,
+        record: dict[str, Any],
+        frame: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Bridge one ACP permission request into the frozen ControlPlane.
+
+        Only the exact ``allow_once`` (approve) and ``cancelled`` (deny)
+        outcomes are ever returned.  Duplicate/concurrent requests, requests
+        bound to a different session, unsupported option lists, mismatched
+        identities, and late responses all fail closed into the control
+        plane's recovery state and abort the turn.
+        """
+        plane: ApprovalControlPlane = record["plane"]
+        run_id = str(record["run_id"])
+        session_id = str(record.get("session_id") or "")
+        request_id, tool_call = validate_permission_request(
+            frame,
+            session_id=session_id,
+        )
+        message = build_approval_message(
+            frame,
+            task_id=str(record["task_packet"].get("task_id") or ""),
+            executor_run_id=run_id,
+            session_id=session_id,
+        )
+        try:
+            event = plane.request_approval(message)
+        except (ControlPlaneError, SessionRecoveryRequired) as exc:
+            self._record_transport_failed(
+                run_id,
+                f"Hermes ACP approval rejected: {exc}",
+                request_id=str(request_id),
+            )
+            raise HermesAcpError(
+                "hermes_acp_approval_rejected",
+                str(exc),
+                {"code": getattr(exc, "code", "")},
+            ) from exc
+        approval: dict[str, Any] = {
+            "type": "permission",
+            "request_id": str(request_id),
+            "kind": "permission",
+            "scope": "single_action",
+            "session_id": session_id,
+        }
+        record["events"].append(
+            {
+                "event_type": "approval_requested",
+                "source": "agentbc.control",
+                "sequence": len(record["events"]) + 1,
+                "payload": event,
+            }
+        )
+        record["result"] = {
+            "events": list(record["events"]),
+            "execution_session": record.get("execution_session"),
+            "approval_request": approval,
+            "extensions": self.get_extensions(),
+        }
+        # Result must be visible before the status flips so poll() can never
+        # observe input_required without the approval_request payload.
+        record["status"] = "input_required"
+        self._runs[run_id] = PollResult(
+            status="input_required",
+            progress={"events_seen": len(record["events"])},
+            result=dict(record["result"]),
+        )
+        self._suspend_run(run_id)
+        try:
+            response = plane.wait_for_decision(
+                str(request_id),
+                self.approval_timeout_s,
+            )
+        except ControlPlaneError as exc:
+            self._record_transport_failed(
+                run_id,
+                f"Hermes ACP approval wait failed: {exc}",
+                request_id=str(request_id),
+            )
+            raise HermesAcpError(
+                "hermes_acp_approval_wait_failed",
+                str(exc),
+                {"code": exc.code},
+            ) from exc
+        decision = str(response.get("decision") or "")
+        outcome = approval_outcome_for_decision(decision)
+        self._resume_run(run_id)
+        record["status"] = "running"
+        record.setdefault("approval_history", []).append(
+            {"request_id": str(request_id), "decision": decision}
+        )
+        return outcome
 
     def _should_use_runner(self) -> bool:
         if self.transport == "direct":
@@ -701,6 +1144,35 @@ class HermesExecutor(CLIExecutorBase):
             metadata["last_run"] = last_run
             if isinstance(last_run.get("iteration"), dict):
                 metadata["iteration"] = last_run["iteration"]
+        acp = self.acp_capability()
+        metadata["acp"] = {
+            "transport": TRANSPORT_HERMES_ACP,
+            "capability_id": HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID,
+            "check": {
+                "ok": acp["ok"],
+                "reason": acp.get("reason") or "",
+                "version": acp.get("version"),
+            },
+            "request_permission": {
+                # Task 6 binds the exact session-level capability at ACP
+                # session init: only allow_once/deny outcomes are exposed to
+                # AgentBC through the frozen approval receipt and ControlPlane.
+                "state": "bound",
+                "capability_id": HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID,
+                "decisions": ["allow_once", "deny"],
+            },
+        }
+        permission = metadata.get("permission")
+        if isinstance(permission, dict):
+            mode = permission.get("effective_mode")
+            if isinstance(mode, str):
+                mapping = executor_permission_mapping("hermes", mode)
+                metadata["permission_capability"] = mapping
+                if mode == "full":
+                    metadata["permission_audit"] = build_permission_audit_payload(
+                        permission,
+                        executor="hermes",
+                    )
         return {
             "executor.hermes": metadata,
             "executor": {"hermes": metadata},

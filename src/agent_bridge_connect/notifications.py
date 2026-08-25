@@ -4,6 +4,15 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from .approval import (
+    APPROVAL_EXTENSION_KEY,
+    APPROVAL_SCOPE,
+    core_bounded_summary_details,
+    normalize_reason_summary_details,
+    sanitize_reason_detail,
+    validate_approval_receipt,
+)
+from .protocol import ABCError
 from .execution_policy import execution_policy_view
 from .notifiers.dialog import DialogNotifier
 from .notifiers.file import FileNotifier
@@ -16,6 +25,7 @@ RESOURCE_DECISION_DENY_LABEL = "终止任务"
 RESOURCE_DECISION_KIND = "resource_limit"
 RESOURCE_DECISION_PROTOCOL = "approve_deny"
 PERMISSION_DIALOG_TIMEOUT_RESPONSE = "agentbc_permission_dialog_timeout"
+PERMISSION_DIALOG_CLOSED_RESPONSE = "agentbc_permission_dialog_closed"
 
 
 def notify_terminal(
@@ -92,6 +102,10 @@ def notify_input_required(
                     if payload.get("input_type") == "permission"
                     and action == "deny"
                     and decision_source == "timeout"
+                    else PERMISSION_DIALOG_CLOSED_RESPONSE
+                    if payload.get("input_type") == "permission"
+                    and action == "deny"
+                    and decision_source == "dialog_closed"
                     else ""
                     if payload.get("input_type") == "permission"
                     else str(dialog_result.details.get("message") or "")
@@ -113,6 +127,20 @@ def notify_input_required(
                     "report_path": str(payload.get("report_path") or ""),
                 }
             )
+        # Single-action approval responses must resolve to the same native
+        # request that created the wait; a response recorded against a different
+        # request id fails closed and is never treated as a successful answer.
+        if (
+            payload.get("input_type") == "permission"
+            and payload.get("approval_request_id")
+            and not response_error
+        ):
+            response_request_id = str(response_result.get("request_id") or "")
+            if response_request_id and response_request_id != payload["approval_request_id"]:
+                response_error = (
+                    "approval_request_mismatch: "
+                    "response resolved to a different native request"
+                )
         service.store.append_event(
             task_id,
             {
@@ -177,7 +205,43 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         command = f"agentbc task respond {task_id} --input {input_id} --message \"<response>\""
     workspace = task.workspace or {}
     blocked_step = request.get("blocked_step_id", "")
-    summary = compact_notification_text(str(request.get("summary") or ""), 240)
+    is_single_action_approval = (
+        input_type == "permission"
+        and request.get("scope") == APPROVAL_SCOPE
+        and bool(str(request.get("request_id") or "").strip())
+    )
+    summary_truncated = False
+    if input_type == "permission":
+        stored_summary = str(request.get("reason_summary") or "").strip()
+        if stored_summary:
+            summary, compacted = normalize_reason_summary_details(
+                stored_summary,
+                executor=str(task.assignee or ""),
+                operation=str(request.get("operation") or "full permission")
+                if is_single_action_approval
+                else "full permission",
+            )
+        else:
+            raw_reason = str(
+                request.get("reason") or request.get("summary") or ""
+            ).strip()
+            if raw_reason and sanitize_reason_detail(raw_reason):
+                summary, compacted = normalize_reason_summary_details(
+                    raw_reason,
+                    executor=str(task.assignee or ""),
+                    operation="full permission",
+                )
+            else:
+                summary, compacted = core_bounded_summary_details(
+                    executor=str(task.assignee or ""),
+                    operation="full permission",
+                )
+        summary_truncated = bool(request.get("summary_truncated") is True or compacted)
+    else:
+        summary = compact_notification_text(
+            str(request.get("reason_summary") or request.get("summary") or ""),
+            240,
+        )
     if input_type == "choice":
         reason = compact_notification_text(str(request.get("reason") or summary), 240)
         if is_resource_decision and not option_descriptions:
@@ -207,7 +271,21 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
             "Why this is blocked:",
             summary,
         ]
-        if input_type == "permission" and request.get("requested_permission"):
+        if input_type == "permission" and is_single_action_approval:
+            operation = compact_notification_text(
+                str(request.get("operation") or ""), 120
+            )
+            if operation:
+                body_lines.append(f"Requested operation: {operation}")
+            body_lines.extend(
+                [
+                    "Approve authorizes only this exact single action in the current session.",
+                    "Deny returns to the same session and the agent handles the rejection.",
+                    "This approval never changes the task permission mode.",
+                    "Choose Approve or Deny below.",
+                ]
+            )
+        elif input_type == "permission" and request.get("requested_permission"):
             body_lines.extend(
                 [
                     "Requested access:",
@@ -223,10 +301,55 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
             body_lines.append("Enter your response below to resume this same task.")
     body = "\n".join(body_lines)
     permission_grant = execution_policy_view(task.extensions).get("permission_grant")
+    # The bounded detail is read from the durable approval receipt, never from
+    # the input request, so report/status projections of ``agentbc.input`` keep
+    # exposing only the short summary by default.
+    reason_detail = ""
+    if is_single_action_approval:
+        receipt_value = (task.extensions or {}).get(APPROVAL_EXTENSION_KEY)
+        if isinstance(receipt_value, dict):
+            try:
+                reason_detail = str(
+                    validate_approval_receipt(receipt_value).get("reason_detail") or ""
+                )
+            except ABCError:
+                reason_detail = ""
+    elif input_type == "permission":
+        # Full-fallback detail is carried by the current structured input only.
+        # Never reconstruct it from input history, reports or a truncated marker.
+        reason_detail = sanitize_reason_detail(request.get("reason_detail"))
+
+    # Sanitized bounded identity facts are carried explicitly on permission
+    # payloads so the macOS permission decision view can render them
+    # deterministically without querying private executor state.  Task ID, the
+    # bounded task title and the Executor label are all safe public facts; the
+    # scope distinguishes a single-action approval from the legacy full
+    # fallback continuation.  Non-permission inputs keep the generic title.
+    if input_type == "permission":
+        identity_task_id = compact_notification_text(task_id, 48)
+        identity_title = compact_notification_text(str(task.title or ""), 96)
+        executor_label = str(getattr(task, "assignee", "") or "").strip() or "unknown"
+        identity_blocked_step = compact_notification_text(
+            str(request.get("blocked_step_id") or ""), 24
+        )
+        if is_single_action_approval:
+            identity_scope = APPROVAL_SCOPE
+        elif str(request.get("requested_permission") or "").strip().lower() == "full":
+            identity_scope = "full"
+        else:
+            identity_scope = "unknown"
+        dialog_title = f"AgentBC · {executor_label} · {identity_task_id}"
+    else:
+        identity_task_id = ""
+        identity_title = ""
+        executor_label = ""
+        identity_blocked_step = ""
+        identity_scope = ""
+        dialog_title = "Agent-Bridge-Connect"
     return {
         "task_id": task_id,
         "event_type": "task.input_required",
-        "title": "Agent-Bridge-Connect",
+        "title": dialog_title,
         "level": "input",
         "message": body,
         "report_path": str(workspace.get("report_file") or ""),
@@ -236,10 +359,46 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         "input_type": input_type,
         "input_kind": input_kind,
         "response_protocol": response_protocol,
-        "input_reason": str(request.get("reason") or ""),
+        "input_reason": (
+            summary
+            if input_type == "permission"
+            else str(request.get("reason") or "")
+        ),
+        "summary": summary,
+        "summary_truncated": summary_truncated,
+        "reason_summary": summary,
+        "reason_detail": reason_detail,
         "input_options": input_options,
         "input_option_descriptions": option_descriptions,
         "permission_grant": permission_grant,
+        # Single-action approval binding: the notification is tied to exactly one
+        # native request so a dialog can only Approve/Deny the bound request.
+        "approval_request_id": (
+            str(request.get("request_id") or "") if is_single_action_approval else ""
+        ),
+        "approval_request_fingerprint": (
+            str(request.get("request_fingerprint") or "")
+            if is_single_action_approval
+            else ""
+        ),
+        "approval_executor_run_id": (
+            str(request.get("executor_run_id") or "")
+            if is_single_action_approval
+            else ""
+        ),
+        "approval_scope": (
+            str(request.get("scope") or "") if is_single_action_approval else ""
+        ),
+        # Sanitized bounded identity facts rendered deterministically by the
+        # macOS decision view.  These are safe public facts (never private paths,
+        # raw argv, tokens, or session content) and keep the generic-only title
+        # replaced by a compact ``AgentBC · <Executor> · <Task ID>`` title.
+        "dialog_title": dialog_title,
+        "identity_task_id": identity_task_id,
+        "identity_task_title": identity_title,
+        "identity_executor": executor_label,
+        "identity_blocked_step": identity_blocked_step,
+        "identity_scope": identity_scope,
     }
 
 

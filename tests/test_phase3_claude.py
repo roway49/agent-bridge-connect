@@ -126,6 +126,10 @@ class Phase3ClaudeExecutorTests(unittest.TestCase):
         )
         executor = ClaudeExecutor(command=sys.executable, transport="direct")
         with (
+            mock.patch(
+                "agent_bridge_connect.executors.claude.assert_claude_path_capability_supported",
+                return_value={"supported": True},
+            ),
             mock.patch.object(executor, "_start_run_lease"),
             mock.patch.object(executor, "_heartbeat_run"),
             mock.patch.object(executor, "_close_run_lease"),
@@ -157,6 +161,10 @@ class Phase3ClaudeExecutorTests(unittest.TestCase):
         )
         executor = ClaudeExecutor(command=sys.executable, transport="direct")
         with (
+            mock.patch(
+                "agent_bridge_connect.executors.claude.assert_claude_path_capability_supported",
+                return_value={"supported": True},
+            ),
             mock.patch.object(executor, "_start_run_lease"),
             mock.patch.object(executor, "_heartbeat_run"),
             mock.patch.object(executor, "_close_run_lease"),
@@ -178,6 +186,10 @@ class Phase3ClaudeExecutorTests(unittest.TestCase):
             timeout_s=1,
         )
         with (
+            mock.patch(
+                "agent_bridge_connect.executors.claude.assert_claude_path_capability_supported",
+                return_value={"supported": True},
+            ),
             mock.patch.object(executor, "_start_run_lease"),
             mock.patch.object(executor, "_heartbeat_run"),
             mock.patch.object(executor, "_mark_run_stale"),

@@ -14,6 +14,7 @@ from agent_bridge_connect.execution_policy import (
     build_resource_snapshot,
     build_session_snapshot,
 )
+from agent_bridge_connect.executors.claude import ClaudeExecutor
 from agent_bridge_connect.runner import (
     PHASE2_AUDIT_EVENT_TYPE,
     PHASE2_EXECUTION_EXTENSION_KEY,
@@ -418,13 +419,17 @@ class Phase2RunnerPolicyTests(unittest.TestCase):
         task_id = self._create_task("claude")
         self._make_native(task_id, "claude")
         packet = self._packet(task_id)
-        session_id = packet["extensions"][SESSION_EXTENSION_KEY]["session_id"]
         Path(packet["extensions"][SESSION_EXTENSION_KEY]["project_path"]).mkdir(
             parents=True,
             exist_ok=True,
         )
-        command = self._claude_command(
-            "--max-budget-usd", "10.0", "--session-id", session_id
+        command = ClaudeExecutor(
+            command=str(self.fake_claude),
+            transport="direct",
+        )._build_command(
+            "hello",
+            Path(packet["workspace"]["root"]),
+            packet,
         )
         result = self.state.authorize_command(
             "claude",

@@ -137,14 +137,16 @@ class PermissionCanaryRegressionTests(unittest.TestCase):
             failed = service.get_task(task.id)
             self.assertEqual(code, 1)
             self.assertEqual(failed.status, "failed")
+            persisted_permission = failed.extensions[PERMISSION_EXTENSION_KEY]
+            self.assertEqual(persisted_permission["version"], 2)
+            self.assertEqual(persisted_permission["requested_mode"], "inherit")
+            self.assertEqual(persisted_permission["effective_mode"], "inherit")
             self.assertEqual(
-                failed.extensions[PERMISSION_EXTENSION_KEY],
-                {
-                    "requested_mode": "inherit",
-                    "effective_mode": "inherit",
-                    "selection_source": "configured_default",
-                },
+                persisted_permission["selection_source"], "configured_default"
             )
+            self.assertEqual(persisted_permission["scope"], "task")
+            self.assertEqual(persisted_permission["permission_args"], [])
+            self.assertIn("hermes", persisted_permission["mapping"])
             self.assertLessEqual(task_record_size(service.store.task_dir(task.id)), MAX_TASK_RECORD_BYTES)
             self.assertTrue(Path(failed.workspace["report_file"]).is_file())
             events = service.store.read_events(task.id)

@@ -359,17 +359,33 @@ class PermissionResponseTests(unittest.TestCase):
             service.respond_to_input(task_id, request["input_id"], response_type="message", message="hello")
         self.assertEqual(raised.exception.code, "invalid_input_response")
 
-    def test_inherit_and_full_permission_waits_are_rejected(self) -> None:
-        for mode in ("inherit", "full"):
-            with self.subTest(mode=mode):
-                harness = PermissionLifecycleHarness("codex", permission_mode=mode)
-                self.addCleanup(harness.close)
-                task_id, _, _ = harness.prepare_wait()
-                task = harness.service.get_task(task_id)
-                self.assertEqual(task.status, "needs_recovery")
-                self.assertEqual(task.errors[-1]["code"], RECOVERY_CODE)
-                self.assertNotIn("agentbc.input", task.extensions)
-                self.assertNotIn(PERMISSION_GRANT_EXTENSION_KEY, task.extensions)
+    def test_inherit_waits_on_runtime_block_but_full_is_not_escalatable(self) -> None:
+        inherited = PermissionLifecycleHarness("codex", permission_mode="inherit")
+        self.addCleanup(inherited.close)
+        task_id, _, _ = inherited.prepare_wait()
+        task = inherited.service.get_task(task_id)
+        self.assertEqual(task.status, "input_required")
+        self.assertEqual(task.extensions["agentbc.input"]["type"], "permission")
+        self.assertNotIn(PERMISSION_GRANT_EXTENSION_KEY, task.extensions)
+        request = self._waiting_input(inherited.service, task_id)
+        inherited.service.respond_to_input(
+            task_id,
+            request["input_id"],
+            response_type="approve",
+        )
+        grant = inherited.service.get_task(task_id).extensions[
+            PERMISSION_GRANT_EXTENSION_KEY
+        ]
+        self.assertEqual(grant["transition"], {"from": "native", "to": "full"})
+
+        full = PermissionLifecycleHarness("codex", permission_mode="full")
+        self.addCleanup(full.close)
+        task_id, _, _ = full.prepare_wait()
+        task = full.service.get_task(task_id)
+        self.assertEqual(task.status, "needs_recovery")
+        self.assertEqual(task.errors[-1]["code"], RECOVERY_CODE)
+        self.assertNotIn("agentbc.input", task.extensions)
+        self.assertNotIn(PERMISSION_GRANT_EXTENSION_KEY, task.extensions)
 
     def test_wrong_session_id_moves_to_needs_recovery(self) -> None:
         harness = PermissionLifecycleHarness("claude")

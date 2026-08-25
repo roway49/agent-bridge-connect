@@ -4,6 +4,12 @@ The v1 envelope is deliberately internal.  It records only durable binding,
 scope, state, and timestamp data needed to authorize one future executor run;
 it never stores the permission prompt, command line, executor output, secrets,
 private paths, or session content.
+
+PERM-103-005: the envelope remains a bounded, one-run fallback contract.  It
+does not mutate the task's frozen permission snapshot: a trusted runtime block
+may issue a one-shot native/safe-to-full grant bound to the same task, session,
+input, and source run.  Native single-action approval receipts remain the
+preferred path.  Existing v1 extensions stay untouched on terminal history.
 """
 
 from __future__ import annotations
@@ -58,14 +64,21 @@ def build_permission_grant(
     input_id: str,
     session_id: str,
     source_run_id: str,
+    base_mode: str = "safe",
     issued_at: str | None = None,
     grant_id: str | None = None,
 ) -> dict[str, Any]:
-    """Build one issued ``safe -> full`` grant for the next executor run."""
+    """Build one issued runtime-blocked -> full grant for the next run."""
+    normalized_base = str(base_mode or "").strip().lower()
+    if normalized_base not in {"native", "safe"}:
+        _invalid(
+            "permission_grant_transition_invalid",
+            "Permission grant base must be an approval-capable native or safe policy",
+        )
     envelope: dict[str, Any] = {
         "version": PERMISSION_GRANT_VERSION,
         "grant_id": grant_id or f"grant-{uuid.uuid4().hex}",
-        "transition": {"from": "safe", "to": "full"},
+        "transition": {"from": normalized_base, "to": "full"},
         "binding": {
             "executor": executor,
             "task_id": task_id,
@@ -121,10 +134,10 @@ def validate_permission_grant(
 
     _require_identifier(grant.get("grant_id"), "grant_id")
     transition = _require_object(grant, "transition")
-    if transition.get("from") != "safe" or transition.get("to") != "full":
+    if transition.get("from") not in {"native", "safe"} or transition.get("to") != "full":
         _invalid(
             "permission_grant_transition_invalid",
-            "Permission grant v1 supports only safe to full",
+            "Permission grant v1 supports only runtime-blocked native/safe to full",
         )
 
     binding = _require_object(grant, "binding")

@@ -6,6 +6,9 @@ This page contains only the Public Alpha deployment flow. Task, Runner,
 recovery, and uninstall commands are documented in the
 [User Guide](USER_GUIDE.md).
 
+The internal development candidate is **1.0.3A** (Python package `1.0.3a1`).
+The published installation commands below intentionally remain on 1.0.2A.
+
 ## 1. Check Requirements
 
 - macOS on Apple Silicon or Intel;
@@ -25,6 +28,20 @@ agentbc setup
 
 The explicit version pin keeps Alpha deployments reproducible. To use the
 checksummed GitHub bundle instead, continue with the next section.
+
+### Install The Homebrew Alpha
+
+The existing AgentBC repository is also the Homebrew custom tap:
+
+```bash
+brew tap roway49/agentbc https://github.com/roway49/agent-bridge-connect.git
+brew install roway49/agentbc/agentbc
+agentbc setup
+brew services start agentbc
+```
+
+Upgrade this installation with `brew upgrade agentbc`. AgentBC self-update
+intentionally reports the Homebrew command instead of changing Cellar files.
 
 ## 3. Install From A Verified GitHub Release
 

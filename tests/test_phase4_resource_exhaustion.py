@@ -352,6 +352,10 @@ class ClaudeExecutorEndToEndTests(unittest.TestCase):
             output_format=output_format,
         )
         with (
+            mock.patch(
+                "agent_bridge_connect.executors.claude.assert_claude_path_capability_supported",
+                return_value={"supported": True},
+            ),
             mock.patch.object(executor, "_start_run_lease"),
             mock.patch.object(executor, "_heartbeat_run"),
             mock.patch.object(executor, "_close_run_lease"),

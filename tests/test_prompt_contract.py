@@ -562,6 +562,17 @@ class AllPromptContractTests(unittest.TestCase):
         self.assertIn("Return a concise execution summary and mention any files changed.", hermes)
         self.assertIn("After completing all steps, print a concise summary.", claude)
 
+    def test_codex_app_server_prompt_allows_only_bounded_native_retry(self):
+        prompt = codex_prompt(managed_packet(), native_single_action=True)
+        self.assertIn("sandbox_permissions=require_escalated", prompt)
+        self.assertIn("identical command exactly once with the same cwd", prompt)
+        self.assertIn("not a full fallback", prompt)
+        self.assertIn("Never use it for progress updates", prompt)
+        self.assertNotIn(
+            "sandbox_permissions=require_escalated",
+            codex_prompt(managed_packet()),
+        )
+
 
 # --- PROMPT-001 regression limits --------------------------------------------
 

@@ -47,6 +47,7 @@ _SHORTHAND_SUGGESTIONS = [
     "task logs",
     "worker run",
     "runner status",
+    "permissions status",
 ]
 
 
@@ -88,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument(
         "--permission-mode",
         choices=CANONICAL_PERMISSION_MODES,
-        help="Set the default execution permission mode: inherit, safe, or full.",
+        help="Set the unified default permission mode for future tasks: inherit, safe, or full.",
     )
 
     doctor = sub.add_parser("doctor", help="Inspect build, configuration, and Runner identity without changing state.")
@@ -103,6 +104,18 @@ def build_parser() -> argparse.ArgumentParser:
     artifacts.add_argument("--remove-artifacts", dest="remove_artifacts", action="store_true")
     artifacts.add_argument("--keep-artifacts", dest="remove_artifacts", action="store_false")
     uninstall.set_defaults(remove_records=None, remove_artifacts=None)
+
+    update = sub.add_parser(
+        "update",
+        help="Check the Alpha channel and confirm a verified in-place update.",
+    )
+    add_task_root(update)
+    update.add_argument("--config", type=Path)
+    update.add_argument(
+        "--bypass",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
 
     init = sub.add_parser("init", help="Initialize the AgentBC runtime record directory.")
     add_task_root(init)
@@ -124,6 +137,25 @@ def build_parser() -> argparse.ArgumentParser:
     retention_sub.add_parser("status", help="Show the effective retention setting.")
     retention_sub.add_parser("enable", help="Retain executor temporary sessions after terminal tasks.")
     retention_sub.add_parser("disable", help="Remove executor temporary sessions after terminal tasks.")
+
+    permissions = sub.add_parser(
+        "permissions",
+        help="Inspect or change the unified AgentBC permission mode.",
+    )
+    permissions_sub = permissions.add_subparsers(dest="permissions_command", required=True)
+    permissions_sub.add_parser(
+        "status",
+        help="Show the effective permission mode, its sources, and the executor mapping.",
+    )
+    permissions_set = permissions_sub.add_parser(
+        "set",
+        help="Set the unified default permission mode for future tasks.",
+    )
+    permissions_set.add_argument(
+        "mode",
+        choices=CANONICAL_PERMISSION_MODES,
+        help="inherit, safe, or full.",
+    )
 
     record = sub.add_parser("record", help="Inspect or clean AgentBC task records.")
     record_sub = record.add_subparsers(dest="record_command", required=True)
@@ -435,6 +467,9 @@ def command_task_create(args: argparse.Namespace) -> int:
         print('path_model_v2_required: use --customer-path "default path" or --customer-path <project-path> instead of --workspace/--output-dir')
         return 1
     try:
+        from .migration import assert_maintenance_command_allowed
+
+        assert_maintenance_command_allowed(_task_service(args.root, config_path), "create")
         customer_dir_hint = (
             _parse_customer_dir(args.customer_dir)
             if getattr(args, "customer_dir", None) is not None
@@ -779,6 +814,14 @@ def command_task_dispatch(args: argparse.Namespace) -> int:
     from .runner import RunnerClient, RunnerError
 
     try:
+        from .migration import assert_maintenance_command_allowed
+
+        assert_maintenance_command_allowed(
+            _task_service(
+                args.root, _optional_path_arg(getattr(args, "config", None))
+            ),
+            "dispatch",
+        )
         result = RunnerClient().dispatch_task(
             args.id,
             args.root,
@@ -1467,13 +1510,127 @@ def command_worker_run(args: argparse.Namespace) -> int:
             executor_started = True
             service.update_execution_metadata(task.id, {"executor_run_id": start.run_id})
 
+            notified_approval_requests: set[str] = set()
+            execution_session: dict[str, Any] | None = None
             while True:
                 poll = executor.poll(start.run_id)
-                if poll.status in ("completed", "cancelled", "input_required", "needs_recovery", "failed", "needs_review"):
-                    break
-                time.sleep(max(args.interval, 0.1))
+                terminal_statuses = {
+                    "completed",
+                    "cancelled",
+                    "input_required",
+                    "needs_recovery",
+                    "failed",
+                    "needs_review",
+                }
+                if poll.status not in terminal_statuses:
+                    time.sleep(max(args.interval, 0.1))
+                    continue
 
-            execution_session = poll.result.get("execution_session")
+                execution_session = poll.result.get("execution_session")
+                if manages_executor_session:
+                    try:
+                        execution_session = service.validate_executor_session_result(
+                            task.id,
+                            start.run_id,
+                            execution_session,
+                        )
+                    except ABCError as exc:
+                        recovery_marked = service.mark_task_needs_recovery(
+                            task.id,
+                            exc.code,
+                            str(exc),
+                            {"executor": args.executor, "phase": "session_receipt"},
+                        )
+                        if recovery_marked:
+                            _write_terminal_report(task.id, service.board_root)
+                            _notify_terminal(
+                                service,
+                                task.id,
+                                "task.recovery_required",
+                                "warning",
+                                str(exc),
+                            )
+                        _request_task_list_refresh(service.board_root)
+                        print(f"worker_error: executor session receipt failed for {task.id}: {exc}")
+                        return 1
+                else:
+                    execution_session = None
+
+                approval_request = poll.result.get("approval_request")
+                is_native_approval = (
+                    poll.status == "input_required"
+                    and isinstance(approval_request, dict)
+                    and approval_request.get("scope") == "single_action"
+                    and bool(str(approval_request.get("request_id") or "").strip())
+                )
+                if is_native_approval:
+                    request_id = str(approval_request.get("request_id") or "").strip()
+                    if request_id not in notified_approval_requests:
+                        try:
+                            blocked = service.block_task_for_approval(
+                                task.id,
+                                executor_run_id=start.run_id,
+                                session_id=str(approval_request.get("session_id") or ""),
+                                request_id=request_id,
+                                request_fingerprint=str(
+                                    approval_request.get("request_fingerprint") or ""
+                                ),
+                                executor=args.executor,
+                                operation=str(
+                                    approval_request.get("operation")
+                                    or approval_request.get("kind")
+                                    or "permission"
+                                ),
+                                summary=str(approval_request.get("summary") or ""),
+                                reason=str(approval_request.get("summary") or ""),
+                                reason_detail=str(approval_request.get("summary") or ""),
+                                execution_session=execution_session,
+                            )
+                        except ABCError as exc:
+                            recovery_marked = service.mark_task_needs_recovery(
+                                task.id,
+                                exc.code,
+                                str(exc),
+                                {
+                                    "executor": args.executor,
+                                    "phase": "native_approval_block",
+                                    "request_id": request_id,
+                                },
+                                executor_run_id=start.run_id,
+                                execution_session=execution_session,
+                            )
+                            if recovery_marked:
+                                _write_terminal_report(task.id, service.board_root)
+                                _notify_terminal(
+                                    service,
+                                    task.id,
+                                    "task.recovery_required",
+                                    "warning",
+                                    str(exc),
+                                )
+                            _request_task_list_refresh(service.board_root)
+                            print(f"worker_error: native approval failed for {task.id}: {exc}")
+                            return 1
+                        notified_approval_requests.add(request_id)
+                        _notify_input_required(
+                            service,
+                            task.id,
+                            config_path=getattr(args, "config", None),
+                            interval_s=getattr(args, "interval", 2),
+                        )
+                        _request_task_list_refresh(service.board_root)
+                        print(
+                            f"input_required: {task.id} "
+                            f"request={blocked.get('request_id', request_id)}"
+                        )
+                    # The App Server thread remains alive while the same native
+                    # request waits.  A dialog or CLI response writes the
+                    # accept/decline decision through Runner; never finalize or
+                    # launch a second worker from this transient poll state.
+                    time.sleep(max(args.interval, 0.1))
+                    continue
+                break
+
             if manages_executor_session:
                 try:
                     execution_session = service.validate_executor_session_result(
@@ -2263,6 +2420,78 @@ def command_executor_setting(executor: str, key: str, value: int | float) -> int
     return 0
 
 
+def command_permissions(action: str, mode: str | None = None) -> int:
+    setting = "permissions.mode"
+    if action == "status":
+        from .permission_registry import permissions_status_payload
+
+        try:
+            config = load_config()
+            errors = validate_config(config)
+            if errors:
+                raise ABCError("config_invalid", "; ".join(errors), {"errors": errors})
+        except (ABCError, OSError, ValueError, TypeError) as exc:
+            _print_config_command_error(exc, setting)
+            return 2
+        payload = permissions_status_payload(config)
+    else:
+        from .permission_modes import configured_permission_mode
+        from .config import apply_permissions_setting
+
+        desired = mode if isinstance(mode, str) else "inherit"
+        previous: str | None = None
+        previous_source = ""
+
+        def mutate(config: dict[str, Any]) -> None:
+            nonlocal previous, previous_source
+            previous, previous_source = configured_permission_mode(config)
+            apply_permissions_setting(config, desired)
+
+        try:
+            _, changed = update_config_atomic(mutate)
+        except (ABCError, OSError, ValueError, TypeError) as exc:
+            _print_config_command_error(exc, setting)
+            return 2
+        payload = {
+            "ok": True,
+            "command": "permissions set",
+            "setting": setting,
+            "previous": previous,
+            "previous_source": previous_source,
+            "value": desired,
+            "changed": changed,
+            "source": "command" if changed else "configured",
+            "scope": "future_tasks",
+            "note": (
+                "Affects newly dispatched root tasks and handoff iterations "
+                "only; active, input_required, needs_recovery tasks and "
+                "same-task resume keep their frozen permission snapshot."
+            ),
+        }
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    return 0
+
+
+def command_update(args: argparse.Namespace) -> int:
+    """Run the supported Alpha update flow or the internal bypass entry."""
+    from .update import manual_bypass_install, run_update_flow
+
+    config_path = _optional_path_arg(getattr(args, "config", None))
+    try:
+        service = _task_service(args.root, config_path)
+        if args.bypass:
+            result = manual_bypass_install(service)
+        else:
+            result = run_update_flow(service)
+    except (ABCError, OSError, ValueError, TypeError) as exc:
+        print(f"update_error: {exc}")
+        return 2
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if args.bypass:
+        return 0
+    return 1 if result.get("state") == "legacy_permission_cutover_blocked" else 0
+
+
 def command_session_retention(action: str) -> int:
     setting = "sessions.retain_executor_sessions"
     if action == "status":
@@ -2403,6 +2632,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "session":
         return command_session_retention(args.retention_command)
 
+    if args.command == "permissions":
+        return command_permissions(args.permissions_command, getattr(args, "mode", None))
+
+    if args.command == "update":
+        return command_update(args)
+
     if args.command == "uninstall":
         from .setup import run_uninstall
 
@@ -2476,12 +2711,14 @@ def main(argv: list[str] | None = None) -> int:
 def _expand_shorthand(argv: list[str]) -> list[str]:
     known_commands = {
         "setup",
+        "update",
         "doctor",
         "uninstall",
         "init",
         "claude",
         "hermes",
         "session",
+        "permissions",
         "record",
         "task",
         "worker",

@@ -4,6 +4,9 @@
 
 Applies to AgentBC **1.0.2A** (Python package `1.0.2a1`).
 
+The current internal development candidate is **1.0.3A** (Python package
+`1.0.3a1`); public installation remains on 1.0.2A.
+
 ## Command Surface
 
 Use `agentbc <group> <command> --help` for the exact options installed by your

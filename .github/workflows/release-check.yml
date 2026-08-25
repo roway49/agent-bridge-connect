@@ -59,6 +59,13 @@ jobs:
       - name: Generate release manifest
         run: python3 scripts/build_provenance.py generate-manifest
 
+      - name: Generate Homebrew formula
+        run: |
+          python3 scripts/generate_homebrew_formula.py \
+            dist/release-manifest.json \
+            --output dist/agentbc.rb
+          ruby -c dist/agentbc.rb
+
       - name: Install wheel
         run: python -m pip install dist/*.whl
 

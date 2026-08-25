@@ -62,7 +62,7 @@ class ExecutorFlowContractTests(unittest.TestCase):
         self, name: str, output: str, *, returncode: int = 0, stderr: str = ""
     ):
         if name == "codex":
-            executor = CodexExecutor(command=sys.executable)
+            executor = CodexExecutor(command=sys.executable, transport="cli")
             stdout = json.dumps(
                 {
                     "type": "item.completed",

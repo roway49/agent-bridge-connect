@@ -37,5 +37,10 @@ shaders/
 work/
 agentbc_tasks/
 
+# Internal development planning; never publish from the public release branch.
+AGENTBC_ALPHA_DEVELOPMENT_HANDBOOK.md
+AGENTBC_1.0.2A_DEVELOPMENT_CHECKLIST.md
+AGENTBC_1.0.3A_DEVELOPMENT_CHECKLIST.md
+
 # Generated at build time — never commit a stale identity.
 _build_info.json

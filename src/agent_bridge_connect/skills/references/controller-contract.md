@@ -37,11 +37,11 @@ resolved executor, and final `--assignee` or `--to` value match.
 
 ## Permission Modes
 
-AgentBC has exactly `inherit`, `safe`, and `full` task permission modes:
+AgentBC accepts exactly `inherit`, `safe`, and `full` task permission selectors:
 
-- `inherit` adds no AgentBC permission, approval, sandbox, safe-mode, or yolo override and preserves the executor's existing user/global settings.
-- `safe` is the conservative task override and preserves established executor approval behavior.
-- `full` is an explicit audited choice for the installed executor's strongest documented noninteractive access. Warn before selecting it.
+- `inherit` is a selection strategy, not a third runtime access level. It adds no AgentBC permission, sandbox, safe-mode, or yolo override and lets the executor's existing policy resolve at runtime, including its native safe, full, or single-action behavior.
+- `safe` is the explicit conservative task base and preserves established executor approval behavior.
+- `full` is the explicit audited non-escalatable task base for the installed executor's strongest documented noninteractive access. Warn before selecting it.
 
 First-time setup defaults to `inherit`; an existing configured default is preserved. Legacy tasks
 that have no persisted permission extension still fail closed to `safe`.
@@ -52,15 +52,23 @@ handoff inherits its source task. Never pass raw executor permission flags or co
 overrides. Legacy tasks fall back to `safe`. Runner canonicalizes long, short, and equals forms and
 fails closed on alternate, duplicate, conflicting, or bypass arguments.
 
-When a `safe` task hits a step that genuinely needs `full`, the executor stops with
-`input_required`, `input.type=permission`, `requested_permission=full`, and the blocked step
-declared. The user approves or denies through the existing dialog or
+Approval eligibility is decided by a trusted runtime permission-block event, not by matching the
+task selector to `safe`. An `inherit` or `safe` task may therefore stop with `input_required` when
+its executor transport reports a genuinely blocked declared action. Do not synthesize a permission
+request merely from the configured selector, ordinary stderr, or executor exit status. A native
+single-action transport binds the decision to the exact task, run, session, request, and fingerprint
+and resumes that same live session without changing the frozen task base.
+
+Where the current compatibility path explicitly requests the bounded `full` fallback, the input has
+`input.type=permission`, `requested_permission=full`, and exactly one blocked declared step. The user
+approves or denies through the existing dialog or
 `agentbc task respond <task-id> --input <input-id> --approve|--deny`; a one-time `full` grant is
 issued for the next same-session continuation only. It is consumed when that run is authorized;
 an unused grant is revoked on terminal, recovery, reassignment, or other invalidating paths. A
 permission dialog has exactly Approve and Deny, collects no text, defaults to Deny, and automatically
-denies on timeout or close. A `full` task does not ask; plain message/choice text and native executor
-flags never escalate permissions. AgentBC never treats approval prose as a valid completion marker.
+denies on timeout or close. A concrete `full` task base does not ask because no broader AgentBC
+permission exists; plain message/choice text and native executor flags never escalate permissions.
+AgentBC never treats approval prose as a valid completion marker.
 
 ## Steps Contract
 

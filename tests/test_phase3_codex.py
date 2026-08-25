@@ -28,7 +28,7 @@ class CodexSessionCommandTests(unittest.TestCase):
         self.root = Path(self.temporary.name).resolve()
         self.image = self.root / "input.png"
         self.image.write_bytes(b"fixture")
-        self.executor = CodexExecutor(command=sys.executable)
+        self.executor = CodexExecutor(command=sys.executable, transport="cli")
 
     def _packet(self, *, session_id: str = "", run_ids: list[str] | None = None) -> dict:
         session = build_session_snapshot(
@@ -145,7 +145,7 @@ class CodexSessionReceiptTests(unittest.TestCase):
         session_id = self.fixture["thread_id"]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
-            executor = CodexExecutor(command=sys.executable)
+            executor = CodexExecutor(command=sys.executable, transport="cli")
             for resumed in (False, True):
                 with self.subTest(resumed=resumed):
                     session = build_session_snapshot(

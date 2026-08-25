@@ -708,6 +708,9 @@ class SetupModeTests(unittest.TestCase):
                  mock.patch.object(setup, "install_hermes_skill", return_value=hermes_result) as install_hermes, \
                  mock.patch.object(setup, "install_claude_skill", return_value=claude_result) as install_claude, \
                  mock.patch.object(setup, "_configure_alias", return_value={"status": "skipped"}), \
+                 mock.patch.object(setup, "_select_claude_budget", return_value=(10.0, True, "test_default")), \
+                 mock.patch.object(setup, "_select_hermes_max_turns", return_value=(60, True, "test_default")), \
+                 mock.patch.object(setup, "_select_session_retention", return_value=(False, True, "test_default")), \
                  mock.patch.object(setup, "discover_codex", return_value={"found": False}), \
                  mock.patch.object(setup, "probe_codex", return_value={}):
                 result = setup.run_setup(interactive=True, permission_mode="safe")

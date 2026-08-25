@@ -16,7 +16,7 @@ BUILTIN_EXECUTORS = {
 BUILTIN_EXECUTOR_RUNTIME_KEYS = {
     "mock": frozenset(),
     "shell": frozenset(),
-    "codex": frozenset({"timeout_s", "command"}),
+    "codex": frozenset({"timeout_s", "command", "transport", "approval_timeout_s"}),
     "hermes": frozenset(
         {
             "timeout_s",
@@ -97,6 +97,20 @@ def get_executor(name: str, config: dict | None = None) -> ExecutorPort:
         joined = ", ".join(unknown_keys)
         raise ValueError(f"Unsupported {name} executor config: {joined}")
     runtime_config = {key: raw_config[key] for key in runtime_keys if key in raw_config}
+    if name == "codex" and "transport" in runtime_config:
+        from .codex_app_server import (
+            CODEX_APP_SERVER_TRANSPORT,
+            CODEX_APP_SERVER_TRANSPORT_ALIASES,
+        )
+
+        transport = str(runtime_config["transport"]).strip().lower()
+        if transport not in CODEX_APP_SERVER_TRANSPORT_ALIASES | {"auto", "cli", "direct"}:
+            raise ValueError(
+                f"Unsupported codex executor config transport: {runtime_config['transport']}"
+            )
+        # Canonicalize the App Server transport for capability gating.
+        if transport in CODEX_APP_SERVER_TRANSPORT_ALIASES:
+            runtime_config["transport"] = CODEX_APP_SERVER_TRANSPORT
     executor = executor_class(**runtime_config)
     if not isinstance(executor, ExecutorPort):
         raise TypeError(f"Executor does not implement ExecutorPort: {name}")

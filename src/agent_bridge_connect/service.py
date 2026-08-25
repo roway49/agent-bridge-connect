@@ -9,6 +9,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .approval import (
+    APPROVAL_EXTENSION_KEY,
+    APPROVAL_SCOPE,
+    approval_public_projection,
+    build_approval_receipt,
+    normalize_reason_summary,
+    record_approval_decision,
+    sanitize_reason_detail,
+    validate_approval_receipt,
+)
 from .config import DEFAULT_BOARD_ROOT, get_executor_config, init_board
 from .execution_contract import validate_callback_payload
 from .execution_policy import (
@@ -27,6 +37,12 @@ from .execution_policy import (
     validate_resource_snapshot,
     validate_session_snapshot,
 )
+from .migration import (
+    assert_legacy_cutover_clear,
+    assert_maintenance_command_allowed,
+    legacy_permission_cutover_blocked,
+    maintenance_mode_view,
+)
 from .executor_registry import get_executor
 from .media import media_extension, normalize_image_inputs, task_image_paths
 from .path_model import build_path_plan, validate_path_plan_workspace
@@ -35,11 +51,32 @@ from .permission_grants import (
     build_permission_grant,
     revoke_permission_grant as revoke_grant_contract,
 )
+from .permission_failures import (
+    PERMISSION_BLOCKED_STEP_CARDINALITY_INVALID,
+    PERMISSION_CHAIN_HEAD_AMBIGUOUS,
+    PERMISSION_CHAIN_HEAD_STALE,
+    PERMISSION_EXECUTOR_SESSION_MISMATCH,
+    PERMISSION_EXECUTOR_SESSION_RUN_MISMATCH,
+    PERMISSION_INPUT_INVALID,
+    PERMISSION_MODE_UNSUPPORTED,
+    PERMISSION_REQUESTED_SCOPE_INVALID,
+    PERMISSION_RESUME_SESSION_MISSING,
+    PERMISSION_RUN_LEASE_INVALID,
+    PERMISSION_RUN_LEASE_RUN_MISMATCH,
+    PERMISSION_SESSION_RECEIPT_INVALID,
+    PERMISSION_SESSION_RECEIPT_MISSING,
+    PERMISSION_SESSION_SNAPSHOT_INVALID,
+    PERMISSION_SESSION_STATE_STALE,
+    PERMISSION_WAIT_COMPATIBILITY_CODE,
+    PermissionWaitFailure,
+    permission_wait_failure,
+)
 from .permission_modes import (
     PERMISSION_EXTENSION_KEY,
     assert_executor_permission_supported,
     build_permission_record,
     permission_record_from_extensions,
+    permission_runtime_policy,
 )
 from .protocol import ABCError, PreflightResult, TaskModel, task_step_text
 from .schema import validate_task
@@ -74,6 +111,7 @@ HANDOFF_SOURCE_STATUSES = {"completed"}
 DELETE_ELIGIBLE_STATUSES = {"completed", "failed", "cancelled", "rejected"}
 DEFAULT_INPUT_WAIT_SECONDS = 24 * 60 * 60
 PERMISSION_DIALOG_TIMEOUT_RESPONSE = "agentbc_permission_dialog_timeout"
+PERMISSION_DIALOG_CLOSED_RESPONSE = "agentbc_permission_dialog_closed"
 
 
 @dataclass(frozen=True)
@@ -122,6 +160,7 @@ class TaskService:
         permission_mode: str | None = None,
         inherited_permission: dict[str, Any] | None = None,
     ) -> TaskModel:
+        assert_maintenance_command_allowed(self, "create")
         title = title.strip()
         assignee = _normalize_executor_ref(
             assignee,
@@ -475,6 +514,7 @@ class TaskService:
     def start_task_run(self, task_id: str, executor_id: str) -> str:
         from .task_health import write_task_progress
 
+        assert_maintenance_command_allowed(self, "dispatch")
         task = self.get_task(task_id)
         validate_path_plan_workspace(task.workspace or {})
         execution = dict((task.extensions or {}).get("agentbc.execution") or {})
@@ -704,8 +744,28 @@ class TaskService:
         task_id = task.id
         if _has_close_intent(task):
             return False
+        raw_input_details = (
+            dict(callback.get("input"))
+            if isinstance(callback, dict) and isinstance(callback.get("input"), dict)
+            else None
+        )
         validation = validate_callback_payload(callback, task_id, task.steps)
         if not validation.valid or validation.callback is None:
+            permission_failure = self._permission_wait_failure_for_callback_validation(
+                callback,
+                validation.code,
+            )
+            if permission_failure is not None:
+                executor_run_id = (
+                    str(callback.get("executor_run_id") or "")
+                    if isinstance(callback, dict)
+                    else ""
+                )
+                return self._fail_closed_permission_wait(
+                    task,
+                    executor_run_id,
+                    failure=permission_failure,
+                )
             raise ABCError(validation.code or "completion_marker_invalid", validation.message)
         callback = validation.callback
         final_state = str(callback["final_state"])
@@ -721,10 +781,10 @@ class TaskService:
         if not summary:
             raise ABCError("invalid_agent_callback", "Agent callback summary is required")
         if final_state == "input_required":
-            raw_input_details = callback.get("input")
+            validated_input_details = callback.get("input")
             input_type = (
-                str(raw_input_details.get("type") or "").strip().lower()
-                if isinstance(raw_input_details, dict)
+                str(validated_input_details.get("type") or "").strip().lower()
+                if isinstance(validated_input_details, dict)
                 else ""
             )
             if input_type == "permission":
@@ -732,7 +792,7 @@ class TaskService:
                     return self._fail_closed_permission_wait(
                         task,
                         str(callback.get("executor_run_id") or ""),
-                        details={"reason": "executor session receipt is missing"},
+                        failure=permission_wait_failure(PERMISSION_SESSION_RECEIPT_MISSING),
                     )
                 try:
                     self._apply_executor_session_result(
@@ -741,11 +801,15 @@ class TaskService:
                         execution_session,
                         "input_required",
                     )
-                except ABCError:
+                except ABCError as exc:
                     return self._fail_closed_permission_wait(
                         task,
                         str(callback.get("executor_run_id") or ""),
-                        details={"reason": "executor session receipt is malformed or mismatched"},
+                        failure=self._permission_wait_failure_for_session_error(
+                            task,
+                            str(callback.get("executor_run_id") or ""),
+                            exc,
+                        ),
                     )
             elif execution_session is not None:
                 self._apply_executor_session_result(
@@ -754,7 +818,12 @@ class TaskService:
                     execution_session,
                     "input_required",
                 )
-            return self._suspend_task_for_input(task, callback, summary)
+            return self._suspend_task_for_input(
+                task,
+                callback,
+                summary,
+                raw_input_details=raw_input_details,
+            )
         if not report_file:
             raise ABCError("invalid_agent_callback", "Agent callback report_file is required")
         existing_callback = (task.extensions or {}).get("agentbc.final_callback")
@@ -962,63 +1031,298 @@ class TaskService:
         current.updated_at = _utc_now()
         self.store.write_task(task_id, _without_none(current.to_dict()))
 
+    def _approval_receipt_for_response(
+        self,
+        task: TaskModel,
+        extensions: dict[str, Any],
+        request: dict[str, Any],
+        input_id: str,
+    ) -> dict[str, Any]:
+        """Return the durable approval receipt bound to a responding input."""
+        if APPROVAL_EXTENSION_KEY not in extensions:
+            raise ABCError(
+                "permission_input_invalid",
+                "Approval input is missing the persisted agentbc.approval receipt",
+            )
+        session_id = str(
+            (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
+        )
+        if not session_id:
+            raise ABCError(
+                "permission_input_invalid",
+                "Approval input is missing the authoritative executor session",
+            )
+        return validate_approval_receipt(
+            extensions[APPROVAL_EXTENSION_KEY],
+            executor=task.assignee,
+            task_id=task.id,
+            session_id=session_id,
+            request_id=str(request.get("request_id") or ""),
+        )
+
+    def _permission_wait_failure_for_callback_validation(
+        self,
+        callback: Any,
+        validation_code: str,
+    ) -> PermissionWaitFailure | None:
+        """Project permission-specific callback validation into the recovery taxonomy."""
+        if not isinstance(callback, dict):
+            return None
+        if str(callback.get("final_state") or "").strip().lower() != "input_required":
+            return None
+        input_details = callback.get("input")
+        if not isinstance(input_details, dict):
+            return None
+        if str(input_details.get("type") or "").strip().lower() != "permission":
+            return None
+
+        if validation_code in {
+            "completion_marker_input_step_missing",
+            "completion_marker_permission_step_invalid",
+        }:
+            return permission_wait_failure(PERMISSION_BLOCKED_STEP_CARDINALITY_INVALID)
+        if validation_code == "completion_marker_permission_request_invalid":
+            return permission_wait_failure(PERMISSION_REQUESTED_SCOPE_INVALID)
+        if validation_code in {
+            "completion_marker_permission_reason_invalid",
+            "completion_marker_permission_native_flags_invalid",
+            "completion_marker_steps_invalid",
+            "completion_marker_step_duplicate",
+            "completion_marker_step_unknown",
+            "completion_marker_step_status_invalid",
+        }:
+            return permission_wait_failure(PERMISSION_INPUT_INVALID)
+        return None
+
+    def _permission_wait_failure_for_session_error(
+        self,
+        task: TaskModel,
+        executor_run_id: str,
+        error: ABCError,
+    ) -> PermissionWaitFailure:
+        """Map adapter/session validation errors without persisting their raw text."""
+        error_details = error.details if isinstance(error.details, dict) else {}
+        raw_errors = error_details.get("errors")
+        validation_errors = (
+            [str(item) for item in raw_errors if isinstance(item, str)]
+            if isinstance(raw_errors, list)
+            else []
+        )
+        if any("executor does not match" in item for item in validation_errors):
+            return permission_wait_failure(
+                PERMISSION_EXECUTOR_SESSION_MISMATCH,
+                executor=task.assignee,
+            )
+        if error.code == "executor_session_receipt_invalid":
+            return permission_wait_failure(
+                PERMISSION_SESSION_RECEIPT_INVALID,
+                receipt_state="invalid",
+                executor=task.assignee,
+            )
+        if error.code in {"executor_session_run_mismatch", "executor_session_resume_mismatch"}:
+            return permission_wait_failure(
+                PERMISSION_EXECUTOR_SESSION_RUN_MISMATCH,
+                executor=task.assignee,
+                run_id_present=bool(str(executor_run_id or "").strip()),
+            )
+        if error.code == "executor_session_id_mismatch":
+            return permission_wait_failure(
+                PERMISSION_EXECUTOR_SESSION_MISMATCH,
+                executor=task.assignee,
+                session_id_present=True,
+            )
+        if error.code == "executor_session_invalid":
+            session = (task.extensions or {}).get(SESSION_EXTENSION_KEY)
+            if not isinstance(session, dict):
+                return permission_wait_failure(PERMISSION_RESUME_SESSION_MISSING)
+            session_id_present = bool(str(session.get("session_id") or "").strip())
+            if not session_id_present:
+                return permission_wait_failure(
+                    PERMISSION_RESUME_SESSION_MISSING,
+                    session_id_present=False,
+                )
+            return permission_wait_failure(PERMISSION_SESSION_SNAPSHOT_INVALID)
+        # The only remaining session failure at this gate is a malformed or
+        # otherwise unusable receipt.  The receipt is deliberately not echoed.
+        return permission_wait_failure(
+            PERMISSION_SESSION_RECEIPT_INVALID,
+            receipt_state="invalid",
+            executor=task.assignee,
+        )
+
     def _permission_wait_contract_failure(
         self,
         task: TaskModel,
         callback: dict[str, Any],
         executor_run_id: str,
         blocked_results: list[dict[str, Any]],
-    ) -> str | None:
-        """Return ``permission_resume_session_unavailable`` when no wait may be created.
+    ) -> PermissionWaitFailure | None:
+        """Return one stable reason when a permission wait cannot be persisted.
 
         The wait is executor-neutral for codex, claude and hermes.  A permission
-        request may only be persisted when the base task permission is safe, the
-        executor asked for full, exactly one declared step is blocked, the task is
-        the unique current chain head, a suspended/closed RunLease matches the run,
-        and the authoritative ``agentbc.session`` snapshot carries a non-empty
-        session id whose latest run entry is the callback run.
+        request may only be persisted after a trusted runtime block. ``inherit``
+        is a selection strategy and remains approval-capable; a concrete full
+        base is the only non-escalatable state. The executor must ask for full,
+        exactly one declared step must be blocked, the task must be the unique
+        current chain head, the RunLease must match, and the authoritative
+        session snapshot must bind the latest run.
         """
         from .run_lease import RunLeaseState, load_lease
 
         try:
             permission = permission_record_from_extensions(task.extensions)
-        except ABCError:
-            return "permission_resume_session_unavailable"
-        if permission["effective_mode"] != "safe":
-            return "permission_resume_session_unavailable"
-        raw_input = callback.get("input")
+        except ABCError as error:
+            if error.code == "unsupported_permission_mode":
+                raw_permission = (task.extensions or {}).get(PERMISSION_EXTENSION_KEY)
+                if isinstance(raw_permission, dict):
+                    raw_version = raw_permission.get("version")
+                    requested = str(raw_permission.get("requested_mode") or "").strip().lower()
+                    effective = str(raw_permission.get("effective_mode") or "").strip().lower()
+                    if (
+                        raw_version is not None
+                        and raw_version != 2
+                    ) or (
+                        requested
+                        and effective
+                        and requested != effective
+                    ):
+                        return permission_wait_failure(
+                            PERMISSION_INPUT_INVALID,
+                            field="permission",
+                        )
+                effective = (
+                    str(raw_permission.get("effective_mode") or "").strip().lower()
+                    if isinstance(raw_permission, dict)
+                    else ""
+                )
+                return permission_wait_failure(
+                    PERMISSION_MODE_UNSUPPORTED,
+                    effective_mode=effective,
+                )
+            return permission_wait_failure(PERMISSION_INPUT_INVALID, field="permission")
+        except (TypeError, ValueError):
+            return permission_wait_failure(PERMISSION_INPUT_INVALID, field="permission")
+        if not isinstance(permission, dict):
+            return permission_wait_failure(PERMISSION_INPUT_INVALID, field="permission")
+        runtime_policy = permission_runtime_policy(permission)
+        if runtime_policy["approval_on_block"] is not True:
+            return permission_wait_failure(
+                PERMISSION_MODE_UNSUPPORTED,
+                effective_mode=str(permission.get("effective_mode") or ""),
+            )
+
+        raw_input = callback.get("input") if isinstance(callback, dict) else None
         if not isinstance(raw_input, dict):
-            return "permission_resume_session_unavailable"
-        if str(raw_input.get("requested_permission") or "").strip().lower() != "full":
-            return "permission_resume_session_unavailable"
-        if len(blocked_results) != 1:
-            return "permission_resume_session_unavailable"
-        chain = self.resolve_chain(task.id)
-        if not chain.requested_is_head or len(chain.head_task_ids) != 1:
-            return "permission_resume_session_unavailable"
+            return permission_wait_failure(PERMISSION_INPUT_INVALID, field="input")
+        if str(raw_input.get("type") or "").strip().lower() != "permission":
+            return permission_wait_failure(PERMISSION_INPUT_INVALID, field="input_type")
+        requested_permission = raw_input.get("requested_permission")
+        if (
+            not isinstance(requested_permission, str)
+            or requested_permission.strip().lower() != "full"
+        ):
+            return permission_wait_failure(PERMISSION_REQUESTED_SCOPE_INVALID)
+        reason = raw_input.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            return permission_wait_failure(PERMISSION_INPUT_INVALID, field="reason")
+        if any(
+            field in raw_input
+            for field in ("argv", "command", "executor_flags", "flags", "native_executor_flags")
+        ):
+            return permission_wait_failure(PERMISSION_INPUT_INVALID, field="native_flags")
+        if len(blocked_results) != 1 or _safe_blocked_step_id(blocked_results) is None:
+            return permission_wait_failure(
+                PERMISSION_BLOCKED_STEP_CARDINALITY_INVALID,
+                blocked_step_count=len(blocked_results),
+            )
+
+        try:
+            chain = self.resolve_chain(task.id)
+        except ABCError:
+            return permission_wait_failure(
+                PERMISSION_CHAIN_HEAD_AMBIGUOUS,
+                chain_state="unresolvable",
+            )
+        if chain.anomalies or len(chain.head_task_ids) != 1:
+            return permission_wait_failure(
+                PERMISSION_CHAIN_HEAD_AMBIGUOUS,
+                chain_state="ambiguous",
+                head_count=len(chain.head_task_ids),
+            )
+        if not chain.requested_is_head:
+            return permission_wait_failure(
+                PERMISSION_CHAIN_HEAD_STALE,
+                chain_state="stale",
+            )
+
         normalized_run_id = str(executor_run_id or "").strip()
-        lease = load_lease(task.id, self.board_root)
-        if lease is None or lease.state not in {
+        try:
+            lease = load_lease(task.id, self.board_root)
+            lease_state = (
+                str(getattr(lease, "state", "") or "").strip().lower()
+                if lease is not None
+                else ""
+            )
+        except (AttributeError, KeyError, OSError, TypeError, ValueError):
+            return permission_wait_failure(
+                PERMISSION_RUN_LEASE_INVALID,
+                lease_state="invalid",
+            )
+        if lease is None or lease_state not in {
             RunLeaseState.SUSPENDED,
             RunLeaseState.CLOSED,
         }:
-            return "permission_resume_session_unavailable"
-        if str(lease.run_id or "").strip() != normalized_run_id:
-            return "permission_resume_session_unavailable"
+            return permission_wait_failure(
+                PERMISSION_RUN_LEASE_INVALID,
+                lease_state=lease_state or "missing",
+            )
+        if (
+            str(getattr(lease, "task_id", "") or "") != task.id
+            or str(getattr(lease, "executor_id", "") or "").strip().lower()
+            != str(task.assignee or "").strip().lower()
+        ):
+            return permission_wait_failure(
+                PERMISSION_RUN_LEASE_INVALID,
+                lease_state=lease_state,
+                executor=task.assignee,
+            )
+        if str(getattr(lease, "run_id", "") or "").strip() != normalized_run_id:
+            return permission_wait_failure(
+                PERMISSION_RUN_LEASE_RUN_MISMATCH,
+                run_id_present=bool(normalized_run_id),
+            )
+
         session = (task.extensions or {}).get(SESSION_EXTENSION_KEY)
+        if not isinstance(session, dict):
+            return permission_wait_failure(PERMISSION_RESUME_SESSION_MISSING)
+        session_state = str(session.get("session_state") or "").strip().lower()
+        if session_state not in {"pending", "active", "input_required", "needs_recovery", "terminal"}:
+            return permission_wait_failure(PERMISSION_SESSION_SNAPSHOT_INVALID)
+        if session_state != "input_required":
+            return permission_wait_failure(
+                PERMISSION_SESSION_STATE_STALE,
+                session_state=session_state,
+            )
+        session_id_present = bool(str(session.get("session_id") or "").strip())
+        if not session_id_present:
+            return permission_wait_failure(
+                PERMISSION_RESUME_SESSION_MISSING,
+                session_id_present=False,
+            )
         session_errors = validate_session_snapshot(session, executor=task.assignee)
         if session_errors:
-            return "permission_resume_session_unavailable"
-        if not str(session.get("session_id") or "").strip():
-            return "permission_resume_session_unavailable"
-        run_ids = list(session.get("run_ids") or [])
-        if not run_ids or run_ids[-1] != normalized_run_id:
-            return "permission_resume_session_unavailable"
-        # The current result must have just emitted a valid receipt: the session
-        # must have been advanced to input_required, never a stale snapshot that
-        # happens to carry an earlier session id/run history.
-        if str(session.get("session_state") or "").strip() != "input_required":
-            return "permission_resume_session_unavailable"
+            return permission_wait_failure(PERMISSION_SESSION_SNAPSHOT_INVALID)
+        run_ids = session.get("run_ids")
+        if not isinstance(run_ids, list) or not run_ids:
+            return permission_wait_failure(
+                PERMISSION_RESUME_SESSION_MISSING,
+                run_id_present=False,
+            )
+        if run_ids[-1] != normalized_run_id:
+            return permission_wait_failure(
+                PERMISSION_EXECUTOR_SESSION_RUN_MISMATCH,
+                run_id_present=True,
+            )
         return None
 
     def _fail_closed_permission_wait(
@@ -1026,19 +1330,35 @@ class TaskService:
         task: TaskModel,
         executor_run_id: str,
         *,
-        details: dict[str, Any] | None = None,
+        failure: PermissionWaitFailure,
+        blocked_step_id: int | None = None,
     ) -> bool:
         """Convert an unblockable permission wait into a recoverable terminal."""
-        merged_details = {"input_type": "permission"}
-        if details:
-            merged_details.update(details)
-        merged_details["executor_run_id"] = str(executor_run_id or "")
+        current = self.get_task(task.id)
+        if _normalize_status(current.status) == "needs_recovery":
+            latest_error = (current.errors or [])[-1] if current.errors else {}
+            latest_details = (
+                latest_error.get("details")
+                if isinstance(latest_error, dict)
+                and isinstance(latest_error.get("details"), dict)
+                else {}
+            )
+            if (
+                isinstance(latest_error, dict)
+                and latest_error.get("code") == PERMISSION_WAIT_COMPATIBILITY_CODE
+                and latest_details.get("reason_code") == failure.reason_code
+            ):
+                return False
+        merged_details = failure.to_details(
+            executor_run_id=executor_run_id,
+            blocked_step_id=blocked_step_id,
+        )
         return self.mark_task_needs_recovery(
             task.id,
-            "permission_resume_session_unavailable",
+            PERMISSION_WAIT_COMPATIBILITY_CODE,
             (
-                "Permission wait cannot be created safely; the official executor "
-                "session receipt is unavailable"
+                "Permission wait cannot be created safely; task requires recovery "
+                f"(reason: {failure.reason_code})"
             ),
             merged_details,
             executor_run_id=executor_run_id,
@@ -1049,6 +1369,8 @@ class TaskService:
         task: TaskModel,
         callback: dict[str, Any],
         summary: str,
+        *,
+        raw_input_details: dict[str, Any] | None = None,
     ) -> bool:
         """Persist one actionable wait without creating terminal artifacts."""
         from .reports import redact_secrets
@@ -1067,9 +1389,13 @@ class TaskService:
             for item in callback.get("step_results") or []
             if isinstance(item, dict) and item.get("status") == "blocked"
         ]
-        blocked_step_id = int(blocked_results[0]["id"])
-        raw_input_details = callback.get("input")
-        input_details = raw_input_details if isinstance(raw_input_details, dict) else {}
+        blocked_step_id = _safe_blocked_step_id(blocked_results)
+        validated_input_details = callback.get("input")
+        input_details = (
+            validated_input_details
+            if isinstance(validated_input_details, dict)
+            else {}
+        )
         input_type = str(input_details.get("type") or "message").strip().lower() or "message"
         input_choices = (
             [dict(option) for option in input_details.get("options", []) if isinstance(option, dict)]
@@ -1088,26 +1414,82 @@ class TaskService:
         ).isoformat().replace("+00:00", "Z")
         executor_run_id = str(callback.get("executor_run_id") or "")
         if input_type == "permission":
-            failure_code = self._permission_wait_contract_failure(
+            failure = self._permission_wait_contract_failure(
                 task,
                 callback,
                 executor_run_id,
                 blocked_results,
             )
-            if failure_code is not None:
+            if failure is not None:
                 return self._fail_closed_permission_wait(
                     task,
                     executor_run_id,
-                    details={"blocked_step_id": blocked_step_id},
+                    failure=failure,
+                    blocked_step_id=blocked_step_id,
                 )
+        if blocked_step_id is None:
+            raise ABCError(
+                "completion_marker_input_step_missing",
+                "Input marker must identify one valid blocked step",
+            )
         self.revoke_permission_grant(task.id, "input_superseded", model=task)
         extensions = dict(task.extensions or {})
+        is_full_fallback_permission = input_type == "permission" and not (
+            input_details.get("scope") == APPROVAL_SCOPE
+            and bool(str(input_details.get("request_id") or "").strip())
+        )
+        fallback_reason_summary = ""
+        fallback_summary_truncated = False
+        fallback_reason_detail = ""
+        if is_full_fallback_permission:
+            from .approval import normalize_reason_summary_details
+
+            # The validated callback keeps the compatibility reason bounded to
+            # 240 characters.  A detail may only come from this current
+            # structured callback, never from input history, logs or executor
+            # session storage.  Sanitization is fail-closed for private paths,
+            # argv, raw output and credential-bearing material.
+            raw_reason = str(
+                (raw_input_details or {}).get("reason") or input_reason
+            ).strip()
+            raw_detail_marker = (raw_input_details or {}).get("reason_detail")
+            if raw_detail_marker is not None:
+                fallback_reason_detail = sanitize_reason_detail(raw_detail_marker)
+            elif raw_reason and not (
+                len(raw_reason) == 240 and raw_reason.endswith("…")
+            ):
+                fallback_reason_detail = sanitize_reason_detail(raw_reason)
+
+            summary_source = input_reason or raw_reason
+            if summary_source and sanitize_reason_detail(summary_source):
+                (
+                    fallback_reason_summary,
+                    fallback_summary_truncated,
+                ) = normalize_reason_summary_details(
+                    summary_source,
+                    executor=task.assignee,
+                    operation="full permission",
+                )
+            else:
+                from .approval import core_bounded_summary_details
+
+                (
+                    fallback_reason_summary,
+                    fallback_summary_truncated,
+                ) = core_bounded_summary_details(
+                    executor=task.assignee,
+                    operation="full permission",
+                )
         request: dict[str, Any] = {
             "input_id": f"input-{uuid.uuid4().hex}",
             "executor_run_id": executor_run_id,
             "blocked_step_id": blocked_step_id,
             "type": input_type,
-            "summary": str(redact_secrets(summary)),
+            "summary": (
+                fallback_reason_summary
+                if is_full_fallback_permission
+                else str(redact_secrets(summary))
+            ),
             "created_at": created_at,
             "deadline_at": deadline_at,
             "status": "waiting",
@@ -1115,7 +1497,16 @@ class TaskService:
         if requested_permission:
             request["requested_permission"] = str(redact_secrets(requested_permission))
         if input_reason:
-            request["reason"] = str(redact_secrets(input_reason))
+            request["reason"] = (
+                fallback_reason_summary
+                if is_full_fallback_permission
+                else str(redact_secrets(input_reason))
+            )
+        if is_full_fallback_permission:
+            request["reason_summary"] = fallback_reason_summary
+            request["summary_truncated"] = fallback_summary_truncated
+            if fallback_reason_detail:
+                request["reason_detail"] = fallback_reason_detail
         if input_choices:
             request["options"] = [
                 str(redact_secrets(str(option.get("label") or "").strip()))
@@ -1368,6 +1759,251 @@ class TaskService:
             "exhaustion_count": resources["exhaustion_count"],
         }
 
+    def block_task_for_approval(
+        self,
+        task_id: str,
+        *,
+        executor_run_id: str,
+        session_id: str,
+        request_id: str,
+        request_fingerprint: str,
+        executor: str,
+        operation: str,
+        summary: str = "",
+        reason: str = "",
+        reason_detail: str = "",
+        blocked_step_id: int | None = None,
+        execution_session: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Block the first incomplete step for one structured native approval request.
+
+        Core entry for the ``PERM-103-003`` approval flow.  The caller supplies
+        the executor-neutral ``agentbc.approval`` v1 binding facts; Core builds a
+        bounded summary, persists the approval receipt under
+        ``agentbc.approval``, and creates an ``input_required(type=permission)``
+        request that only Approve / Deny can answer through
+        :func:`notify_input_required`.  The optional ``reason`` is normalized to
+        a Core single-line ``reason_summary`` (at most 120 characters) and the
+        optional ``reason_detail`` is persisted only after redaction,
+        control-character removal and a 2000-character bound.  No safe-to-full
+        grant is issued and the task ``effective_mode`` is never changed.
+        """
+        from .approval import (
+            APPROVAL_SCOPE,
+            compute_request_fingerprint,
+            core_bounded_summary,
+            new_request_id,
+        )
+        from .reports import redact_secrets
+        from .run_lease import suspend_lease
+        from .task_health import clear_task_progress
+
+        task = self.get_task(task_id)
+        task_id = task.id
+        if execution_session is not None:
+            self._apply_executor_session_result(
+                task,
+                executor_run_id,
+                execution_session,
+                "input_required",
+            )
+        chain = self.resolve_chain(task_id)
+        if not chain.requested_is_head or len(chain.head_task_ids) != 1:
+            raise ABCError(
+                "approval_stale_chain",
+                "Approval request must target the current unique chain head",
+                chain.to_dict(),
+            )
+        normalized_executor = str(executor or "").strip().lower()
+        if normalized_executor != str(task.assignee or "").strip().lower():
+            raise ABCError(
+                "approval_executor_mismatch",
+                "Approval request executor does not match the task assignee",
+            )
+        normalized_run_id = str(executor_run_id or "").strip()
+        if not normalized_run_id:
+            raise ABCError(
+                "approval_run_missing",
+                "Approval request requires the authoritative executor run id",
+            )
+        session = (task.extensions or {}).get(SESSION_EXTENSION_KEY)
+        session_errors = validate_session_snapshot(session, executor=task.assignee)
+        if session_errors:
+            raise ABCError("approval_session_invalid", "; ".join(session_errors), {"errors": session_errors})
+        official_session_id = str(session.get("session_id") or "").strip()
+        if not official_session_id or official_session_id != str(session_id or "").strip():
+            raise ABCError(
+                "approval_session_mismatch",
+                "Approval request does not match the official executor session",
+            )
+        run_ids = list(session.get("run_ids") or [])
+        if not run_ids or run_ids[-1] != normalized_run_id:
+            raise ABCError(
+                "approval_run_mismatch",
+                "Approval request does not match the latest executor run",
+            )
+
+        clean_request_id = str(request_id or "").strip()
+        if not clean_request_id:
+            clean_request_id = new_request_id()
+        clean_fingerprint = str(request_fingerprint or "").strip()
+        if not clean_fingerprint:
+            clean_fingerprint = compute_request_fingerprint(
+                executor=normalized_executor,
+                session_id=official_session_id,
+                tool_name=operation,
+            )
+        clean_operation = str(operation or "").strip()
+        if not clean_operation:
+            raise ABCError("approval_operation_invalid", "Approval request requires an operation")
+        clean_summary = str(summary or "").strip()
+        if not clean_summary:
+            clean_summary = core_bounded_summary(
+                executor=normalized_executor,
+                operation=clean_operation,
+            )
+        clean_reason_summary = normalize_reason_summary(
+            reason,
+            executor=normalized_executor,
+            operation=clean_operation,
+        )
+        clean_reason_detail = sanitize_reason_detail(reason_detail)
+
+        receipt = build_approval_receipt(
+            task_id=task_id,
+            executor_run_id=normalized_run_id,
+            executor=normalized_executor,
+            session_id=official_session_id,
+            request_id=clean_request_id,
+            request_fingerprint=clean_fingerprint,
+            kind="permission",
+            operation=clean_operation,
+            summary=str(redact_secrets(clean_summary)),
+            reason_summary=clean_reason_summary,
+            reason_detail=clean_reason_detail,
+            scope=APPROVAL_SCOPE,
+        )
+
+        step_id = blocked_step_id or _first_incomplete_step_id(task.steps)
+        if step_id is None:
+            raise ABCError(
+                "approval_no_step",
+                "Approval request cannot be created: no incomplete step exists",
+            )
+
+        now = _utc_now()
+        deadline_at = (
+            _parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)
+        ).isoformat().replace("+00:00", "Z")
+        request: dict[str, Any] = {
+            "input_id": f"input-{uuid.uuid4().hex}",
+            "executor_run_id": normalized_run_id,
+            "blocked_step_id": step_id,
+            "type": "permission",
+            "scope": APPROVAL_SCOPE,
+            "request_id": clean_request_id,
+            "request_fingerprint": clean_fingerprint,
+            "operation": clean_operation,
+            "summary": receipt["summary"],
+            "reason_summary": clean_reason_summary,
+            "summary_truncated": bool(receipt.get("summary_truncated", False)),
+            "created_at": now,
+            "deadline_at": deadline_at,
+            "status": "waiting",
+        }
+
+        extensions = dict(task.extensions or {})
+        previous = extensions.get("agentbc.input")
+        history = list(extensions.get("agentbc.input_history") or [])
+        if isinstance(previous, dict):
+            history.append(previous)
+
+        extensions[APPROVAL_EXTENSION_KEY] = receipt
+        extensions = self._record_run_interval(task_id, extensions)
+        extensions.pop("agentbc.completion_intent", None)
+        extensions.pop("agentbc.final_callback", None)
+        extensions["agentbc.input"] = request
+        if history:
+            extensions["agentbc.input_history"] = history
+        task.extensions = _merge_execution(
+            extensions,
+            {
+                "internal_status": "waiting",
+                "lease_state": "suspended",
+                "waiting_since": now,
+            },
+        )
+        task.status = "input_required"
+        task.updated_at = now
+        task.steps = [
+            _resource_block_step(step, step_id)
+            for step in task.steps
+        ]
+        self._release_lease(task_id)
+        self.store.write_task(task_id, _without_none(task.to_dict()))
+        suspend_lease(
+            task_id,
+            self.board_root,
+            executor_run_id=normalized_run_id,
+            executor_id=task.assignee,
+            work_dir=str(
+                (task.workspace or {}).get("project_root")
+                or (task.workspace or {}).get("root")
+                or self.board_root
+            ),
+        )
+        clear_task_progress(task)
+        self.store.append_event(
+            task_id,
+            {
+                "event_type": "task.approval_required",
+                "task_id": task_id,
+                "created_at": now,
+                "input_id": request["input_id"],
+                "request_id": clean_request_id,
+                "blocked_step_id": step_id,
+                "scope": APPROVAL_SCOPE,
+            },
+        )
+        self._refresh_task_index()
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "status": "input_required",
+            "input_id": request["input_id"],
+            "request_id": clean_request_id,
+            "request_fingerprint": clean_fingerprint,
+            "scope": APPROVAL_SCOPE,
+            "blocked_step_id": step_id,
+        }
+
+    def cutover_preflight(self) -> dict[str, Any]:
+        """Return the strict cutover gate for a supported update/preflight.
+
+        Any old-channel ``pending`` / ``running`` / ``input_required`` /
+        ``needs_recovery`` task, unconsumed one-shot grant, or legacy permission
+        marker blocks the cutover with ``legacy_permission_cutover_blocked``.
+        """
+        return legacy_permission_cutover_blocked(self)
+
+    def assert_legacy_cutover_clear(self) -> dict[str, Any]:
+        """Raise ``legacy_permission_cutover_blocked`` when the gate is closed."""
+        return assert_legacy_cutover_clear(self)
+
+    def enter_maintenance_mode(self, reason: str = "") -> dict[str, Any]:
+        """Enter cutover maintenance mode (manual bypass install)."""
+        from .migration import enter_maintenance_mode as _enter_marker
+
+        return _enter_marker(self, reason=reason)
+
+    def exit_maintenance_mode(self) -> dict[str, Any]:
+        from .migration import exit_maintenance_mode as _exit_marker
+
+        return _exit_marker(self)
+
+    def maintenance_mode(self) -> dict[str, Any]:
+        return maintenance_mode_view(self)
+
     def _fail_closed_resource_block(
         self,
         task: TaskModel,
@@ -1415,6 +2051,7 @@ class TaskService:
         from .run_lease import RunLeaseState, load_lease
         from .task_health import write_task_progress
 
+        assert_maintenance_command_allowed(self, "respond")
         task = self.get_task(task_id)
         request = (task.extensions or {}).get("agentbc.input")
         if not isinstance(request, dict):
@@ -1490,6 +2127,10 @@ class TaskService:
             if is_permission_request
             and response_type == "deny"
             and message == PERMISSION_DIALOG_TIMEOUT_RESPONSE
+            else "dialog_closed"
+            if is_permission_request
+            and response_type == "deny"
+            and message == PERMISSION_DIALOG_CLOSED_RESPONSE
             else "user"
         )
         answered["response"] = {
@@ -1505,6 +2146,102 @@ class TaskService:
         extensions["agentbc.input"] = answered
         if updated_resources is not None:
             extensions[RESOURCE_EXTENSION_KEY] = updated_resources
+
+        is_approval_request = (
+            is_permission_request
+            and request.get("scope") == APPROVAL_SCOPE
+            and bool(str(request.get("request_id") or "").strip())
+        )
+        if is_approval_request:
+            receipt = self._approval_receipt_for_response(
+                task,
+                extensions,
+                request,
+                current_input_id,
+            )
+            approval_source = permission_denial_source if response_type == "deny" else "user"
+            updated_receipt = record_approval_decision(
+                receipt,
+                response_type,
+                source=approval_source,
+                decided_at=now,
+                executor=task.assignee,
+                task_id=task.id,
+                session_id=str(
+                    (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
+                ),
+                request_id=str(request.get("request_id") or ""),
+            )
+            extensions[APPROVAL_EXTENSION_KEY] = updated_receipt
+            blocked_step_id = request.get("blocked_step_id")
+            if not any(
+                step.get("id") == blocked_step_id and step.get("status") == "blocked"
+                for step in task.steps
+            ):
+                raise ABCError(
+                    "permission_input_invalid",
+                    "Approval input does not identify the current blocked step",
+                )
+            task.steps = [
+                {**step, "status": "pending"}
+                if step.get("id") == blocked_step_id and step.get("status") == "blocked"
+                else dict(step)
+                for step in task.steps
+            ]
+            task.status = "running"
+            task.updated_at = now
+            task.extensions = _merge_execution(
+                extensions,
+                {
+                    "internal_status": "resuming",
+                    "lease_state": "suspended",
+                    "resuming_at": now,
+                },
+            )
+            self.store.write_task(task.id, _without_none(task.to_dict()))
+            self.store.append_event(
+                task.id,
+                {
+                    "event_type": "task.input_answered",
+                    "task_id": task.id,
+                    "input_id": current_input_id,
+                    "response_type": response_type,
+                    "response_source": approval_source,
+                    "approval_scope": APPROVAL_SCOPE,
+                    "created_at": now,
+                },
+            )
+            self.store.append_event(
+                task.id,
+                {
+                    "event_type": "task.approval_decided",
+                    "task_id": task.id,
+                    "request_id": str(request.get("request_id") or ""),
+                    "decision": response_type,
+                    "decision_source": approval_source,
+                    "scope": APPROVAL_SCOPE,
+                    "created_at": now,
+                },
+            )
+            write_task_progress(
+                task,
+                state="resuming",
+                message="approval decision recorded; resuming the same task session",
+                source="runner",
+            )
+            self._refresh_task_index()
+            return {
+                "ok": True,
+                "task_id": task.id,
+                "input_id": current_input_id,
+                "request_id": str(request.get("request_id") or ""),
+                "status": "resuming",
+                "dispatch_required": True,
+                "approval_decision": response_type,
+                "approval_source": approval_source,
+                "same_session": True,
+            }
+
         if is_resource_decision and response_type == "deny":
             failure_code = {
                 "claude": "budget_exhausted_user_terminated",
@@ -1668,12 +2405,20 @@ class TaskService:
                     "permission_input_invalid",
                     "Permission input is missing the authoritative executor session",
                 )
+            base_permission = permission_record_from_extensions(extensions)
+            runtime_policy = permission_runtime_policy(base_permission)
+            if runtime_policy["approval_on_block"] is not True:
+                raise ABCError(
+                    "permission_input_invalid",
+                    "Permission input cannot escalate an already-full permission base",
+                )
             extensions[PERMISSION_GRANT_EXTENSION_KEY] = build_permission_grant(
                 executor=task.assignee,
                 task_id=task.id,
                 input_id=current_input_id,
                 session_id=session_id,
                 source_run_id=str(request.get("executor_run_id") or ""),
+                base_mode=str(runtime_policy["base_mode"]),
                 issued_at=now,
             )
         else:
@@ -1751,6 +2496,60 @@ class TaskService:
                 task.extensions = dict(task.extensions or {})
                 task.extensions["agentbc.input"] = answered_request
                 task.updated_at = expired_at
+                is_approval_request = (
+                    request.get("scope") == APPROVAL_SCOPE
+                    and bool(str(request.get("request_id") or "").strip())
+                )
+                if is_approval_request:
+                    # Approval-based timeout auto-denies on the same native
+                    # request, records the decision source, and never issues a
+                    # safe-to-full grant.  The task is moved to needs_recovery so
+                    # the official session is never silently lost.
+                    extensions = dict(task.extensions)
+                    try:
+                        receipt = self._approval_receipt_for_response(
+                            task,
+                            extensions,
+                            request,
+                            str(request.get("input_id") or ""),
+                        )
+                    except ABCError:
+                        receipt = None
+                    if receipt is not None:
+                        updated_receipt = record_approval_decision(
+                            receipt,
+                            "deny",
+                            source="timeout",
+                            decided_at=expired_at,
+                            executor=task.assignee,
+                            task_id=task.id,
+                            session_id=str(
+                                (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
+                            ),
+                            request_id=str(request.get("request_id") or ""),
+                        )
+                        extensions[APPROVAL_EXTENSION_KEY] = updated_receipt
+                        task.extensions = extensions
+                        self.store.write_task(task.id, _without_none(task.to_dict()))
+                    changed = self.mark_task_needs_recovery(
+                        task.id,
+                        "approval_denied_by_timeout",
+                        "Approval request timed out and was automatically denied",
+                        {
+                            "input_id": request.get("input_id", ""),
+                            "request_id": request.get("request_id", ""),
+                            "executor": task.assignee,
+                            "response_source": "timeout",
+                        },
+                    )
+                    if changed:
+                        expired.append(
+                            {
+                                "task_id": task.id,
+                                "input_id": request.get("input_id", ""),
+                            }
+                        )
+                    continue
                 failure_code = "permission_denied_by_timeout"
                 failure_message = "Permission request timed out and was automatically denied"
                 self._mark_task_failed_model(
@@ -2704,7 +3503,10 @@ class TaskService:
         updated["session_state"] = session_state
         errors = validate_session_snapshot(updated, executor=task.assignee)
         if errors:
-            raise ABCError("executor_session_invalid", "; ".join(errors), {"errors": errors})
+            # Recovery must remain fail closed even when the persisted session
+            # snapshot is already damaged.  Do not invent or partially rewrite
+            # a session id/state; the task error is the public evidence.
+            return
         extensions[SESSION_EXTENSION_KEY] = updated
         task.extensions = extensions
 
@@ -2996,6 +3798,17 @@ def task_to_status(task: TaskModel) -> dict[str, Any]:
         PERMISSION_EXTENSION_KEY,
         permission_record_from_extensions(extensions),
     )
+    # Public status exposes only the sanitized approval projection: the bounded
+    # summary, decision and timestamps.  Binding identifiers and the optional
+    # bounded detail are internal and never projected.
+    approval_value = extensions.get(APPROVAL_EXTENSION_KEY)
+    if approval_value is not None:
+        try:
+            extensions[APPROVAL_EXTENSION_KEY] = approval_public_projection(
+                approval_value
+            )
+        except ABCError:
+            extensions.pop(APPROVAL_EXTENSION_KEY, None)
     data["extensions"] = extensions
     if raw_status != data["status"]:
         extensions = dict(data.get("extensions") or {})
@@ -3102,6 +3915,15 @@ def _first_incomplete_step_id(steps: list[dict[str, Any]]) -> int | None:
             if isinstance(step_id, int):
                 return step_id
     return None
+
+
+def _safe_blocked_step_id(blocked_results: list[dict[str, Any]]) -> int | None:
+    if len(blocked_results) != 1:
+        return None
+    step_id = blocked_results[0].get("id")
+    if isinstance(step_id, bool) or not isinstance(step_id, int):
+        return None
+    return step_id
 
 
 def _resource_block_step(

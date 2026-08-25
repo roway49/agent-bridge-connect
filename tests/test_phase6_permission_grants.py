@@ -124,7 +124,22 @@ class PermissionGrantContractTests(unittest.TestCase):
                     validate_permission_grant(grant)
                 self.assertEqual(raised.exception.code, "permission_grant_sensitive_field")
 
-    def test_only_safe_to_full_next_run_and_one_use_are_valid(self) -> None:
+    def test_only_approval_capable_base_to_full_next_run_and_one_use_are_valid(self) -> None:
+        inherited = build_permission_grant(
+            executor="codex",
+            task_id="TEST-001",
+            input_id="input-abc123",
+            session_id="019fe6f1-3ff9-76e3-8001-52b6c0ae357a",
+            source_run_id="codex-run-1",
+            base_mode="native",
+            grant_id="grant-inherit",
+            issued_at=ISSUED_AT,
+        )
+        self.assertEqual(
+            validate_permission_grant(inherited)["transition"],
+            {"from": "native", "to": "full"},
+        )
+
         invalid = []
         from_full = self._grant()
         from_full["transition"]["from"] = "full"
