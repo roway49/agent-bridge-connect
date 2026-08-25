@@ -8,6 +8,11 @@ class Agentbc < Formula
   sha256 "5342affc02902429e0eda1d7bcc5aa284c2f957662309c8a469ee294a56cf8d7"
   license "MIT"
 
+  bottle do
+    root_url "https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.3A"
+    sha256 cellar: :any_skip_relocation, all: "ef9afd5e7798e1564b5f5a834ce819279557ab243237b846e131332eae0c314a"
+  end
+
   depends_on "python"
 
   def install
