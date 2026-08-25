@@ -2478,11 +2478,14 @@ def command_update(args: argparse.Namespace) -> int:
 
     config_path = _optional_path_arg(getattr(args, "config", None))
     try:
-        service = _task_service(args.root, config_path)
         if args.bypass:
+            service = _task_service(args.root, config_path)
             result = manual_bypass_install(service)
         else:
-            result = run_update_flow(service)
+            result = run_update_flow(
+                None,
+                service_factory=lambda: _task_service(args.root, config_path),
+            )
     except (ABCError, OSError, ValueError, TypeError) as exc:
         print(f"update_error: {exc}")
         return 2

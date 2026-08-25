@@ -265,6 +265,21 @@ class UpdateCliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertFalse((harness.board / CUTOVER_READY_FILE).is_file())
 
+    def test_cli_homebrew_route_never_constructs_task_service(self) -> None:
+        with (
+            mock.patch(
+                "agent_bridge_connect.update._local_install_strategy",
+                return_value={"method": "homebrew", "reason": "Homebrew owns the CLI"},
+            ),
+            mock.patch(
+                "agent_bridge_connect.cli._task_service",
+                side_effect=AssertionError("Homebrew route must not touch the board"),
+            ) as task_service,
+        ):
+            code = main(["update"])
+        self.assertEqual(code, 0)
+        task_service.assert_not_called()
+
     def test_cli_update_cutover_ready(self) -> None:
         harness = _Harness()
         self.addCleanup(harness.close)

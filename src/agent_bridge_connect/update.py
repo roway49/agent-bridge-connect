@@ -44,7 +44,7 @@ import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 
 from . import __version__
 from .config import DEFAULT_BOARD_ROOT
@@ -219,8 +219,9 @@ def check_for_update(
 
 
 def run_update_flow(
-    service: Any,
+    service: Any | None,
     *,
+    service_factory: Callable[[], Any] | None = None,
     input_fn: Any | None = None,
     output_fn: Any | None = None,
     checker: Any | None = None,
@@ -260,6 +261,10 @@ def run_update_flow(
         answer = ""
     if answer not in {"y", "yes"}:
         return {**available, "state": "update_declined", "updated": False}
+    if service is None:
+        if service_factory is None:
+            raise ValueError("service or service_factory is required for update preflight")
+        service = service_factory()
     preflight = update_preflight(service)
     if not preflight["cutover_ready"]:
         return preflight

@@ -172,6 +172,49 @@ class UpdateFlowTests(unittest.TestCase):
             before,
         )
 
+    def test_zero_write_routes_do_not_construct_task_service(self) -> None:
+        service_factory = mock.Mock(side_effect=AssertionError("must remain lazy"))
+        current = {**_available(), "state": "current", "latest": "1.0.3a1", "update_available": False}
+        result = run_update_flow(
+            None,
+            service_factory=service_factory,
+            checker=lambda: current,
+            input_fn=lambda _prompt: self.fail("must not prompt"),
+            output_fn=lambda _line: None,
+            installer=mock.Mock(),
+        )
+        self.assertEqual(result["state"], "current")
+        service_factory.assert_not_called()
+
+        service_factory.reset_mock()
+        with mock.patch(
+            "agent_bridge_connect.update._local_install_strategy",
+            return_value={"method": "homebrew", "reason": "Homebrew owns the CLI"},
+        ):
+            result = run_update_flow(
+                None,
+                service_factory=service_factory,
+                checker=mock.Mock(side_effect=AssertionError("must not check")),
+                input_fn=lambda _prompt: self.fail("must not prompt"),
+                output_fn=lambda _line: None,
+            )
+        self.assertEqual(result["state"], "homebrew_update_required")
+        service_factory.assert_not_called()
+
+    def test_confirmed_update_constructs_task_service_once(self) -> None:
+        service_factory = mock.Mock(return_value=self.service)
+        installer = mock.Mock(return_value={"version": "1.0.4a1", "runner_refreshed": True})
+        result = run_update_flow(
+            None,
+            service_factory=service_factory,
+            checker=_available,
+            input_fn=lambda _prompt: "yes",
+            output_fn=lambda _line: None,
+            installer=installer,
+        )
+        self.assertEqual(result["state"], "updated")
+        service_factory.assert_called_once_with()
+
     def test_homebrew_runtime_python_is_detected_without_cli_argv_receipt(self) -> None:
         cellar_python = (
             Path(self.temporary.name)
