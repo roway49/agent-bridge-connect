@@ -7,13 +7,14 @@ class Agentbc < Formula
   version "1.0.3a1"
   sha256 "5342affc02902429e0eda1d7bcc5aa284c2f957662309c8a469ee294a56cf8d7"
   license "MIT"
-
-  bottle do
-    root_url "https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.3A"
-    sha256 cellar: :any_skip_relocation, all: "ef9afd5e7798e1564b5f5a834ce819279557ab243237b846e131332eae0c314a"
-  end
+  revision 1
 
   depends_on "python"
+
+  patch do
+    url "https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.3A/agentbc-1.0.3a1-homebrew-update-zero-write.patch"
+    sha256 "30edbb613bfad2a4cb09ccdba122f92be390e52da71c524dee4d267c1b2220a9"
+  end
 
   def install
     virtualenv_install_with_resources
@@ -37,5 +38,8 @@ class Agentbc < Formula
   test do
     assert_match "agentbc 1.0.3a1", shell_output("#{bin}/agentbc --version")
     system bin/"agentbc", "--help"
+    blocked_home = testpath/"blocked-home"
+    blocked_home.write "not a directory"
+    assert_match "homebrew_update_required", shell_output("HOME=#{blocked_home} #{bin}/agentbc update")
   end
 end
