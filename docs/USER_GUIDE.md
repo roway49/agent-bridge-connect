@@ -2,10 +2,9 @@
 
 [中文](USER_GUIDE_ZH.md) | English
 
-Applies to AgentBC **1.0.2A** (Python package `1.0.2a1`).
-
-The current internal development candidate is **1.0.3A** (Python package
-`1.0.3a1`); public installation remains on 1.0.2A.
+Applies to the AgentBC **1.0.3A** prerelease (Python package `1.0.3a1`). The
+current Homebrew bootstrap reports `1.0.3a1_1`; the planned `1.0.3a2` remains a
+development candidate until its session-cleanup and real upgrade gates pass.
 
 ## Command Surface
 
@@ -15,6 +14,7 @@ version.
 - `agentbc setup`: discover executors and install local integrations.
 - `agentbc doctor`: read-only installation and Runner health check.
 - `agentbc uninstall`: remove AgentBC with separate managed-data choices.
+- `agentbc update`: check the Alpha channel and route to the supported upgrade path.
 - `agentbc init`: initialize the managed runtime record directory.
 - `agentbc claude budget`: configure the Claude budget for future runs.
 - `agentbc hermes max-turns`: configure the Hermes turn limit for future runs.
@@ -26,6 +26,17 @@ version.
 
 Setup starts Runner in the background. Use `runner start` for recovery,
 `runner stop` for shutdown, and foreground `runner serve` only for debugging.
+
+### Command Added In 1.0.3A
+
+| Command | Purpose and boundary |
+| --- | --- |
+| `agentbc update` | Check the verified Alpha release manifest. It prompts only when a newer version exists and the running CLI is an AgentBC-managed installation. |
+| `agentbc update --root <RECORD_ROOT> --config <CONFIG>` | Use an explicit runtime record root or config for a controlled environment. Normal installations should omit both options. |
+
+The updater never treats Homebrew, pip/pipx, an external symlink, or a copied
+binary as an AgentBC-managed in-place target. Package-manager installations are
+routed to their package manager instead of being overwritten.
 
 ### Commands Added Or Changed In 1.0.2A
 
@@ -69,6 +80,52 @@ agentbc task handoff 4XMC --to hermes --source-platform claude --dispatch
 Direct terminal use may omit the flag and is recorded as `cli`. Restart agent
 clients after setup so they reload installed skills. Executor-specific model
 selection is not part of the stable Alpha contract.
+
+## Updating AgentBC
+
+Check the current installation through the supported entry point:
+
+```bash
+agentbc doctor --json
+agentbc update
+```
+
+For an AgentBC-managed Alpha installation, `agentbc update` verifies the GitHub
+release index, release manifest, tag, wheel filename, and SHA-256 before it can
+change the active installation. If the installed version is current, it exits
+without prompting or writing. If a newer version is available, it shows the
+bounded release summary and asks:
+
+```text
+Upgrade? [y/N]
+```
+
+Only `y` or `yes` starts the update. `n`, Enter, EOF, or any other response
+returns `update_declined` without modifying the CLI, Skills, Runner, config, or
+task board. Before cutover, AgentBC also rejects unresolved legacy permission
+records and invalid current CLI/Skill/Runner identity.
+
+An approved update stages and verifies the target wheel, snapshots the existing
+managed CLI and Skills, stops the old Runner, switches the CLI, refreshes Skills,
+starts the target Runner, and requires all target identities to match. If any
+post-switch gate fails, AgentBC restores the exact previous CLI link and managed
+Skill files, removes newly introduced managed paths, and restarts the previous
+Runner. `update_rollback_incomplete` requires inspection with
+`agentbc doctor --json` before another update attempt.
+
+For a Homebrew installation, `agentbc update` does not prompt or write update
+state. It returns `homebrew_update_required` with the command:
+
+```bash
+brew update
+brew upgrade agentbc
+agentbc doctor --json
+```
+
+Unmanaged binaries, ordinary pip/pipx installations, non-symlink targets, and
+links outside the AgentBC-managed Alpha root are refused with
+`update_install_unsupported`; reinstall through the intended installation source
+rather than replacing them in place.
 
 ## Executor Resources And Session Retention
 

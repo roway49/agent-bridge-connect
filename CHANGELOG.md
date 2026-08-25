@@ -1,9 +1,10 @@
 # Changelog
 
-## 1.0.3A - 2026-08-21
+## 1.0.3A - 2026-08-25
 
-> Python package `1.0.3a1` is an internal development candidate. The public
-> current release remains `1.0.2A` until the full publication gates pass.
+> Python package `1.0.3a1` is available as the GitHub prerelease and Homebrew
+> bootstrap. The planned `1.0.3a2` update remains gated on executor-session
+> teardown, auxiliary-session cleanup, and the real `a1 -> a2` upgrade test.
 
 ### Added
 
@@ -16,6 +17,10 @@
   continuation retained as a compatibility fallback.
 - Stable permission/session failure taxonomy carried inside the compatible
   `permission_resume_session_unavailable` envelope.
+- Verified Alpha-channel updates through `agentbc update`, including release
+  manifest, tag, wheel digest, installation identity, and legacy-cutover gates.
+- A public Homebrew Formula and universal bottle for both Apple Silicon and
+  Intel macOS, with package-managed upgrades kept separate from self-update.
 
 ### Changed
 
@@ -23,6 +28,21 @@
   details; close and timeout continue to deny.
 - Legacy permission cutover and supported-update preflight remain fail closed
   when old-channel tasks require recovery.
+- `agentbc update` checks before prompting. Current versions and `n`, Enter, or
+  EOF responses perform no local mutation; only explicit `y` or `yes` starts a
+  verified managed-install transaction.
+- Homebrew-owned installations return `brew upgrade agentbc` without prompting,
+  writing a cutover stamp, or replacing files outside Homebrew.
+
+### Fixed
+
+- Managed updates stage the target wheel before switching and verify the new
+  CLI, managed Skills, and Runner as one identity after cutover.
+- Failed managed updates restore the exact previous CLI link, managed Skill
+  bytes and manifests, remove newly introduced managed paths, and restart the
+  previous Runner; incomplete recovery fails closed.
+- Update ownership checks reject unmanaged, pip/pipx-style, and external CLI
+  links instead of overwriting them in place.
 
 ### Validation
 
@@ -30,6 +50,10 @@
   passed with Ruff, compileall, and `git diff --check`.
 - Intel MacBook source gate: package smoke, 140 focused permission regressions,
   and 1229 full tests passed on Python 3.10 using an isolated HOME.
+- The public `v1.0.3A` prerelease and Homebrew revision-1 bottle passed Formula
+  syntax/style, package provenance, manifest/hash, isolated install, and 97
+  focused Update/Homebrew tests. Both ARM64 and Intel hosts installed the bottle
+  and confirmed `agentbc update` returns the package-manager upgrade route.
 
 ## 1.0.2A - 2026-08-14
 
