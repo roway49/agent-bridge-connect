@@ -448,6 +448,18 @@ Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 
 9. **人工不可替代门禁**：原仓库 prerelease/正式 Release 发布按钮、PyPI environment 审批和最终
    go/no-go 由用户确认；自动化只准备可审计资产和命令，不代替这些外部不可逆确认。
 
+执行状态（2026-08-25）：原仓库公开发布候选已准备完成。源码/tag 提交固定为
+`72283ba57046a2e5aea624cb85bf7d8484b91a43`，同仓库 Formula 跟进提交为
+`94577a534ea2577a38b53928555466b38047db19`；`public/main` 可从 `956b3dd` 快进到该 Formula
+提交，`v1.0.3A` 必须指向前一源码提交 `72283ba`。候选通过 `135` 项 Update/Homebrew/发布定向测试
+与 `32` 个 subtests、`1340` 项全量测试与 `642` 个 subtests（公开树缺失的三项内部文档断言按设计
+skip）、Ruff `0.15.22`、compileall、Shell/Ruby 语法、Twine、manifest、隔离 wheel smoke 和
+`git diff --check`。正式 sdist SHA-256 为
+`5342affc02902429e0eda1d7bcc5aa284c2f957662309c8a469ee294a56cf8d7`；发布仍未完成：开发机保护钩子
+禁止写 public，MacBook SSH 当前不可达，须在 MacBook 导入已验证 bundle、快进 public/main、创建
+指向 `72283ba` 的 prerelease tag 并上传资产，然后分别构建 ARM64/Intel bottle 并回写 Formula
+bottle stanza。此阻塞不得误记为已发布。
+
 ### 8.2.2 E2E teardown 与派生会话清理（`SESSION-103-002` / `SESSION-103-003`）
 
 - `UPD-103-001` 真实新旧包升级/故障注入和 `PKG-103-001` 双架构
