@@ -2,7 +2,7 @@
 
 > 制定日期：2026-08-11  
 > 最近整理：2026-08-25
-> 状态：权限与 Phase 5 Update/Homebrew 双机功能 RC Gate 已通过；正在发布 `1.0.3a1` Homebrew bootstrap，随后完成 Session P1、升版 `1.0.3a2` 并以真实 Update 升级作为 GitHub/PyPI 发布前置
+> 状态：权限、Phase 5 Update/Homebrew 双机功能 RC Gate 与公开 `1.0.3a1` Homebrew bootstrap 已通过；下一项为 Session P1，随后升版 `1.0.3a2` 并以真实 Update 升级作为 GitHub/PyPI 发布前置
 > 目标版本：`v1.0.3A`  
 > 来源基线：`1.0.2A` 开发截止代码 `b8af2f3a0a1f56814854e3f46056dd8ab9cf55d7`
 > 计划开发起点：`private/integration@fc2f3f19d18d1c23890ee02a4ee9600c36456a60`
@@ -10,6 +10,8 @@
 > `UPD-103-001` 实现快照：`private/integration@f7cbfbb`
 > `PKG-103-001` ARM RC 快照：`private/integration@40ce0ec`
 > Phase 5 双机 RC 验证基线：`private/integration@4ef01ca`
+> Homebrew 零写入修复：`private/integration@d0e4599`
+> 公开 a1 Homebrew bootstrap：`public/main@9671b2c`
 > 前置条件：`1.0.2A` 最终发布身份与双机 Gate 完成；Phase 0 只读契约盘点可提前进行
 > 架构依据：`AGENTBC_ALPHA_DEVELOPMENT_HANDBOOK.md`
 
@@ -88,11 +90,11 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 | `PERM-103-007` | 已完成 | `0cfb492`：Claude 2.1.216～2.1.x 版本/平台/help gate、任务级 `claude.ephemeral_project_isolation.v1`、Artifact-only `--add-dir`、内建 Edit deny、OS sandbox `allowWrite/denyWrite`、禁用 unsandboxed retry 与 Runner 精确 argv/settings 重建校验已合入；本机 2.1.233 probe、1268 项全量、Ruff、compileall 与 diff check 通过 |
 | `PERM-103-008` / `PERM-103-009` | 已完成 | `a993e94`、`4ef12eb`：permission/session 兼容总错误下新增 15 类稳定原因与脱敏诊断；`2b1bcbd`、`247c45b`：Codex app-server single-action 生产链已合入；既有一次性 full continuation 继续作为兼容兜底 |
 | `FLOW-103-001` | 已延期 | 与 `FLOW-104-001` 的结构化多 steps、`PROTO-104-001` fixtures 和 `ARCH-104-001` 局部重构一起进入 1.0.4A |
-| `UPD-103-001` | 双机 RC Gate 已通过 | `2656cef` 修复跨版本受管 Skill 识别，`b285a35` 补齐 CLI/Runner/Skill 事务回滚与 identity 校验，`eeb9c00` 增加隔离两版本 RC 驱动；`integration@4ef01ca` 上 69 项 Update 定向测试通过，Mac mini 与 Intel MacBook 均完成 `1.0.2a1 → 1.0.3a1` 成功切换及 Runner-start 故障包精确回滚，CLI/Runner/三平台 Skill identity 与稳定数据合同全部满足 |
-| `PKG-103-001` | 双架构私有 bottle RC Gate 已通过；正式 workflow 待补 | `bf3c1e6` 增加默认只读、双重执行门禁的 RC 驱动；`4d21d31` 删除 Formula 的 Python 小版本硬编码；`bde6b73` 将 Doctor 改为诊断分类；`40ce0ec` 修复 Homebrew-owned CLI 在远端版本检查前路由到 `brew upgrade agentbc`。Apple Silicon 与 Intel 均完成 bottle install/upgrade/uninstall，Intel `brew services start/stop` 与 Cellar Runner identity 通过；正式发布前仍须把 bottle 生成、payload 审计和 Formula hash 固化进 release workflow |
+| `UPD-103-001` | 双机 RC Gate 与 Homebrew 零写入路由已通过 | `2656cef` 修复跨版本受管 Skill 识别，`b285a35` 补齐 CLI/Runner/Skill 事务回滚与 identity 校验，`eeb9c00` 增加隔离两版本 RC 驱动；`integration@4ef01ca` 上 69 项 Update 定向测试通过，Mac mini 与 Intel MacBook 均完成 `1.0.2a1 → 1.0.3a1` 成功切换及 Runner-start 故障包精确回滚。`d0e4599` 将 TaskService 改为仅在确认升级并进入 preflight 时惰性创建，Homebrew/current/decline 路径不再初始化或写入 board；31 项定向、1346 项全量、Ruff、compileall 与 diff check 通过 |
+| `PKG-103-001` | 公开 `1.0.3a1` Homebrew bootstrap 已通过 | `bf3c1e6` 增加默认只读、双重执行门禁的 RC 驱动；`4d21d31` 删除 Formula 的 Python 小版本硬编码；`bde6b73` 将 Doctor 改为诊断分类；`40ce0ec` 与 `d0e4599` 保证 Homebrew-owned CLI 在任何 board 初始化前路由到 `brew upgrade agentbc`。公开 `main@9671b2c`、Formula revision `1` 与 `all` bottle 已发布；Apple Silicon 与 Intel 的 `brew install agentbc`、`agentbc update` 和 bottle receipt 均通过，Intel 历史 board 与 local-alpha Runner 保持不变 |
 | `SESSION-103-002` | P1 待开发；前置 Gate 已满足 | 修复 E2E helper 的 teardown 完整性；必须使用创建时捕获的官方 session receipt 精确删除，不得以结束进程、删除 canary root 或退出码代替 cleanup 成功 |
 | `SESSION-103-003` | P1 待开发；前置 Gate 已满足 | 补齐派生 Executor 对话的登记、终态清理、失败重试、report/doctor blocker 与脱敏 cleanup receipt；完成前不再运行会产生持久化子对话的真实权限 E2E |
-| `REL-103-CANDIDATE` | 候选包与双机安装 smoke 已完成 | `89dc0b0` 已形成 `1.0.3a1` 内部候选；Mac mini 110 项权限定向与 1229 项全量、Intel MacBook 140 项权限定向与 1229 项全量通过；隔离 wheel smoke `F47F-001`、MacBook 安装态 `X977-001`、Mac mini 安装态 `CQBA-001` 通过，双机 CLI/Runner/三平台 Skill identity 一致；尚未关闭真实三 Executor 权限审批 canary 与最终发布 Gate |
+| `REL-103-CANDIDATE` | a1 GitHub prerelease/Homebrew bootstrap 已完成；a2 正式发布待 Session P1 | `v1.0.3A` prerelease、sdist/wheel/manifest、公开 Formula revision `1` 与 `all` bottle 已发布；公开 `main@9671b2c` 的 Release Check `32855168616` 在 Python 3.10/3.11/3.14 全通过。PyPI 仍未发布，真实三 Executor 权限审批 canary、Session P1、a1→a2 两条升级链与最终发布 Gate 仍待完成 |
 | `FLOW-103-001` / `PROTO-104-001` / `ARCH-104-001` / `FLOW-104-001` / `PERM-104-001` | 已延期 | 保持 `1.0.4A` 边界，本版不实现；1.0.3A 不再扩大功能范围，只执行 update/Homebrew 与三 Executor 的 RC 验收 |
 
 Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 于 2026-08-16 明确取消，
@@ -426,10 +428,11 @@ Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 
    Formula 和 bottle。创建 prerelease 前必须先将 PyPI workflow 的 release publish gate 限制为
    `prerelease == false`；prerelease 可运行 build/provenance 验证，但不得上传 PyPI。a1 会进入产品
    GitHub release index，因此既有 1.0.2A AgentBC-managed 安装可看到 a1；这不影响后续 a1→a2 验收；
-4. **a1 公开安装验收**：Apple Silicon 与 Intel 均从公开 Tap clean install，要求强制 pour bottle、
-   receipt 为 `built_as_bottle/poured_from_bottle=true`、CLI version/help 通过；Intel 另跑
-   `brew services start/stop` 与 Cellar Runner identity。uninstall 后配置、record、report、artifact、
-   customer project 和另一安装来源保持；
+4. **a1 公开安装验收**：Apple Silicon 与 Intel 均从固定到公开 `main` 的 Tap 执行原样
+   `brew install agentbc`，要求强制 pour bottle、receipt 为
+   `built_as_bottle/poured_from_bottle=true`，随后原样 `agentbc update` 返回
+   `homebrew_update_required` 与 `brew upgrade agentbc`；本轮不重启现有 local-alpha Runner。
+   Intel `brew test` 的宿主 Xcode/CLT 门禁不作为终端用户安装或运行前置；
 5. **完成 Session P1**：依次实现 `SESSION-103-002` receipt 驱动 E2E teardown 和
    `SESSION-103-003` auxiliary session ledger/cleanup；成功、Deny、timeout、transport lost、崩溃、
    Runner 重启和清理重试均不得新增遗留 Executor 对话；
@@ -448,17 +451,23 @@ Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 
 9. **人工不可替代门禁**：原仓库 prerelease/正式 Release 发布按钮、PyPI environment 审批和最终
    go/no-go 由用户确认；自动化只准备可审计资产和命令，不代替这些外部不可逆确认。
 
-执行状态（2026-08-25）：原仓库公开发布候选已准备完成。源码/tag 提交固定为
-`72283ba57046a2e5aea624cb85bf7d8484b91a43`，同仓库 Formula 跟进提交为
-`94577a534ea2577a38b53928555466b38047db19`；`public/main` 可从 `956b3dd` 快进到该 Formula
-提交，`v1.0.3A` 必须指向前一源码提交 `72283ba`。候选通过 `135` 项 Update/Homebrew/发布定向测试
-与 `32` 个 subtests、`1340` 项全量测试与 `642` 个 subtests（公开树缺失的三项内部文档断言按设计
-skip）、Ruff `0.15.22`、compileall、Shell/Ruby 语法、Twine、manifest、隔离 wheel smoke 和
-`git diff --check`。正式 sdist SHA-256 为
-`5342affc02902429e0eda1d7bcc5aa284c2f957662309c8a469ee294a56cf8d7`；发布仍未完成：开发机保护钩子
-禁止写 public，MacBook SSH 当前不可达，须在 MacBook 导入已验证 bundle、快进 public/main、创建
-指向 `72283ba` 的 prerelease tag 并上传资产，然后分别构建 ARM64/Intel bottle 并回写 Formula
-bottle stanza。此阻塞不得误记为已发布。
+执行状态（2026-08-25）：`v1.0.3A` GitHub prerelease 与 Homebrew bootstrap 已发布并验收。
+源码/tag 仍固定为 `72283ba57046a2e5aea624cb85bf7d8484b91a43`；公开 `main` 已快进到
+`9671b2cc4b093386c1724275c6926acc3d2fd113`。正式 sdist SHA-256 为
+`5342affc02902429e0eda1d7bcc5aa284c2f957662309c8a469ee294a56cf8d7`；Homebrew 专用零写入 patch
+SHA-256 为 `30edbb613bfad2a4cb09ccdba122f92be390e52da71c524dee4d267c1b2220a9`，Formula revision `1`
+的 `all` bottle SHA-256 为 `9c1475516fc98e7d0a539178572c7692a25e5c4e29289b666db14d17e7b52e36`。
+payload 审计确认 82 个普通文件、无 Mach-O/ELF、无绝对 symlink、无未重定位构建机路径；Formula
+style、Ruby 语法、97 项相关测试及公开 Release Check `32855168616` 的 Python 3.10/3.11/3.14
+矩阵全部通过。
+
+Apple Silicon 与 Intel MacBook 均完成 `brew install agentbc`，receipt 为
+`version=1.0.3a1_1`、`built_as_bottle=true`、`poured_from_bottle=true`；两机的 `agentbc update`
+均返回 `homebrew_update_required` 和 `brew upgrade agentbc`。Intel 复验前暴露的 board README
+写权限错误由 `integration@d0e4599` / `public@e771222` 修复；修复后连续 update 前后 README
+mtime/size/owner 不变，local-alpha Runner PID `14131` 与命令行不变，Brew service 保持 `none`。
+Intel 的附加 `brew test` 仍被 Homebrew 自身 Xcode 15.4/CLT 诊断在 Formula test 前拦截，按既定边界
+不作为用户安装或运行失败。a1 bootstrap Gate 至此关闭，下一开发项为 `SESSION-103-002`。
 
 ### 8.2.2 E2E teardown 与派生会话清理（`SESSION-103-002` / `SESSION-103-003`）
 
@@ -557,7 +566,7 @@ bottle stanza。此阻塞不得误记为已发布。
    `integration@4ef01ca` 的双机 Update success/rollback 与双架构 Homebrew bottle/service 功能 RC
    均 accepted，Phase 5 功能 Gate 已关闭；正式 bottle workflow 归 Phase 6 发布资产门禁；本版不实现
    rollback 命令、完整 fixture matrix 或主动模块拆分；
-7. **Phase 5.5：E2E/session P1 补完**——先完成 `1.0.3a1` Homebrew bootstrap 发布；随后开始
+7. **Phase 5.5：E2E/session P1 补完**——`1.0.3a1` Homebrew bootstrap 已完成；现在开始
    `SESSION-103-002` / `SESSION-103-003`；实现 teardown 和派生会话 ledger/cleanup，完成
    定向、异常路径与零残留回归；
 8. **Phase 6：集成与发布**——Phase 5.5 通过后再执行三 Executor 权限 E2E、Python/双机、
@@ -583,7 +592,7 @@ bottle stanza。此阻塞不得误记为已发布。
 | 2026-09-07～09-13 | Phase 3 | 已完成；progress 延期 | Approve/Deny、同 session resume 与极简弹窗已合入；`FLOW-103-001` 转入 1.0.4A |
 | 2026-09-14～09-20 | Phase 4 | `PERM-103-007` 已完成 | Claude 文件级 capability 与 Runner fail-closed 校验通过；真实 canary 归发布验收 |
 | 2026-09-21～09-24 | Phase 5 | 双机功能 RC Gate 已提前完成 | Mac mini/Intel Update success 与 fault rollback、双架构 bottle install/upgrade/uninstall、Intel service/Cellar identity、PATH/update guidance 与原环境恢复全部通过；正式 bottle workflow 转 Phase 6 |
-| Phase 5 Gate 后、Phase 6 前 | Homebrew bootstrap / Phase 5.5 | a1 发布准备中，Session P1 随后开发 | 从干净 commit 发布公开 Tap `1.0.3a1`；再完成 `SESSION-103-002` E2E teardown 与 `SESSION-103-003` 派生会话 ledger/cleanup，异常路径、幂等删除、doctor blocker 与零新增遗留对话回归通过 |
+| Phase 5 Gate 后、Phase 6 前 | Homebrew bootstrap / Phase 5.5 | a1 bootstrap 已发布并通过；Session P1 开始 | `SESSION-103-002` E2E teardown 与 `SESSION-103-003` 派生会话 ledger/cleanup 的异常路径、幂等删除、doctor blocker 与零新增遗留对话回归通过 |
 | Phase 5.5 通过后 | Phase 6 | 升版与正式发布待执行 | 补齐 `A2/a2` serial 映射并升版 `1.0.3a2`；验证 AgentBC-managed update 与 Brew upgrade 两条 a1→a2 链，执行三 Executor 权限 canary、故障注入和最终发布身份 Gate，随后发布 GitHub/PyPI 并更新 Tap |
 
 目标发布窗口仍以 `2026-09-27` 为基准，但不得越过 Phase 5.5 零残留门禁；若 session P1、
