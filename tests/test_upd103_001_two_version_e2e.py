@@ -232,6 +232,26 @@ class CommandConstructionTests(unittest.TestCase):
         for key in ("AGENTBC_CODEX_BIN", "AGENTBC_CLAUDE_BIN", "AGENTBC_HERMES_BIN"):
             self.assertEqual(Path(env[key]).parent, self.plan.bin_dir)
 
+    def test_generated_tls_ca_is_valid_for_server_auth(self) -> None:
+        cert_dir = self.root / "certs"
+        ca_cert, server_cert, _server_key = driver.make_tls(cert_dir)
+        ca_text = driver.subprocess.run(
+            ["openssl", "x509", "-in", str(ca_cert), "-noout", "-text"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        server_text = driver.subprocess.run(
+            ["openssl", "x509", "-in", str(server_cert), "-noout", "-text"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        self.assertIn("CA:TRUE", ca_text)
+        self.assertIn("TLS Web Server Authentication", server_text)
+        self.assertIn("Authority Key Identifier", server_text)
+        self.assertIn("IP Address:127.0.0.1", server_text)
+
 
 class HashAndEvidenceTests(unittest.TestCase):
     def test_hash_comparison_is_case_insensitive_and_strict(self) -> None:

@@ -8,24 +8,20 @@ temporary HOME / install / bin / config / workspace / spool hierarchy.  It
 never discovers or writes the real user installation, the default Runner
 spool, or the user task board.
 
-The driver is accepted on this baseline by exposing the known pre-fix Update
-failure (three-platform Skills stay 1.0.2a1 after the new CLI runs
-``setup --update``, so post-update identity fails closed) without modifying
-any real state.  It must never be used to claim product Update success; the
-``success`` scenario here intentionally reports the observed failure.
+The driver accepts a clean update only when the CLI, Runner, and all managed
+Skills advance together.  Fault scenarios accept only an exact rollback to
+the old CLI, Runner, Skill bytes, configuration, and stable user data.
 
 Scenarios
 ---------
 - ``success``            clean target wheel; contract is 1.0.2a1 -> 1.0.3a1
-                         with matching CLI / Runner / installed Skills.  On
-                         the current baseline this observes the known pre-fix
-                         failure instead of reporting success.
+                         with matching CLI / Runner / installed Skills.
 - ``setup_refresh``      fault wheel makes the new CLI's ``setup --update``
                          exit non-zero; the update flow must roll back.
 - ``runner_start``       fault wheel makes the new CLI's ``runner start``
                          exit non-zero; the update flow must roll back.
-- ``post_identity``      clean target wheel; post-update identity fails
-                         naturally (known pre-fix skill mismatch).
+- ``post_identity``      clean target wheel used by compatibility tests that
+                         expect a post-update identity failure and rollback.
 
 Every fault contract requires the exact pre-update CLI link, the managed
 Skill bytes/manifests, the old Runner identity, the config, and the stable
@@ -1015,15 +1011,39 @@ def make_tls(cert_dir: Path) -> tuple[Path, Path, Path]:
     server_key = cert_dir / "server.key"
     server_csr = cert_dir / "server.csr"
     server_cert = cert_dir / "server.pem"
+    ca_config = cert_dir / "ca.cnf"
+    ca_config.write_text(
+        "[req]\n"
+        "distinguished_name=dn\n"
+        "prompt=no\n"
+        "x509_extensions=v3_ca\n"
+        "[dn]\n"
+        "CN=AgentBC RC Test CA\n"
+        "[v3_ca]\n"
+        "basicConstraints=critical,CA:TRUE,pathlen:0\n"
+        "keyUsage=critical,keyCertSign,cRLSign\n"
+        "subjectKeyIdentifier=hash\n"
+        "authorityKeyIdentifier=keyid:always,issuer\n",
+        encoding="utf-8",
+    )
     san_file = cert_dir / "san.cnf"
-    san_file.write_text("subjectAltName=DNS:localhost,IP:127.0.0.1\n", encoding="utf-8")
+    san_file.write_text(
+        "[v3_server]\n"
+        "basicConstraints=critical,CA:FALSE\n"
+        "keyUsage=critical,digitalSignature,keyEncipherment\n"
+        "extendedKeyUsage=serverAuth\n"
+        "subjectKeyIdentifier=hash\n"
+        "authorityKeyIdentifier=keyid,issuer\n"
+        "subjectAltName=DNS:localhost,IP:127.0.0.1\n",
+        encoding="utf-8",
+    )
     for path in (ca_key, ca_cert, server_key, server_csr, server_cert):
         path.unlink(missing_ok=True)
     _run_or_raise(
         [
             "openssl", "req", "-x509", "-newkey", "rsa:2048",
             "-keyout", str(ca_key), "-out", str(ca_cert),
-            "-days", "2", "-nodes", "-subj", "/CN=AgentBC RC Test CA",
+            "-days", "2", "-nodes", "-config", str(ca_config),
         ]
     )
     _run_or_raise(
@@ -1039,7 +1059,7 @@ def make_tls(cert_dir: Path) -> tuple[Path, Path, Path]:
             "-in", str(server_csr),
             "-CA", str(ca_cert), "-CAkey", str(ca_key),
             "-CAcreateserial", "-out", str(server_cert),
-            "-days", "2", "-extfile", str(san_file),
+            "-days", "2", "-extfile", str(san_file), "-extensions", "v3_server",
         ]
     )
     return ca_cert, server_cert, server_key
