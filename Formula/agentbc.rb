@@ -9,6 +9,11 @@ class Agentbc < Formula
   license "MIT"
   revision 1
 
+  bottle do
+    root_url "https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.3A"
+    sha256 cellar: :any_skip_relocation, all: "9c1475516fc98e7d0a539178572c7692a25e5c4e29289b666db14d17e7b52e36"
+  end
+
   depends_on "python"
 
   patch do
