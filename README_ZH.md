@@ -62,6 +62,18 @@ python3 -m pip install agentbc==1.0.2a1
 agentbc setup
 ```
 
+Homebrew Alpha 直接使用本仓库作为 custom tap，无需单独的 `homebrew-*` 仓库：
+
+```bash
+brew tap roway49/agentbc https://github.com/roway49/agent-bridge-connect.git
+brew install roway49/agentbc/agentbc
+agentbc setup
+brew services start agentbc
+```
+
+该安装来源由 Homebrew 管理升级，请使用 `brew upgrade agentbc`；`agentbc update` 不会替换
+Cellar 管理的 CLI。
+
 请先阅读[快速开始](docs/QUICK_START_ZH.md)，任务与 Runner 命令详见
 [用户指南](docs/USER_GUIDE_ZH.md)。
 

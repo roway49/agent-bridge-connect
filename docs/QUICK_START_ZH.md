@@ -27,6 +27,20 @@ agentbc setup
 固定版本号可以确保 Alpha 部署结果可复现。如需使用带完整校验文件的 GitHub
 压缩包，请继续阅读下一节。
 
+### 安装 Homebrew Alpha
+
+现有 AgentBC 仓库同时作为 Homebrew custom tap：
+
+```bash
+brew tap roway49/agentbc https://github.com/roway49/agent-bridge-connect.git
+brew install roway49/agentbc/agentbc
+agentbc setup
+brew services start agentbc
+```
+
+该安装来源使用 `brew upgrade agentbc` 升级。AgentBC 自更新会返回 Homebrew 命令，
+不会直接修改 Cellar 文件。
+
 ## 3. 通过已校验的 GitHub Release 安装
 
 打开 [AgentBC 1.0.2A Release](https://github.com/roway49/agent-bridge-connect/releases/tag/v1.0.2A)

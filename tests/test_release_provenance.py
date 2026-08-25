@@ -595,6 +595,7 @@ class NoPublishBehaviourTests(unittest.TestCase):
             "\n    steps:\n", 1
         )[0]
         self.assertIn("github.event_name == 'release'", publish_guard)
+        self.assertIn("github.event.release.prerelease == false", publish_guard)
         self.assertIn("github.event_name == 'workflow_dispatch'", publish_guard)
         self.assertIn("inputs.publish", publish_guard)
         self.assertIn("inputs.release_tag != ''", publish_guard)

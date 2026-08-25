@@ -417,31 +417,36 @@ Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 
 1. **冻结并发布 `1.0.3a1` Homebrew bootstrap**：先提交本轮 Update RC 驱动、Python 3.14
    测试 CA 修复和清单证据，以该干净 commit 重新构建 sdist、manifest、Formula 与 bottle；
    临时 RC bottle 不得复制为正式资产；
-2. **使用独立公开 Tap**：默认目标为 `roway49/homebrew-agentbc`，Release/asset tag 使用
-   `agentbc-1.0.3a1`，Formula 位于 `Formula/agentbc.rb`。a1 的 sdist、manifest、Formula 和 bottle
-   由 Tap 仓库托管，不创建产品仓库 `v1.0.3A` Release，也不触发 PyPI workflow，避免 a1 提前进入
-   `agentbc update` 的产品 release index；
-3. **a1 公开安装验收**：Apple Silicon 与 Intel 均从公开 Tap clean install，要求强制 pour bottle、
+2. **复用现有产品仓库作为 custom Tap**：不创建 `homebrew-*` 仓库；在
+   `roway49/agent-bridge-connect` 根目录维护 `Formula/agentbc.rb`，安装入口固定为
+   `brew tap roway49/agentbc https://github.com/roway49/agent-bridge-connect.git` 后执行
+   `brew install roway49/agentbc/agentbc`。Homebrew 的双参数 tap 明确绑定现有仓库 URL，不依赖
+   `homebrew-` 命名约定；
+3. **a1 资产使用原仓库 prerelease**：`v1.0.3A` 作为 GitHub prerelease 承载 a1 的 sdist、manifest、
+   Formula 和 bottle。创建 prerelease 前必须先将 PyPI workflow 的 release publish gate 限制为
+   `prerelease == false`；prerelease 可运行 build/provenance 验证，但不得上传 PyPI。a1 会进入产品
+   GitHub release index，因此既有 1.0.2A AgentBC-managed 安装可看到 a1；这不影响后续 a1→a2 验收；
+4. **a1 公开安装验收**：Apple Silicon 与 Intel 均从公开 Tap clean install，要求强制 pour bottle、
    receipt 为 `built_as_bottle/poured_from_bottle=true`、CLI version/help 通过；Intel 另跑
    `brew services start/stop` 与 Cellar Runner identity。uninstall 后配置、record、report、artifact、
    customer project 和另一安装来源保持；
-4. **完成 Session P1**：依次实现 `SESSION-103-002` receipt 驱动 E2E teardown 和
+5. **完成 Session P1**：依次实现 `SESSION-103-002` receipt 驱动 E2E teardown 和
    `SESSION-103-003` auxiliary session ledger/cleanup；成功、Deny、timeout、transport lost、崩溃、
    Runner 重启和清理重试均不得新增遗留 Executor 对话；
-5. **补齐 Alpha serial 后升版 `1.0.3a2`**：Python 版本固定为 `1.0.3a2`，产品 tag 固定为
+6. **补齐 Alpha serial 后升版 `1.0.3a2`**：Python 版本固定为 `1.0.3a2`，产品 tag 固定为
    `v1.0.3A2`。`build_provenance.py` 已支持 `A[N]`，但 `update._tag_to_package_version()`、
    `generate_homebrew_formula.py` 和相关 fixture 仍只接受 `A/a1`，必须先统一为同一映射并覆盖
    `A -> a1`、`A2 -> a2`、非法/零序号 fail closed；
-6. **分别验证两条升级链**：AgentBC-managed a1 安装通过 `agentbc update` 升到 a2，验证明确
+7. **分别验证两条升级链**：AgentBC-managed a1 安装通过 `agentbc update` 升到 a2，验证明确
    `y` 成功、`n`/空输入/EOF 零写入、manifest/hash/tag 失败前停止、Runner-start fault 精确回滚；
    Homebrew a1 只能通过 `brew upgrade agentbc` 升到 a2，`agentbc update` 必须继续仅返回
    `homebrew_update_required`，不得把 Brew 路径作为自更新通过证据；
-7. **正式发布 `1.0.3a2`**：三 Agent/session、全量 unittest、Ruff、compileall、build、Twine、
+8. **正式发布 `1.0.3a2`**：三 Agent/session、全量 unittest、Ruff、compileall、build、Twine、
    provenance、manifest/hash、隔离 wheel、双机 CLI/Runner/Skill identity 和 a1→a2 两条升级链
    全部通过后，才创建产品 GitHub Release `v1.0.3A2` 并由 trusted publishing 上传 PyPI
    `agentbc==1.0.3a2`；最后把公开 Tap Formula/bottle 更新到 a2，再做一次真实 `brew upgrade`；
-8. **人工不可替代门禁**：GitHub Tap 仓库创建/可见性、Release 发布按钮、PyPI environment 审批和
-   最终 go/no-go 由用户确认；自动化只准备可审计资产和命令，不代替这些外部不可逆确认。
+9. **人工不可替代门禁**：原仓库 prerelease/正式 Release 发布按钮、PyPI environment 审批和最终
+   go/no-go 由用户确认；自动化只准备可审计资产和命令，不代替这些外部不可逆确认。
 
 ### 8.2.2 E2E teardown 与派生会话清理（`SESSION-103-002` / `SESSION-103-003`）
 

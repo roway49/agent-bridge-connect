@@ -29,6 +29,20 @@ agentbc setup
 The explicit version pin keeps Alpha deployments reproducible. To use the
 checksummed GitHub bundle instead, continue with the next section.
 
+### Install The Homebrew Alpha
+
+The existing AgentBC repository is also the Homebrew custom tap:
+
+```bash
+brew tap roway49/agentbc https://github.com/roway49/agent-bridge-connect.git
+brew install roway49/agentbc/agentbc
+agentbc setup
+brew services start agentbc
+```
+
+Upgrade this installation with `brew upgrade agentbc`. AgentBC self-update
+intentionally reports the Homebrew command instead of changing Cellar files.
+
 ## 3. Install From A Verified GitHub Release
 
 Open the [AgentBC 1.0.2A release](https://github.com/roway49/agent-bridge-connect/releases/tag/v1.0.2A)

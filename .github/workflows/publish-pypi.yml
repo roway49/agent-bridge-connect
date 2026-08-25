@@ -98,7 +98,7 @@ jobs:
     name: Publish agentbc
     needs: build
     if: >-
-      (github.event_name == 'release' && github.event.action == 'published') ||
+      (github.event_name == 'release' && github.event.action == 'published' && github.event.release.prerelease == false) ||
       (github.event_name == 'workflow_dispatch' && inputs.publish && inputs.release_tag != '')
     runs-on: ubuntu-latest
     environment:
