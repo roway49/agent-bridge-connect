@@ -8,6 +8,12 @@ class Agentbc < Formula
   sha256 "4644734013081ef22f5f6c9941f0b75fb3ca60816cd1ddf4d16cde382d18be89"
   license "MIT"
 
+  bottle do
+    root_url "https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.3A2"
+    sha256 cellar: :any_skip_relocation, arm64_sequoia: "e42f10d5643aa78a406984fa19720fcc4de3f671f50afb9d5b15a0a1a68498ea"
+    sha256 cellar: :any_skip_relocation, tahoe: "4ff5fac11796e4790e74e7d85b915325dbc3161e7bb4dedea9909e46def4ca80"
+  end
+
   depends_on "python"
 
   def install
