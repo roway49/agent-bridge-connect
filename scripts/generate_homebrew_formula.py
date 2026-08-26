@@ -12,8 +12,12 @@ from pathlib import Path
 def generate_formula(manifest: dict, base_url: str) -> str:
     version = str(manifest.get("package_version") or "")
     tag = str(manifest.get("tag") or "")
-    tag_match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)A", tag)
-    if tag_match is None or version != ".".join(tag_match.groups()) + "a1":
+    tag_match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)A([1-9]\d*)?", tag)
+    if tag_match is None:
+        raise ValueError("manifest version/tag is not an AgentBC Alpha release")
+    major, minor, patch, serial = tag_match.groups()
+    expected_version = f"{major}.{minor}.{patch}a{serial or '1'}"
+    if version != expected_version:
         raise ValueError("manifest version/tag is not an AgentBC Alpha release")
     if not base_url.startswith("https://"):
         raise ValueError("formula release URL must use https")

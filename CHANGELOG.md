@@ -1,10 +1,33 @@
 # Changelog
 
+## 1.0.3A2 - 2026-08-26
+
+> Python package `1.0.3a2` is the internal release candidate. Publication
+> remains gated on real executor-session cleanup and the `a1 -> a2`
+> managed-update and Homebrew-upgrade tests.
+
+### Added
+
+- Receipt-driven E2E session teardown and a task/run-scoped auxiliary-session
+  ledger with exact official cleanup, bounded retries, redacted public views,
+  and stable Doctor/report blockers for unresolved derived conversations.
+
+### Changed
+
+- Alpha release serial mapping now treats `vX.Y.ZA` as `X.Y.Za1` and
+  `vX.Y.ZA2` as `X.Y.Za2` across Update and Homebrew Formula generation.
+
+### Validation
+
+- Session P1 and the A2 release mapping passed 153 focused tests, 1386 full
+  tests, Ruff, compileall,
+  wheel/sdist build, and Twine validation before the real executor cleanup
+  canary.
+
 ## 1.0.3A - 2026-08-25
 
 > Python package `1.0.3a1` is available as the GitHub prerelease and Homebrew
-> bootstrap. The planned `1.0.3a2` update remains gated on executor-session
-> teardown, auxiliary-session cleanup, and the real `a1 -> a2` upgrade test.
+> bootstrap. The follow-up a2 candidate remains unpublished.
 
 ### Added
 

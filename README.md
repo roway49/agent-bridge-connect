@@ -12,7 +12,7 @@ gateway, one report contract, and one recovery model.
 
 Current release: **1.0.2A** (Python package version `1.0.2a1`).
 
-Internal development candidate: **1.0.3A** (Python package `1.0.3a1`); this
+Internal development candidate: **1.0.3A2** (Python package `1.0.3a2`); this
 candidate is not yet the public release.
 
 - Repository and releases: [GitHub](https://github.com/roway49/agent-bridge-connect)

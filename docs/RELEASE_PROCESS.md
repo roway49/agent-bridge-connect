@@ -4,7 +4,7 @@
 
 This checklist prepares and publishes AgentBC without allowing a local smoke
 test, a mutable branch, or an existing artifact name to stand in for a release.
-The current internal candidate is **1.0.3A** (Python package `1.0.3a1`), while
+The current internal candidate is **1.0.3A2** (Python package `1.0.3a2`), while
 the published release procedure below remains the immutable 1.0.2A record.
 For `1.0.2A`, the fixed mapping is:
 

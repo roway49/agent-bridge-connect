@@ -13,6 +13,7 @@ from agent_bridge_connect.protocol import ABCError
 from agent_bridge_connect.service import TaskService
 from agent_bridge_connect import update as update_module
 from agent_bridge_connect.update import (
+    _tag_to_package_version,
     check_for_update,
     install_verified_release,
     run_update_flow,
@@ -98,6 +99,14 @@ class UpdateResolutionTests(unittest.TestCase):
                 fetch_bytes=self._responses(tamper_manifest=True),
             )
         self.assertEqual(raised.exception.code, "update_manifest_hash_mismatch")
+
+    def test_alpha_serial_tag_mapping_is_stable_and_fail_closed(self) -> None:
+        self.assertEqual(_tag_to_package_version("v1.0.3A"), "1.0.3a1")
+        self.assertEqual(_tag_to_package_version("v1.0.3A2"), "1.0.3a2")
+        self.assertEqual(_tag_to_package_version("v1.0.3A12"), "1.0.3a12")
+        for invalid in ("v1.0.3A0", "v1.0.3A02", "v1.0.3a2", "1.0.3A2"):
+            with self.subTest(tag=invalid):
+                self.assertIsNone(_tag_to_package_version(invalid))
 
 
 class UpdateFlowTests(unittest.TestCase):

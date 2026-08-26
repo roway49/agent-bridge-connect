@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentbc"
-version = "1.0.3a1"
+version = "1.0.3a2"
 description = "Local-first task control plane for coordinating Codex, Claude Code, and Hermes."
 readme = "README.md"
 requires-python = ">=3.10"

@@ -6,7 +6,7 @@ This page contains only the Public Alpha deployment flow. Task, Runner,
 recovery, and uninstall commands are documented in the
 [User Guide](USER_GUIDE.md).
 
-The internal development candidate is **1.0.3A** (Python package `1.0.3a1`).
+The internal development candidate is **1.0.3A2** (Python package `1.0.3a2`).
 The published installation commands below intentionally remain on 1.0.2A.
 
 ## 1. Check Requirements

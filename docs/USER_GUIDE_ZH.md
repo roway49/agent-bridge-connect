@@ -2,9 +2,8 @@
 
 中文 | [English](USER_GUIDE.md)
 
-适用于 AgentBC **1.0.3A** 预发布版（Python 包 `1.0.3a1`）。当前 Homebrew
-bootstrap 显示为 `1.0.3a1_1`；规划中的 `1.0.3a2` 在会话清理和真实升级门禁通过前
-仍属于开发候选。
+适用于 AgentBC **1.0.3A2** 内部候选版（Python 包 `1.0.3a2`）。当前 Homebrew
+bootstrap 仍为 `1.0.3a1_1`；a2 在真实会话清理和升级门禁通过前不公开发布。
 
 ## 命令结构
 
