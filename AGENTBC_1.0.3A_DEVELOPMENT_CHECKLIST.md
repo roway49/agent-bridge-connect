@@ -2,8 +2,8 @@
 
 > 制定日期：2026-08-11  
 > 最近整理：2026-08-26
-> 状态：权限、Phase 5 Update/Homebrew 双机功能 RC Gate、公开 `1.0.3a1` Homebrew bootstrap 与 Session P1 自动化开发门禁已通过；下一项为 `1.0.3a2` 升版和真实 session/update RC
-> 目标版本：`v1.0.3A`  
+> 状态：`1.0.3A` 开发与发布已收口；GitHub `v1.0.3A2`、PyPI `1.0.3a2` 和双架构 Homebrew bottle 已发布
+> 目标版本：`v1.0.3A2`
 > 来源基线：`1.0.2A` 开发截止代码 `b8af2f3a0a1f56814854e3f46056dd8ab9cf55d7`
 > 计划开发起点：`private/integration@fc2f3f19d18d1c23890ee02a4ee9600c36456a60`
 > `PERM-103-007` 实现快照：`private/integration@0cfb492`
@@ -13,6 +13,7 @@
 > Homebrew 零写入修复：`private/integration@d0e4599`
 > 公开 a1 Homebrew bootstrap：`public/main@9671b2c`
 > Session P1 实现快照：`private/integration@0e56bb3`（实现提交 `58e5986`）
+> 正式发布身份：`v1.0.3A2@62757a4`；公开发布后 Formula 收口：`public/main@87c4bca`
 > 前置条件：`1.0.2A` 最终发布身份与双机 Gate 完成；Phase 0 只读契约盘点可提前进行
 > 架构依据：`AGENTBC_ALPHA_DEVELOPMENT_HANDBOOK.md`
 
@@ -94,10 +95,10 @@ Codex、Claude、Hermes 在拿到合法 `AGENTBC_FINAL_CALLBACK(final_state=inpu
 | `PERM-103-008` / `PERM-103-009` | 已完成 | `a993e94`、`4ef12eb`：permission/session 兼容总错误下新增 15 类稳定原因与脱敏诊断；`2b1bcbd`、`247c45b`：Codex app-server single-action 生产链已合入；既有一次性 full continuation 继续作为兼容兜底 |
 | `FLOW-103-001` | 已延期 | 与 `FLOW-104-001` 的结构化多 steps、`PROTO-104-001` fixtures 和 `ARCH-104-001` 局部重构一起进入 1.0.4A |
 | `UPD-103-001` | 双机 RC Gate 与 Homebrew 零写入路由已通过 | `2656cef` 修复跨版本受管 Skill 识别，`b285a35` 补齐 CLI/Runner/Skill 事务回滚与 identity 校验，`eeb9c00` 增加隔离两版本 RC 驱动；`integration@4ef01ca` 上 69 项 Update 定向测试通过，Mac mini 与 Intel MacBook 均完成 `1.0.2a1 → 1.0.3a1` 成功切换及 Runner-start 故障包精确回滚。`d0e4599` 将 TaskService 改为仅在确认升级并进入 preflight 时惰性创建，Homebrew/current/decline 路径不再初始化或写入 board；31 项定向、1346 项全量、Ruff、compileall 与 diff check 通过 |
-| `PKG-103-001` | 公开 `1.0.3a1` Homebrew bootstrap 已通过 | `bf3c1e6` 增加默认只读、双重执行门禁的 RC 驱动；`4d21d31` 删除 Formula 的 Python 小版本硬编码；`bde6b73` 将 Doctor 改为诊断分类；`40ce0ec` 与 `d0e4599` 保证 Homebrew-owned CLI 在任何 board 初始化前路由到 `brew upgrade agentbc`。公开 `main@9671b2c`、Formula revision `1` 与 `all` bottle 已发布；Apple Silicon 与 Intel 的 `brew install agentbc`、`agentbc update` 和 bottle receipt 均通过，Intel 历史 board 与 local-alpha Runner 保持不变 |
+| `PKG-103-001` | 已完成并正式发布 | a1 bootstrap 与双机 RC 均通过；a2 Formula 使用项目统一的 `depends_on "python"`，不硬编码 Python 小版本。正式 Release 提供 `arm64_sequoia` bottle `e42f10d…498ea` 与 Intel `tahoe` bottle `4ff5fac…ca80`；两端均完成真实 pour/版本/help 验证，Homebrew-owned `agentbc update` 返回 `brew upgrade agentbc`。Intel `brew test` 仍在进入 Formula test 前被 Homebrew 的宿主 Xcode/CLT 诊断拦截，不构成 AgentBC 依赖 |
 | `SESSION-103-002` | 开发与自动化门禁已完成；真实 RC 待 a2 候选 | `58e5986` 增加 receipt 驱动 E2E supervisor、try/finally 与 SIGINT/SIGTERM/KeyboardInterrupt teardown、重启重放、精确官方删除和 dispatcher 排除；`0e56bb3` 已合入 integration |
 | `SESSION-103-003` | 开发与自动化门禁已完成；真实 RC 待 a2 候选 | `58e5986` 增加 task/run scoped auxiliary ledger、两阶段 reserve/bind、主会话优先与 deepest/newest 派生清理、失败继续、bounded retry、Doctor/report blocker 和公共脱敏投影；227 项定向、1384 项全量、Ruff、compileall、build/Twine 与 diff check 通过 |
-| `REL-103-CANDIDATE` | a1 GitHub prerelease/Homebrew bootstrap 已完成；a2 正式发布待真实 Session/Update RC | `v1.0.3A` prerelease、sdist/wheel/manifest、公开 Formula revision `1` 与 `all` bottle 已发布；公开 `main@9671b2c` 的 Release Check `32855168616` 在 Python 3.10/3.11/3.14 全通过。PyPI 仍未发布，Session P1 自动化开发 Gate 已通过；真实三 Executor cleanup/权限 canary、a1→a2 两条升级链与最终发布 Gate 仍待完成 |
+| `REL-103-CANDIDATE` | 已完成并发布 | annotated tag `v1.0.3A2` 固定到 `62757a4`；Release Check `32974163104` 通过，Trusted Publishing `32974876711` 成功。GitHub Release 包含 wheel、sdist、manifest、Formula、macOS bundle/校验/安装器及双架构 bottle；PyPI `agentbc==1.0.3a2` wheel/sdist SHA 与 GitHub 一致。公开 Formula 与一次性 workflow 清理收口到 `87c4bca` |
 | `FLOW-103-001` / `PROTO-104-001` / `ARCH-104-001` / `FLOW-104-001` / `PERM-104-001` / `PERM-104-002` / `FLOW-104-002` | 已延期 | 保持 `1.0.4A` 边界，本版不实现；1.0.3A 不再扩大功能范围，只执行 a2 升版、session/update/Homebrew 与三 Executor 的 RC 验收 |
 
 Codex 控制面遗留任务 `HZQR-001` 因旧运行缺失官方 session receipt 于 2026-08-16 明确取消，
@@ -472,6 +473,14 @@ mtime/size/owner 不变，local-alpha Runner PID `14131` 与命令行不变，Br
 Intel 的附加 `brew test` 仍被 Homebrew 自身 Xcode 15.4/CLT 诊断在 Formula test 前拦截，按既定边界
 不作为用户安装或运行失败。a1 bootstrap Gate 至此关闭，下一开发项为 `SESSION-103-002`。
 
+正式 a2 发布于 2026-08-26 完成：annotated `v1.0.3A2` 固定到 `62757a4`，产品 Release 名称与
+CHANGELOG 均只使用 `1.0.3A`。Release Check `32974163104` 与 PyPI Trusted Publishing
+`32974876711` 通过；PyPI wheel SHA-256 为 `6a78981c1edd23d41076e87ab89166992f8f59dba1be83bfc37185a4f6ce25d8`，
+sdist 为 `4644734013081ef22f5f6c9941f0b75fb3ca60816cd1ddf4d16cde382d18be89`。MacBook 真实安装
+`tahoe` bottle 后 `agentbc 1.0.3a2`、help 与 Homebrew-owned update guidance 通过；Mac mini
+`arm64_sequoia` bottle 的 install/test/version 通过。两个 bottle 分别使用目标平台独立构建，AgentBC
+Formula 继续只声明通用 Homebrew `python`，没有新增 Xcode 或 Python 小版本合同。
+
 ### 8.2.2 E2E teardown 与派生会话清理（`SESSION-103-002` / `SESSION-103-003`）
 
 - `UPD-103-001` 真实新旧包升级/故障注入和 `PKG-103-001` 双架构
@@ -606,8 +615,9 @@ AgentBC/Executor 接受 full grant 不等于宿主 OS allow-list 已扩大，lin
    `SESSION-103-002` / `SESSION-103-003` 已由 `58e5986` 实现并在 `0e56bb3` 合入；227 项定向、
    1384 项全量、Ruff、compileall、build/Twine 与 diff check 通过。真实零残留 session RC 随 a2
    候选执行，不把模拟 cleanup adapter 当成真实 Executor 删除成功；
-8. **Phase 6：集成与发布**——Phase 5.5 通过后再执行三 Executor 权限 E2E、Python/双机、
-   失败注入与最终发布身份 Gate。
+8. **Phase 6：集成与发布**——已完成 `v1.0.3A2@62757a4`、GitHub Release、PyPI Trusted
+   Publishing、双架构 Homebrew bottle 与公开 Formula 收口；未进入本版的机械审批判断、结构化
+   handoff multi-steps 和终态通知解耦继续保持 `1.0.4A` 边界。
 
 ### 9.1 `1.0.3A` 开始前的人工过渡规则
 
@@ -629,12 +639,11 @@ AgentBC/Executor 接受 full grant 不等于宿主 OS allow-list 已扩大，lin
 | 2026-09-07～09-13 | Phase 3 | 已完成；progress 延期 | Approve/Deny、同 session resume 与极简弹窗已合入；`FLOW-103-001` 转入 1.0.4A |
 | 2026-09-14～09-20 | Phase 4 | `PERM-103-007` 已完成 | Claude 文件级 capability 与 Runner fail-closed 校验通过；真实 canary 归发布验收 |
 | 2026-09-21～09-24 | Phase 5 | 双机功能 RC Gate 已提前完成 | Mac mini/Intel Update success 与 fault rollback、双架构 bottle install/upgrade/uninstall、Intel service/Cellar identity、PATH/update guidance 与原环境恢复全部通过；正式 bottle workflow 转 Phase 6 |
-| Phase 5 Gate 后、Phase 6 前 | Homebrew bootstrap / Phase 5.5 | a1 bootstrap 已发布；Session P1 开发和自动化 Gate 已通过 | `58e5986` / `0e56bb3` 已实现 E2E teardown 与派生会话 ledger/cleanup；a2 候选仍须完成真实 Executor 精确删除、Doctor blocker 清零与零新增遗留对话 RC |
-| Phase 5.5 通过后 | Phase 6 | 升版与正式发布待执行 | 补齐 `A2/a2` serial 映射并升版 `1.0.3a2`；验证 AgentBC-managed update 与 Brew upgrade 两条 a1→a2 链，执行三 Executor 权限 canary、故障注入和最终发布身份 Gate，随后发布 GitHub/PyPI 并更新 Tap |
+| Phase 5 Gate 后、Phase 6 前 | Homebrew bootstrap / Phase 5.5 | 已完成 | `58e5986` / `0e56bb3` 已实现 E2E teardown 与派生会话 ledger/cleanup；真实测试发现的机械审批与通知优化已转入 1.0.4A，不再扩大 1.0.3A 范围 |
+| Phase 5.5 通过后 | Phase 6 | 已完成 | `v1.0.3A2@62757a4`、GitHub/PyPI、macOS bundle 与 Intel/ARM64 Homebrew bottle 已发布，公开 Formula 收口到 `87c4bca` |
 
-目标发布窗口仍以 `2026-09-27` 为基准，但不得越过 Phase 5.5 零残留门禁；若 session P1、
-Hermes early approval/session capability 或 Claude 文件级 capability 无法由当前上游 CLI
-精确表达，本版按既定 fail-closed 合同交付，不以危险近似实现换取日期。
+`1.0.3A` 已于 2026-08-26 提前完成正式发布。无法由当前上游 CLI 精确表达的机械审批、结构化
+handoff 与通知恢复能力继续按既定 fail-closed 合同进入 `1.0.4A`，不回写已发布版本。
 
 ### 9.3 权限审批测试任务流程（`PERM-TEST-103`）
 
