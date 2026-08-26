@@ -684,6 +684,27 @@ def _render_report_md(report: dict[str, Any]) -> str:
             ]
         )
 
+    auxiliary = policy.get("auxiliary_sessions") or []
+    auxiliary_aggregate = policy.get("auxiliary_aggregate") or {}
+    if auxiliary:
+        lines.extend(["", "### Auxiliary Executor Sessions"])
+        lines.append(
+            f"- Aggregate: `{auxiliary_aggregate.get('state') or 'resolved'}` "
+            f"(`{auxiliary_aggregate.get('resolved', 0)}` resolved / "
+            f"`{auxiliary_aggregate.get('unresolved', 0)}` unresolved)"
+        )
+        for entry in auxiliary:
+            cleanup = entry.get("cleanup") or {}
+            lines.append(
+                f"- Auxiliary `{entry.get('executor') or 'unknown'}` "
+                f"`{entry.get('purpose') or 'session'}` "
+                f"ref=`{entry.get('ref') or 'unbound'}` "
+                f"state=`{entry.get('session_state') or 'unknown'}` "
+                f"cleanup=`{cleanup.get('state') or 'not_requested'}` "
+                f"attempts=`{cleanup.get('attempts', 0)}` "
+                f"error=`{cleanup.get('error_code') or 'none'}`"
+            )
+
     image_inputs = (report.get("media") or {}).get("images") or []
     if image_inputs:
         lines.extend(["", "## Image Inputs", *[f"- `{image}`" for image in image_inputs]])
