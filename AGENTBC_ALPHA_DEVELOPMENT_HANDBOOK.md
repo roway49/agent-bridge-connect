@@ -18,6 +18,7 @@ Phase/Wave、AgentBC 任务 ID、临时提交 SHA、单次测试数量或故障�
 - 用户命令和行为：`docs/USER_GUIDE.md`、`docs/USER_GUIDE_ZH.md`；
 - 真实实现：`src/agent_bridge_connect/` 与当前测试；
 - 发布步骤：`docs/RELEASE_PROCESS_ZH.md`。
+- 双机 Git、分支、worktree 与公开写入规则：`AGENTBC_DUAL_MACHINE_GIT_WORKFLOW.md`。
 
 开始工作前先确认真实状态：
 
@@ -438,7 +439,9 @@ status/report/doctor。只改 setup 默认值、prompt 或 Adapter 参数都不�
 
 ## 10. 开发与合并护栏
 
-- 开发只在固定 agent worktree；integration 控制端审阅、提交、合并和同步分支；
+- 长期分支只允许 `main`、`private/integration` 和三个 `agent/*`；禁止私建引用别名；
+- Agent worktree 按任务创建，integration 控制端审阅、提交、合并和同步分支；
+- 必要临时分支在合入 integration 并验证提交可达后必须立即删除分支和关联 worktree；
 - Executor 任务不得执行 git add/commit/push/merge/rebase，避免 linked-worktree `.git` 写入冲突；
 - 失败分支先恢复干净基线，再用新根任务重新派发，不沿用污染现场；
 - 验收必须查看 status、report、callback、RunLease、execution session receipt、diff 和测试；
@@ -446,6 +449,11 @@ status/report/doctor。只改 setup 默认值、prompt 或 Adapter 参数都不�
 - 不在有活跃任务时更新安装、替换 CLI/Skill 或重启 Runner；
 - 私有手册与开发清单不得进入公开 main；
 - 公开版本、tag 和 PyPI 文件不可覆盖或移动。
+
+Mac mini 可以并且必须正常 fetch/pull 公开 `main` 与 tags；禁止的是从 Mac mini 向公开 remote
+push。保护规则只能由 `pre-push` 根据目标 remote/ref 执行，不得使用 `reference-transaction`
+阻止本地 `main`、remote-tracking ref 或 tag 的正常更新。完整双机流程以
+`AGENTBC_DUAL_MACHINE_GIT_WORKFLOW.md` 为准。
 
 每个缺陷修复必须回答：根因属于哪一层、为何原边界未拦住、是否修在唯一责任模块、是否
 删除重复逻辑、哪个回归能阻止复发。
