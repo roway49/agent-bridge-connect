@@ -2,9 +2,8 @@
 
 [中文](USER_GUIDE_ZH.md) | English
 
-Applies to the AgentBC **1.0.3A2** internal candidate (Python package
-`1.0.3a2`). The current Homebrew bootstrap remains `1.0.3a1_1`; a2 remains
-unpublished until its real session-cleanup and upgrade gates pass.
+Applies to the AgentBC **1.0.3A** release (tag `v1.0.3A2`, Python package
+`1.0.3a2`).
 
 ## Command Surface
 

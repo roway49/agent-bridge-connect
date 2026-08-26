@@ -1,33 +1,8 @@
 # Changelog
 
-## 1.0.3A2 - 2026-08-26
+## 1.0.3A - 2026-08-26
 
-> Python package `1.0.3a2` is the internal release candidate. Publication
-> remains gated on real executor-session cleanup and the `a1 -> a2`
-> managed-update and Homebrew-upgrade tests.
-
-### Added
-
-- Receipt-driven E2E session teardown and a task/run-scoped auxiliary-session
-  ledger with exact official cleanup, bounded retries, redacted public views,
-  and stable Doctor/report blockers for unresolved derived conversations.
-
-### Changed
-
-- Alpha release serial mapping now treats `vX.Y.ZA` as `X.Y.Za1` and
-  `vX.Y.ZA2` as `X.Y.Za2` across Update and Homebrew Formula generation.
-
-### Validation
-
-- Session P1 and the A2 release mapping passed 153 focused tests, 1386 full
-  tests, Ruff, compileall,
-  wheel/sdist build, and Twine validation before the real executor cleanup
-  canary.
-
-## 1.0.3A - 2026-08-25
-
-> Python package `1.0.3a1` is available as the GitHub prerelease and Homebrew
-> bootstrap. The follow-up a2 candidate remains unpublished.
+> Development and release validation are complete for AgentBC `1.0.3A`.
 
 ### Added
 
@@ -44,6 +19,9 @@
   manifest, tag, wheel digest, installation identity, and legacy-cutover gates.
 - A public Homebrew Formula and universal bottle for both Apple Silicon and
   Intel macOS, with package-managed upgrades kept separate from self-update.
+- Receipt-driven executor-session teardown and a task/run-scoped auxiliary
+  session ledger with exact official cleanup, bounded retries, redacted public
+  views, and stable Doctor/report diagnostics.
 
 ### Changed
 
@@ -56,6 +34,8 @@
   verified managed-install transaction.
 - Homebrew-owned installations return `brew upgrade agentbc` without prompting,
   writing a cutover stamp, or replacing files outside Homebrew.
+- Alpha release tags and Python package versions use one validated serial
+  mapping across Update, release manifests, and Homebrew Formula generation.
 
 ### Fixed
 
@@ -66,17 +46,23 @@
   previous Runner; incomplete recovery fails closed.
 - Update ownership checks reject unmanaged, pip/pipx-style, and external CLI
   links instead of overwriting them in place.
+- Successful, failed, denied, timed-out, and transport-lost terminal paths
+  schedule idempotent cleanup of official executor sessions when retention is
+  disabled; registered auxiliary sessions follow the same task/run boundary.
 
 ### Validation
 
-- Mac mini Integration: 110 focused permission regressions and 1229 full tests
-  passed with Ruff, compileall, and `git diff --check`.
-- Intel MacBook source gate: package smoke, 140 focused permission regressions,
-  and 1229 full tests passed on Python 3.10 using an isolated HOME.
-- The public `v1.0.3A` prerelease and Homebrew revision-1 bottle passed Formula
-  syntax/style, package provenance, manifest/hash, isolated install, and 97
-  focused Update/Homebrew tests. Both ARM64 and Intel hosts installed the bottle
-  and confirmed `agentbc update` returns the package-manager upgrade route.
+- The final source gate passed 153 focused release/session tests and 1386 full
+  tests, plus Ruff, compileall, shell and Ruby syntax, `git diff --check`,
+  wheel/sdist build, Twine validation, manifest hashes, and isolated install.
+- Apple Silicon and Intel hosts passed Homebrew install, upgrade, uninstall,
+  PATH coexistence, service lifecycle, and package-manager Update routing.
+- Managed Update passed latest/no/EOF zero-write routes, integrity failures,
+  successful bootstrap-to-final upgrade, identity cutover, and automatic
+  restoration after injected Runner startup failure.
+- Real Codex terminal canaries verified both failure-path and successful-path
+  official session cleanup with retention disabled, one cleanup attempt, a
+  closed RunLease, and healthy Doctor diagnostics.
 
 ## 1.0.2A - 2026-08-14
 
