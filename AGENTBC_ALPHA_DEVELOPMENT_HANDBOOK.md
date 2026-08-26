@@ -1,7 +1,7 @@
 # AgentBC 开发手册
 
-> 当前公开版本：AgentBC `1.0.2A` / Python `1.0.2a1`
-> 当前开发方向：`1.0.3A` 统一权限治理与结构化审批
+> 当前公开版本：AgentBC `1.0.3A` / Python `1.0.3a2`
+> 当前开发方向：`1.0.4A` 控制面机械判定、结构化流程与受保护重构
 > 私有开发入口：`/Users/wangroway/hermes-team/codex/AgentBC_Temp/agent-worktrees/integration`
 > 公开仓库：<https://github.com/roway49/agent-bridge-connect>
 > 文档属性：私有长期维护基线；生成公开候选时必须排除本文件
@@ -527,28 +527,38 @@ mock 通过不能替代真实 CLI；真实任务成功也不能替代源码、�
 - setup 默认权限 `inherit`、retention `false`；
 - `task delete` 内置 `y/N` 确认并保护 customer project。
 
-### 1.0.3A：剩余发布验收主线
+### 1.0.3A：权限、更新、Session 与分发基线（已截止）
 
-- 权限设置、三 Executor approval/session、弹窗与 Claude 临时工程文件级能力已经收口；默认
+- 权限设置、三 Executor approval/session、弹窗与 Claude 临时工程文件级能力完成；默认
   `inherit`、已有配置保留和 handoff 继承逻辑保持不变；
 - `agentbc update` 的 manifest/hash 校验、`y/N`、受管 venv 原子切换、Runner/Skill identity 复验
   与内部失败恢复已实现；Alpha 不提供公开 rollback 命令；
-- Homebrew Formula 生成与发布资产接线已实现；剩余真实 release 资产升级故障注入，以及 Apple
-  Silicon/Intel 的安装、升级、卸载、services、PATH 和现有 PyPI/local bundle 迁移；
-- 只补 RC 所需的可复现发布证据，不再扩大本版权限、progress、update 或 packaging 功能范围。
+- E2E teardown 与 task/run scoped auxiliary session ledger 完成，默认 `retain=false` 时按官方 receipt
+  定向清理主会话和已登记派生会话；
+- GitHub `v1.0.3A2`、PyPI `1.0.3a2`、macOS bundle、Intel/Apple Silicon Homebrew bottle 已发布；
+- `1.0.3A` 自 2026-08-26 起冻结。除发布资产完整性或高风险安全问题外，不回填新功能、状态机、
+  schema、权限策略或 CLI；后续需求只进入 `1.0.4A` 清单。
 
-详细合同只在 `AGENTBC_1.0.3A_DEVELOPMENT_CHECKLIST.md` 维护，避免手册再次复制 Phase 计划。
+历史合同与发布证据保留在 `AGENTBC_1.0.3A_DEVELOPMENT_CHECKLIST.md`，该文件只读归档。
 
-### 1.0.4A：已确定延期项
+### 1.0.4A：控制面机械判定与结构化流程
 
 - `FLOW-103-001`：资源耗尽与 final callback 的权威、单调 progress receipt；
 - `PERM-104-001`：审批资格、通知类型、Deny 终态和 fallback eligibility 由 Core 机械判定；
+- `PERM-104-002`：区分 Executor、AgentBC、PathPlan 与宿主 OS 阻塞域；已批准但不可升级的同一
+  fingerprint 直接收敛为 blocked，不重复弹窗或启动 continuation；
+- `FLOW-104-001`：handoff 支持结构化多 steps，task packet、Prompt 与 callback 只使用持久化
+  declared steps；
+- `FLOW-104-002`：终态状态、报告/压缩、通知和 cleanup 拆成独立、可重放阶段，record 超限不得
+  吞掉完成/失败通知；
 - 建立三 Executor 完整、版本化的 version/help/argv/output/session/approval/resource fixture
   matrix 与未知能力组合 fail-closed probe（`PROTO-104-001`）；
 - 在上述 fixtures 和 characterization tests 保护下进行局部重构，优先拆分 permission
   registry、approval transport、Doctor collectors、Runner IPC handlers 和 update service
   （`ARCH-104-001`）；
 - 重构提交与状态机、schema、CLI 文案和权限语义变更严格分离。
+
+优先级、依赖、文件边界和验收合同统一维护在 `AGENTBC_1.0.4A_DEVELOPMENT_CHECKLIST.md`。
 
 ### 中期方向
 

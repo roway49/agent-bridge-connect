@@ -3,6 +3,7 @@
 > 制定日期：2026-08-11  
 > 最近整理：2026-08-26
 > 状态：`1.0.3A` 开发与发布已收口；GitHub `v1.0.3A2`、PyPI `1.0.3a2` 和双架构 Homebrew bottle 已发布
+> 文档状态：2026-08-26 开发截止归档；禁止继续追加 1.0.3A 功能、排期或实现任务
 > 目标版本：`v1.0.3A2`
 > 来源基线：`1.0.2A` 开发截止代码 `b8af2f3a0a1f56814854e3f46056dd8ab9cf55d7`
 > 计划开发起点：`private/integration@fc2f3f19d18d1c23890ee02a4ee9600c36456a60`
@@ -14,10 +15,16 @@
 > 公开 a1 Homebrew bootstrap：`public/main@9671b2c`
 > Session P1 实现快照：`private/integration@0e56bb3`（实现提交 `58e5986`）
 > 正式发布身份：`v1.0.3A2@62757a4`；公开发布后 Formula 收口：`public/main@87c4bca`
+> 私有截止基线：`private/integration@01f3ce1`
+> 后续开发清单：`AGENTBC_1.0.4A_DEVELOPMENT_CHECKLIST.md`
 > 前置条件：`1.0.2A` 最终发布身份与双机 Gate 完成；Phase 0 只读契约盘点可提前进行
 > 架构依据：`AGENTBC_ALPHA_DEVELOPMENT_HANDBOOK.md`
 
 ## 0. 产品目标
+
+本文件自开发截止起只保存 `1.0.3A` 的需求、决策和验收证据。除更正事实错误、修复文档链接或
+记录已发布资产安全事件外，不再修改本版范围；任何新实现、优化、重构或回归任务必须进入
+`AGENTBC_1.0.4A_DEVELOPMENT_CHECKLIST.md`，不得以补丁名义回填已发布 tag 或 PyPI 文件。
 
 `1.0.3A` 以权限治理、可信进度和简化分发为主线：AgentBC 提供一个统一、可解释、可审计
 的权限 registry，但不改变已经验证体验良好的权限默认和继承逻辑。首次 setup 继续默认
