@@ -10,10 +10,7 @@ gateway, one report contract, and one recovery model.
 > Public Alpha. Use AgentBC on development projects with version control and
 > review agent output before accepting changes.
 
-Current release: **1.0.2A** (Python package version `1.0.2a1`).
-
-Internal development candidate: **1.0.3A** (Python package `1.0.3a1`); this
-candidate is not yet the public release.
+Current release: **1.0.3A** (Python package version `1.0.3a2`).
 
 - Repository and releases: [GitHub](https://github.com/roway49/agent-bridge-connect)
 - Python package: [agentbc](https://pypi.org/project/agentbc/)
@@ -54,29 +51,25 @@ One command downloads, verifies, installs, and configures AgentBC:
 
 ```bash
 curl -fsSL \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.2A/install-agentbc-alpha.sh \
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.3A2/install-agentbc-alpha.sh \
   | sh -s -- \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.2A
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.3A2
 ```
 
-For a package-managed installation from PyPI:
+For a package-managed installation from PyPI and Homebrew:
 
 ```bash
-python3 -m pip install agentbc==1.0.2a1
-agentbc setup
-```
-
-For the Homebrew Alpha, use this repository directly as a custom tap:
-
-```bash
-brew tap roway49/agentbc https://github.com/roway49/agent-bridge-connect.git
+python3 -m pip install agentbc==1.0.3a2
 brew install roway49/agentbc/agentbc
+brew install agentbc
 agentbc setup
-brew services start agentbc
 ```
 
-Homebrew owns upgrades for this installation. Use `brew upgrade agentbc`;
-`agentbc update` will not replace a Cellar-managed CLI.
+Update AgentBC
+
+```shell
+agentbc update
+```
 
 Start with [Quick Start](docs/QUICK_START.md), then use the
 [User Guide](docs/USER_GUIDE.md) for task and Runner commands.

@@ -213,7 +213,12 @@ def _compact_terminal_extensions(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
     compact: dict[str, Any] = {}
-    for key in ("agentbc.resources", "agentbc.session", "agentbc.permission"):
+    for key in (
+        "agentbc.resources",
+        "agentbc.session",
+        "agentbc.permission",
+        "agentbc.auxiliary_sessions",
+    ):
         item = value.get(key)
         if item not in (None, "", [], {}):
             # These v1 policy receipts are already bounded and must remain exact.

@@ -37,6 +37,14 @@ except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
 from .adapters import ExecutorPort, SessionCleanupRequest, SessionCleanupResult
+from .auxiliary_sessions import (
+    AUXILIARY_EXTENSION_KEY,
+    auxiliary_cleanup_strategy,
+    read_auxiliary_ledger,
+    redact_session_ref,
+    transition_auxiliary_cleanup,
+    validate_auxiliary_entry,
+)
 from .execution_policy import (
     CLEANUP_STRATEGIES,
     MAX_SESSION_CLEANUP_ATTEMPTS,
@@ -144,7 +152,10 @@ class SessionCleanupCoordinator:
 
         Re-reads the task/session from disk under the per-task lock, verifies
         every gate, and either performs a single transition + at most one
-        Executor call, or returns a zero-side-effect skip.
+        Executor call, or returns a zero-side-effect skip.  When the task
+        registers auxiliary sessions, the primary ``agentbc.session`` is
+        processed first, then every auxiliary session deepest/newest first;
+        auxiliary attempts continue even when the primary pass fails.
         """
         task_id = str(task_id or "").strip()
         if not task_id:
@@ -157,50 +168,65 @@ class SessionCleanupCoordinator:
             if task is None:
                 return self._result(task_id, "skipped", ["task_read_failed"])
             task_id = str(task.get("id") or task.get("task_id") or task_id)
-            session = self._authoritative_session(task)
-            if session is None:
-                return self._result(task_id, "skipped", ["session_receipt_invalid"])
-            receipt = read_session_cleanup_receipt(session.get("cleanup"))
-            state = receipt["state"]
-            if state in RESOLVED_CLEANUP_STATES:
-                return self._result(task_id, "resolved", [], receipt=receipt)
-            blockers = self._gates(task)
+            primary = self._request_primary(task, occurred_at)
+            if primary.get("status") == "skipped":
+                # The shared terminal/report/notification/RunLease gates are not
+                # met, so auxiliary sessions remain in use; return the primary
+                # skip without touching the auxiliary ledger.
+                return primary
+            return self._request_auxiliary(task, primary, occurred_at)
 
-            if session.get("retain") is True:
-                return self._handle_retained(task, session, blockers, occurred_at)
+    def _request_primary(
+        self,
+        task: dict[str, Any],
+        occurred_at: str,
+    ) -> dict[str, Any]:
+        """Run the existing primary ``agentbc.session`` cleanup pass."""
+        task_id = str(task.get("id") or task.get("task_id") or "")
+        session = self._authoritative_session(task)
+        if session is None:
+            return self._result(task_id, "skipped", ["session_receipt_invalid"])
+        receipt = read_session_cleanup_receipt(session.get("cleanup"))
+        state = receipt["state"]
+        if state in RESOLVED_CLEANUP_STATES:
+            return self._result(task_id, "resolved", [], receipt=receipt)
+        blockers = self._gates(task)
 
-            if state == "not_requested":
-                if blockers:
-                    return self._result(task_id, "skipped", blockers, receipt=receipt)
-                pending = self._to_pending(task, session, occurred_at)
-                self._persist_receipt(task, pending, "requested", occurred_at)
-                return self._execute(task_id, pending, occurred_at)
+        if session.get("retain") is True:
+            return self._handle_retained(task, session, blockers, occurred_at)
 
-            if state == "failed":
-                if blockers:
-                    return self._result(task_id, "skipped", blockers, receipt=receipt)
-                if not receipt["retryable"]:
-                    return self._result(task_id, "final", [], receipt=receipt)
-                if not receipt["next_attempt_at"] or not _is_iso_utc(receipt["next_attempt_at"]):
-                    return self._result(task_id, "waiting", [], receipt=receipt)
-                if _parse_utc(occurred_at) < _parse_utc(receipt["next_attempt_at"]):
-                    return self._result(task_id, "waiting", [], receipt=receipt)
-                if receipt["attempts"] >= MAX_SESSION_CLEANUP_ATTEMPTS:
-                    return self._result(task_id, "final", [], receipt=receipt)
-                pending = self._to_pending(task, session, occurred_at)
-                self._persist_receipt(task, pending, "retry", occurred_at)
-                return self._execute(task_id, pending, occurred_at)
+        if state == "not_requested":
+            if blockers:
+                return self._result(task_id, "skipped", blockers, receipt=receipt)
+            pending = self._to_pending(task, session, occurred_at)
+            self._persist_receipt(task, pending, "requested", occurred_at)
+            return self._execute(task_id, pending, occurred_at)
 
-            if state == "pending":
-                # A pending receipt under the lock is always a crashed-process
-                # leftover: form a stable failed/fallback state, then backoff.
-                if blockers:
-                    return self._result(task_id, "skipped", blockers, receipt=receipt)
-                failed = self._crash_recovery_receipt(task, session, receipt, occurred_at)
-                self._persist_receipt(task, failed, "interrupted", occurred_at)
-                return self._result(task_id, "recovered", [], receipt=failed)
+        if state == "failed":
+            if blockers:
+                return self._result(task_id, "skipped", blockers, receipt=receipt)
+            if not receipt["retryable"]:
+                return self._result(task_id, "final", [], receipt=receipt)
+            if not receipt["next_attempt_at"] or not _is_iso_utc(receipt["next_attempt_at"]):
+                return self._result(task_id, "waiting", [], receipt=receipt)
+            if _parse_utc(occurred_at) < _parse_utc(receipt["next_attempt_at"]):
+                return self._result(task_id, "waiting", [], receipt=receipt)
+            if receipt["attempts"] >= MAX_SESSION_CLEANUP_ATTEMPTS:
+                return self._result(task_id, "final", [], receipt=receipt)
+            pending = self._to_pending(task, session, occurred_at)
+            self._persist_receipt(task, pending, "retry", occurred_at)
+            return self._execute(task_id, pending, occurred_at)
 
-            return self._result(task_id, "noop", [], receipt=receipt)
+        if state == "pending":
+            # A pending receipt under the lock is always a crashed-process
+            # leftover: form a stable failed/fallback state, then backoff.
+            if blockers:
+                return self._result(task_id, "skipped", blockers, receipt=receipt)
+            failed = self._crash_recovery_receipt(task, session, receipt, occurred_at)
+            self._persist_receipt(task, failed, "interrupted", occurred_at)
+            return self._result(task_id, "recovered", [], receipt=failed)
+
+        return self._result(task_id, "noop", [], receipt=receipt)
 
     def maintain_board(self, *, now: str | None = None) -> list[dict[str, Any]]:
         """Scan this board for terminal sessions needing a cleanup pass."""
@@ -249,6 +275,449 @@ class SessionCleanupCoordinator:
             return self._result(task_id, "skipped", blockers, receipt=receipt)
         self._persist_receipt(task, retained, "retained", occurred_at)
         return self._result(task_id, "retained", [], receipt=retained)
+
+    # ---------------------------------------------------------- auxiliary
+    def _request_auxiliary(
+        self,
+        task: dict[str, Any],
+        primary: dict[str, Any],
+        occurred_at: str,
+    ) -> dict[str, Any]:
+        """Process all registered auxiliary sessions deepest/newest first."""
+        task_id = str(task.get("id") or task.get("task_id") or "")
+        # The primary pass re-reads and persists its own snapshot; refresh the
+        # in-memory task so auxiliary writes never overwrite fresh primary state.
+        fresh = self._read_task(task_id)
+        if fresh is not None:
+            task = fresh
+        extensions = task.get("extensions")
+        if not isinstance(extensions, dict) or AUXILIARY_EXTENSION_KEY not in extensions:
+            return primary
+        try:
+            ledger = read_auxiliary_ledger(extensions)
+        except ABCError:
+            blocked = {
+                "aux_id": "",
+                "ref": "",
+                "executor": "auxiliary",
+                "status": "skipped",
+                "actioned": False,
+                "blockers": ["auxiliary_ledger_invalid"],
+                "receipt": None,
+            }
+            return self._auxiliary_aggregate(primary, [blocked], task_id)
+        entries = self._auxiliary_depth_order(
+            self._primary_session_id(task),
+            ledger.get("sessions") or [],
+        )
+        results: list[dict[str, Any]] = []
+        for entry in entries:
+            results.append(self._auxiliary_cleanup_pass(task, entry, occurred_at))
+        return self._auxiliary_aggregate(primary, results, task_id)
+
+    def _auxiliary_cleanup_pass(
+        self,
+        task: dict[str, Any],
+        entry: dict[str, Any],
+        occurred_at: str,
+    ) -> dict[str, Any]:
+        aux_id = str(entry.get("aux_id") or "")
+        executor = str(entry.get("executor") or "").strip().lower()
+        ref = redact_session_ref(str(entry.get("session_id") or ""))
+        base = {"aux_id": aux_id, "executor": executor, "ref": ref}
+        entry = self._auxiliary_terminal_entry(task, entry, occurred_at)
+        try:
+            receipt = read_session_cleanup_receipt(entry.get("cleanup"))
+        except ABCError:
+            return {
+                **base,
+                "status": "skipped",
+                "actioned": False,
+                "blockers": ["auxiliary_ledger_invalid"],
+                "receipt": None,
+            }
+        state = receipt["state"]
+        if state in RESOLVED_CLEANUP_STATES:
+            return {**base, "status": "resolved", "actioned": False, "blockers": [], "receipt": receipt}
+        blockers = self._auxiliary_gates(task, entry)
+
+        if entry.get("retain") is True:
+            return self._auxiliary_handle_retained(task, entry, blockers, occurred_at, base)
+
+        if state == "not_requested":
+            if blockers:
+                return {**base, "status": "skipped", "actioned": False, "blockers": blockers, "receipt": receipt}
+            pending = self._auxiliary_to_pending(task, entry, occurred_at)
+            updated = self._auxiliary_with_receipt(entry, pending, occurred_at)
+            self._persist_auxiliary(task, updated, "requested", occurred_at)
+            return self._auxiliary_execute(task, updated, occurred_at, base)
+
+        if state == "failed":
+            if blockers:
+                return {**base, "status": "skipped", "actioned": False, "blockers": blockers, "receipt": receipt}
+            if not receipt["retryable"]:
+                return {**base, "status": "final", "actioned": False, "blockers": [], "receipt": receipt}
+            if not receipt["next_attempt_at"] or not _is_iso_utc(receipt["next_attempt_at"]):
+                return {**base, "status": "waiting", "actioned": False, "blockers": [], "receipt": receipt}
+            if _parse_utc(occurred_at) < _parse_utc(receipt["next_attempt_at"]):
+                return {**base, "status": "waiting", "actioned": False, "blockers": [], "receipt": receipt}
+            if receipt["attempts"] >= MAX_SESSION_CLEANUP_ATTEMPTS:
+                return {**base, "status": "final", "actioned": False, "blockers": [], "receipt": receipt}
+            pending = self._auxiliary_to_pending(task, entry, occurred_at)
+            updated = self._auxiliary_with_receipt(entry, pending, occurred_at)
+            self._persist_auxiliary(task, updated, "retry", occurred_at)
+            return self._auxiliary_execute(task, updated, occurred_at, base)
+
+        if state == "pending":
+            # A pending auxiliary receipt under the lock is a crashed-process
+            # leftover: form a stable failed/fallback state, then backoff.
+            if blockers:
+                return {**base, "status": "skipped", "actioned": False, "blockers": blockers, "receipt": receipt}
+            failed = self._auxiliary_crash_recovery(task, entry, receipt, occurred_at)
+            updated = self._auxiliary_with_receipt(entry, failed, occurred_at)
+            self._persist_auxiliary(task, updated, "interrupted", occurred_at)
+            return {**base, "status": "recovered", "actioned": True, "blockers": [], "receipt": failed}
+
+        return {**base, "status": "noop", "actioned": False, "blockers": [], "receipt": receipt}
+
+    def _auxiliary_terminal_entry(
+        self,
+        task: dict[str, Any],
+        entry: dict[str, Any],
+        occurred_at: str,
+    ) -> dict[str, Any]:
+        """A bound auxiliary session is terminal once the task is terminal."""
+        if str(task.get("status") or "") not in TERMINAL_SESSION_CLEANUP_STATUSES:
+            return entry
+        if not str(entry.get("session_id") or "").strip():
+            return entry
+        if str(entry.get("session_state") or "") == "terminal":
+            return entry
+        updated = copy.deepcopy(entry)
+        updated["session_state"] = "terminal"
+        updated["updated_at"] = occurred_at
+        return updated
+
+    def _auxiliary_handle_retained(
+        self,
+        task: dict[str, Any],
+        entry: dict[str, Any],
+        blockers: list[str],
+        occurred_at: str,
+        base: dict[str, Any],
+    ) -> dict[str, Any]:
+        receipt = read_session_cleanup_receipt(entry.get("cleanup"))
+        if receipt["state"] != "not_requested":
+            return {**base, "status": "resolved", "actioned": False, "blockers": [], "receipt": receipt}
+        retention_blockers = [item for item in blockers if item != "retention_enabled"]
+        if retention_blockers:
+            return {**base, "status": "skipped", "actioned": False, "blockers": blockers, "receipt": receipt}
+        retained = self._transition_auxiliary(
+            task,
+            entry,
+            "retained",
+            occurred_at,
+        )
+        updated = self._auxiliary_with_receipt(entry, retained, occurred_at)
+        self._persist_auxiliary(task, updated, "retained", occurred_at)
+        return {**base, "status": "retained", "actioned": True, "blockers": [], "receipt": retained}
+
+    def _auxiliary_to_pending(
+        self,
+        task: dict[str, Any],
+        entry: dict[str, Any],
+        occurred_at: str,
+    ) -> dict[str, Any]:
+        strategy = self._auxiliary_request_strategy(entry)
+        return self._transition_auxiliary(
+            task,
+            entry,
+            "pending",
+            occurred_at,
+            capability="supported",
+            strategy=strategy or "official_session_delete",
+        )
+
+    def _auxiliary_crash_recovery(
+        self,
+        task: dict[str, Any],
+        entry: dict[str, Any],
+        receipt: dict[str, Any],
+        occurred_at: str,
+    ) -> dict[str, Any]:
+        retryable, next_attempt_at = self._next_retry(receipt["attempts"], occurred_at)
+        return self._transition_auxiliary(
+            task,
+            entry,
+            "failed",
+            occurred_at,
+            capability=receipt["capability"] or "supported",
+            strategy=receipt["strategy"] or "official_session_delete",
+            error_code="session_cleanup_interrupted",
+            retryable=retryable,
+            next_attempt_at=next_attempt_at,
+        )
+
+    def _transition_auxiliary(
+        self,
+        task: dict[str, Any],
+        entry: dict[str, Any],
+        target: str,
+        occurred_at: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        task_id = str(task.get("id") or task.get("task_id") or "")
+        return transition_auxiliary_cleanup(
+            entry,
+            target,
+            task_status=str(task.get("status") or ""),
+            lease_state=self._lease_state(task_id),
+            report_written=self._report_written(task),
+            notification_recorded=self._notification_recorded(task_id),
+            occurred_at=occurred_at,
+            **kwargs,
+        )
+
+    def _auxiliary_execute(
+        self,
+        task: dict[str, Any],
+        entry: dict[str, Any],
+        occurred_at: str,
+        base: dict[str, Any],
+    ) -> dict[str, Any]:
+        request = self._auxiliary_build_request(task, entry)
+        try:
+            port = self._resolve_port(str(entry.get("executor") or ""))
+            result = port.cleanup_session(request)
+            if not isinstance(result, SessionCleanupResult):
+                raise TypeError("cleanup_session must return SessionCleanupResult")
+        except Exception:
+            result = SessionCleanupResult(
+                state="failed",
+                capability="supported",
+                strategy=(entry.get("cleanup") or {}).get("strategy") or "official_session_delete",
+                error_code="session_cleanup_failed",
+                retryable=True,
+            )
+        return self._apply_auxiliary_result(task, entry, result, occurred_at, base)
+
+    def _apply_auxiliary_result(
+        self,
+        task: dict[str, Any],
+        entry: dict[str, Any],
+        result: SessionCleanupResult,
+        occurred_at: str,
+        base: dict[str, Any],
+    ) -> dict[str, Any]:
+        current = read_session_cleanup_receipt(entry.get("cleanup"))
+        if current["state"] != "pending":
+            return {**base, "status": "superseded", "actioned": False, "blockers": [], "receipt": current}
+        if result.state == "succeeded":
+            new_receipt = self._transition_auxiliary(
+                task,
+                entry,
+                "succeeded",
+                occurred_at,
+                capability="supported",
+                strategy=_sanitize_strategy(result.strategy) or current["strategy"],
+            )
+        elif result.state == "unsupported":
+            new_receipt = self._transition_auxiliary(
+                task,
+                entry,
+                "unsupported",
+                occurred_at,
+                capability="unsupported",
+                strategy="none",
+                error_code=_sanitize_error_code(result.error_code, "session_cleanup_unsupported"),
+            )
+        else:
+            retryable, next_attempt_at = (
+                self._next_retry(current["attempts"], occurred_at)
+                if result.retryable
+                else (False, "")
+            )
+            new_receipt = self._transition_auxiliary(
+                task,
+                entry,
+                "failed",
+                occurred_at,
+                capability=current["capability"] or "supported",
+                strategy=current["strategy"] or "official_session_delete",
+                error_code=_sanitize_error_code(result.error_code),
+                retryable=retryable,
+                next_attempt_at=next_attempt_at,
+            )
+        updated = self._auxiliary_with_receipt(entry, new_receipt, occurred_at)
+        self._persist_auxiliary(task, updated, "result", occurred_at)
+        status = new_receipt["state"]
+        return {**base, "status": status, "actioned": status != "failed", "blockers": [], "receipt": new_receipt}
+
+    def _auxiliary_with_receipt(
+        self,
+        entry: dict[str, Any],
+        receipt: dict[str, Any],
+        occurred_at: str,
+    ) -> dict[str, Any]:
+        updated = copy.deepcopy(entry)
+        updated["cleanup"] = copy.deepcopy(receipt)
+        updated["updated_at"] = occurred_at
+        return updated
+
+    def _auxiliary_gates(self, task: dict[str, Any], entry: dict[str, Any]) -> list[str]:
+        task_id = str(task.get("id") or task.get("task_id") or "")
+        blockers: list[str] = []
+        if str(task.get("status") or "").strip().lower() not in TERMINAL_SESSION_CLEANUP_STATUSES:
+            blockers.append("task_not_terminal")
+        if str(self._lease_state(task_id) or "").strip().lower() != "closed":
+            blockers.append("run_lease_not_closed")
+        if self._report_written(task) is not True:
+            blockers.append("report_not_written")
+        if self._notification_recorded(task_id) is not True:
+            blockers.append("notification_not_recorded")
+        entry_errors = validate_auxiliary_entry(entry)
+        if entry_errors:
+            blockers.append("auxiliary_ledger_invalid")
+            return blockers
+        if entry.get("retain") is True:
+            blockers.append("retention_enabled")
+        if not str(entry.get("session_id") or "").strip():
+            blockers.append("auxiliary_session_pending_reservation")
+        cleanup = read_session_cleanup_receipt(entry.get("cleanup"))
+        if cleanup["state"] in RESOLVED_CLEANUP_STATES:
+            blockers.append("cleanup_already_resolved")
+        return blockers
+
+    def _auxiliary_build_request(
+        self,
+        task: dict[str, Any],
+        entry: dict[str, Any],
+    ) -> SessionCleanupRequest:
+        task_id = str(task.get("id") or task.get("task_id") or "")
+        retain = bool(entry.get("retain"))
+        request = SessionCleanupRequest(
+            executor=str(entry.get("executor") or ""),
+            session_id=str(entry.get("session_id") or ""),
+            task_id=task_id,
+            retain=retain,
+            project_mode=str(entry.get("project_mode") or "none"),
+            strategy=self._auxiliary_request_strategy(entry),
+            project_path=str(entry.get("project_path") or ""),
+            workspace=dict(task.get("workspace") or {}),
+        )
+        return request
+
+    @staticmethod
+    def _auxiliary_request_strategy(entry: dict[str, Any]) -> str:
+        return auxiliary_cleanup_strategy(entry)
+
+    def _auxiliary_depth_order(
+        self,
+        primary_session_id: str,
+        entries: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        depth = {str(primary_session_id or ""): 0}
+        remaining = list(entries)
+        ordered: list[tuple[int, str, dict[str, Any]]] = []
+        for _ in range(len(entries) + 1):
+            progressed = False
+            for entry in list(remaining):
+                parent = str(entry.get("parent_session_id") or "")
+                if parent not in depth:
+                    continue
+                entry_depth = depth[parent] + 1
+                session_id = str(entry.get("session_id") or "")
+                if session_id:
+                    depth[session_id] = entry_depth
+                ordered.append((entry_depth, str(entry.get("created_at") or ""), entry))
+                remaining.remove(entry)
+                progressed = True
+            if not progressed:
+                break
+        for entry in remaining:
+            ordered.append((1, str(entry.get("created_at") or ""), entry))
+        ordered.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return [entry for _, _, entry in ordered]
+
+    def _auxiliary_aggregate(
+        self,
+        primary: dict[str, Any],
+        results: list[dict[str, Any]],
+        task_id: str,
+    ) -> dict[str, Any]:
+        if not results:
+            return primary
+        unresolved_statuses = {"skipped", "failed", "final", "waiting", "recovered", "noop"}
+        unresolved = [item for item in results if item["status"] in unresolved_statuses]
+        combined = dict(primary)
+        combined["auxiliary"] = list(results)
+        combined["aggregate"] = {
+            "total": len(results),
+            "resolved": len(results) - len(unresolved),
+            "unresolved": len(unresolved),
+            "state": "blocked" if unresolved else "resolved",
+        }
+        if unresolved:
+            combined["status"] = "blocked"
+            combined["blockers"] = ["auxiliary_session_cleanup_incomplete"]
+            combined["actioned"] = bool(primary.get("actioned")) or any(
+                item.get("actioned") for item in results
+            )
+        return combined
+
+    def _persist_auxiliary(
+        self,
+        task: dict[str, Any],
+        entry: dict[str, Any],
+        event_kind: str,
+        occurred_at: str,
+    ) -> None:
+        """Persist one full auxiliary entry back into the task ledger."""
+        task_id = str(task.get("id") or task.get("task_id") or "")
+        extensions = dict(task.get("extensions") or {})
+        ledger = read_auxiliary_ledger(extensions)
+        aux_id = str(entry.get("aux_id") or "")
+        for index, item in enumerate(ledger["sessions"]):
+            if str(item.get("aux_id") or "") == aux_id:
+                ledger["sessions"][index] = copy.deepcopy(entry)
+                break
+        else:
+            raise ABCError(
+                "auxiliary_receipt_missing",
+                "Cannot persist cleanup for an unknown auxiliary session.",
+                {"aux_id": aux_id},
+            )
+        extensions[AUXILIARY_EXTENSION_KEY] = ledger
+        task["extensions"] = extensions
+        self.store.write_task(task_id, task)
+        receipt = read_session_cleanup_receipt(entry.get("cleanup"))
+        task_dir = self.store.task_dir(task_id)
+        task_dir.mkdir(parents=True, exist_ok=True)
+        append_bounded_jsonl(
+            task_dir / CLEANUP_EVENTS_FILE,
+            {
+                "event_type": CLEANUP_EVENT_TYPE,
+                "task_id": task_id,
+                "aux_id": aux_id,
+                "aux_ref": redact_session_ref(str(entry.get("session_id") or "")),
+                "executor": str(entry.get("executor") or ""),
+                "cleanup_event": str(event_kind),
+                "state": receipt["state"],
+                "capability": receipt["capability"],
+                "strategy": receipt["strategy"],
+                "attempts": int(receipt["attempts"]),
+                "retryable": bool(receipt["retryable"]),
+                "next_attempt_at": receipt["next_attempt_at"],
+                "error_code": receipt["error_code"],
+                "created_at": occurred_at,
+            },
+        )
+
+    def _primary_session_id(self, task: dict[str, Any]) -> str:
+        session = self._authoritative_session(task)
+        if session is None:
+            return ""
+        return str(session.get("session_id") or "")
 
     # ---------------------------------------------------------- pending steps
     def _to_pending(

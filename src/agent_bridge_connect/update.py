@@ -1003,11 +1003,11 @@ def _version_key(value: str) -> tuple[int, ...]:
 
 
 def _tag_to_package_version(tag: str) -> str | None:
-    matched = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)A", tag)
+    matched = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)A([1-9]\d*)?", tag)
     if matched is None:
         return None
-    major, minor, patch = matched.groups()
-    return f"{major}.{minor}.{patch}a1"
+    major, minor, patch, serial = matched.groups()
+    return f"{major}.{minor}.{patch}a{serial or '1'}"
 
 
 def _bounded_summary(value: str) -> str:

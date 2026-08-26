@@ -323,7 +323,11 @@ def build_session_cleanup_diagnostics(
     now: str | None = None,
 ) -> dict[str, Any]:
     """Build structured cleanup health data consumed by doctor text and JSON."""
-    from .execution_policy import SESSION_EXTENSION_KEY, session_cleanup_view
+    from .execution_policy import (
+        SESSION_EXTENSION_KEY,
+        TERMINAL_SESSION_CLEANUP_STATUSES,
+        session_cleanup_view,
+    )
 
     current = _parse_timestamp(now) if now else None
     current = current or datetime.now(timezone.utc)
@@ -339,6 +343,11 @@ def build_session_cleanup_diagnostics(
         )
         if not isinstance(session, dict) or "cleanup" not in session:
             continue
+        task_status = str(task.get("status") or "").strip().lower()
+        if task_status in TERMINAL_SESSION_CLEANUP_STATUSES:
+            diagnostics.extend(
+                _auxiliary_cleanup_diagnostics(extensions, _safe_label(task.get("id"), "unknown"), current)
+            )
         cleanup = session_cleanup_view(session.get("cleanup"))
         state = cleanup["state"]
         status = "healthy"
@@ -391,6 +400,158 @@ def build_session_cleanup_diagnostics(
         "warnings": warnings,
         "diagnostics": diagnostics,
     }
+
+
+def _auxiliary_cleanup_diagnostics(
+    extensions: Any,
+    task_id: str,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """Return stable acceptance diagnostics for one task's auxiliary sessions.
+
+    Any ``retain=false`` pending reservation, missing receipt, invalid ledger,
+    unsupported cleanup, failed cleanup, or stale pending cleanup for a terminal
+    task is a warning: primary session success never implies aggregate success.
+    """
+    from .auxiliary_sessions import (
+        AUXILIARY_EXTENSION_KEY,
+        read_auxiliary_ledger as _read_ledger,
+    )
+    from .protocol import ABCError
+
+    if not isinstance(extensions, dict):
+        return []
+    ledger = extensions.get(AUXILIARY_EXTENSION_KEY)
+    if ledger is None:
+        return []
+    try:
+        validated = _read_ledger(extensions)
+    except ABCError:
+        return [
+            {
+                "task_id": task_id,
+                "executor": "auxiliary",
+                "aux_id": "",
+                "ref": "",
+                "purpose": "",
+                "capability": "unknown",
+                "state": "not_requested",
+                "attempts": 0,
+                "error_code": "",
+                "retryable": False,
+                "status": "warning",
+                "message": (
+                    "The auxiliary session ledger is invalid; terminal cleanup "
+                    "cannot be proven for derived executor sessions."
+                ),
+            }
+        ]
+    diagnostics: list[dict[str, Any]] = []
+    for entry in validated.get("sessions") or []:
+        diagnostics.append(
+            _one_auxiliary_diagnostic(entry, task_id, now)
+        )
+    return diagnostics
+
+
+def _one_auxiliary_diagnostic(entry: Any, task_id: str, now: datetime) -> dict[str, Any]:
+    from .auxiliary_sessions import redact_session_ref
+    from .execution_policy import session_cleanup_view
+    from .protocol import ABCError
+
+    aux_id = _safe_label(entry.get("aux_id"), "")
+    executor = _safe_label(entry.get("executor"), "unknown")
+    purpose = _safe_label(entry.get("purpose"), "")
+    ref = redact_session_ref(str(entry.get("session_id") or ""))
+    retain = bool(entry.get("retain"))
+    try:
+        cleanup = session_cleanup_view(entry.get("cleanup"))
+    except ABCError:
+        cleanup = session_cleanup_view(
+            {
+                "version": 1,
+                "capability": "unknown",
+                "strategy": "none",
+                "state": "not_requested",
+                "attempts": 0,
+                "requested_at": "",
+                "last_attempt_at": "",
+                "next_attempt_at": "",
+                "completed_at": "",
+                "error_code": "",
+                "retryable": False,
+            }
+        )
+    state = cleanup["state"]
+    session_id = str(entry.get("session_id") or "").strip()
+    base: dict[str, Any] = {
+        "task_id": task_id,
+        "executor": executor,
+        "aux_id": aux_id,
+        "ref": ref,
+        "purpose": purpose,
+        "capability": cleanup["capability"],
+        "state": state,
+        "attempts": cleanup["attempts"],
+        "error_code": cleanup["error_code"],
+        "retryable": cleanup["retryable"],
+    }
+    if retain:
+        return {
+            **base,
+            "status": "healthy",
+            "message": "Auxiliary session retention was requested; no cleanup is needed.",
+        }
+    if not session_id:
+        return {
+            **base,
+            "status": "warning",
+            "message": (
+                "A retain=false auxiliary reservation has no official session "
+                "receipt; cleanup cannot be proven."
+            ),
+        }
+    if state == "unsupported":
+        return {
+            **base,
+            "status": "warning",
+            "message": (
+                f"Auxiliary {executor} session cleanup is unsupported; the derived "
+                "executor conversation was not closed by an official delete."
+            ),
+        }
+    if state == "failed":
+        return {
+            **base,
+            "status": "warning",
+            "message": (
+                f"Auxiliary cleanup failed with error_code={cleanup['error_code'] or 'unknown'}; "
+                f"retryable={str(bool(cleanup['retryable'])).lower()}. AgentBC will "
+                "use its bounded retry path when retryable."
+            ),
+        }
+    if state == "pending" and _pending_is_stale(entry.get("cleanup"), now):
+        return {
+            **base,
+            "status": "warning",
+            "message": (
+                "Auxiliary cleanup has remained pending for more than five minutes; "
+                "check AgentBC Runner health without inspecting Executor session stores."
+            ),
+        }
+    if state == "not_requested":
+        return {
+            **base,
+            "status": "warning",
+            "message": (
+                "Auxiliary executor session cleanup was not requested; the derived "
+                "executor conversation was not closed by an official delete."
+            ),
+        }
+    message = "Auxiliary executor temporary-session cleanup succeeded."
+    if state == "pending":
+        message = "Auxiliary executor temporary-session cleanup is pending."
+    return {**base, "status": "healthy", "message": message}
 
 
 def _render_package(package: dict[str, Any]) -> list[str]:

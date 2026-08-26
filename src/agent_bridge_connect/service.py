@@ -3611,12 +3611,108 @@ class TaskService:
         eligibility gate (terminal task, closed RunLease, written report,
         recorded terminal notification, terminal session with an exact session
         ID) under a per-task lock, and only then transitions the cleanup receipt.
-        Retained sessions are marked ``retained``; everything else is dispatched
-        to the Executor cleanup port with an atomic receipt/event write-back.
+        The primary ``agentbc.session`` is processed first, then every registered
+        auxiliary session deepest/newest first; auxiliary attempts continue even
+        when the primary pass fails.  Retained sessions are marked ``retained``;
+        everything else is dispatched to the Executor cleanup port with an atomic
+        receipt/event write-back.
         """
         from .session_cleanup import SessionCleanupCoordinator
 
         return SessionCleanupCoordinator(self.board_root).request_cleanup(task_id, now=now)
+
+    # ------------------------------------------------ auxiliary sessions
+    def reserve_auxiliary_session(
+        self,
+        task_id: str,
+        *,
+        owner_run_id: str,
+        parent_executor: str,
+        parent_session_id: str,
+        executor: str,
+        purpose: str,
+        project_mode: str = "none",
+        project_path: str = "",
+    ) -> dict:
+        """Phase one: reserve a pending auxiliary start for one task run.
+
+        Idempotent duplicates return the existing reservation; conflicts on
+        frozen fields fail closed.
+        """
+        from .auxiliary_sessions import reserve_auxiliary_session as _reserve
+
+        raw = self.store.read_task(task_id)
+        extensions = dict(raw.get("extensions") or {})
+        updated, entry = _reserve(
+            extensions,
+            owner_task_id=task_id,
+            owner_run_id=owner_run_id,
+            parent_executor=parent_executor,
+            parent_session_id=parent_session_id,
+            executor=executor,
+            purpose=purpose,
+            retain=bool((extensions.get(SESSION_EXTENSION_KEY) or {}).get("retain")),
+            project_mode=project_mode,
+            project_path=project_path,
+        )
+        raw["extensions"] = updated
+        self.store.write_task(task_id, raw)
+        return entry
+
+    def bind_auxiliary_session(
+        self,
+        task_id: str,
+        *,
+        aux_id: str,
+        receipt: Any,
+        expected_session_id: str | None = None,
+    ) -> dict:
+        """Phase two: atomically bind the exact official executor receipt.
+
+        The receipt is validated and frozen before any child prompt or action
+        may continue.  Idempotent re-binds of the same exact session return the
+        existing entry; conflicts fail closed.
+        """
+        from .auxiliary_sessions import bind_auxiliary_receipt as _bind
+
+        raw = self.store.read_task(task_id)
+        extensions = dict(raw.get("extensions") or {})
+        updated, entry = _bind(
+            extensions,
+            aux_id=aux_id,
+            receipt=receipt,
+            expected_session_id=expected_session_id,
+        )
+        raw["extensions"] = updated
+        self.store.write_task(task_id, raw)
+        return entry
+
+    def mark_auxiliary_session_terminal(self, task_id: str, *, aux_id: str) -> dict:
+        """Mark one bound auxiliary session terminal for terminal cleanup."""
+        from .auxiliary_sessions import mark_auxiliary_terminal as _mark
+
+        raw = self.store.read_task(task_id)
+        extensions = dict(raw.get("extensions") or {})
+        updated, entry = _mark(extensions, aux_id=aux_id)
+        raw["extensions"] = updated
+        self.store.write_task(task_id, raw)
+        return entry
+
+    def auxiliary_session_ledger(self, task_id: str) -> dict:
+        """Return the redacted public projection plus aggregate health."""
+        from .auxiliary_sessions import (
+            AUXILIARY_EXTENSION_KEY,
+            auxiliary_aggregate_view,
+            auxiliary_ledger_view,
+        )
+
+        raw = self.store.read_task(task_id)
+        extensions = raw.get("extensions")
+        ledger = extensions.get(AUXILIARY_EXTENSION_KEY) if isinstance(extensions, dict) else None
+        return {
+            "sessions": auxiliary_ledger_view(ledger),
+            "aggregate": auxiliary_aggregate_view(ledger),
+        }
 
     def _refresh_task_index(self) -> None:
         refresh_task_index(self.board_root)

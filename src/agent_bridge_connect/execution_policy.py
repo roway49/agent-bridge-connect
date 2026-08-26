@@ -654,6 +654,12 @@ def permission_grant_view(value: Any) -> dict[str, Any] | None:
 
 def execution_policy_view(extensions: Any) -> dict[str, Any]:
     """Return the stable, path-free policy projection used by public interfaces."""
+    from .auxiliary_sessions import (
+        AUXILIARY_EXTENSION_KEY,
+        auxiliary_aggregate_view,
+        auxiliary_ledger_view,
+    )
+
     value = extensions if isinstance(extensions, dict) else {}
     resource = value.get(RESOURCE_EXTENSION_KEY)
     session = value.get(SESSION_EXTENSION_KEY)
@@ -684,6 +690,8 @@ def execution_policy_view(extensions: Any) -> dict[str, Any]:
         "permission_grant": permission_grant_view(
             value.get(PERMISSION_GRANT_EXTENSION_KEY)
         ),
+        "auxiliary_sessions": auxiliary_ledger_view(value.get(AUXILIARY_EXTENSION_KEY)),
+        "auxiliary_aggregate": auxiliary_aggregate_view(value.get(AUXILIARY_EXTENSION_KEY)),
     }
 
 
@@ -699,13 +707,25 @@ def public_extensions_view(extensions: Any) -> dict[str, Any]:
 
     The internal ``agentbc.permission_grant`` envelope is replaced by the same
     sanitized projection exposed through ``execution_policy_view``; malformed
-    or unsupported envelopes are removed entirely (fail closed).
+    or unsupported envelopes are removed entirely (fail closed).  The auxiliary
+    session ledger is replaced by its redacted public projection.
     """
+    from .auxiliary_sessions import (
+        AUXILIARY_EXTENSION_KEY,
+        auxiliary_aggregate_view,
+        auxiliary_ledger_view,
+    )
+
     public = copy.deepcopy(extensions) if isinstance(extensions, dict) else {}
     session = public.get(SESSION_EXTENSION_KEY)
     if isinstance(session, dict):
         session.pop("project_path", None)
         session["cleanup"] = session_cleanup_view(session.get("cleanup"))
+    if AUXILIARY_EXTENSION_KEY in public:
+        public[AUXILIARY_EXTENSION_KEY] = {
+            "sessions": auxiliary_ledger_view(public[AUXILIARY_EXTENSION_KEY]),
+            "aggregate": auxiliary_aggregate_view(public[AUXILIARY_EXTENSION_KEY]),
+        }
     input_request = public.get("agentbc.input")
     if isinstance(input_request, dict):
         # Full-fallback detail is a local dialog affordance, not a public task

@@ -3,21 +3,21 @@
 中文 | [English](RELEASE_PROCESS.md)
 
 本清单用于准备和发布 AgentBC，避免用一次本地 smoke、可变分支或重复资产名冒充正式发布。
-当前内部候选为 **1.0.3A**（Python 包 `1.0.3a1`），下方公开发布流程继续保留
-1.0.2A 的不可变记录。
-`1.0.2A` 的固定映射为：
+当前发布版本为 **1.0.3A**。由于首个 Alpha 序号已用于 Homebrew bootstrap，最终发布的
+不可变映射为：
 
 ```text
-产品标签：    v1.0.2A
-Python 包：  1.0.2a1
+Release 名称： AgentBC 1.0.3A
+产品标签：     v1.0.3A2
+Python 包：    1.0.3a2
 ```
 
 ## 1. 冻结发布提交
 
 - 完成 CHANGELOG，将 `Unreleased` 替换为实际发布日期；
 - 要求发布分支干净且非 detached，逐文件审阅发布 diff；
-- 确认 `pyproject.toml` 与 `agent_bridge_connect.__version__` 都是 `1.0.2a1`；
-- 确认公开远端不存在 `v1.0.2A`，PyPI 也不存在 `agentbc==1.0.2a1` 文件。已发布标签和
+- 确认 `pyproject.toml` 与 `agent_bridge_connect.__version__` 都是 `1.0.3a2`；
+- 确认公开远端不存在 `v1.0.3A2`，PyPI 也不存在 `agentbc==1.0.3a2` 文件。已发布标签和
   包文件不可覆盖。
 
 ## 2. 执行发布矩阵
@@ -26,8 +26,9 @@ Python 包：  1.0.2a1
 源码测试、Ruff、compileall、Shell 语法、构建、Twine、发行文件名校验、manifest、wheel
 安装和纯包 smoke。
 
-打标签前还必须完成 1.0.2A 清单中的发布专属人工门禁：MacBook 同步、retain-on 会话行为、
-clean install/rollback 和真实 Executor 检查。Runner 健康或一次 smoke 不能替代其他门禁。
+打标签前还必须完成 1.0.3A 清单中的发布专属人工门禁：双机 Update/Homebrew、成功与失败
+终态 session cleanup、clean install/restore 和真实 Executor 检查。Runner 健康或一次 smoke
+不能替代其他门禁。
 
 ## 3. 构建本地候选包
 
@@ -50,8 +51,8 @@ python3 scripts/build_provenance.py generate-manifest
 从同一提交单独构建 macOS local-alpha 候选包：
 
 ```bash
-./scripts/build_local_alpha_bundle.sh /tmp/agentbc-v1.0.2A-release
-shasum -a 256 -c /tmp/agentbc-v1.0.2A-release/agentbc-v1.0.2A-macos-local-alpha.tar.gz.sha256
+./scripts/build_local_alpha_bundle.sh /tmp/agentbc-v1.0.3A2-release
+shasum -a 256 -c /tmp/agentbc-v1.0.3A2-release/agentbc-v1.0.3A2-macos-local-alpha.tar.gz.sha256
 ```
 
 至少解压一次，并在包内执行 `shasum -a 256 -c SHA256SUMS`。压缩包、压缩包 checksum、
@@ -63,17 +64,18 @@ workflow 不负责构建这些 macOS 资产。
 全部门禁通过后，在已审阅的发布提交上创建不可变 annotated tag，并校验 tag/version/commit：
 
 ```bash
-git tag -a v1.0.2A -m "AgentBC 1.0.2A"
-python3 scripts/build_provenance.py validate --tag v1.0.2A
+git tag -a v1.0.3A2 -m "AgentBC 1.0.3A"
+python3 scripts/build_provenance.py validate --tag v1.0.3A2
 git push public <release-branch>
-git push public refs/tags/v1.0.2A
+git push public refs/tags/v1.0.3A2
 ```
 
-使用对应 CHANGELOG 内容从 `v1.0.2A` 创建 **draft GitHub Release**。发布前先上传并校验：
+使用对应 CHANGELOG 内容从 `v1.0.3A2` 创建名为 `AgentBC 1.0.3A` 的 **draft GitHub Release**。
+发布前先上传并校验：
 
 ```text
-agentbc-v1.0.2A-macos-local-alpha.tar.gz
-agentbc-v1.0.2A-macos-local-alpha.tar.gz.sha256
+agentbc-v1.0.3A2-macos-local-alpha.tar.gz
+agentbc-v1.0.3A2-macos-local-alpha.tar.gz.sha256
 install-agentbc-alpha.sh
 uninstall-agentbc-alpha.sh
 ```
@@ -88,11 +90,11 @@ uninstall-agentbc-alpha.sh
 发布完成后：
 
 - 对比 GitHub Release、PyPI 资产哈希与 release manifest；
-- 在全新环境安装 `agentbc==1.0.2a1`；
+- 在全新环境安装 `agentbc==1.0.3a2`；
 - 验证 `agentbc --version`、`agentbc setup --show`、Runner identity、Skill manifest 和
   `agentbc doctor`；
 - Apple Silicon 与 Intel 安装路径均通过后再宣布发布完成。
 
 若 tag 已存在但发布 job 失败，应修复 workflow，不得移动或重建 tag。受保护的恢复入口是
-手动 workflow dispatch：`release_tag=v1.0.2A`、`publish=true`；它会先 checkout 并校验
+手动 workflow dispatch：`release_tag=v1.0.3A2`、`publish=true`；它会先 checkout 并校验
 既有 tag，再重新构建。已经发布到 PyPI 的同版本文件永远不得覆盖。

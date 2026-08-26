@@ -2,9 +2,8 @@
 
 中文 | [English](USER_GUIDE.md)
 
-适用于 AgentBC **1.0.2A**（Python 包 `1.0.2a1`）。
-
-当前内部开发候选为 **1.0.3A**（Python 包 `1.0.3a1`）；公开安装仍保持 1.0.2A。
+适用于 AgentBC **1.0.3A** 正式 Alpha 版本（tag `v1.0.3A2`，Python 包
+`1.0.3a2`）。
 
 ## 命令结构
 
@@ -13,6 +12,7 @@
 - `agentbc setup`：发现执行器并安装本地集成。
 - `agentbc doctor`：只读的安装与 Runner 健康检查。
 - `agentbc uninstall`：卸载 AgentBC，并分别选择是否删除托管数据。
+- `agentbc update`：检查 Alpha 通道并转到当前安装来源支持的升级路径。
 - `agentbc init`：初始化托管运行记录目录。
 - `agentbc claude budget`：设置后续 Claude run 的预算。
 - `agentbc hermes max-turns`：设置后续 Hermes run 的迭代上限。
@@ -24,6 +24,16 @@
 
 setup 会在后台启动 Runner。恢复时使用 `runner start`，停止时使用
 `runner stop`；前台 `runner serve` 仅用于调试。
+
+### 1.0.3A 新增命令
+
+| 命令 | 用途与边界 |
+| --- | --- |
+| `agentbc update` | 检查经过校验的 Alpha Release manifest；只有检测到新版本且当前 CLI 属于 AgentBC 自管安装时才会询问是否升级。 |
+| `agentbc update --root <RECORD_ROOT> --config <CONFIG>` | 为受控环境显式指定运行记录根目录或配置；普通安装应省略这两个选项。 |
+
+Updater 不会把 Homebrew、pip/pipx、外部 symlink 或复制得到的二进制认定为
+AgentBC 自管的原地更新目标。包管理器安装只返回对应包管理器的升级路径，不会被覆盖。
 
 ### 1.0.2A 新增或调整的命令
 
@@ -64,6 +74,46 @@ agentbc task handoff 4XMC --to hermes --source-platform claude --dispatch
 
 直接从终端调用时可省略该字段，此时派发者记录为 `cli`。setup 后请重启 Agent
 客户端，使其重新加载已安装的 Skill。执行器模型选择暂不属于稳定的 Alpha 契约。
+
+## 更新 AgentBC
+
+通过受支持的入口检查当前安装：
+
+```bash
+agentbc doctor --json
+agentbc update
+```
+
+对于 AgentBC 自管的 Alpha 安装，`agentbc update` 会先验证 GitHub release index、
+release manifest、tag、wheel 文件名和 SHA-256，之后才可能修改当前安装。已是最新版本时
+不询问、不写入；检测到新版本时会显示有长度限制的发布摘要并询问：
+
+```text
+Upgrade? [y/N]
+```
+
+只有 `y` 或 `yes` 才开始更新。输入 `n`、直接按 Enter、EOF 或其他内容都会返回
+`update_declined`，且不修改 CLI、Skills、Runner、配置或 task board。切换前还会检查
+遗留权限记录，以及当前 CLI、Skill、Runner identity 是否有效。
+
+批准后，AgentBC 会先 staging 并验证目标 wheel，快照旧 CLI 与托管 Skill，停止旧
+Runner，再切换 CLI、刷新 Skill、启动目标 Runner，并要求所有目标 identity 一致。
+切换后的任一门禁失败时，会恢复原 CLI link 和托管 Skill 文件，删除目标版本新引入的
+托管路径并重启旧 Runner。若返回 `update_rollback_incomplete`，必须先运行
+`agentbc doctor --json` 检查，不能直接重复更新。
+
+对于 Homebrew 安装，`agentbc update` 不询问，也不写入 update 状态；它返回
+`homebrew_update_required` 以及以下命令：
+
+```bash
+brew update
+brew upgrade agentbc
+agentbc doctor --json
+```
+
+非托管二进制、普通 pip/pipx 安装、非 symlink 目标，以及指向 AgentBC Alpha 自管目录
+之外的链接都会以 `update_install_unsupported` 拒绝。此时应使用原安装来源重新安装，
+不能原地覆盖。
 
 ## 执行资源与临时会话保留
 

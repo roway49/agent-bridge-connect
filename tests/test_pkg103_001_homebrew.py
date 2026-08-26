@@ -70,6 +70,22 @@ class HomebrewFormulaTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             MODULE.generate_formula(valid, "http://example.test")
 
+    def test_formula_accepts_alpha_serial_and_rejects_mismatch(self) -> None:
+        manifest = {
+            "tag": "v1.0.3A2",
+            "package_version": "1.0.3a2",
+            "artifacts": [
+                {"filename": "agentbc-1.0.3a2.tar.gz", "sha256": "a" * 64}
+            ],
+        }
+        formula = MODULE.generate_formula(manifest, "https://example.test/v1.0.3A2")
+        self.assertIn('version "1.0.3a2"', formula)
+        self.assertIn("agentbc-1.0.3a2.tar.gz", formula)
+
+        mismatch = {**manifest, "package_version": "1.0.3a1"}
+        with self.assertRaises(ValueError):
+            MODULE.generate_formula(mismatch, "https://example.test/v1.0.3A2")
+
     def test_release_workflows_generate_and_publish_formula(self) -> None:
         root = Path(__file__).parents[1]
         publish = (root / ".github" / "workflows" / "publish-pypi.yml").read_text(
