@@ -510,8 +510,14 @@ class Phase4DocsRegressionTests(unittest.TestCase):
         self.assertTrue(path.is_file(), f"missing doc: {path}")
         return path.read_text(encoding="utf-8")
 
+    def _read_private(self, relative: str) -> str:
+        path = PROJECT_ROOT / relative
+        if not path.is_file():
+            self.skipTest(f"private development document is not published: {relative}")
+        return path.read_text(encoding="utf-8")
+
     def test_checklist_describes_phase4_slice_and_keeps_cleanup_open(self) -> None:
-        checklist = self._read("AGENTBC_1.0.2A_DEVELOPMENT_CHECKLIST.md")
+        checklist = self._read_private("AGENTBC_1.0.2A_DEVELOPMENT_CHECKLIST.md")
         self.assertIn(RESOURCE_DECISION_APPROVE_LABEL, checklist)
         self.assertIn("configured_limit", checklist)
         self.assertIn("exhaustion_count", checklist)
@@ -522,7 +528,7 @@ class Phase4DocsRegressionTests(unittest.TestCase):
         self.assertIn("本切片不实现 purge/delete", checklist)
 
     def test_handbook_describes_phase4_ux_without_closing_cleanup(self) -> None:
-        handbook = self._read("AGENTBC_ALPHA_DEVELOPMENT_HANDBOOK.md")
+        handbook = self._read_private("AGENTBC_ALPHA_DEVELOPMENT_HANDBOOK.md")
         self.assertIn(RESOURCE_DECISION_APPROVE_LABEL, handbook)
         self.assertIn(RESOURCE_DECISION_DENY_LABEL, handbook)
         self.assertIn("approve_deny", handbook)

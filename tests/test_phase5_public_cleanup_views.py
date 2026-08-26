@@ -350,8 +350,13 @@ class Phase5DocumentationTests(unittest.TestCase):
             self.assertIn(phrase, chinese)
 
     def test_integration_docs_preserve_executor_session_cleanup_boundary(self) -> None:
-        checklist = self._read("AGENTBC_1.0.2A_DEVELOPMENT_CHECKLIST.md")
-        handbook = self._read("AGENTBC_ALPHA_DEVELOPMENT_HANDBOOK.md")
+        private_paths = (
+            "AGENTBC_1.0.2A_DEVELOPMENT_CHECKLIST.md",
+            "AGENTBC_ALPHA_DEVELOPMENT_HANDBOOK.md",
+        )
+        if not all((PROJECT_ROOT / relative).is_file() for relative in private_paths):
+            self.skipTest("private development documents are not published")
+        checklist, handbook = (self._read(relative) for relative in private_paths)
 
         for document in (checklist, handbook):
             self.assertIn("SESSION-001", document)

@@ -254,6 +254,10 @@ class UpdateCliTests(unittest.TestCase):
         self.addCleanup(harness.close)
         harness.create(status="pending")
         with (
+            mock.patch(
+                "agent_bridge_connect.update._local_install_strategy",
+                return_value={"method": "managed"},
+            ),
             mock.patch("agent_bridge_connect.update.check_for_update", side_effect=self._available),
             mock.patch("builtins.input", return_value="y"),
         ):
@@ -280,6 +284,10 @@ class UpdateCliTests(unittest.TestCase):
         harness = _Harness()
         self.addCleanup(harness.close)
         with (
+            mock.patch(
+                "agent_bridge_connect.update._local_install_strategy",
+                return_value={"method": "managed"},
+            ),
             mock.patch("agent_bridge_connect.update.check_for_update", side_effect=self._available),
             mock.patch("agent_bridge_connect.update.install_verified_release", return_value={"version": "1.0.4a1"}),
             mock.patch("builtins.input", return_value="y"),
@@ -321,6 +329,10 @@ class UpdateCliTests(unittest.TestCase):
         self.addCleanup(harness.close)
         harness.create(status="needs_recovery")
         with (
+            mock.patch(
+                "agent_bridge_connect.update._local_install_strategy",
+                return_value={"method": "managed"},
+            ),
             mock.patch("agent_bridge_connect.update.check_for_update", side_effect=self._available),
             mock.patch("builtins.input", return_value="y"),
         ):
