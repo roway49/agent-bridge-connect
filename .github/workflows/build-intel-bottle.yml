@@ -1,0 +1,44 @@
+name: Build AgentBC 1.0.3A Intel Bottle
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bottle:
+    name: Build Intel bottle on macOS 26
+    runs-on: macos-26-intel
+
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Build and test bottle
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          test "$(git rev-parse HEAD^)" = "0b94b766d06d21e5f2279affc6c0918ca5cd3f3a"
+          grep -q 'version "1.0.3a2"' Formula/agentbc.rb
+          grep -q '/v1.0.3A2/agentbc-1.0.3a2.tar.gz' Formula/agentbc.rb
+          brew tap-new roway49/agentbc-bottle
+          tap_root="$(brew --repository roway49/agentbc-bottle)"
+          cp Formula/agentbc.rb "$tap_root/Formula/agentbc.rb"
+          ruby -c "$tap_root/Formula/agentbc.rb"
+          brew install --build-bottle roway49/agentbc-bottle/agentbc
+          brew test agentbc
+          mkdir -p bottle
+          cd bottle
+          brew bottle --json \
+            --root-url=https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.3A2 \
+            agentbc
+          shasum -a 256 ./*
+
+      - name: Upload bottle artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agentbc-1.0.3a2-intel-bottle
+          path: bottle/
+          if-no-files-found: error
+          retention-days: 1
