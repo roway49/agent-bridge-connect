@@ -35,6 +35,11 @@ from agent_bridge_connect.run_lease import create_lease, save_lease
 from agent_bridge_connect.service import TaskService
 
 T0 = "2026-08-25T00:00:00Z"
+PRIMARY_SESSION_ID = "00000000-0000-4000-8000-000000000001"
+CODEX_ABSENT_VERIFICATION = {
+    "cli": {"status": "absent", "checked_at": T0},
+    "desktop": {"status": "absent", "checked_at": T0},
+}
 
 
 def _add_seconds(value: str, seconds: int) -> str:
@@ -141,39 +146,38 @@ class AuxiliaryLedgerTestCase(unittest.TestCase):
 
     def test_reserve_requires_owner_run_and_parent(self) -> None:
         extensions = {AUXILIARY_EXTENSION_KEY: build_auxiliary_ledger()}
-        base = dict(
-            owner_task_id=self.task.id,
-            owner_run_id="run-1",
-            parent_executor="codex",
-            parent_session_id="PARENT",
-            executor="hermes",
-            purpose="child_worker",
-            retain=False,
-            created_at=T0,
-        )
+        base = {
+            "owner_task_id": self.task.id,
+            "owner_run_id": "run-1",
+            "parent_executor": "codex",
+            "parent_session_id": "PARENT",
+            "executor": "hermes",
+            "purpose": "child_worker",
+            "retain": False,
+            "created_at": T0,
+        }
         for overrides in (
             {"owner_run_id": ""},
             {"parent_session_id": ""},
             {"parent_executor": "unknown"},
             {"executor": "unknown"},
         ):
-            with self.subTest(overrides=overrides):
-                with self.assertRaises(ABCError):
-                    reserve_auxiliary_session(extensions, **{**base, **overrides})
+            with self.subTest(overrides=overrides), self.assertRaises(ABCError):
+                reserve_auxiliary_session(extensions, **{**base, **overrides})
 
     # ------------------------------------------------------- idempotency
     def test_idempotent_duplicate_reservation_returns_existing(self) -> None:
         extensions = {AUXILIARY_EXTENSION_KEY: build_auxiliary_ledger()}
-        common = dict(
-            owner_task_id=self.task.id,
-            owner_run_id="run-1",
-            parent_executor="codex",
-            parent_session_id="PARENT",
-            executor="hermes",
-            purpose="child_worker",
-            retain=False,
-            created_at=T0,
-        )
+        common = {
+            "owner_task_id": self.task.id,
+            "owner_run_id": "run-1",
+            "parent_executor": "codex",
+            "parent_session_id": "PARENT",
+            "executor": "hermes",
+            "purpose": "child_worker",
+            "retain": False,
+            "created_at": T0,
+        }
         extensions, first = reserve_auxiliary_session(extensions, **common)
         extensions, second = reserve_auxiliary_session(extensions, **common)
         self.assertEqual(first["aux_id"], second["aux_id"])
@@ -181,16 +185,16 @@ class AuxiliaryLedgerTestCase(unittest.TestCase):
 
     def test_conflicting_frozen_fields_fail_closed(self) -> None:
         extensions = {AUXILIARY_EXTENSION_KEY: build_auxiliary_ledger()}
-        common = dict(
-            owner_task_id=self.task.id,
-            owner_run_id="run-1",
-            parent_executor="codex",
-            parent_session_id="PARENT",
-            executor="hermes",
-            purpose="child_worker",
-            retain=False,
-            created_at=T0,
-        )
+        common = {
+            "owner_task_id": self.task.id,
+            "owner_run_id": "run-1",
+            "parent_executor": "codex",
+            "parent_session_id": "PARENT",
+            "executor": "hermes",
+            "purpose": "child_worker",
+            "retain": False,
+            "created_at": T0,
+        }
         extensions, _ = reserve_auxiliary_session(extensions, **common)
         with self.assertRaises(ABCError) as ctx:
             reserve_auxiliary_session(extensions, **{**common, "retain": True})
@@ -198,15 +202,15 @@ class AuxiliaryLedgerTestCase(unittest.TestCase):
 
     def test_duplicate_reservation_with_mismatched_owner_task_fails_closed(self) -> None:
         extensions = {AUXILIARY_EXTENSION_KEY: build_auxiliary_ledger()}
-        common = dict(
-            owner_run_id="run-1",
-            parent_executor="codex",
-            parent_session_id="PARENT",
-            executor="hermes",
-            purpose="child_worker",
-            retain=False,
-            created_at=T0,
-        )
+        common = {
+            "owner_run_id": "run-1",
+            "parent_executor": "codex",
+            "parent_session_id": "PARENT",
+            "executor": "hermes",
+            "purpose": "child_worker",
+            "retain": False,
+            "created_at": T0,
+        }
         extensions, first = reserve_auxiliary_session(
             extensions, owner_task_id=self.task.id, **common
         )
@@ -335,7 +339,7 @@ class AuxiliaryLedgerTestCase(unittest.TestCase):
             project_path="/private/customer/project",
             created_at=T0,
         )
-        extensions, bound = bind_auxiliary_receipt(
+        extensions, _bound = bind_auxiliary_receipt(
             extensions,
             aux_id=reserved["aux_id"],
             receipt=_official_receipt("claude", "SECRET-CHILD", "preallocated"),
@@ -413,7 +417,7 @@ def _terminal_task(
     service: TaskService,
     *,
     executor: str = "codex",
-    session_id: str = "PRIMARY-SESS",
+    session_id: str = PRIMARY_SESSION_ID,
     retain: bool = False,
     status: str = "completed",
 ) -> str:
@@ -430,6 +434,10 @@ def _terminal_task(
     session["session_state"] = "terminal"
     session["session_id"] = session_id
     session["retain"] = retain
+    if executor == "codex" and not retain:
+        # The cleanup contract requires a bound official Codex UUID receipt.
+        session["receipt_source"] = "jsonl_thread_started"
+        session["official_receipt_bound"] = True
     if executor == "claude":
         session["project_mode"] = "native" if retain else "ephemeral"
         session["project_path"] = str(raw["workspace"].get("project_root") or service.board_root)
@@ -530,7 +538,7 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
                 {
                     "executor": "hermes",
                     "parent_executor": "codex",
-                    "parent_session_id": "PRIMARY-SESS",
+                    "parent_session_id": PRIMARY_SESSION_ID,
                     "session_id": "CHILD-A",
                 },
                 {
@@ -548,6 +556,7 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
                 state="succeeded",
                 capability="supported",
                 strategy="official_session_delete",
+                verification=CODEX_ABSENT_VERIFICATION,
             )
         )
         result = self._coordinator(executor).request_cleanup(task_id, now=T0)
@@ -560,7 +569,7 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
             ["claude", "hermes"],
         )
         self.assertEqual(len(executor.calls), 3)
-        self.assertEqual(executor.calls[0].session_id, "PRIMARY-SESS")
+        self.assertEqual(executor.calls[0].session_id, PRIMARY_SESSION_ID)
         self.assertEqual(executor.calls[1].session_id, "CHILD-B")
         self.assertEqual(executor.calls[2].session_id, "CHILD-A")
 
@@ -573,7 +582,7 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
                 {
                     "executor": "hermes",
                     "parent_executor": "codex",
-                    "parent_session_id": "PRIMARY-SESS",
+                    "parent_session_id": PRIMARY_SESSION_ID,
                     "session_id": "CHILD-A",
                 }
             ],
@@ -607,13 +616,13 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
                 {
                     "executor": "hermes",
                     "parent_executor": "codex",
-                    "parent_session_id": "PRIMARY-SESS",
+                    "parent_session_id": PRIMARY_SESSION_ID,
                     "session_id": "CHILD-GOOD",
                 },
                 {
                     "executor": "codex",
                     "parent_executor": "codex",
-                    "parent_session_id": "PRIMARY-SESS",
+                    "parent_session_id": PRIMARY_SESSION_ID,
                     "session_id": "",
                     "terminal": False,
                 },
@@ -624,6 +633,7 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
                 state="succeeded",
                 capability="supported",
                 strategy="official_session_delete",
+                verification=CODEX_ABSENT_VERIFICATION,
             )
         )
         result = self._coordinator(executor).request_cleanup(task_id, now=T0)
@@ -644,7 +654,7 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
                 {
                     "executor": "hermes",
                     "parent_executor": "codex",
-                    "parent_session_id": "PRIMARY-SESS",
+                    "parent_session_id": PRIMARY_SESSION_ID,
                     "session_id": "CHILD-A",
                     "retain": True,
                 }
@@ -669,7 +679,7 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
                 {
                     "executor": "hermes",
                     "parent_executor": "codex",
-                    "parent_session_id": "PRIMARY-SESS",
+                    "parent_session_id": PRIMARY_SESSION_ID,
                     "session_id": "CHILD-A",
                 }
             ],
@@ -707,7 +717,7 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
             _add_seconds(T0, 60),
         )
         # The crashed pending must not trigger a duplicate purge in the same pass.
-        self.assertEqual([call.session_id for call in executor.calls], ["PRIMARY-SESS"])
+        self.assertEqual([call.session_id for call in executor.calls], [PRIMARY_SESSION_ID])
 
     def test_repeated_auxiliary_cleanup_is_idempotent(self) -> None:
         task_id = _terminal_task(self.service)
@@ -718,7 +728,7 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
                 {
                     "executor": "hermes",
                     "parent_executor": "codex",
-                    "parent_session_id": "PRIMARY-SESS",
+                    "parent_session_id": PRIMARY_SESSION_ID,
                     "session_id": "CHILD-A",
                 }
             ],
@@ -728,6 +738,7 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
                 state="succeeded",
                 capability="supported",
                 strategy="official_session_delete",
+                verification=CODEX_ABSENT_VERIFICATION,
             )
         )
         coordinator = self._coordinator(executor)
@@ -760,7 +771,7 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
                 {
                     "executor": "hermes",
                     "parent_executor": "codex",
-                    "parent_session_id": "PRIMARY-SESS",
+                    "parent_session_id": PRIMARY_SESSION_ID,
                     "session_id": "CHILD-A",
                 }
             ],
@@ -807,14 +818,14 @@ class AuxiliaryDoctorReportTestCase(unittest.TestCase):
                 {
                     "executor": "codex",
                     "parent_executor": "codex",
-                    "parent_session_id": "PRIMARY-SESS",
+                    "parent_session_id": PRIMARY_SESSION_ID,
                     "session_id": "",
                     "terminal": False,
                 },
                 {
                     "executor": "hermes",
                     "parent_executor": "codex",
-                    "parent_session_id": "PRIMARY-SESS",
+                    "parent_session_id": PRIMARY_SESSION_ID,
                     "session_id": "CHILD-FAIL",
                 },
             ],
@@ -878,7 +889,7 @@ class AuxiliaryDoctorReportTestCase(unittest.TestCase):
                 {
                     "executor": "hermes",
                     "parent_executor": "codex",
-                    "parent_session_id": "PRIMARY-SESS",
+                    "parent_session_id": PRIMARY_SESSION_ID,
                     "session_id": "CHILD-A",
                 }
             ],

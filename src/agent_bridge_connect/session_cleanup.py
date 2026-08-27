@@ -27,9 +27,10 @@ import copy
 import json
 import os
 import re
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 try:  # pragma: no cover - POSIX is required by the config/runner runtime
     import fcntl
@@ -45,12 +46,20 @@ from .auxiliary_sessions import (
     transition_auxiliary_cleanup,
     validate_auxiliary_entry,
 )
+from .codex_session_cleanup import (
+    CODEX_DESKTOP_UI_STALE_CODE,
+    CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE,
+    CODEX_SESSION_DELETE_FAILED_CODE,
+    CODEX_SESSION_DELETE_STILL_PRESENT_CODE,
+)
 from .execution_policy import (
     CLEANUP_STRATEGIES,
     MAX_SESSION_CLEANUP_ATTEMPTS,
     RESOLVED_CLEANUP_STATES,
     SESSION_EXTENSION_KEY,
+    SESSION_RECEIPT_SOURCES,
     TERMINAL_SESSION_CLEANUP_STATUSES,
+    normalize_cleanup_verification,
     read_session_cleanup_receipt,
     session_cleanup_blockers,
     transition_session_cleanup,
@@ -61,7 +70,6 @@ from .record_management import append_bounded_jsonl
 from .run_lease import load_lease
 from .task_id import split_task_ref
 from .task_store import TaskStore
-
 
 CLEANUP_EVENT_TYPE = "session.cleanup"
 CLEANUP_EVENTS_FILE = "cleanup.jsonl"
@@ -123,6 +131,37 @@ def _sanitize_strategy(value: Any) -> str:
     if text in CLEANUP_STRATEGIES and text not in {"none", "retain"}:
         return text
     return ""
+
+
+def _strict_codex_success_result(
+    result: SessionCleanupResult,
+    verification: dict[str, dict[str, str]] | None,
+) -> tuple[SessionCleanupResult, dict[str, dict[str, str]]]:
+    """Fail closed if an adapter claims Codex success without both absences."""
+    checked = verification or normalize_cleanup_verification(None)
+    cli_status = checked["cli"]["status"]
+    desktop_status = checked["desktop"]["status"]
+    if cli_status == "absent" and desktop_status == "absent":
+        return result, checked
+    if cli_status == "absent" and desktop_status == "present":
+        code = CODEX_DESKTOP_UI_STALE_CODE
+    elif cli_status == "present":
+        code = CODEX_SESSION_DELETE_STILL_PRESENT_CODE
+    elif cli_status == "absent":
+        code = CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE
+    else:
+        code = CODEX_SESSION_DELETE_FAILED_CODE
+    return (
+        SessionCleanupResult(
+            state="failed",
+            capability="supported",
+            strategy=result.strategy or "official_session_delete",
+            error_code=code,
+            retryable=False,
+            verification=checked,
+        ),
+        checked,
+    )
 
 
 class SessionCleanupCoordinator:
@@ -491,7 +530,7 @@ class SessionCleanupCoordinator:
             result = port.cleanup_session(request)
             if not isinstance(result, SessionCleanupResult):
                 raise TypeError("cleanup_session must return SessionCleanupResult")
-        except Exception:
+        except Exception:  # noqa: BLE001
             result = SessionCleanupResult(
                 state="failed",
                 capability="supported",
@@ -512,6 +551,19 @@ class SessionCleanupCoordinator:
         current = read_session_cleanup_receipt(entry.get("cleanup"))
         if current["state"] != "pending":
             return {**base, "status": "superseded", "actioned": False, "blockers": [], "receipt": current}
+        result_verification = (
+            normalize_cleanup_verification(result.verification)
+            if result.verification
+            else None
+        )
+        if (
+            result.state == "succeeded"
+            and str(entry.get("executor") or "").strip().lower() == "codex"
+        ):
+            result, result_verification = _strict_codex_success_result(
+                result,
+                result_verification,
+            )
         if result.state == "succeeded":
             new_receipt = self._transition_auxiliary(
                 task,
@@ -520,6 +572,7 @@ class SessionCleanupCoordinator:
                 occurred_at,
                 capability="supported",
                 strategy=_sanitize_strategy(result.strategy) or current["strategy"],
+                verification=result_verification,
             )
         elif result.state == "unsupported":
             new_receipt = self._transition_auxiliary(
@@ -530,6 +583,7 @@ class SessionCleanupCoordinator:
                 capability="unsupported",
                 strategy="none",
                 error_code=_sanitize_error_code(result.error_code, "session_cleanup_unsupported"),
+                verification=result_verification,
             )
         else:
             retryable, next_attempt_at = (
@@ -547,6 +601,7 @@ class SessionCleanupCoordinator:
                 error_code=_sanitize_error_code(result.error_code),
                 retryable=retryable,
                 next_attempt_at=next_attempt_at,
+                verification=result_verification,
             )
         updated = self._auxiliary_with_receipt(entry, new_receipt, occurred_at)
         self._persist_auxiliary(task, updated, "result", occurred_at)
@@ -579,6 +634,11 @@ class SessionCleanupCoordinator:
         if entry_errors:
             blockers.append("auxiliary_ledger_invalid")
             return blockers
+        if (
+            str(entry.get("executor") or "").strip().lower() == "codex"
+            and str(entry.get("source") or "") != SESSION_RECEIPT_SOURCES["codex"]
+        ):
+            blockers.append("auxiliary_session_receipt_unbound")
         if entry.get("retain") is True:
             blockers.append("retention_enabled")
         if not str(entry.get("session_id") or "").strip():
@@ -604,6 +664,8 @@ class SessionCleanupCoordinator:
             strategy=self._auxiliary_request_strategy(entry),
             project_path=str(entry.get("project_path") or ""),
             workspace=dict(task.get("workspace") or {}),
+            receipt_source=str(entry.get("source") or ""),
+            official_receipt_bound=bool(str(entry.get("source") or "").strip()),
         )
         return request
 
@@ -709,6 +771,7 @@ class SessionCleanupCoordinator:
                 "retryable": bool(receipt["retryable"]),
                 "next_attempt_at": receipt["next_attempt_at"],
                 "error_code": receipt["error_code"],
+                "verification": normalize_cleanup_verification(receipt.get("verification")),
                 "created_at": occurred_at,
             },
         )
@@ -799,7 +862,7 @@ class SessionCleanupCoordinator:
             result = port.cleanup_session(request)
             if not isinstance(result, SessionCleanupResult):
                 raise TypeError("cleanup_session must return SessionCleanupResult")
-        except Exception:
+        except Exception:  # noqa: BLE001
             result = SessionCleanupResult(
                 state="failed",
                 capability="supported",
@@ -825,6 +888,16 @@ class SessionCleanupCoordinator:
         current = read_session_cleanup_receipt(session.get("cleanup"))
         if current["state"] != "pending":
             return self._result(task_id, "superseded", [], receipt=current)
+        result_verification = (
+            normalize_cleanup_verification(result.verification)
+            if result.verification
+            else None
+        )
+        if result.state == "succeeded" and str(session.get("executor") or "").strip().lower() == "codex":
+            result, result_verification = _strict_codex_success_result(
+                result,
+                result_verification,
+            )
         if result.state == "succeeded":
             new_receipt = self._transition(
                 session,
@@ -833,6 +906,7 @@ class SessionCleanupCoordinator:
                 occurred_at=occurred_at,
                 capability="supported",
                 strategy=_sanitize_strategy(result.strategy) or pending["strategy"],
+                verification=result_verification,
             )
         elif result.state == "unsupported":
             new_receipt = self._transition(
@@ -843,6 +917,7 @@ class SessionCleanupCoordinator:
                 capability="unsupported",
                 strategy="none",
                 error_code=_sanitize_error_code(result.error_code, "session_cleanup_unsupported"),
+                verification=result_verification,
             )
         else:
             retryable, next_attempt_at = (
@@ -860,6 +935,7 @@ class SessionCleanupCoordinator:
                 error_code=_sanitize_error_code(result.error_code),
                 retryable=retryable,
                 next_attempt_at=next_attempt_at,
+                verification=result_verification,
             )
         self._persist_receipt(task, new_receipt, "result", occurred_at)
         return self._result(task_id, new_receipt["state"], [], receipt=new_receipt)
@@ -885,6 +961,8 @@ class SessionCleanupCoordinator:
             strategy=self._request_strategy(session, retain, project_mode),
             project_path=project_path,
             workspace=workspace,
+            receipt_source=str(session.get("receipt_source") or ""),
+            official_receipt_bound=session.get("official_receipt_bound") is True,
         )
 
     @staticmethod
@@ -1017,6 +1095,7 @@ class SessionCleanupCoordinator:
                 "retryable": bool(receipt["retryable"]),
                 "next_attempt_at": receipt["next_attempt_at"],
                 "error_code": receipt["error_code"],
+                "verification": normalize_cleanup_verification(receipt.get("verification")),
                 "created_at": occurred_at,
             },
         )

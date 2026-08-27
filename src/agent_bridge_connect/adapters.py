@@ -69,6 +69,10 @@ class SessionCleanupRequest:
     strategy: str = "none"
     project_path: str = field(default="", repr=False)
     workspace: dict[str, Any] = field(default_factory=dict, repr=False)
+    # These fields are the coordinator's binding proof.  They are transient
+    # request metadata and are deliberately excluded from repr/log surfaces.
+    receipt_source: str = field(default="", repr=False)
+    official_receipt_bound: bool = field(default=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -86,6 +90,9 @@ class SessionCleanupResult:
     error_code: str = ""
     retryable: bool = False
     next_attempt_at: str = ""
+    # Only bounded verification statuses/timestamps may cross the adapter
+    # boundary.  Raw RPC, CLI output, prompts, tokens and paths are forbidden.
+    verification: dict[str, dict[str, str]] = field(default_factory=dict, repr=False)
 
 
 @dataclass

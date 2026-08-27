@@ -1064,10 +1064,9 @@ def command_task_intervention(args: argparse.Namespace) -> int:
                 pass
         elif args.task_command == "close":
             plan = service.plan_task_close(args.id)
-            if plan["is_chain_iteration"] and not args.confirm:
-                if not _confirm_chain_close(plan):
-                    print("close_cancelled")
-                    return 0
+            if plan["is_chain_iteration"] and not args.confirm and not _confirm_chain_close(plan):
+                print("close_cancelled")
+                return 0
             reservation = service.reserve_task_close(
                 args.id,
                 confirmed=bool(args.confirm or plan["is_chain_iteration"]),
@@ -1154,7 +1153,7 @@ def command_task_delete(args: argparse.Namespace) -> int:
 def _cancel_task_runner_runs(task: Any) -> list[str]:
     from .runner import RunnerClient, RunnerError
 
-    execution = dict(((getattr(task, "extensions", None) or {}).get("agentbc.execution") or {}))
+    execution = dict((getattr(task, "extensions", None) or {}).get("agentbc.execution") or {})
     candidates = (
         ("executor", str(execution.get("executor_run_id") or "")),
         ("worker", str(execution.get("worker_run_id") or "")),
@@ -2146,13 +2145,13 @@ def _format_elapsed_compact(start: str, end: str) -> str:
     parsed_end = _parse_cli_timestamp(end)
     if parsed_start is None or parsed_end is None:
         return "unknown"
-    seconds = max(int(round((parsed_end - parsed_start).total_seconds())), 0)
+    seconds = max(round((parsed_end - parsed_start).total_seconds()), 0)
     return _format_seconds_compact(seconds)
 
 
 def _format_seconds_compact(value: Any) -> str:
     try:
-        seconds = max(int(round(float(value))), 0)
+        seconds = max(round(float(value)), 0)
     except (TypeError, ValueError):
         return "unknown"
     hours, remainder = divmod(seconds, 3600)
@@ -2271,6 +2270,16 @@ def _print_execution_policy(policy: Any) -> None:
                 f"error_code={cleanup.get('error_code') or '-'} "
                 f"retryable={'yes' if cleanup.get('retryable') else 'no'}"
             )
+            if cleanup.get("version") == 2:
+                verification = cleanup.get("verification") or {}
+                cli_verification = verification.get("cli") if isinstance(verification, dict) else {}
+                desktop_verification = verification.get("desktop") if isinstance(verification, dict) else {}
+                print(
+                    "Session cleanup verification: "
+                    f"strategy={cleanup.get('strategy') or '-'} "
+                    f"cli={cli_verification.get('status') if isinstance(cli_verification, dict) else 'unknown'} "
+                    f"desktop={desktop_verification.get('status') if isinstance(desktop_verification, dict) else 'unknown'}"
+                )
     grant = policy.get("permission_grant")
     if isinstance(grant, dict):
         print(
@@ -2378,7 +2387,7 @@ def _utc_now_cli() -> str:
     return utc_now()
 
 
-def command_executor_setting(executor: str, key: str, value: int | float) -> int:
+def command_executor_setting(executor: str, key: str, value: float) -> int:
     previous: Any = None
 
     def mutate(config: dict[str, Any]) -> None:
@@ -2435,8 +2444,8 @@ def command_permissions(action: str, mode: str | None = None) -> int:
             return 2
         payload = permissions_status_payload(config)
     else:
-        from .permission_modes import configured_permission_mode
         from .config import apply_permissions_setting
+        from .permission_modes import configured_permission_mode
 
         desired = mode if isinstance(mode, str) else "inherit"
         previous: str | None = None

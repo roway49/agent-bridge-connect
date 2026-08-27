@@ -1,6 +1,6 @@
 {
   "default": {
-    "version": 1,
+    "version": 2,
     "capability": "unknown",
     "strategy": "none",
     "state": "not_requested",
@@ -10,7 +10,17 @@
     "next_attempt_at": "",
     "completed_at": "",
     "error_code": "",
-    "retryable": false
+    "retryable": false,
+    "verification": {
+      "cli": {
+        "status": "unknown",
+        "checked_at": ""
+      },
+      "desktop": {
+        "status": "unknown",
+        "checked_at": ""
+      }
+    }
   },
   "legacy_minimal": {
     "state": "not_requested",

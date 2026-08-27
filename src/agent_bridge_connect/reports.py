@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .execution_policy import execution_policy_view, public_workspace_view
 from .permission_modes import permission_record_from_extensions
 from .protocol import task_step_text
 from .run_lease import (
@@ -19,8 +20,6 @@ from .task_id import split_task_ref, task_sequence
 from .task_store import TaskStore
 from .terminal_states import TASK_TERMINAL_STATES
 from .timing_view import build_timing_view
-from .execution_policy import execution_policy_view, public_workspace_view
-
 
 _OPENAI_KEY_RE = re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{12,}", re.IGNORECASE)
 _PASSWORD_ASSIGNMENT_RE = re.compile(
@@ -668,6 +667,21 @@ def _render_report_md(report: dict[str, Any]) -> str:
             f"- Cleanup retryable: `{'yes' if session_cleanup.get('retryable') else 'no'}`",
         ]
     )
+    if session_cleanup.get("version") == 2:
+        verification = session_cleanup.get("verification") or {}
+        cli = verification.get("cli") if isinstance(verification, dict) else {}
+        desktop = verification.get("desktop") if isinstance(verification, dict) else {}
+        cli_status = cli.get("status") if isinstance(cli, dict) else "unknown"
+        cli_checked_at = cli.get("checked_at") if isinstance(cli, dict) else ""
+        desktop_status = desktop.get("status") if isinstance(desktop, dict) else "unknown"
+        desktop_checked_at = desktop.get("checked_at") if isinstance(desktop, dict) else ""
+        lines.extend(
+            [
+                f"- Cleanup strategy: `{session_cleanup.get('strategy') or 'none'}`",
+                f"- CLI verification: `{cli_status}` checked_at=`{cli_checked_at}`",
+                f"- Desktop verification: `{desktop_status}` checked_at=`{desktop_checked_at}`",
+            ]
+        )
     if grant:
         lines.extend(
             [
@@ -851,7 +865,7 @@ def _format_report_timestamp(value: str) -> str:
 
 def _format_duration(value: Any) -> str:
     try:
-        seconds = max(int(round(float(value))), 0)
+        seconds = max(round(float(value)), 0)
     except (TypeError, ValueError):
         return "unknown"
     hours, remainder = divmod(seconds, 3600)
