@@ -1,0 +1,30 @@
+{
+  "approve": {
+    "decision": "accept",
+    "method_group": "server_requests",
+    "scope": "turn"
+  },
+  "cleanup_unavailable_code": "codex_session_delete_unavailable",
+  "deny": {
+    "decision": "decline",
+    "method_group": "server_requests",
+    "scope": "turn"
+  },
+  "timeout": {
+    "cleanup_follows": true,
+    "effect": "turn_aborted",
+    "fail_closed": true,
+    "no_partial_state_accepted": true
+  },
+  "transport_lost": {
+    "effect": "turn_unresolved",
+    "fail_closed": true,
+    "resume_allowed_after_lost_receipt": false,
+    "terminal_state": "failed_transport_lost"
+  },
+  "unsupported": {
+    "behaviour": "falls back to the existing CLI continuation path; full mode and default execution behavior are unchanged",
+    "code": "permission_capability_unsupported",
+    "condition": "App Server chain unavailable on the installed binary"
+  }
+}

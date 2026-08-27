@@ -18,7 +18,16 @@ from agent_bridge_connect.executors.codex import (
 from agent_bridge_connect.permission_modes import build_permission_record
 
 
-FIXTURE = Path(__file__).parent / "fixtures" / "executor_runtime" / "codex_outputs.json"
+FIXTURE = (
+    Path(__file__)
+    .parent
+    / "fixtures"
+    / "executor_runtime"
+    / "matrix"
+    / "codex"
+    / "0.146.0"
+    / "receipt_samples.json"
+)
 
 
 class CodexSessionCommandTests(unittest.TestCase):

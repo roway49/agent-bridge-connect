@@ -56,8 +56,8 @@ FIXTURES = Path(__file__).parent / "fixtures" / "executor_runtime"
 
 # Both surfaces share the frozen schema bundle shape.
 CONTRACT_FIXTURES = {
-    "0.146.0": FIXTURES / "codex_app_server_protocol.0.146.0.contract.json",
-    "0.147.0": FIXTURES / "codex_app_server_protocol.0.147.0.contract.json",
+    "0.146.0": FIXTURES / "matrix" / "codex" / "0.146.0" / "app_server_schema.json",
+    "0.147.0": FIXTURES / "matrix" / "codex" / "0.147.0" / "app_server_schema.json",
 }
 
 

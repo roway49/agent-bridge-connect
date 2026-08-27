@@ -1,0 +1,7 @@
+{
+  "captured_live": false,
+  "note": "Version string asserted by the Runner pin, not a live probe.",
+  "output_format": "codex-cli 0.146.0",
+  "parsed": "0.146.0",
+  "surface": "version_probe"
+}

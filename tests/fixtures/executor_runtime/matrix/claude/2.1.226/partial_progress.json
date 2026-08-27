@@ -1,0 +1,6 @@
+{
+  "init_receipt_required_before_progress_is_trusted": true,
+  "observable": "stream-json system/assistant/result lines arrive incrementally",
+  "partial_success_forbidden": true,
+  "surface": "partial_progress"
+}

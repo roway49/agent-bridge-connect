@@ -1,0 +1,481 @@
+{
+  "capture_tool": "tests/fixtures/executor_runtime/tools/capture_protocol_fixture.py",
+  "executors": {
+    "claude": {
+      "capability_groups_reference": null,
+      "production": {
+        "binding_constants": [
+          "agent_bridge_connect.claude_path_capability.CLAUDE_PATH_CAPABILITY_MIN_VERSION",
+          "agent_bridge_connect.claude_path_capability.CLAUDE_PATH_CAPABILITY_MAX_VERSION"
+        ],
+        "frozen_cli_version": "2.1.226",
+        "path_capability_bounds": {
+          "max_exclusive": "2.2.0",
+          "min_inclusive": "2.1.216"
+        }
+      },
+      "shared_surfaces": {},
+      "versions": {
+        "2.1.226": {
+          "evidence": {
+            "capture_kind": "offline_frozen_evidence",
+            "captured_by": "tests/fixtures/executor_runtime/tools/capture_protocol_fixture.py",
+            "live_capture": false,
+            "origin": "Help/budget characterization frozen during PERM-103-007 and PERM-103-009."
+          },
+          "in_production_supported_range": true,
+          "promotion_blocker": null,
+          "release_channel": "frozen_baseline",
+          "status": "supported",
+          "surfaces": {
+            "argv_contract.json": {
+              "bytes": 982,
+              "sha256": "920b5a69cef641022ad54e9fb9ebe470d4ddc530e61153c39c96abc0fbefb7b9"
+            },
+            "budget_exhaustion.json": {
+              "bytes": 269,
+              "sha256": "aa5c126996376bed09d7ddcbb036ef50422477df771a5ce29122a2cc4842edaa"
+            },
+            "callback_failures.json": {
+              "bytes": 213,
+              "sha256": "86b12cf7e432100081f43a331f848e47e44a04de18e8624fda9b5fde29402f9b"
+            },
+            "decisions.json": {
+              "bytes": 872,
+              "sha256": "b1a48a72b878237a24ac4e084c6a3bf00ec2b0186eca823a983f9aef68cedbb3"
+            },
+            "help.txt": {
+              "bytes": 1468,
+              "sha256": "4bcbd63a4a3b7adbc5350694cb806a22e406024e6835bb3d25d070f8a513cc48"
+            },
+            "partial_progress.json": {
+              "bytes": 215,
+              "sha256": "5c54d6cc4bb1c45300615a59fadf3efdd27d3ab592137e453d8f0c0794ea1a64"
+            },
+            "path_capability.json": {
+              "bytes": 619,
+              "sha256": "f74e5f3bfef11d80aac6b5ca73cc411f127c02739ea98d1abf29d222ab513df6"
+            },
+            "project_purge.json": {
+              "bytes": 720,
+              "sha256": "45393d57cc2d015b246f87270f0ad83b8d5bb6d7227602a0682c71efc4a39a10"
+            },
+            "resource_exhaustion.json": {
+              "bytes": 448,
+              "sha256": "ca6e4129026ce894f04de1d5fcabb55fb507c4c82bc9c71b26189e33205a062a"
+            },
+            "session_events.json": {
+              "bytes": 1113,
+              "sha256": "75619bafd16363d0a5bc00ba9b56fa3ee4341a34b3e06389b170fcb1ea86af33"
+            },
+            "version.json": {
+              "bytes": 130,
+              "sha256": "55f7d3d16b0b64155ed22902304599dc5f13d0d159f1277a16937eee8f691f47"
+            }
+          }
+        },
+        "2.1.233": {
+          "evidence": {
+            "capture_kind": "characterized_expectation",
+            "captured_by": "tests/fixtures/executor_runtime/tools/capture_protocol_fixture.py",
+            "live_capture": false,
+            "origin": "Declared current baseline for PROTO-104-001; no binary at exactly this version existed on the capture host."
+          },
+          "in_production_supported_range": false,
+          "promotion_blocker": "Requires an official-probe capture at exactly 2.1.233 plus a live canary before any Claude production bound may widen.",
+          "release_channel": "declared_current_baseline",
+          "status": "pending_capture",
+          "surfaces": {
+            "argv_contract.json": {
+              "bytes": 1049,
+              "sha256": "aea303f0d2182832bc7de4c1290ace495e3c0fd446304eece812ec3f749763c6"
+            },
+            "decisions.json": {
+              "bytes": 939,
+              "sha256": "5cdf143c52d3374de3024c2df1e4dc482a2e6fce99eba29181a8b20337c2ab97"
+            },
+            "path_capability.json": {
+              "bytes": 650,
+              "sha256": "d91362ce508cd0265dd748d409e8b172e10b1dacf25cedaf0b03e48fa6104974"
+            },
+            "project_purge.json": {
+              "bytes": 752,
+              "sha256": "52295c15a7e62e830a951b299fa9c75a42ed7c1d1eb67af0100722d737ef940c"
+            },
+            "resource_exhaustion.json": {
+              "bytes": 515,
+              "sha256": "0fd3a30004c7d6d72c7cf76e5397f3be48f5c1e908c0da4a89a2b778efd3fc4e"
+            },
+            "session_events.json": {
+              "bytes": 1144,
+              "sha256": "7e8902b4bc13c2891ffd577de947ece89373184d1e0ef9522121be20c309d28c"
+            },
+            "version.json": {
+              "bytes": 377,
+              "sha256": "7b46e9e50624421015cdeb3810d8c8192094f04a5640af6cff0eb67257b2bda2"
+            }
+          }
+        }
+      }
+    },
+    "codex": {
+      "capability_groups_reference": "agent_bridge_connect.codex_app_server",
+      "production": {
+        "app_server_bounds": {
+          "max_inclusive": "0.147.0",
+          "min_inclusive": "0.146.0"
+        },
+        "binding_constants": [
+          "agent_bridge_connect.executors.codex._CODEX_FROZEN_VERSION",
+          "agent_bridge_connect.codex_app_server.CODEX_APP_SERVER_MIN_VERSION",
+          "agent_bridge_connect.codex_app_server.CODEX_APP_SERVER_MAX_VERSION"
+        ],
+        "frozen_cli_version": "0.146.0"
+      },
+      "shared_surfaces": {
+        "codex/shared/app_server_v2_contract_summary.json": {
+          "applies_to": [
+            "0.146.0",
+            "0.147.0"
+          ],
+          "bytes": 1126,
+          "note": "Distilled v2 protocol contract summary used by the App Server control tests.",
+          "sha256": "e0813009187e105f80341330ee946ae3e307f976d1c0a94c67bdd6199377a848"
+        }
+      },
+      "versions": {
+        "0.146.0": {
+          "evidence": {
+            "capture_kind": "offline_frozen_evidence",
+            "captured_by": "tests/fixtures/executor_runtime/tools/capture_protocol_fixture.py",
+            "live_capture": false,
+            "origin": "Runner-pinned release frozen during PERM-103-009."
+          },
+          "in_production_supported_range": true,
+          "promotion_blocker": null,
+          "release_channel": "runner_pinned",
+          "status": "supported",
+          "surfaces": {
+            "app_server_cleanup.json": {
+              "bytes": 555,
+              "sha256": "0708a2a4960456ccf339e3df60b21894cbede89f3c924d379d67ffba35cf0337"
+            },
+            "app_server_execution.json": {
+              "bytes": 976,
+              "sha256": "4804daf49757ca240c64ea0e236a94244a631e8068e8a50707494722784a16b6"
+            },
+            "app_server_schema.json": {
+              "bytes": 102501,
+              "sha256": "cc87adb33a59e58646144f578dffce150cc98371997133f0533bbc55b6fa43d8"
+            },
+            "argv_contract.json": {
+              "bytes": 757,
+              "sha256": "facb3407aa12e9a7671102d1b8bd11bcdcf4e1c0b26cfbb89fb2ba1181d2a940"
+            },
+            "callback_failures.json": {
+              "bytes": 304,
+              "sha256": "7dbb50386caf23ba7a855ec1841c6f446ca0e977adbe4a22acb6c341f2bfed41"
+            },
+            "decisions.json": {
+              "bytes": 868,
+              "sha256": "bb1d50bfc805390137484e745946c7f7fe919ee2912011878abd2a77d461a65a"
+            },
+            "delete_help.txt": {
+              "bytes": 304,
+              "sha256": "e1771e8d38f5d1d3e54587bf410916e3f90abe2e8924be64cebff7a59e04589f"
+            },
+            "partial_progress.json": {
+              "bytes": 237,
+              "sha256": "481bde3f8fd2c155d807ceaab42664d85a7906b1006b4255b15a54caaf03441f"
+            },
+            "receipt_samples.json": {
+              "bytes": 584,
+              "sha256": "fd193c8447abe89c21cc285842edeb22d64e0e69558122eb65e2868ffef5e476"
+            },
+            "resource_exhaustion.json": {
+              "bytes": 193,
+              "sha256": "bf4ae7a873cd1ad69bab28fca81d8b438f6e0893a24759a4f0312e5802e71894"
+            },
+            "session_events.json": {
+              "bytes": 1809,
+              "sha256": "3577137d2b0e27792fd4da8e04f689ccb7ae643462e91131fdbe1bf440606a0c"
+            },
+            "version.json": {
+              "bytes": 196,
+              "sha256": "8fa81091a37e7a19e2662956f93a39064b41dbdceeaa524e9ef9a34710730a90"
+            }
+          }
+        },
+        "0.147.0": {
+          "evidence": {
+            "capture_kind": "schema_bundle_distillation",
+            "captured_by": "tests/fixtures/executor_runtime/tools/capture_protocol_fixture.py",
+            "live_capture": false,
+            "origin": "Locally installed surface verified against its generated schema bundle."
+          },
+          "in_production_supported_range": true,
+          "promotion_blocker": null,
+          "release_channel": "local_installation",
+          "status": "supported",
+          "surfaces": {
+            "app_server_cleanup.json": {
+              "bytes": 555,
+              "sha256": "0708a2a4960456ccf339e3df60b21894cbede89f3c924d379d67ffba35cf0337"
+            },
+            "app_server_execution.json": {
+              "bytes": 976,
+              "sha256": "4804daf49757ca240c64ea0e236a94244a631e8068e8a50707494722784a16b6"
+            },
+            "app_server_schema.json": {
+              "bytes": 105424,
+              "sha256": "9f9330476c68787453e17a2c71e2c5bbae90422876d111f338361815774d63c1"
+            },
+            "argv_contract.json": {
+              "bytes": 792,
+              "sha256": "b55dd53ce121c389e90ed06618e66a0463e3960f7490d9a926a515d1c29fcef0"
+            },
+            "callback_failures.json": {
+              "bytes": 339,
+              "sha256": "4ab8dfc6cf66817ae505602b76a5f5ac94a772e45a1c13ec6a98440e4e422447"
+            },
+            "decisions.json": {
+              "bytes": 903,
+              "sha256": "48ccdb60517b3371edde4e3de70ea70cbb586db18bab2dd9af5ace201e21c4a6"
+            },
+            "partial_progress.json": {
+              "bytes": 272,
+              "sha256": "4c4eaca80cf328e41a09026277a315732d7fb23173557548f2b95ac871eb3fbf"
+            },
+            "resource_exhaustion.json": {
+              "bytes": 228,
+              "sha256": "bf4a480d04813a19b152a544815c42724ef617d4f4fdd4239c3479af8ca5ad2c"
+            },
+            "session_events.json": {
+              "bytes": 1283,
+              "sha256": "509e0664126ca8a2d34e6f4271a538d238d1529bf0679192eed716d1c45f5364"
+            },
+            "version.json": {
+              "bytes": 240,
+              "sha256": "7d03cd6679d91b5f7672db0556d97d884ae17b8ca022c9c2b24f78dfffa35e98"
+            }
+          }
+        },
+        "0.150.1": {
+          "evidence": {
+            "capture_kind": "official_probe_live",
+            "captured_by": "tests/fixtures/executor_runtime/tools/capture_protocol_fixture.py",
+            "live_capture": true,
+            "origin": "Official read-only probes captured locally on 2026-08-27; every frozen execution method and the full cleanup group are present in the generated schema bundle."
+          },
+          "in_production_supported_range": false,
+          "promotion_blocker": "Candidate stays outside production: the full help/event/canary contract has not been run against a paid live canary.",
+          "release_channel": "observed_path_binary",
+          "status": "candidate",
+          "surfaces": {
+            "app_server_cleanup.json": {
+              "bytes": 555,
+              "sha256": "0708a2a4960456ccf339e3df60b21894cbede89f3c924d379d67ffba35cf0337"
+            },
+            "app_server_execution.json": {
+              "bytes": 976,
+              "sha256": "4804daf49757ca240c64ea0e236a94244a631e8068e8a50707494722784a16b6"
+            },
+            "app_server_schema.json": {
+              "bytes": 598692,
+              "sha256": "5299e1c756474c9ae92d21d3bbd682bb88627c72e9965bdfb8194d6eef7cd627"
+            },
+            "argv_contract.json": {
+              "bytes": 792,
+              "sha256": "b55dd53ce121c389e90ed06618e66a0463e3960f7490d9a926a515d1c29fcef0"
+            },
+            "callback_failures.json": {
+              "bytes": 364,
+              "sha256": "090427b382b25d04c90091349eab8b15f545a30edd52e98475ce9cd4f8fb3c77"
+            },
+            "decisions.json": {
+              "bytes": 928,
+              "sha256": "c14de35bbaac0c645180a20dca08b2980de3e28d44cd28c3a28cac6a395b0258"
+            },
+            "delete_help.txt": {
+              "bytes": 2982,
+              "sha256": "6df376b1468fee4b0bf1deaabde0041bb3b97a04eb24c68bb831374afeb94fc1"
+            },
+            "help.txt": {
+              "bytes": 5717,
+              "sha256": "263beefe1da7f32b64f1b919df4e6567b14e46d47555b251ab7b11a01de856a6"
+            },
+            "partial_progress.json": {
+              "bytes": 297,
+              "sha256": "d45be1a8bae1f3a5bce89a7c6940685c92d62876380497dfd781aa30bda8abc0"
+            },
+            "resource_exhaustion.json": {
+              "bytes": 253,
+              "sha256": "4acdc6e6354548700a8b215ec45d7542a8df2c95e6c77be072ef9de749bb1472"
+            },
+            "session_events.json": {
+              "bytes": 1224,
+              "sha256": "78da8e2c051ca716102a541e688f35a452834ad5b566e2761aa8ca5e38df85c9"
+            },
+            "version.json": {
+              "bytes": 170,
+              "sha256": "1238249fbfdc498e012a6f5c88e275814323868ebc7c2887d66bb51e52a06c31"
+            }
+          }
+        }
+      }
+    },
+    "hermes": {
+      "capability_groups_reference": null,
+      "production": {
+        "acp_protocol_version": 1,
+        "binding_constants": [
+          "agent_bridge_connect.executors.hermes._HERMES_FROZEN_VERSION",
+          "agent_bridge_connect.hermes_acp.HERMES_ACP_PROTOCOL_VERSION"
+        ],
+        "frozen_cli_version": "0.17.0"
+      },
+      "shared_surfaces": {},
+      "versions": {
+        "0.17.0": {
+          "evidence": {
+            "capture_kind": "offline_frozen_evidence",
+            "captured_by": "tests/fixtures/executor_runtime/tools/capture_protocol_fixture.py",
+            "live_capture": false,
+            "origin": "Help/receipt/exhaustion characterization frozen during PERM-103-002 and the cleanup freeze."
+          },
+          "in_production_supported_range": true,
+          "promotion_blocker": null,
+          "release_channel": "frozen_baseline",
+          "status": "supported",
+          "surfaces": {
+            "acp_probe.json": {
+              "bytes": 500,
+              "sha256": "27d04c5dbd1f479a94c01e55d258b19000a2da8e2b316bc17b9f9d072982076f"
+            },
+            "argv_contract.json": {
+              "bytes": 903,
+              "sha256": "723d202166900453c35d7a6308e1762d574862c1b76ccb6cef3535ca4cb6927e"
+            },
+            "callback_failures.json": {
+              "bytes": 216,
+              "sha256": "fe7648e9c4fbd03a3ae5b31ad2007cb9043f7e2b4629933f32460acd0087a4e2"
+            },
+            "help.txt": {
+              "bytes": 510,
+              "sha256": "d93491143d82711cd8be6eab0416e7b8904e8ac563d03ced92f8e507846c9507"
+            },
+            "partial_progress.json": {
+              "bytes": 212,
+              "sha256": "42a98730992472727b40e82f574cf824f3f6bcbbffaac55afad6d3fbd733989e"
+            },
+            "permission.json": {
+              "bytes": 649,
+              "sha256": "75543ab2fc03a0a123578bb335839fc73f04329ad7086e79edd64f2c252f0e0c"
+            },
+            "receipt_samples.json": {
+              "bytes": 382,
+              "sha256": "b7c9d63e192805ce9c2916f1a9cb164d93ecab038dca11ae43445f2202e505f5"
+            },
+            "resource_exhaustion.json": {
+              "bytes": 785,
+              "sha256": "8dc74bcac7f00293e61140f34f5775aa9c39ff01ec8d39164b1cdc6425290ee1"
+            },
+            "session_delete.json": {
+              "bytes": 770,
+              "sha256": "82e45e0806f34a2c2da6c03fa2a8df20597d5ce577a14abc36fe6ea9db5e0829"
+            },
+            "session_events.json": {
+              "bytes": 1378,
+              "sha256": "b113801473a8d0e89d2c6d5a44bc8369fddf8ed92e99fa3b340468c52addbf5e"
+            },
+            "version.json": {
+              "bytes": 161,
+              "sha256": "bc6e8cb5f0428c053dce1c3595702124e7d2c5b4e61426d876baeb916c9afb21"
+            }
+          }
+        },
+        "0.20.1": {
+          "evidence": {
+            "capture_kind": "official_probe_live",
+            "captured_by": "tests/fixtures/executor_runtime/tools/capture_protocol_fixture.py",
+            "live_capture": true,
+            "origin": "Official read-only probes captured locally on 2026-08-27: version, top-level help, sessions delete help, acp --check, acp --version."
+          },
+          "in_production_supported_range": false,
+          "promotion_blocker": "Candidate stays outside production: no live paid turn has validated event or exhaustion wording, so the cleanup freeze stays pinned at 0.17.0.",
+          "release_channel": "observed_path_binary",
+          "status": "candidate",
+          "surfaces": {
+            "acp_probe.json": {
+              "bytes": 520,
+              "sha256": "de4b9f2945adc3b48c49bf75a78c34e891be826d46818fa4e0b2242ec55f008e"
+            },
+            "argv_contract.json": {
+              "bytes": 963,
+              "sha256": "14888e0da3126d96de30572c697da87c38e7121e5440ee6eed957b49073203fb"
+            },
+            "callback_failures.json": {
+              "bytes": 276,
+              "sha256": "c4521640c4f2acc8365b3821aceb60bdcd8d8baa9bdf4ed04f1444772155fb25"
+            },
+            "help.txt": {
+              "bytes": 13864,
+              "sha256": "33b1901e0c31b2070b1185a1ff51f4d6bc4251055c7e6fea8e865b61f3485bac"
+            },
+            "partial_progress.json": {
+              "bytes": 272,
+              "sha256": "8bb7d5c31e11f2c735641444e279fb943f60a863491c707a867a8b794c0e8be3"
+            },
+            "permission.json": {
+              "bytes": 649,
+              "sha256": "75543ab2fc03a0a123578bb335839fc73f04329ad7086e79edd64f2c252f0e0c"
+            },
+            "resource_exhaustion.json": {
+              "bytes": 661,
+              "sha256": "b6193d54ac312bf90973e6128ff05edf5d7e6eb0cfda58de43ff782302af10f1"
+            },
+            "session_delete.json": {
+              "bytes": 786,
+              "sha256": "58a1c40dd0c089668bdf60113f74ae86154b11fa6b2b8d79594cb460a6cfc151"
+            },
+            "session_events.json": {
+              "bytes": 1216,
+              "sha256": "d2e4767f4bc3225cb2eb571e3b242d89827e9b76d6d33b6b7eef60a6f1aa4189"
+            },
+            "sessions_delete_help.txt": {
+              "bytes": 200,
+              "sha256": "b2e54cb273e985762c3a8c2fa7ee6878bfa750b43c99d3b452b669226310968b"
+            },
+            "version.json": {
+              "bytes": 465,
+              "sha256": "23e64026c53f33da43b881f7204e0e9b25125f4868417581f7ee1ab29b49990f"
+            }
+          }
+        }
+      }
+    }
+  },
+  "expected_status_counts": {
+    "candidate": 2,
+    "pending_capture": 1,
+    "supported": 4
+  },
+  "purpose": "Single authoritative copy of every executor protocol fixture, layered by executor / version / surface.",
+  "rules": {
+    "candidate_versions_never_widen_production_bounds": true,
+    "incomplete_capability_group_fails_closed": true,
+    "missing_early_receipt_fails_closed": true,
+    "never_stored_here": [
+      "tokens or bearer credentials",
+      "raw private session paths",
+      "user prompt bodies",
+      "full environment dumps",
+      "real session transcripts"
+    ],
+    "newer_path_binary_alone_never_promotes_a_version": true,
+    "one_authoritative_copy_per_version_surface": true,
+    "redaction_required_before_capture_enters_the_matrix": true,
+    "unknown_critical_event_fails_closed": true
+  },
+  "schema_version": "PROTO-104-001/1"
+}

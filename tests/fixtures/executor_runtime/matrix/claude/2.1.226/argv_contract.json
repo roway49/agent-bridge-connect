@@ -1,0 +1,43 @@
+{
+  "approval_broker_arg": [
+    "--permission-prompt-tool",
+    "{broker_command}"
+  ],
+  "budget_guard_arg": [
+    "--max-budget-usd",
+    "{amount_usd}"
+  ],
+  "canonical_argv_prefix": [
+    "{binary}",
+    "-p",
+    "{permission_flags}",
+    "{session_flag}",
+    "--output-format",
+    "stream-json",
+    "--verbose"
+  ],
+  "controlled_environment": {
+    "inherits_parent_env": true,
+    "never_persisted_in_results_or_fixtures": true,
+    "subprocess_scoped_only": true
+  },
+  "cwd": "{workspace_root}",
+  "path_capability_args": [
+    "--add-dir",
+    "{root}",
+    "--settings",
+    "{settings_json}"
+  ],
+  "session_flag_rule": {
+    "fresh": "--session-id",
+    "resumed": "--resume",
+    "value": "{uuid}"
+  },
+  "surface": "argv_contract",
+  "tool_fence_args": [
+    "--disallowedTools",
+    "TaskCreate,TaskUpdate,TodoWrite"
+  ],
+  "transport": "cli_stream_json_controlled",
+  "writable_roots_source": "claude_ephemeral_path_capability(task_packet, execution_root)"
+}

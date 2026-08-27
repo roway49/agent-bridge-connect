@@ -29,7 +29,15 @@ from agent_bridge_connect.session import (
 )
 
 
-SCHEMA_FIXTURE = Path(__file__).parent / "fixtures" / "executor_runtime" / "codex_app_server_protocol.v2.schema.json"
+SCHEMA_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "executor_runtime"
+    / "matrix"
+    / "codex"
+    / "shared"
+    / "app_server_v2_contract_summary.json"
+)
 
 
 def _app_server_capability_override() -> dict:

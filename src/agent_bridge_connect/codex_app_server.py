@@ -69,6 +69,33 @@ CODEX_APP_SERVER_CLIENT_METHODS = frozenset(
 CODEX_APP_SERVER_REQUEST_METHODS = frozenset(APPROVAL_METHODS)
 CODEX_APP_SERVER_NOTIFICATIONS = frozenset({"item/completed", "turn/completed"})
 
+# Named capability groups (PROTO-104-001).  The ``execution`` group is exactly
+# the frozen single-action surface above and keeps driving production today.
+# The ``cleanup`` group names the thread lifecycle surface SESSION will need for
+# App Server based session deletion; exposing it as a named group does not
+# change any production behavior until SESSION opts in.  Group membership is a
+# closed set: extra schema methods are never added automatically, so an
+# incomplete group always fails closed in the matrix contract tests.
+CODEX_APP_SERVER_EXECUTION_GROUP = "execution"
+CODEX_APP_SERVER_CLEANUP_GROUP = "cleanup"
+CODEX_APP_SERVER_CAPABILITY_GROUPS: dict[str, dict[str, frozenset[str]]] = {
+    CODEX_APP_SERVER_EXECUTION_GROUP: {
+        "client_methods": CODEX_APP_SERVER_CLIENT_METHODS,
+        "server_requests": CODEX_APP_SERVER_REQUEST_METHODS,
+        "notifications": CODEX_APP_SERVER_NOTIFICATIONS,
+    },
+    CODEX_APP_SERVER_CLEANUP_GROUP: {
+        # Exactly the three members frozen by PROTO-104-001.
+        "client_methods": frozenset({"thread/delete", "thread/read"}),
+        "server_requests": frozenset(),
+        "notifications": frozenset({"thread/deleted"}),
+    },
+}
+
+# Versions whose generated schema bundle is distilled into the fixture matrix.
+# Evidence only: listing a version here never widens the gate above.
+CODEX_APP_SERVER_SCHEMA_EVIDENCE_VERSIONS = ("0.146.0", "0.147.0", "0.150.1")
+
 # Schema-contract evidence, in the same order the generated bundle is checked.
 CODEX_APP_SERVER_SCHEMA_METHODS = frozenset(
     {
@@ -196,6 +223,32 @@ def _schema_matches_contract(schema: dict[str, Any]) -> list[str]:
         if not _schema_has_request_method(schema, method):
             missing.append(method)
     for method in CODEX_APP_SERVER_NOTIFICATIONS:
+        if not _schema_has_notification(schema, method):
+            missing.append(method)
+    return missing
+
+
+def verify_capability_group(
+    schema: dict[str, Any],
+    group: str,
+) -> list[str]:
+    """Return the members of one named capability group missing from a schema.
+
+    Fail-closed: a method that cannot be located in the generated bundle is
+    reported as missing instead of being assumed present.  Used by the fixture
+    matrix contract tests; it never changes production probing.
+    """
+    definition = CODEX_APP_SERVER_CAPABILITY_GROUPS.get(group)
+    if definition is None:
+        return [f"unknown_capability_group:{group}"]
+    missing: list[str] = []
+    for method in sorted(definition.get("client_methods", ())):
+        if not _schema_has_client_method(schema, method):
+            missing.append(method)
+    for method in sorted(definition.get("server_requests", ())):
+        if not _schema_has_request_method(schema, method):
+            missing.append(method)
+    for method in sorted(definition.get("notifications", ())):
         if not _schema_has_notification(schema, method):
             missing.append(method)
     return missing
@@ -372,15 +425,20 @@ def assert_codex_app_server_capability(
 
 
 __all__ = [
+    "CODEX_APP_SERVER_CAPABILITY_GROUPS",
+    "CODEX_APP_SERVER_CLEANUP_GROUP",
     "CODEX_APP_SERVER_CLIENT_METHODS",
+    "CODEX_APP_SERVER_EXECUTION_GROUP",
     "CODEX_APP_SERVER_MAX_VERSION",
     "CODEX_APP_SERVER_MIN_VERSION",
     "CODEX_APP_SERVER_NOTIFICATIONS",
     "CODEX_APP_SERVER_REQUIRED_PROTOCOL",
     "CODEX_APP_SERVER_REQUEST_METHODS",
+    "CODEX_APP_SERVER_SCHEMA_EVIDENCE_VERSIONS",
     "CODEX_APP_SERVER_TRANSPORT",
     "CODEX_APP_SERVER_TRANSPORT_ALIASES",
     "assert_codex_app_server_capability",
     "codex_app_server_contract",
     "parse_codex_version",
+    "verify_capability_group",
 ]

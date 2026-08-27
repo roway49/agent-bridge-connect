@@ -20,7 +20,7 @@ HELP_FIXTURE = (
     Path(__file__).parent
     / "fixtures"
     / "executor_runtime"
-    / "claude_2.1.226_help.txt"
+    / "matrix" / "claude" / "2.1.226" / "help.txt"
 )
 SESSION_ID = "12345678-1234-5678-9234-567812345678"
 

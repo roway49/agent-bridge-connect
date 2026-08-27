@@ -1,0 +1,16 @@
+{
+  "absent_project_detection": "purge output reporting an absent project is treated as already-absent success via _claude_project_is_absent",
+  "help_entry_captured": true,
+  "project_root_validation": "purge only ever targets the ephemeral Claude project root from the persisted PathPlan, never the customer deliverable root",
+  "raw_output_retained": false,
+  "required_help_entry": {
+    "all_projects_flag": "--all",
+    "confirm_flag": "--yes",
+    "dry_run_flag": "--dry-run",
+    "interactive_flag": "--interactive",
+    "usage_line": "Usage: claude project purge [options] [path]"
+  },
+  "strategy": "claude_project_purge",
+  "surface": "project_purge",
+  "timeout_constant": "CLAUDE_PROJECT_PURGE_TIMEOUT_S"
+}

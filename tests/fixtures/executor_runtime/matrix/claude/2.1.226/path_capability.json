@@ -1,0 +1,22 @@
+{
+  "capability_version": 1,
+  "failure_code": "claude_path_capability_unsupported",
+  "isolation_property": "AgentBC ephemeral project stays separate from the task deliverable root",
+  "module": "agent_bridge_connect.claude_path_capability",
+  "probe_scope": "--version and --help only; never reads private Claude project state",
+  "production_bounds": {
+    "enforced_at_runtime": true,
+    "max_exclusive": "2.2.0",
+    "min_inclusive": "2.1.216"
+  },
+  "required_flags": [
+    "--add-dir",
+    "--settings"
+  ],
+  "supported_platforms": [
+    "Darwin",
+    "Linux",
+    "WSL2"
+  ],
+  "surface": "path_capability"
+}

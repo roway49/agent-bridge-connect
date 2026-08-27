@@ -1,0 +1,16 @@
+{
+  "default_reference": "--max-turns default 90, or agent.max_turns in config",
+  "diagnostics_extractor": "_iteration_budget_diagnostics(stdout, stderr)",
+  "flag": "--max-turns N",
+  "iteration_detector_strings": [
+    "turn_exit_reason=max_iterations_reached(60/60)",
+    "⚠️  Iteration budget exhausted (60/60) — asking model to summarise",
+    "⚠️  Reached maximum iterations (60). Requesting summary...",
+    "turn_exit_reason: budget_exhausted"
+  ],
+  "runtime_version_of_samples": "0.17.0",
+  "semantics": "maximum tool-calling iterations per conversation turn",
+  "surface": "resource_exhaustion",
+  "task_freeze_wins": "extensions.agentbc.resources.max_turns overrides the configured default",
+  "validation": "positive integer; anything else raises ValueError"
+}
