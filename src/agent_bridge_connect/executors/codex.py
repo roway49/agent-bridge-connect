@@ -6,6 +6,7 @@ import subprocess
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,11 +20,16 @@ from agent_bridge_connect.adapters import (
     SessionCleanupResult,
     StartResult,
 )
-from agent_bridge_connect.execution_contract import (
-    detect_retryable_transport_failure,
-    extract_callback_validation_from_events,
-    route_executor_terminal,
-    strip_callback_line,
+from agent_bridge_connect.codex_session_cleanup import (
+    CODEX_DESKTOP_UI_STALE_CODE,
+    CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE,
+    CODEX_SESSION_DELETE_FAILED_CODE,
+    CODEX_SESSION_DELETE_INVALID_ID_CODE,
+    CODEX_SESSION_DELETE_STILL_PRESENT_CODE,
+    CODEX_SESSION_DELETE_TIMEOUT_CODE,
+    CODEX_SESSION_DELETE_TRANSPORT_LOST_CODE,
+    CodexSessionCleanupClient,
+    CodexSessionCleanupError,
 )
 from agent_bridge_connect.control import (
     ApprovalControlPlane,
@@ -33,25 +39,32 @@ from agent_bridge_connect.control import (
     approval_response_payload,
 )
 from agent_bridge_connect.effective_permissions import resolve_effective_permission
+from agent_bridge_connect.execution_contract import (
+    detect_retryable_transport_failure,
+    extract_callback_validation_from_events,
+    route_executor_terminal,
+    strip_callback_line,
+)
 from agent_bridge_connect.media import task_image_paths
 from agent_bridge_connect.permission_modes import (
     assert_executor_permission_supported,
     permission_flags,
     permission_record_from_extensions,
 )
+from agent_bridge_connect.prompt_contract import (
+    PromptPlatformExtras,
+    build_prompt_contract,
+)
 from agent_bridge_connect.protocol import ABCError
-from agent_bridge_connect.prompt_contract import PromptPlatformExtras, build_prompt_contract
 from agent_bridge_connect.runner import RunnerClient, RunnerError
 from agent_bridge_connect.session import SessionRecoveryRequired
 
-from .base import CLIExecutorBase
 from ..path_provider import find_binary
+from .base import CLIExecutorBase
 
 SAFETY_TIMEOUT_S = 24 * 60 * 60
 SESSION_EXTENSION_KEY = "agentbc.session"
 CODEX_CLEANUP_UNSUPPORTED_CODE = "codex_session_delete_unavailable"
-CODEX_SESSION_DELETE_FAILED_CODE = "codex_session_delete_failed"
-CODEX_SESSION_DELETE_INVALID_ID_CODE = "codex_session_delete_invalid_session_id"
 _CODEX_FROZEN_HELP_FIXTURE = "matrix/codex/0.146.0/delete_help.txt"
 _CODEX_FROZEN_VERSION = "0.146.0"
 _CODEX_CLEANUP_TIMEOUT_S = 60
@@ -71,11 +84,13 @@ class CodexExecutor(CLIExecutorBase):
         transport: str | Any = "auto",
         transport_factory: Any | None = None,
         approval_timeout_s: float = 300.0,
+        desktop_verifier: Any | None = None,
     ) -> None:
         super().__init__()
         self.timeout_s = timeout_s
         self.transport_mode = transport
         self.transport_factory = transport_factory
+        self.desktop_verifier = desktop_verifier
         self.approval_timeout_s = max(float(approval_timeout_s), 0.1)
         self._discovery = _discover_codex_binary(command)
         resolved = str(self._discovery.get("path") or "")
@@ -152,11 +167,16 @@ class CodexExecutor(CLIExecutorBase):
         self,
         request: SessionCleanupRequest,
     ) -> SessionCleanupCapability:
-        """Probe the discovered CLI help without reading any saved session data."""
+        """Return the narrow official cleanup capability without session-store reads."""
         if request.retain is True:
             return SessionCleanupCapability("not_applicable", "retain")
         if self.agent_bin is None:
             return _codex_cleanup_unsupported()
+        if self._uses_cleanup_app_server():
+            return SessionCleanupCapability(
+                "supported",
+                "official_session_delete",
+            )
         try:
             completed = subprocess.run(
                 [str(self.agent_bin), "delete", "--help"],
@@ -175,7 +195,7 @@ class CodexExecutor(CLIExecutorBase):
         )
 
     def cleanup_session(self, request: SessionCleanupRequest) -> SessionCleanupResult:
-        """Delete one exact official UUID through ``codex delete --force``."""
+        """Delete one exact official UUID through the official cleanup chain."""
         if request.retain is True:
             return SessionCleanupResult("retained", "not_applicable", "retain")
         request_error = _codex_cleanup_request_error(request)
@@ -187,6 +207,157 @@ class CodexExecutor(CLIExecutorBase):
                 request_error,
                 False,
             )
+        if self._uses_cleanup_app_server():
+            return self._cleanup_session_app_server(request)
+        return self._cleanup_session_cli(request, strict=request.official_receipt_bound)
+
+    def _uses_cleanup_app_server(self) -> bool:
+        """Use App Server when a caller explicitly supplies that transport seam."""
+        if not isinstance(self.transport_mode, str):
+            return True
+        transport = self.transport_mode.strip().lower()
+        if transport in {"cli", "direct"}:
+            return False
+        if self.transport_factory is not None:
+            return True
+        return transport in {"app-server", "app_server", "stdio", "codex-app-server"}
+
+    def _cleanup_session_app_server(
+        self,
+        request: SessionCleanupRequest,
+    ) -> SessionCleanupResult:
+        verification = _unknown_cleanup_verification()
+        try:
+            assert self.agent_bin is not None
+            root = _cleanup_workspace_root(request)
+            observation = CodexSessionCleanupClient(
+                self.agent_bin,
+                cwd=root,
+                transport_factory=self.transport_factory,
+                transport=(
+                    self.transport_mode
+                    if not isinstance(self.transport_mode, str)
+                    else None
+                ),
+                timeout_s=_CODEX_CLEANUP_TIMEOUT_S,
+            ).delete_and_verify(request.session_id)
+            verification = observation.verification()
+        except CodexSessionCleanupError as exc:
+            desktop = self._desktop_cleanup_verification(request)
+            verification = {
+                "cli": {
+                    "status": exc.cli_status
+                    if exc.cli_status in {"unknown", "absent", "present"}
+                    else "unknown",
+                    "checked_at": exc.cli_checked_at or _cleanup_now(),
+                },
+                "desktop": desktop,
+            }
+            return SessionCleanupResult(
+                "failed",
+                "supported",
+                "official_session_delete",
+                exc.code,
+                exc.retryable,
+                verification=verification,
+            )
+        except (OSError, TransportClosed, RuntimeError):
+            desktop = self._desktop_cleanup_verification(request)
+            verification = {
+                **_unknown_cleanup_verification(),
+                "desktop": desktop,
+            }
+            return SessionCleanupResult(
+                "failed",
+                "supported",
+                "official_session_delete",
+                CODEX_SESSION_DELETE_TRANSPORT_LOST_CODE,
+                True,
+                verification=verification,
+            )
+
+        desktop = self._desktop_cleanup_verification(request)
+        verification["desktop"] = desktop
+        cli_status = verification["cli"]["status"]
+        desktop_status = desktop["status"]
+        if cli_status == "absent" and desktop_status == "absent":
+            return SessionCleanupResult(
+                "succeeded",
+                "supported",
+                "official_session_delete",
+                verification=verification,
+            )
+        if cli_status == "absent" and desktop_status == "present":
+            return SessionCleanupResult(
+                "failed",
+                "supported",
+                "official_session_delete",
+                CODEX_DESKTOP_UI_STALE_CODE,
+                False,
+                verification=verification,
+            )
+        if cli_status == "absent":
+            return SessionCleanupResult(
+                "failed",
+                "supported",
+                "official_session_delete",
+                CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE,
+                False,
+                verification=verification,
+            )
+        return SessionCleanupResult(
+            "failed",
+            "supported",
+            "official_session_delete",
+            CODEX_SESSION_DELETE_STILL_PRESENT_CODE
+            if cli_status == "present"
+            else CODEX_SESSION_DELETE_FAILED_CODE,
+            False,
+            verification=verification,
+        )
+
+    def _desktop_cleanup_verification(
+        self,
+        request: SessionCleanupRequest,
+    ) -> dict[str, str]:
+        checked_at = _cleanup_now()
+        verifier = self.desktop_verifier
+        if verifier is None:
+            return {"status": "unavailable", "checked_at": checked_at}
+        try:
+            if callable(getattr(verifier, "verify_absent", None)):
+                value = verifier.verify_absent(session_id=request.session_id)
+            elif callable(getattr(verifier, "verify_session", None)):
+                value = verifier.verify_session(session_id=request.session_id)
+            elif callable(verifier):
+                value = verifier(request.session_id)
+            else:
+                value = None
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            value = None
+        if isinstance(value, dict):
+            status = value.get("status")
+            timestamp = value.get("checked_at")
+            if status in {"absent", "present"}:
+                return {
+                    "status": str(status),
+                    "checked_at": str(timestamp) if _is_cleanup_timestamp(timestamp) else checked_at,
+                }
+        elif isinstance(value, str) and value.strip().lower() in {"absent", "present"}:
+            return {"status": value.strip().lower(), "checked_at": checked_at}
+        return {"status": "unavailable", "checked_at": checked_at}
+
+    def _cleanup_session_cli(
+        self,
+        request: SessionCleanupRequest,
+        *,
+        strict: bool,
+    ) -> SessionCleanupResult:
+        """Keep the legacy CLI action as a bounded fallback.
+
+        For an official coordinator request, the CLI action is never promoted
+        to success because it cannot provide the required fresh backend read.
+        """
         capability = self.session_cleanup_capability(request)
         if capability.capability != "supported":
             return SessionCleanupResult(
@@ -206,7 +377,33 @@ class CodexExecutor(CLIExecutorBase):
                 shell=False,
                 timeout=_CODEX_CLEANUP_TIMEOUT_S,
             )
-        except (OSError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired:
+            if strict:
+                return SessionCleanupResult(
+                    "failed",
+                    "supported",
+                    "official_session_delete",
+                    CODEX_SESSION_DELETE_TIMEOUT_CODE,
+                    True,
+                    verification=_unknown_cleanup_verification(),
+                )
+            return SessionCleanupResult(
+                "failed",
+                "supported",
+                "official_session_delete",
+                CODEX_SESSION_DELETE_FAILED_CODE,
+                True,
+            )
+        except OSError:
+            if strict:
+                return SessionCleanupResult(
+                    "failed",
+                    "supported",
+                    "official_session_delete",
+                    CODEX_SESSION_DELETE_TRANSPORT_LOST_CODE,
+                    True,
+                    verification=_unknown_cleanup_verification(),
+                )
             return SessionCleanupResult(
                 "failed",
                 "supported",
@@ -215,11 +412,24 @@ class CodexExecutor(CLIExecutorBase):
                 True,
             )
         output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
-        if completed.returncode == 0 or _CODEX_SESSION_ABSENT_RE.search(output):
+        if not strict and (completed.returncode == 0 or _CODEX_SESSION_ABSENT_RE.search(output)):
             return SessionCleanupResult(
                 "succeeded",
                 "supported",
                 "official_session_delete",
+            )
+        if strict and completed.returncode == 0:
+            desktop = self._desktop_cleanup_verification(request)
+            return SessionCleanupResult(
+                "failed",
+                "supported",
+                "official_session_delete",
+                CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE,
+                False,
+                verification={
+                    **_unknown_cleanup_verification(),
+                    "desktop": desktop,
+                },
             )
         return SessionCleanupResult(
             "failed",
@@ -373,7 +583,9 @@ class CodexExecutor(CLIExecutorBase):
         transport = self.transport_mode.strip().lower()
         if transport in {"cli", "direct"}:
             return False
-        from agent_bridge_connect.permission_grants import permission_grant_from_extensions
+        from agent_bridge_connect.permission_grants import (
+            permission_grant_from_extensions,
+        )
 
         extensions = (task_packet or {}).get("extensions")
         grant = permission_grant_from_extensions(
@@ -591,7 +803,7 @@ class CodexExecutor(CLIExecutorBase):
         if callable(checker):
             try:
                 return bool(checker())
-            except Exception:
+            except Exception:  # noqa: BLE001
                 return False
         value = getattr(transport, "alive", None)
         return bool(value) if isinstance(value, bool) else True
@@ -751,7 +963,7 @@ class CodexExecutor(CLIExecutorBase):
                         "Codex App Server transport died while approval was pending",
                         evidence={"phase": "approval_wait"},
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001,S110
                     pass
                 return
 
@@ -780,7 +992,7 @@ class CodexExecutor(CLIExecutorBase):
                 "result": response_payload,
             }
             self._transport_send(record["transport"], rpc_response)
-        except (ControlPlaneError, SessionRecoveryRequired):
+        except (ControlPlaneError, SessionRecoveryRequired):  # noqa: TRY203
             raise
         finally:
             monitor_stop.set()
@@ -938,7 +1150,7 @@ class CodexExecutor(CLIExecutorBase):
                     request_id=pending_id,
                     evidence={"phase": str(record.get("status") or "starting")},
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001,S110
                 pass
             receipt = record.get("execution_session")
             result: dict[str, Any] = {
@@ -1054,6 +1266,34 @@ class CodexExecutor(CLIExecutorBase):
             )
 
 
+def _cleanup_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _is_cleanup_timestamp(value: Any) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None
+
+
+def _unknown_cleanup_verification() -> dict[str, dict[str, str]]:
+    return {
+        "cli": {"status": "unknown", "checked_at": _cleanup_now()},
+        "desktop": {"status": "unavailable", "checked_at": _cleanup_now()},
+    }
+
+
+def _cleanup_workspace_root(request: SessionCleanupRequest) -> Path:
+    workspace = request.workspace if isinstance(request.workspace, dict) else {}
+    candidate = str(workspace.get("root") or workspace.get("project_root") or ".")
+    root = Path(candidate).expanduser().resolve()
+    return root if root.is_dir() else Path.cwd()
+
+
 def _discover_codex_binary(command: str | None) -> dict[str, Any]:
     configured = command.strip() if isinstance(command, str) else ""
     return find_binary("codex", extra_paths=[configured] if configured else None)
@@ -1140,6 +1380,8 @@ def _codex_cleanup_request_error(request: SessionCleanupRequest) -> str:
         return "codex_cleanup_mode_invalid"
     if request.strategy != "official_session_delete":
         return "codex_cleanup_strategy_mismatch"
+    if request.official_receipt_bound and request.receipt_source != "jsonl_thread_started":
+        return "codex_cleanup_receipt_unbound"
     session_id = str(request.session_id or "").strip()
     try:
         parsed = uuid.UUID(session_id)
@@ -1186,12 +1428,12 @@ def _build_prompt(
     extra_rules: tuple[str, ...] = ()
     if native_single_action:
         extra_rules = (
-            "If an exact action explicitly declared by a task step is blocked by the native sandbox, "
+            ("If an exact action explicitly declared by a task step is blocked by the native sandbox, "
             "retry that identical command exactly once with the same cwd through Codex's native "
             "sandbox_permissions=require_escalated single-action request. This does not change the "
             "task permission mode and is not a full fallback. Never use it for progress updates, "
             "diagnostics, an alternate command or path, persistent/session-wide access, or any "
-            "undeclared action; if the native request cannot be emitted, stop and report the blocker.",
+            "undeclared action; if the native request cannot be emitted, stop and report the blocker."),
         )
     return build_prompt_contract(
         task_packet,

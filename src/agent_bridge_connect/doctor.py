@@ -9,10 +9,11 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from . import __version__
 from .config import (
@@ -368,6 +369,15 @@ def build_session_cleanup_diagnostics(
                 f"retryable={str(bool(cleanup['retryable'])).lower()}. AgentBC will "
                 "use its bounded retry path when retryable."
             )
+        elif state == "legacy":
+            if session.get("version") == 1:
+                status = "warning"
+                message = (
+                    "Historical v1 cleanup reported success without the v2 CLI and "
+                    "Desktop absence proof; AgentBC will not re-delete it."
+                )
+            else:
+                message = "Historical cleanup metadata is unverified."
         elif state == "pending" and _pending_is_stale(
             session.get("cleanup"), current
         ):
@@ -413,10 +423,8 @@ def _auxiliary_cleanup_diagnostics(
     unsupported cleanup, failed cleanup, or stale pending cleanup for a terminal
     task is a warning: primary session success never implies aggregate success.
     """
-    from .auxiliary_sessions import (
-        AUXILIARY_EXTENSION_KEY,
-        read_auxiliary_ledger as _read_ledger,
-    )
+    from .auxiliary_sessions import AUXILIARY_EXTENSION_KEY
+    from .auxiliary_sessions import read_auxiliary_ledger as _read_ledger
     from .protocol import ABCError
 
     if not isinstance(extensions, dict):
@@ -496,6 +504,9 @@ def _one_auxiliary_diagnostic(entry: Any, task_id: str, now: datetime) -> dict[s
         "error_code": cleanup["error_code"],
         "retryable": cleanup["retryable"],
     }
+    for field in ("version", "strategy", "verification"):
+        if field in cleanup:
+            base[field] = cleanup[field]
     if retain:
         return {
             **base,
@@ -716,6 +727,18 @@ def _render_cleanup(cleanup: dict[str, Any]) -> list[str]:
     lines.append(f"  status: {_text_value(cleanup.get('status'))}")
     lines.append(f"  warnings: {_text_value(cleanup.get('warnings'))}")
     for diagnostic in cleanup.get("diagnostics", []):
+        strategy = diagnostic.get("strategy")
+        verification = diagnostic.get("verification")
+        detail = ""
+        if strategy:
+            detail += f" strategy={_text_value(strategy)}"
+        if isinstance(verification, dict):
+            cli = verification.get("cli") if isinstance(verification.get("cli"), dict) else {}
+            desktop = verification.get("desktop") if isinstance(verification.get("desktop"), dict) else {}
+            detail += (
+                f" cli={_text_value(cli.get('status'))}"
+                f" desktop={_text_value(desktop.get('status'))}"
+            )
         lines.append(
             "  "
             f"[{str(diagnostic.get('status', '')).upper()}] "
@@ -726,7 +749,7 @@ def _render_cleanup(cleanup: dict[str, Any]) -> list[str]:
             f"attempts={_text_value(diagnostic.get('attempts'))} "
             f"error_code={_text_value(diagnostic.get('error_code'))} "
             f"retryable={_bool_text(diagnostic.get('retryable'))} - "
-            f"{_text_value(diagnostic.get('message'))}"
+            f"{_text_value(diagnostic.get('message'))}{detail}"
         )
     return lines
 
@@ -1312,13 +1335,12 @@ def _collect_blockers(
     *,
     cleanup: dict[str, Any],
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    from .execution_policy import is_resource_decision_request
     from .permission_grants import (
         PERMISSION_GRANT_EXTENSION_KEY,
         permission_grant_public_projection,
     )
     from .protocol import ABCError
-
-    from .execution_policy import is_resource_decision_request
 
     tasks = _read_task_records(board_root)
     items: list[dict[str, Any]] = []

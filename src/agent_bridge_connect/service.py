@@ -32,25 +32,20 @@ from .execution_policy import (
     is_resource_decision_request,
     next_resource_limit,
     public_task_view,
-    validate_execution_session_receipt,
     validate_execution_policy_extensions,
+    validate_execution_session_receipt,
     validate_resource_snapshot,
     validate_session_snapshot,
 )
+from .executor_registry import get_executor
+from .media import media_extension, normalize_image_inputs, task_image_paths
 from .migration import (
     assert_legacy_cutover_clear,
     assert_maintenance_command_allowed,
     legacy_permission_cutover_blocked,
     maintenance_mode_view,
 )
-from .executor_registry import get_executor
-from .media import media_extension, normalize_image_inputs, task_image_paths
 from .path_model import build_path_plan, validate_path_plan_workspace
-from .permission_grants import (
-    PERMISSION_GRANT_EXTENSION_KEY,
-    build_permission_grant,
-    revoke_permission_grant as revoke_grant_contract,
-)
 from .permission_failures import (
     PERMISSION_BLOCKED_STEP_CARDINALITY_INVALID,
     PERMISSION_CHAIN_HEAD_AMBIGUOUS,
@@ -71,6 +66,13 @@ from .permission_failures import (
     PermissionWaitFailure,
     permission_wait_failure,
 )
+from .permission_grants import (
+    PERMISSION_GRANT_EXTENSION_KEY,
+    build_permission_grant,
+)
+from .permission_grants import (
+    revoke_permission_grant as revoke_grant_contract,
+)
 from .permission_modes import (
     PERMISSION_EXTENSION_KEY,
     assert_executor_permission_supported,
@@ -85,7 +87,6 @@ from .task_id import format_task_id, is_task_like, split_task_ref, task_iteratio
 from .task_index import refresh_task_index
 from .task_store import TaskStore
 from .terminal_states import TASK_TERMINAL_STATES
-
 
 RUNNING_TASK_STATUSES = {
     "running",
@@ -193,7 +194,10 @@ class TaskService:
             iteration_index += 1
         if lineage is not None:
             lineage_data["iteration_index"] = iteration_index
-        task_date = str(lineage_data.get("task_date") or datetime.now().strftime("%Y-%m-%d"))
+        task_date = str(
+            lineage_data.get("task_date")
+            or datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005 - local board time compatibility
+        )
         path_config = self.config
         if lineage_data.get("agentbc_root"):
             path_config = {**self.config, "workspace_root": lineage_data["agentbc_root"]}
@@ -2821,7 +2825,7 @@ class TaskService:
         task.extensions = _merge_execution(task.extensions, updates)
         task.updated_at = _utc_now()
         self.store.write_task(task_id, _without_none(task.to_dict()))
-        return dict((task.extensions.get("agentbc.execution") or {}))
+        return dict(task.extensions.get("agentbc.execution") or {})
 
     def pause_task(self, task_id: str, reason: str | None = None) -> None:
         task = self.get_task(task_id)
@@ -3003,7 +3007,7 @@ class TaskService:
             if rollback_complete:
                 try:
                     self._refresh_task_index()
-                except Exception:
+                except Exception:  # noqa: BLE001,S110
                     pass
             raise ABCError(
                 "task_delete_index_error",
@@ -3107,7 +3111,10 @@ class TaskService:
 
     def commit_task_close(self, task_id: str, token: str) -> dict[str, Any]:
         """Commit a reserved close even if process cancellation has raced task state."""
-        from .task_health import cleanup_cancelled_task_files, cleanup_task_report_records
+        from .task_health import (
+            cleanup_cancelled_task_files,
+            cleanup_task_report_records,
+        )
 
         task = self.get_task(task_id)
         intent = (task.extensions or {}).get("agentbc.close_intent")
@@ -3482,6 +3489,11 @@ class TaskService:
         session = dict(extensions[SESSION_EXTENSION_KEY])
         if not str(session.get("session_id") or "").strip():
             session["session_id"] = validated["session_id"]
+        # Freeze the source and binding fact alongside the exact session ID.
+        # Codex cleanup uses this narrow proof to reject unregistered or fuzzy
+        # candidates; Claude/Hermes retain their existing cleanup behavior.
+        session["receipt_source"] = str(validated.get("source") or "")
+        session["official_receipt_bound"] = True
         session["session_state"] = session_state
         errors = validate_session_snapshot(session, executor=task.assignee)
         if errors:
@@ -4068,7 +4080,7 @@ def _require_step(task: TaskModel, step_id: int) -> None:
 
 
 def _validate_path(*states: str) -> None:
-    for from_state, to_state in zip(states, states[1:]):
+    for from_state, to_state in zip(states, states[1:]):  # noqa: RUF007 - preserve supported runtime path
         validate_transition(from_state, to_state)
 
 

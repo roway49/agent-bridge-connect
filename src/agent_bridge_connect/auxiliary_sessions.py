@@ -36,15 +36,17 @@ from .execution_policy import (
     PROJECT_MODES,
     RESOLVED_CLEANUP_STATES,
     SESSION_EXTENSION_KEY,
+    SESSION_RECEIPT_SOURCES,
     TERMINAL_SESSION_CLEANUP_STATUSES,
     build_session_cleanup_receipt,
+    normalize_cleanup_verification,
     read_session_cleanup_receipt,
     session_cleanup_view,
+    upgrade_session_cleanup_receipt,
     validate_execution_session_receipt,
     validate_session_cleanup_receipt,
 )
 from .protocol import ABCError
-
 
 AUXILIARY_LEDGER_VERSION = 1
 AUXILIARY_EXTENSION_KEY = "agentbc.auxiliary_sessions"
@@ -274,13 +276,16 @@ def reserve_auxiliary_session(
             "purpose must be a stable lowercase label",
         )
     primary = extensions.get(SESSION_EXTENSION_KEY)
-    if isinstance(primary, dict) and type(primary.get("retain")) is bool:
-        if retain is not primary.get("retain"):
-            raise ABCError(
-                "auxiliary_reservation_conflict",
-                "auxiliary retain must be copied from the primary session snapshot",
-                {"primary_retain": primary.get("retain"), "requested_retain": retain},
-            )
+    if (
+        isinstance(primary, dict)
+        and type(primary.get("retain")) is bool
+        and retain is not primary.get("retain")
+    ):
+        raise ABCError(
+            "auxiliary_reservation_conflict",
+            "auxiliary retain must be copied from the primary session snapshot",
+            {"primary_retain": primary.get("retain"), "requested_retain": retain},
+        )
     entry = _match_existing_reservation(
         ledger,
         owner_run_id=owner_run_id,
@@ -487,6 +492,11 @@ def auxiliary_cleanup_blockers(
     if entry_errors:
         blockers.append("auxiliary_ledger_invalid")
         return blockers
+    if (
+        str(entry.get("executor") or "").strip().lower() == "codex"
+        and str(entry.get("source") or "") != SESSION_RECEIPT_SOURCES["codex"]
+    ):
+        blockers.append("auxiliary_session_receipt_unbound")
     if entry.get("retain") is True:
         blockers.append("retention_enabled")
     if str(entry.get("session_state") or "") != "terminal":
@@ -512,6 +522,7 @@ def transition_auxiliary_cleanup(
     error_code: str = "",
     retryable: bool = False,
     next_attempt_at: str = "",
+    verification: Any | None = None,
     occurred_at: str | None = None,
 ) -> dict[str, Any]:
     """Apply one pure, fail-closed auxiliary cleanup receipt transition.
@@ -529,6 +540,7 @@ def transition_auxiliary_cleanup(
     current_state = receipt["state"]
     if current_state in RESOLVED_CLEANUP_STATES or current_state == target_state:
         return receipt
+    receipt = upgrade_session_cleanup_receipt(receipt)
 
     now = occurred_at or _utc_now()
     if not _valid_utc_timestamp(now):
@@ -557,6 +569,10 @@ def transition_auxiliary_cleanup(
                 "error_code": "",
                 "retryable": False,
                 "next_attempt_at": "",
+                "verification": {
+                    "cli": {"status": "unknown", "checked_at": ""},
+                    "desktop": {"status": "unknown", "checked_at": ""},
+                },
             }
         )
         return _validated_cleanup_transition(updated)
@@ -587,6 +603,10 @@ def transition_auxiliary_cleanup(
                 "completed_at": "",
                 "error_code": "",
                 "retryable": False,
+                "verification": {
+                    "cli": {"status": "unknown", "checked_at": ""},
+                    "desktop": {"status": "unknown", "checked_at": ""},
+                },
             }
         )
         return _validated_cleanup_transition(updated)
@@ -603,6 +623,29 @@ def transition_auxiliary_cleanup(
     updated = dict(receipt)
     updated["last_attempt_at"] = now
     if target_state == "succeeded":
+        normalized_verification = (
+            normalize_cleanup_verification(verification)
+            if verification is not None
+            else (
+                {
+                    "cli": {"status": "not_applicable", "checked_at": ""},
+                    "desktop": {"status": "not_applicable", "checked_at": ""},
+                }
+                if str(entry.get("executor") or "").strip().lower() != "codex"
+                else receipt["verification"]
+            )
+        )
+        if (
+            str(entry.get("executor") or "").strip().lower() == "codex"
+            and {
+                normalized_verification["cli"]["status"],
+                normalized_verification["desktop"]["status"],
+            }
+            != {"absent"}
+        ):
+            _raise_cleanup_transition(
+                "Codex cleanup succeeded without both CLI and Desktop absence verification"
+            )
         updated.update(
             {
                 "capability": capability or receipt["capability"],
@@ -612,6 +655,7 @@ def transition_auxiliary_cleanup(
                 "error_code": "",
                 "retryable": False,
                 "next_attempt_at": "",
+                "verification": normalized_verification,
             }
         )
     elif target_state == "unsupported":
@@ -624,6 +668,9 @@ def transition_auxiliary_cleanup(
                 "error_code": error_code or "session_cleanup_unsupported",
                 "retryable": False,
                 "next_attempt_at": "",
+                "verification": normalize_cleanup_verification(verification)
+                if verification is not None
+                else receipt["verification"],
             }
         )
     else:
@@ -636,6 +683,9 @@ def transition_auxiliary_cleanup(
                 "error_code": error_code,
                 "retryable": retryable,
                 "next_attempt_at": next_attempt_at,
+                "verification": normalize_cleanup_verification(verification)
+                if verification is not None
+                else receipt["verification"],
             }
         )
     return _validated_cleanup_transition(updated)
