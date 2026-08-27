@@ -157,8 +157,8 @@
           "status": "supported",
           "surfaces": {
             "app_server_cleanup.json": {
-              "bytes": 555,
-              "sha256": "0708a2a4960456ccf339e3df60b21894cbede89f3c924d379d67ffba35cf0337"
+              "bytes": 855,
+              "sha256": "4fb72d3ecdabb42d5fe42afa3fbfa38e38273e6ef2693d7f9dda658cb84f3bd6"
             },
             "app_server_execution.json": {
               "bytes": 976,
@@ -219,8 +219,8 @@
           "status": "supported",
           "surfaces": {
             "app_server_cleanup.json": {
-              "bytes": 555,
-              "sha256": "0708a2a4960456ccf339e3df60b21894cbede89f3c924d379d67ffba35cf0337"
+              "bytes": 855,
+              "sha256": "4fb72d3ecdabb42d5fe42afa3fbfa38e38273e6ef2693d7f9dda658cb84f3bd6"
             },
             "app_server_execution.json": {
               "bytes": 976,
@@ -273,8 +273,8 @@
           "status": "candidate",
           "surfaces": {
             "app_server_cleanup.json": {
-              "bytes": 555,
-              "sha256": "0708a2a4960456ccf339e3df60b21894cbede89f3c924d379d67ffba35cf0337"
+              "bytes": 855,
+              "sha256": "4fb72d3ecdabb42d5fe42afa3fbfa38e38273e6ef2693d7f9dda658cb84f3bd6"
             },
             "app_server_execution.json": {
               "bytes": 976,

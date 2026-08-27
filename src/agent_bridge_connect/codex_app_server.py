@@ -78,6 +78,7 @@ CODEX_APP_SERVER_NOTIFICATIONS = frozenset({"item/completed", "turn/completed"})
 # incomplete group always fails closed in the matrix contract tests.
 CODEX_APP_SERVER_EXECUTION_GROUP = "execution"
 CODEX_APP_SERVER_CLEANUP_GROUP = "cleanup"
+CODEX_APP_SERVER_DESKTOP_VISIBILITY_GROUP = "desktop_visibility"
 CODEX_APP_SERVER_CAPABILITY_GROUPS: dict[str, dict[str, frozenset[str]]] = {
     CODEX_APP_SERVER_EXECUTION_GROUP: {
         "client_methods": CODEX_APP_SERVER_CLIENT_METHODS,
@@ -89,6 +90,11 @@ CODEX_APP_SERVER_CAPABILITY_GROUPS: dict[str, dict[str, frozenset[str]]] = {
         "client_methods": frozenset({"thread/delete", "thread/read"}),
         "server_requests": frozenset(),
         "notifications": frozenset({"thread/deleted"}),
+    },
+    CODEX_APP_SERVER_DESKTOP_VISIBILITY_GROUP: {
+        "client_methods": frozenset({"thread/list"}),
+        "server_requests": frozenset(),
+        "notifications": frozenset(),
     },
 }
 
@@ -428,6 +434,7 @@ __all__ = [
     "CODEX_APP_SERVER_CAPABILITY_GROUPS",
     "CODEX_APP_SERVER_CLEANUP_GROUP",
     "CODEX_APP_SERVER_CLIENT_METHODS",
+    "CODEX_APP_SERVER_DESKTOP_VISIBILITY_GROUP",
     "CODEX_APP_SERVER_EXECUTION_GROUP",
     "CODEX_APP_SERVER_MAX_VERSION",
     "CODEX_APP_SERVER_MIN_VERSION",

@@ -23,6 +23,21 @@ CODEX_SESSION_CLEANUP_CLIENT_METHODS = frozenset(
     {"initialize", "thread/delete", "thread/read"}
 )
 CODEX_SESSION_CLEANUP_NOTIFICATIONS = frozenset({"thread/deleted"})
+CODEX_DESKTOP_VISIBILITY_METHOD = "thread/list"
+CODEX_THREAD_SOURCE_KINDS = (
+    "cli",
+    "vscode",
+    "exec",
+    "appServer",
+    "subAgent",
+    "subAgentReview",
+    "subAgentCompact",
+    "subAgentThreadSpawn",
+    "subAgentOther",
+    "unknown",
+)
+CODEX_THREAD_LIST_PAGE_LIMIT = 1000
+CODEX_THREAD_LIST_MAX_PAGES = 1000
 
 CODEX_SESSION_DELETE_FAILED_CODE = "codex_session_delete_failed"
 CODEX_SESSION_DELETE_INVALID_ID_CODE = "codex_session_delete_invalid_session_id"
@@ -139,6 +154,7 @@ def _is_not_found(message: dict[str, Any]) -> bool:
             "unknown session",
             "thread_not_found",
             "session_not_found",
+            "thread not loaded",
         )
     )
 
@@ -172,7 +188,7 @@ class CodexSessionCleanupClient:
             self._start(first)
             self._initialize(first)
             delete_id = self._send(first, "thread/delete", {"threadId": exact_id})
-            self._wait_delete(first, delete_id, exact_id)
+            self._wait_delete(first, delete_id)
         finally:
             self._close(first)
 
@@ -184,6 +200,72 @@ class CodexSessionCleanupClient:
             return self._read_absence(second, read_id, exact_id)
         finally:
             self._close(second)
+
+    def verify_desktop_absence(self, session_id: str) -> dict[str, str]:
+        """Verify that the exact thread is absent from Desktop's official list surface.
+
+        Codex Desktop consumes the App Server thread list.  Querying every source
+        kind and both archive partitions through a fresh connection avoids private
+        database inspection while still detecting a stale Desktop-visible entry.
+        Only the bounded absent/present result leaves this process.
+        """
+        exact_id = self._validate_session_id(session_id)
+        transport = self._new_transport()
+        try:
+            self._start(transport)
+            self._initialize(transport)
+            for archived in (False, True):
+                cursor: str | None = None
+                for _ in range(CODEX_THREAD_LIST_MAX_PAGES):
+                    params: dict[str, Any] = {
+                        "archived": archived,
+                        "limit": CODEX_THREAD_LIST_PAGE_LIMIT,
+                        "sourceKinds": list(CODEX_THREAD_SOURCE_KINDS),
+                    }
+                    if cursor:
+                        params["cursor"] = cursor
+                    request_id = self._send(
+                        transport,
+                        CODEX_DESKTOP_VISIBILITY_METHOD,
+                        params,
+                    )
+                    message = self._wait_response(
+                        transport,
+                        request_id,
+                        allow_error=True,
+                    )
+                    if isinstance(message.get("error"), dict):
+                        raise CodexSessionCleanupError(
+                            CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE
+                        )
+                    result = (
+                        message.get("result")
+                        if isinstance(message.get("result"), dict)
+                        else None
+                    )
+                    data = result.get("data") if isinstance(result, dict) else None
+                    if not isinstance(data, list):
+                        raise CodexSessionCleanupError(
+                            CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE
+                        )
+                    if any(
+                        isinstance(item, dict)
+                        and str(item.get("id") or item.get("threadId") or "")
+                        == exact_id
+                        for item in data
+                    ):
+                        return {"status": "present", "checked_at": _utc_now()}
+                    next_cursor = result.get("nextCursor")
+                    if not isinstance(next_cursor, str) or not next_cursor:
+                        break
+                    cursor = next_cursor
+                else:
+                    raise CodexSessionCleanupError(
+                        CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE
+                    )
+            return {"status": "absent", "checked_at": _utc_now()}
+        finally:
+            self._close(transport)
 
     @staticmethod
     def _validate_session_id(value: str) -> str:
@@ -334,17 +416,11 @@ class CodexSessionCleanupClient:
                 raise CodexSessionCleanupError(CODEX_SESSION_DELETE_FAILED_CODE)
             return message
 
-    def _wait_delete(self, transport: Any, request_id: int, exact_id: str) -> None:
-        rpc_ok = False
-        notification_ok = False
+    def _wait_delete(self, transport: Any, request_id: int) -> None:
         deadline = time.monotonic() + self.timeout_s
-        while not (rpc_ok and notification_ok):
+        while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                if rpc_ok:
-                    raise CodexSessionCleanupError(
-                        CODEX_SESSION_DELETE_NOTIFICATION_UNCONFIRMED_CODE
-                    )
                 raise CodexSessionCleanupError(
                     CODEX_SESSION_DELETE_TIMEOUT_CODE,
                     retryable=True,
@@ -352,10 +428,6 @@ class CodexSessionCleanupClient:
             try:
                 message = self._receive(transport, remaining)
             except TimeoutError as exc:
-                if rpc_ok:
-                    raise CodexSessionCleanupError(
-                        CODEX_SESSION_DELETE_NOTIFICATION_UNCONFIRMED_CODE
-                    ) from exc
                 raise CodexSessionCleanupError(
                     CODEX_SESSION_DELETE_TIMEOUT_CODE,
                     retryable=True,
@@ -363,17 +435,20 @@ class CodexSessionCleanupClient:
             except (TransportClosed, OSError) as exc:
                 raise CodexSessionCleanupError(
                     CODEX_SESSION_DELETE_TRANSPORT_LOST_CODE,
-                    retryable=not rpc_ok,
+                    retryable=True,
                 ) from exc
 
             if message.get("id") == request_id:
                 if isinstance(message.get("error"), dict):
                     raise CodexSessionCleanupError(CODEX_SESSION_DELETE_FAILED_CODE)
-                rpc_ok = True
-                continue
+                # Current supported and candidate Codex builds expose the
+                # thread/deleted schema but do not reliably emit it on stdio.
+                # The RPC acknowledgement remains mandatory; authoritative
+                # absence is proved next by fresh thread/read and thread/list.
+                return
             if message.get("method") == "thread/deleted":
-                if _thread_id(message) == exact_id:
-                    notification_ok = True
+                # A notification is advisory. Ignore unrelated IDs and keep
+                # waiting for the bound RPC response.
                 continue
 
     def _read_absence(
@@ -418,6 +493,7 @@ class CodexSessionCleanupClient:
 __all__ = [
     "CODEX_CLEANUP_VERIFICATION_STATUSES",
     "CODEX_DESKTOP_UI_STALE_CODE",
+    "CODEX_DESKTOP_VISIBILITY_METHOD",
     "CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE",
     "CODEX_SESSION_CLEANUP_CAPABILITY_GROUP",
     "CODEX_SESSION_CLEANUP_CLIENT_METHODS",

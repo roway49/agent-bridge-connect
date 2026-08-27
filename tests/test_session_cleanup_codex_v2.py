@@ -9,7 +9,6 @@ from agent_bridge_connect.adapters import SessionCleanupRequest
 from agent_bridge_connect.codex_session_cleanup import (
     CODEX_DESKTOP_UI_STALE_CODE,
     CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE,
-    CODEX_SESSION_DELETE_NOTIFICATION_UNCONFIRMED_CODE,
     CODEX_SESSION_DELETE_STILL_PRESENT_CODE,
     CODEX_SESSION_DELETE_TIMEOUT_CODE,
     CODEX_SESSION_DELETE_TRANSPORT_LOST_CODE,
@@ -83,6 +82,14 @@ def _delete_transport(*, notification: dict | None = None, tail: list[dict] | No
     return FakeTransport(messages)
 
 
+def _list_transport(*, data: list[dict] | None = None, error: dict | None = None) -> FakeTransport:
+    response: dict = {"jsonrpc": "2.0", "id": 6, "result": {"data": data or [], "nextCursor": None}}
+    if error is not None:
+        response = {"jsonrpc": "2.0", "id": 6, "error": error}
+    archived = {"jsonrpc": "2.0", "id": 7, "result": {"data": [], "nextCursor": None}}
+    return FakeTransport([_initialize_response(5), response, archived])
+
+
 def _request(**overrides: object) -> SessionCleanupRequest:
     values: dict[str, object] = {
         "executor": "codex",
@@ -107,7 +114,7 @@ class CodexCleanupProtocolTests(unittest.TestCase):
             desktop_verifier=verifier,
         )
 
-    def test_delete_notification_and_fresh_read_are_required_for_success(self) -> None:
+    def test_delete_rpc_notification_and_fresh_read_are_verified_for_success(self) -> None:
         first = _delete_transport(
             notification={
                 "jsonrpc": "2.0",
@@ -144,12 +151,23 @@ class CodexCleanupProtocolTests(unittest.TestCase):
         self.assertEqual(result.state, "succeeded")
         self.assertEqual(result.verification["cli"]["status"], "absent")
 
-    def test_missing_notification_fails_without_reading_or_claiming_absence(self) -> None:
+    def test_current_app_server_thread_not_loaded_is_absent(self) -> None:
+        first = _delete_transport(
+            notification={"jsonrpc": "2.0", "method": "thread/deleted", "params": {"threadId": SESSION_ID}}
+        )
+        second = _read_transport(
+            read_error={"code": -32600, "message": f"thread not loaded: {SESSION_ID}"}
+        )
+        result = self._executor(TransportFactory(first, second)).cleanup_session(_request())
+        self.assertEqual(result.state, "succeeded")
+        self.assertEqual(result.verification["cli"]["status"], "absent")
+
+    def test_missing_notification_uses_fresh_read_as_authoritative_proof(self) -> None:
         first = _delete_transport()
-        result = self._executor(TransportFactory(first)).cleanup_session(_request())
-        self.assertEqual(result.state, "failed")
-        self.assertEqual(result.error_code, CODEX_SESSION_DELETE_NOTIFICATION_UNCONFIRMED_CODE)
-        self.assertEqual(result.verification["cli"]["status"], "unknown")
+        second = _read_transport(read_error={"code": -32600, "message": f"thread not loaded: {SESSION_ID}"})
+        result = self._executor(TransportFactory(first, second)).cleanup_session(_request())
+        self.assertEqual(result.state, "succeeded")
+        self.assertEqual(result.verification["cli"]["status"], "absent")
 
     def test_transport_loss_and_timeout_have_stable_codes(self) -> None:
         for failure, expected in (
@@ -172,18 +190,53 @@ class CodexCleanupProtocolTests(unittest.TestCase):
         self.assertEqual(result.verification["cli"]["status"], "present")
 
     def test_desktop_aggregation_is_strict(self) -> None:
-        for desktop, expected in (
-            ("present", CODEX_DESKTOP_UI_STALE_CODE),
-            (None, CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE),
+        for desktop, expected, extra in (
+            ("present", CODEX_DESKTOP_UI_STALE_CODE, []),
+            (
+                None,
+                CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE,
+                [_list_transport(error={"code": "unsupported", "message": "unsupported"})],
+            ),
         ):
             with self.subTest(desktop=desktop):
                 first = _delete_transport(
                     notification={"jsonrpc": "2.0", "method": "thread/deleted", "params": {"threadId": SESSION_ID}}
                 )
                 second = _read_transport(read_result={"thread": None})
-                result = self._executor(TransportFactory(first, second), desktop=desktop).cleanup_session(_request())
+                result = self._executor(
+                    TransportFactory(first, second, *extra), desktop=desktop
+                ).cleanup_session(_request())
                 self.assertEqual(result.state, "failed")
                 self.assertEqual(result.error_code, expected)
+
+    def test_production_desktop_list_verifier_checks_all_sources_and_archives(self) -> None:
+        first = _delete_transport(
+            notification={"jsonrpc": "2.0", "method": "thread/deleted", "params": {"threadId": SESSION_ID}}
+        )
+        second = _read_transport(read_result={"thread": None})
+        third = _list_transport()
+        result = self._executor(
+            TransportFactory(first, second, third), desktop=None
+        ).cleanup_session(_request())
+
+        self.assertEqual(result.state, "succeeded")
+        self.assertEqual(result.verification["desktop"]["status"], "absent")
+        list_requests = [item for item in third.sent if item.get("method") == "thread/list"]
+        self.assertEqual([item["params"]["archived"] for item in list_requests], [False, True])
+        self.assertIn("exec", list_requests[0]["params"]["sourceKinds"])
+
+    def test_production_desktop_list_verifier_detects_stale_entry(self) -> None:
+        first = _delete_transport(
+            notification={"jsonrpc": "2.0", "method": "thread/deleted", "params": {"threadId": SESSION_ID}}
+        )
+        second = _read_transport(read_result={"thread": None})
+        third = _list_transport(data=[{"id": SESSION_ID}])
+        result = self._executor(
+            TransportFactory(first, second, third), desktop=None
+        ).cleanup_session(_request())
+
+        self.assertEqual(result.state, "failed")
+        self.assertEqual(result.error_code, CODEX_DESKTOP_UI_STALE_CODE)
 
 
 class CodexCleanupContractTests(unittest.TestCase):

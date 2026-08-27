@@ -32,6 +32,7 @@ from agent_bridge_connect.codex_app_server import (
     CODEX_APP_SERVER_CAPABILITY_GROUPS,
     CODEX_APP_SERVER_CLEANUP_GROUP,
     CODEX_APP_SERVER_CLIENT_METHODS,
+    CODEX_APP_SERVER_DESKTOP_VISIBILITY_GROUP,
     CODEX_APP_SERVER_MAX_VERSION,
     CODEX_APP_SERVER_MIN_VERSION,
     CODEX_APP_SERVER_NOTIFICATIONS,
@@ -262,6 +263,7 @@ class CodexCapabilityGroupTests(unittest.TestCase):
     """Named execution/cleanup groups agree across code, fixtures and schema."""
 
     EXPECTED_CLEANUP = frozenset({"thread/delete", "thread/deleted", "thread/read"})
+    EXPECTED_DESKTOP_VISIBILITY = frozenset({"thread/list"})
 
     def test_cleanup_group_membership_is_exact(self) -> None:
         definition = CODEX_APP_SERVER_CAPABILITY_GROUPS[CODEX_APP_SERVER_CLEANUP_GROUP]
@@ -278,7 +280,23 @@ class CodexCapabilityGroupTests(unittest.TestCase):
                 "notifications": CODEX_APP_SERVER_NOTIFICATIONS,
             },
             "cleanup": definition,
+            "desktop_visibility": {
+                "client_methods": self.EXPECTED_DESKTOP_VISIBILITY,
+                "server_requests": frozenset(),
+                "notifications": frozenset(),
+            },
         })
+
+    def test_desktop_visibility_group_is_exact(self) -> None:
+        definition = CODEX_APP_SERVER_CAPABILITY_GROUPS[
+            CODEX_APP_SERVER_DESKTOP_VISIBILITY_GROUP
+        ]
+        members = (
+            frozenset(definition["client_methods"])
+            | frozenset(definition["notifications"])
+            | frozenset(definition["server_requests"])
+        )
+        self.assertEqual(members, self.EXPECTED_DESKTOP_VISIBILITY)
 
     def test_execution_group_matches_fixture_for_every_schema_evidence_version(
         self,
@@ -289,7 +307,11 @@ class CodexCapabilityGroupTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            for group in ("execution", CODEX_APP_SERVER_CLEANUP_GROUP):
+            for group in (
+                "execution",
+                CODEX_APP_SERVER_CLEANUP_GROUP,
+                CODEX_APP_SERVER_DESKTOP_VISIBILITY_GROUP,
+            ):
                 found_missing = verify_capability_group(schema, group)
                 with self.subTest(version=version, group=group):
                     self.assertEqual(found_missing, [])

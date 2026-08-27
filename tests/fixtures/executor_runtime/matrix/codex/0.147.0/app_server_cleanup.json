@@ -1,6 +1,12 @@
 {
   "capability_group": "cleanup",
   "changes_default_production_behavior": false,
+  "desktop_visibility_group": {
+    "capability_group": "desktop_visibility",
+    "requests": [
+      "thread/list"
+    ]
+  },
   "exact_members": {
     "notifications": [
       "thread/deleted"
@@ -12,6 +18,7 @@
   },
   "integration_owner": "SESSION integrates through the named groups exposed by agent_bridge_connect.codex_app_server",
   "member_policy": "closed set; extra schema members are recorded but never relied on",
+  "notification_policy": "thread/deleted is advisory because supported live stdio can omit it; RPC success plus fresh thread/read and thread/list absence is authoritative",
   "surface": "app_server_cleanup",
   "verification": "members must be present in app_server_schema.json definitions"
 }

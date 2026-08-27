@@ -230,7 +230,7 @@ class CodexExecutor(CLIExecutorBase):
         try:
             assert self.agent_bin is not None
             root = _cleanup_workspace_root(request)
-            observation = CodexSessionCleanupClient(
+            cleanup_client = CodexSessionCleanupClient(
                 self.agent_bin,
                 cwd=root,
                 transport_factory=self.transport_factory,
@@ -240,7 +240,8 @@ class CodexExecutor(CLIExecutorBase):
                     else None
                 ),
                 timeout_s=_CODEX_CLEANUP_TIMEOUT_S,
-            ).delete_and_verify(request.session_id)
+            )
+            observation = cleanup_client.delete_and_verify(request.session_id)
             verification = observation.verification()
         except CodexSessionCleanupError as exc:
             desktop = self._desktop_cleanup_verification(request)
@@ -276,7 +277,7 @@ class CodexExecutor(CLIExecutorBase):
                 verification=verification,
             )
 
-        desktop = self._desktop_cleanup_verification(request)
+        desktop = self._desktop_cleanup_verification(request, cleanup_client)
         verification["desktop"] = desktop
         cli_status = verification["cli"]["status"]
         desktop_status = desktop["status"]
@@ -319,13 +320,16 @@ class CodexExecutor(CLIExecutorBase):
     def _desktop_cleanup_verification(
         self,
         request: SessionCleanupRequest,
+        protocol_client: CodexSessionCleanupClient | None = None,
     ) -> dict[str, str]:
         checked_at = _cleanup_now()
-        verifier = self.desktop_verifier
+        verifier = self.desktop_verifier or protocol_client
         if verifier is None:
             return {"status": "unavailable", "checked_at": checked_at}
         try:
-            if callable(getattr(verifier, "verify_absent", None)):
+            if callable(getattr(verifier, "verify_desktop_absence", None)):
+                value = verifier.verify_desktop_absence(request.session_id)
+            elif callable(getattr(verifier, "verify_absent", None)):
                 value = verifier.verify_absent(session_id=request.session_id)
             elif callable(getattr(verifier, "verify_session", None)):
                 value = verifier.verify_session(session_id=request.session_id)
