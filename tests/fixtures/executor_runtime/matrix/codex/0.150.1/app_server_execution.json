@@ -1,0 +1,36 @@
+{
+  "agentbc_constraints": {
+    "approval_decisions": [
+      "accept",
+      "decline"
+    ],
+    "approval_scope": "turn",
+    "forbidden_decisions": [
+      "acceptForSession",
+      "amendment"
+    ],
+    "receipt_source": "jsonl_thread_started"
+  },
+  "chain_note": "Frozen single-action approval chain: initialize -> thread/start -> official receipt -> turn/start -> requestApproval -> accept|decline -> same session.",
+  "execution_group": {
+    "client_methods": [
+      "initialize",
+      "thread/start",
+      "thread/resume",
+      "turn/start"
+    ],
+    "notifications": [
+      "item/completed",
+      "turn/completed"
+    ],
+    "server_requests": [
+      "item/commandExecution/requestApproval",
+      "item/fileChange/requestApproval",
+      "item/permissions/requestApproval"
+    ]
+  },
+  "member_policy": "closed set; an incomplete execution group fails closed",
+  "protocol_version": 2,
+  "surface": "app_server_execution",
+  "transport": "app-server"
+}

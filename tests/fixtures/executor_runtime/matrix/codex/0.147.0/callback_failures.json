@@ -1,0 +1,7 @@
+{
+  "duplicate_thread_started": "rejected as malformed rather than silently deduplicated",
+  "identical_to": "codex/0.146.0",
+  "invalid_callback": "summary text is stripped of callback lines by strip_callback_line",
+  "no_callback": "run ends terminal_failed; retries belong to AgentBC, never the CLI",
+  "surface": "callback_failures"
+}

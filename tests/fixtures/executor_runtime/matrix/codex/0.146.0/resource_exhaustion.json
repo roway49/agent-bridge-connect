@@ -1,0 +1,5 @@
+{
+  "executor_level_detector": null,
+  "handling": "runner-level resource decisions own codex exhaustion; the CLI adapter adds no codex-specific detector",
+  "surface": "resource_exhaustion"
+}

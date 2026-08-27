@@ -1,0 +1,17 @@
+{
+  "capability_group": "cleanup",
+  "changes_default_production_behavior": false,
+  "exact_members": {
+    "notifications": [
+      "thread/deleted"
+    ],
+    "requests": [
+      "thread/delete",
+      "thread/read"
+    ]
+  },
+  "integration_owner": "SESSION integrates through the named groups exposed by agent_bridge_connect.codex_app_server",
+  "member_policy": "closed set; extra schema members are recorded but never relied on",
+  "surface": "app_server_cleanup",
+  "verification": "members must be present in app_server_schema.json definitions"
+}

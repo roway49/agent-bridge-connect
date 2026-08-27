@@ -1,0 +1,21 @@
+{
+  "captured": true,
+  "check_command": [
+    "{binary}",
+    "acp",
+    "--check"
+  ],
+  "check_output": "Hermes ACP check OK",
+  "initialize_requirement": {
+    "deviation_code": "hermes_acp_unsupported_version",
+    "protocolVersion": 1
+  },
+  "probe_scope": "official CLI check/version surface only; never scans Hermes private session databases or logs, never reads user configuration",
+  "surface": "acp_probe",
+  "version_command": [
+    "{binary}",
+    "acp",
+    "--version"
+  ],
+  "version_output": "0.20.1"
+}

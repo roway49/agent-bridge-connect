@@ -1,0 +1,8 @@
+usage: hermes sessions delete [-h] [--yes] session_id
+
+positional arguments:
+  session_id  Session ID to delete
+
+options:
+  -h, --help  show this help message and exit
+  --yes, -y   Skip confirmation

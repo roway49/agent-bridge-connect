@@ -1,0 +1,55 @@
+{
+  "acp_canonical_argv": [
+    "{binary}",
+    "acp"
+  ],
+  "chat_canonical_argv": [
+    "{binary}",
+    [
+      "-p",
+      "{profile}"
+    ],
+    "chat",
+    "{permission_flags}",
+    [
+      "--max-turns",
+      "{n}"
+    ],
+    [
+      "--resume",
+      "{session_id}"
+    ],
+    [
+      "-Q"
+    ],
+    [
+      "--provider",
+      "{provider}"
+    ],
+    [
+      "--model",
+      "{model}"
+    ],
+    "--source",
+    "tool",
+    "-q",
+    "{prompt}"
+  ],
+  "controlled_environment": {
+    "HERMES_YOLO_MODE": {
+      "never_mutates_global_env": true,
+      "recorded_as": "permission_audit payload",
+      "scope": "spawned ACP subprocess environment only",
+      "value": "1"
+    }
+  },
+  "cwd": "{workspace_root}",
+  "identical_to": "hermes/0.17.0",
+  "machine_readable_receipt_path": "stderr `session_id:` line when -Q is used",
+  "status": "candidate",
+  "surface": "argv_contract",
+  "transport_options": [
+    "cli_chat_single_query",
+    "acp"
+  ]
+}

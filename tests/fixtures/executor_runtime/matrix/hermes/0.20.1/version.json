@@ -1,0 +1,18 @@
+{
+  "captured_live": true,
+  "captured_on": "2026-08-27",
+  "non_critical_context": [
+    "Install directory: ~/.hermes/hermes-agent",
+    "Install method: git",
+    "Python: 3.11.16",
+    "OpenAI SDK: 2.24.0",
+    "Run 'hermes version' for update status."
+  ],
+  "output_first_line": "Hermes Agent v0.20.1 (2026.8.13)",
+  "parsed": "0.20.1",
+  "redaction_applied": [
+    "home directory rewritten to ~"
+  ],
+  "status": "candidate",
+  "surface": "version_probe"
+}

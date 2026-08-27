@@ -1,0 +1,5 @@
+{
+  "invalid_callback": "result text passes through strip_callback_line before summary storage",
+  "no_callback": "run ends terminal_failed; the marker contract is never faked",
+  "surface": "callback_failures"
+}

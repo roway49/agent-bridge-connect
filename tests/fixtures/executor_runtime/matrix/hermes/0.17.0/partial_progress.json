@@ -1,0 +1,6 @@
+{
+  "observable": "assistant text arrives while the session receipt is already fixed",
+  "partial_success_forbidden": true,
+  "receipt_required_before_summary_acceptance": true,
+  "surface": "partial_progress"
+}

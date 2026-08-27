@@ -9,11 +9,12 @@ from agent_bridge_connect.executors.hermes import _iteration_budget_diagnostics
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "executor_runtime"
+MATRIX = FIXTURES / "matrix"
 
 
 class ExecutorContractFixtureTests(unittest.TestCase):
     def test_claude_2_1_226_capability_snapshot(self) -> None:
-        text = (FIXTURES / "claude_2.1.226_help.txt").read_text(encoding="utf-8")
+        text = (MATRIX / "claude" / "2.1.226" / "help.txt").read_text(encoding="utf-8")
         for flag in (
             "--max-budget-usd",
             "--no-session-persistence",
@@ -26,20 +27,24 @@ class ExecutorContractFixtureTests(unittest.TestCase):
 
     def test_claude_budget_exhaustion_snapshot_is_not_mislabeled_live(self) -> None:
         payload = json.loads(
-            (FIXTURES / "claude_budget_exhaustion.json").read_text(encoding="utf-8")
+            (MATRIX / "claude" / "2.1.226" / "budget_exhaustion.json").read_text(
+                encoding="utf-8"
+            )
         )
         self.assertEqual(payload["structured_subtype"], "error_max_budget_usd")
         self.assertFalse(payload["verified_by_live_paid_canary"])
 
     def test_hermes_0_17_0_capability_snapshot(self) -> None:
-        text = (FIXTURES / "hermes_0.17.0_help.txt").read_text(encoding="utf-8")
+        text = (MATRIX / "hermes" / "0.17.0" / "help.txt").read_text(encoding="utf-8")
         self.assertIn("--max-turns", text)
         self.assertIn("--resume", text)
         self.assertIn("sessions delete", text)
 
     def test_hermes_session_receipt_and_exhaustion_snapshots(self) -> None:
         payload = json.loads(
-            (FIXTURES / "hermes_outputs.json").read_text(encoding="utf-8")
+            (MATRIX / "hermes" / "0.17.0" / "receipt_samples.json").read_text(
+                encoding="utf-8"
+            )
         )
         self.assertEqual(
             extract_hermes_session_id(payload["session_receipt_stderr"]),

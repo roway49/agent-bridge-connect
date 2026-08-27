@@ -1,0 +1,35 @@
+{
+  "approve": {
+    "broker": "ClaudePermissionPromptBroker",
+    "decision": "approve",
+    "session_bound": true
+  },
+  "deny": {
+    "broker": "ClaudePermissionPromptBroker",
+    "decision": "deny",
+    "escalation": "none"
+  },
+  "identical_to": "claude/2.1.226",
+  "status": "pending_capture",
+  "timeout": {
+    "cleanup_follows": true,
+    "effect": "turn_aborted",
+    "fail_closed": true,
+    "no_partial_state_accepted": true
+  },
+  "transport_lost": {
+    "effect": "turn_unresolved",
+    "fail_closed": true,
+    "resume_allowed_after_lost_receipt": false,
+    "terminal_state": "failed_transport_lost"
+  },
+  "unsupported": {
+    "behaviour": "fails closed; no fallback argv is invented",
+    "codes": [
+      "claude_path_capability_unsupported",
+      "claude_project_purge_unsupported",
+      "claude_project_purge_unavailable"
+    ],
+    "condition": "path capability or project purge missing on the installed CLI"
+  }
+}

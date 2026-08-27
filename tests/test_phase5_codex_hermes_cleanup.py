@@ -27,8 +27,8 @@ from agent_bridge_connect.executors.hermes import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "executor_runtime"
-CODEX_FIXTURE = FIXTURES / "codex_0.146.0_help.txt"
-HERMES_FIXTURE = FIXTURES / "hermes_0.17.0_help.txt"
+CODEX_FIXTURE = FIXTURES / "matrix" / "codex" / "0.146.0" / "delete_help.txt"
+HERMES_FIXTURE = FIXTURES / "matrix" / "hermes" / "0.17.0" / "help.txt"
 CODEX_SESSION_ID = "019fef10-2f46-7c40-90c8-6d6ebd3cc7d6"
 HERMES_SESSION_ID = "20260811_004323_d3bd9b"
 HERMES_VERSION_OUTPUT = (

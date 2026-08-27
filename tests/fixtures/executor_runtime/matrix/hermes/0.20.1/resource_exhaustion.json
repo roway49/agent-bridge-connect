@@ -1,0 +1,12 @@
+{
+  "default_reference": "--max-turns default documented in the 0.20.1 help text",
+  "diagnostics_extractor": "_iteration_budget_diagnostics(stdout, stderr)",
+  "flag": "--max-turns N",
+  "iteration_detector_strings": [],
+  "note": "Detector strings stay pinned at 0.17.0 until a canary run confirms the 0.20.1 wording; nothing here widens a production gate.",
+  "semantics": "maximum tool-calling iterations per conversation turn",
+  "status": "candidate",
+  "surface": "resource_exhaustion",
+  "task_freeze_wins": "extensions.agentbc.resources.max_turns overrides the configured default",
+  "validation": "positive integer; anything else raises ValueError"
+}
