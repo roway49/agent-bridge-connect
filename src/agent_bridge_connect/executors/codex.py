@@ -26,7 +26,6 @@ from agent_bridge_connect.codex_session_cleanup import (
     CODEX_SESSION_DELETE_FAILED_CODE,
     CODEX_SESSION_DELETE_INVALID_ID_CODE,
     CODEX_SESSION_DELETE_STILL_PRESENT_CODE,
-    CODEX_SESSION_DELETE_TIMEOUT_CODE,
     CODEX_SESSION_DELETE_TRANSPORT_LOST_CODE,
     CodexSessionCleanupClient,
     CodexSessionCleanupError,
@@ -100,6 +99,7 @@ class CodexExecutor(CLIExecutorBase):
         self._task_packets: dict[str, dict[str, Any]] = {}
         self._app_runs: dict[str, dict[str, Any]] = {}
         self._app_server_capability: dict[str, Any] | None = None
+        self._collaboration_spawn_capability: dict[str, Any] | None = None
         # Test seam: an injected pre-verified App Server capability report
         # (same shape as :func:`codex_app_server_contract`) replaces the
         # subprocess schema probe.  Production always runs the real probe.
@@ -172,7 +172,7 @@ class CodexExecutor(CLIExecutorBase):
             return SessionCleanupCapability("not_applicable", "retain")
         if self.agent_bin is None:
             return _codex_cleanup_unsupported()
-        if self._uses_cleanup_app_server():
+        if self._uses_cleanup_app_server(request):
             return SessionCleanupCapability(
                 "supported",
                 "official_session_delete",
@@ -207,20 +207,21 @@ class CodexExecutor(CLIExecutorBase):
                 request_error,
                 False,
             )
-        if self._uses_cleanup_app_server():
+        if self._uses_cleanup_app_server(request):
             return self._cleanup_session_app_server(request)
-        return self._cleanup_session_cli(request, strict=request.official_receipt_bound)
+        return self._cleanup_session_cli(request)
 
-    def _uses_cleanup_app_server(self) -> bool:
-        """Use App Server when a caller explicitly supplies that transport seam."""
+    def _uses_cleanup_app_server(self, request: SessionCleanupRequest | None = None) -> bool:
+        """Use App Server for auto/official cleanup and only explicit CLI otherwise."""
         if not isinstance(self.transport_mode, str):
             return True
         transport = self.transport_mode.strip().lower()
         if transport in {"cli", "direct"}:
             return False
-        if self.transport_factory is not None:
-            return True
-        return transport in {"app-server", "app_server", "stdio", "codex-app-server"}
+        # ``auto`` and every non-CLI transport spelling are App Server
+        # selections for cleanup, even when a factory is not injected. A
+        # caller must opt into cli/direct to use the legacy subprocess action.
+        return True
 
     def _cleanup_session_app_server(
         self,
@@ -244,7 +245,7 @@ class CodexExecutor(CLIExecutorBase):
             observation = cleanup_client.delete_and_verify(request.session_id)
             verification = observation.verification()
         except CodexSessionCleanupError as exc:
-            desktop = self._desktop_cleanup_verification(request)
+            live = self._desktop_live_cleanup_verification(request)
             verification = {
                 "cli": {
                     "status": exc.cli_status
@@ -252,7 +253,8 @@ class CodexExecutor(CLIExecutorBase):
                     else "unknown",
                     "checked_at": exc.cli_checked_at or _cleanup_now(),
                 },
-                "desktop": desktop,
+                "desktop_backend": {"status": "unavailable", "checked_at": _cleanup_now()},
+                "desktop_live": live,
             }
             return SessionCleanupResult(
                 "failed",
@@ -263,10 +265,10 @@ class CodexExecutor(CLIExecutorBase):
                 verification=verification,
             )
         except (OSError, TransportClosed, RuntimeError):
-            desktop = self._desktop_cleanup_verification(request)
+            live = self._desktop_live_cleanup_verification(request)
             verification = {
                 **_unknown_cleanup_verification(),
-                "desktop": desktop,
+                "desktop_live": live,
             }
             return SessionCleanupResult(
                 "failed",
@@ -277,18 +279,28 @@ class CodexExecutor(CLIExecutorBase):
                 verification=verification,
             )
 
-        desktop = self._desktop_cleanup_verification(request, cleanup_client)
-        verification["desktop"] = desktop
+        try:
+            desktop_backend = cleanup_client.verify_desktop_absence(request.session_id)
+        except (CodexSessionCleanupError, OSError, RuntimeError, TransportClosed):
+            desktop_backend = {"status": "unavailable", "checked_at": _cleanup_now()}
+        desktop_live = self._desktop_live_cleanup_verification(request)
+        verification["desktop_backend"] = desktop_backend
+        verification["desktop_live"] = desktop_live
         cli_status = verification["cli"]["status"]
-        desktop_status = desktop["status"]
-        if cli_status == "absent" and desktop_status == "absent":
+        backend_status = desktop_backend["status"]
+        live_status = desktop_live["status"]
+        if (
+            cli_status == "absent"
+            and backend_status == "absent"
+            and live_status == "absent"
+        ):
             return SessionCleanupResult(
                 "succeeded",
                 "supported",
                 "official_session_delete",
                 verification=verification,
             )
-        if cli_status == "absent" and desktop_status == "present":
+        if backend_status == "absent" and live_status == "present":
             return SessionCleanupResult(
                 "failed",
                 "supported",
@@ -297,7 +309,20 @@ class CodexExecutor(CLIExecutorBase):
                 False,
                 verification=verification,
             )
-        if cli_status == "absent":
+        if cli_status == "present" or backend_status == "present":
+            return SessionCleanupResult(
+                "failed",
+                "supported",
+                "official_session_delete",
+                CODEX_SESSION_DELETE_STILL_PRESENT_CODE,
+                False,
+                verification=verification,
+            )
+        if (
+            cli_status == "absent"
+            and backend_status in {"absent", "unavailable", "unverified"}
+            and live_status in {"unknown", "unavailable", "unverified"}
+        ):
             return SessionCleanupResult(
                 "failed",
                 "supported",
@@ -317,13 +342,18 @@ class CodexExecutor(CLIExecutorBase):
             verification=verification,
         )
 
-    def _desktop_cleanup_verification(
+    def _desktop_live_cleanup_verification(
         self,
         request: SessionCleanupRequest,
-        protocol_client: CodexSessionCleanupClient | None = None,
     ) -> dict[str, str]:
+        """Read the explicitly supplied live Desktop verifier only.
+
+        The App Server ``thread/list`` response is a backend observation and is
+        deliberately kept separate.  No private database or GUI automation is
+        an acceptable substitute for a supported live Desktop channel.
+        """
         checked_at = _cleanup_now()
-        verifier = self.desktop_verifier or protocol_client
+        verifier = self.desktop_verifier
         if verifier is None:
             return {"status": "unavailable", "checked_at": checked_at}
         try:
@@ -351,16 +381,26 @@ class CodexExecutor(CLIExecutorBase):
             return {"status": value.strip().lower(), "checked_at": checked_at}
         return {"status": "unavailable", "checked_at": checked_at}
 
+    # Backward-compatible private seam name used by older integrations.  It
+    # now means the supported live Desktop check and never invokes the App
+    # Server backend list verifier.
+    def _desktop_cleanup_verification(
+        self,
+        request: SessionCleanupRequest,
+        protocol_client: CodexSessionCleanupClient | None = None,
+    ) -> dict[str, str]:
+        del protocol_client
+        return self._desktop_live_cleanup_verification(request)
+
     def _cleanup_session_cli(
         self,
         request: SessionCleanupRequest,
-        *,
-        strict: bool,
     ) -> SessionCleanupResult:
         """Keep the legacy CLI action as a bounded fallback.
 
-        For an official coordinator request, the CLI action is never promoted
-        to success because it cannot provide the required fresh backend read.
+        A CLI exit code is action evidence only.  It can never produce a
+        cleanup success because it supplies neither the fresh backend list nor
+        the live Desktop verification required by the v3 receipt.
         """
         capability = self.session_cleanup_capability(request)
         if capability.capability != "supported":
@@ -382,15 +422,6 @@ class CodexExecutor(CLIExecutorBase):
                 timeout=_CODEX_CLEANUP_TIMEOUT_S,
             )
         except subprocess.TimeoutExpired:
-            if strict:
-                return SessionCleanupResult(
-                    "failed",
-                    "supported",
-                    "official_session_delete",
-                    CODEX_SESSION_DELETE_TIMEOUT_CODE,
-                    True,
-                    verification=_unknown_cleanup_verification(),
-                )
             return SessionCleanupResult(
                 "failed",
                 "supported",
@@ -399,15 +430,6 @@ class CodexExecutor(CLIExecutorBase):
                 True,
             )
         except OSError:
-            if strict:
-                return SessionCleanupResult(
-                    "failed",
-                    "supported",
-                    "official_session_delete",
-                    CODEX_SESSION_DELETE_TRANSPORT_LOST_CODE,
-                    True,
-                    verification=_unknown_cleanup_verification(),
-                )
             return SessionCleanupResult(
                 "failed",
                 "supported",
@@ -416,31 +438,27 @@ class CodexExecutor(CLIExecutorBase):
                 True,
             )
         output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
-        if not strict and (completed.returncode == 0 or _CODEX_SESSION_ABSENT_RE.search(output)):
-            return SessionCleanupResult(
-                "succeeded",
-                "supported",
-                "official_session_delete",
-            )
-        if strict and completed.returncode == 0:
-            desktop = self._desktop_cleanup_verification(request)
-            return SessionCleanupResult(
-                "failed",
-                "supported",
-                "official_session_delete",
-                CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE,
-                False,
-                verification={
-                    **_unknown_cleanup_verification(),
-                    "desktop": desktop,
-                },
-            )
+        cli_status = "absent" if _CODEX_SESSION_ABSENT_RE.search(output) else "unknown"
+        code = (
+            CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE
+            if completed.returncode == 0 or cli_status == "absent"
+            else CODEX_SESSION_DELETE_FAILED_CODE
+        )
+        if completed.returncode == 0:
+            # Deliberately do not treat the subprocess success as cleanup
+            # success; no raw output crosses the adapter boundary.
+            cli_status = "unknown"
         return SessionCleanupResult(
             "failed",
             "supported",
             "official_session_delete",
-            CODEX_SESSION_DELETE_FAILED_CODE,
+            code,
             False,
+            verification={
+                "cli": {"status": cli_status, "checked_at": _cleanup_now()},
+                "desktop_backend": {"status": "unavailable", "checked_at": _cleanup_now()},
+                "desktop_live": self._desktop_live_cleanup_verification(request),
+            },
         )
 
     def start(self, task_packet: dict) -> StartResult:
@@ -595,40 +613,42 @@ class CodexExecutor(CLIExecutorBase):
         grant = permission_grant_from_extensions(
             extensions if isinstance(extensions, dict) else {}
         )
-        if grant is not None and grant["state"]["status"] != "revoked":
-            # A compatibility full continuation is an explicit CLI run even
-            # when the task's inherited/safe base normally uses App Server.
+        session = extensions.get(SESSION_EXTENSION_KEY) if isinstance(extensions, dict) else None
+        official_receipt = (
+            isinstance(session, dict)
+            and session.get("official_receipt_bound") is True
+            and bool(str(session.get("session_id") or "").strip())
+        )
+        if grant is not None and grant["state"]["status"] != "revoked" and not official_receipt:
+            # A fresh compatibility full run has no official session to
+            # resume, so keep the pre-receipt CLI start path.
             return False
         permission = permission_record_from_extensions(
             extensions,
             allow_legacy=True,
         )
-        # Full remains the explicit non-interactive CLI path.  Inherit and safe
-        # use App Server when transport is auto/app-server so runtime approval
-        # is driven by an authenticated native request, not by a mode-name gate.
-        if permission["effective_mode"] == "full":
+        # Once an official receipt exists, auto/app-server must use the same
+        # App Server transport for every continuation, including full mode.
+        # The fresh full task exception above avoids creating a resumable
+        # session through a path that has no official receipt yet.
+        if permission["effective_mode"] == "full" and not official_receipt:
             return False
         return transport == "auto" or transport in CODEX_APP_SERVER_TRANSPORT_ALIASES
 
     def _freeze_app_server_capability(self, permission: dict[str, Any]) -> dict[str, Any]:
-        """Verify App Server for a runtime-approvable inherit/safe run.
-
-        Inherit supplies no sandbox or approval override; App Server only adds
-        the structured transport needed to identify a real blocked action and
-        resume the same official session. Full remains the CLI path.
-        """
+        """Verify the App Server contract before a receipt-bound run."""
         from agent_bridge_connect.codex_app_server import (
             CODEX_APP_SERVER_TRANSPORT,
             assert_codex_app_server_capability,
         )
 
         mode = str(permission.get("effective_mode") or "").strip().lower()
-        if mode not in {"inherit", "safe"}:
+        if mode not in {"inherit", "safe", "full"}:
             raise ABCError(
                 "permission_capability_unsupported",
                 (
-                    "Codex App Server single-action chain requires a runtime-"
-                    "approvable inherit or safe base; "
+                    "Codex App Server single-action chain requires a supported "
+                    "permission base; "
                     f"got {mode or 'inherit'}."
                 ),
                 {
@@ -658,6 +678,64 @@ class CodexExecutor(CLIExecutorBase):
                 )
         return dict(self._app_server_capability)
 
+    def collaboration_spawn_capability(self) -> dict[str, Any]:
+        """Return the two-proof collaboration gate without enabling dispatch."""
+        if self._collaboration_spawn_capability is not None:
+            return dict(self._collaboration_spawn_capability)
+        if self.agent_bin is None:
+            result = {
+                "enabled": False,
+                "version": "",
+                "reason": "codex executable unavailable",
+                "fixture": {"ok": False, "reason": "codex executable unavailable"},
+                "live": {"ok": False, "reason": "codex executable unavailable"},
+            }
+            self._collaboration_spawn_capability = result
+            return dict(result)
+        from agent_bridge_connect.codex_app_server import (
+            codex_collaboration_spawn_contract,
+            codex_collaboration_spawn_fixture_contract,
+        )
+
+        live = codex_collaboration_spawn_contract(self.agent_bin)
+        parsed = live.get("version_parsed")
+        version = (
+            ".".join(str(part) for part in parsed)
+            if isinstance(parsed, (tuple, list)) and len(parsed) == 3
+            else ""
+        )
+        fixture = codex_collaboration_spawn_fixture_contract(version) if version else {
+            "ok": False,
+            "reason": "Codex version is unavailable for fixture matching",
+        }
+        enabled = bool(live.get("ok") is True and fixture.get("ok") is True)
+        if enabled:
+            reason = ""
+        elif not live.get("ok"):
+            reason = str(live.get("reason") or "collaboration live probe failed")
+        else:
+            reason = str(fixture.get("reason") or "collaboration fixture failed")
+        result = {
+            "enabled": enabled,
+            "version": version,
+            "reason": reason,
+            "fixture": fixture,
+            "live": live,
+        }
+        self._collaboration_spawn_capability = result
+        return dict(result)
+
+    # Stable alias for callers that use the capability-group terminology.
+    def collaboration_spawn_capability_group(self) -> dict[str, Any]:
+        return self.collaboration_spawn_capability()
+
+    @staticmethod
+    def _collaboration_spawn_requested(task_packet: dict[str, Any]) -> bool:
+        return bool(
+            task_packet.get("collaboration_spawn") is True
+            or task_packet.get("enable_collaboration_spawn") is True
+        )
+
     def _build_app_server_command(self) -> list[str]:
         if self.agent_bin is None:
             raise RuntimeError("codex unavailable")
@@ -683,6 +761,20 @@ class CodexExecutor(CLIExecutorBase):
             # native permission settings, safe supplies the conservative
             # workspace policy, and full keeps the CLI fallback.
             self._freeze_app_server_capability(permission)
+            collaboration_capability = {
+                "enabled": False,
+                "reason": "collaboration_spawn_not_requested",
+            }
+            if self._collaboration_spawn_requested(task_packet):
+                collaboration_capability = self.collaboration_spawn_capability()
+                if collaboration_capability.get("enabled") is not True:
+                    raise ABCError(
+                        "codex_collaboration_spawn_unsupported",
+                        str(
+                            collaboration_capability.get("reason")
+                            or "Codex collaboration_spawn capability is not verified"
+                        ),
+                    )
             resumed, explicit_session_id = _codex_resume_context(task_packet)
             command = self._build_app_server_command()
             if task_packet.get("runner_authorization_required") is True:
@@ -700,7 +792,12 @@ class CodexExecutor(CLIExecutorBase):
             )
         except (ABCError, RunnerError, ControlPlaneError, SessionRecoveryRequired) as exc:
             self._close_run_lease(run_id)
-            return StartResult(ok=False, run_id="", message=f"codex App Server unavailable: {exc}")
+            code = f"{exc.code}: " if isinstance(exc, ABCError) else ""
+            return StartResult(
+                ok=False,
+                run_id="",
+                message=f"codex App Server unavailable: {code}{exc}",
+            )
 
         record: dict[str, Any] = {
             "run_id": run_id,
@@ -717,6 +814,7 @@ class CodexExecutor(CLIExecutorBase):
             "ready": threading.Event(),
             "started_at": time.time(),
             "transport": None,
+            "collaboration_spawn": collaboration_capability,
         }
         self._app_runs[run_id] = record
         worker = threading.Thread(
@@ -837,6 +935,94 @@ class CodexExecutor(CLIExecutorBase):
                 "sequence": len(record["events"]) + 1,
                 "payload": payload if isinstance(payload, dict) else message,
             }
+        )
+        if method in {"item/started", "item/completed"}:
+            self._handle_collaboration_event(record, method, payload)
+
+    def _handle_collaboration_event(
+        self,
+        record: dict[str, Any],
+        method: str,
+        payload: Any,
+    ) -> None:
+        """Persist verified Codex collaboration lifecycle events only."""
+        capability = record.get("collaboration_spawn")
+        if not isinstance(capability, dict) or capability.get("enabled") is not True:
+            return
+        if not isinstance(payload, dict) or not isinstance(payload.get("item"), dict):
+            return
+        item = payload["item"]
+        if str(item.get("type") or "") != "collabAgentToolCall":
+            return
+        from agent_bridge_connect.auxiliary_sessions import (
+            handle_codex_collaboration_item_completed,
+            handle_codex_collaboration_item_started,
+        )
+        from agent_bridge_connect.task_store import TaskStore
+
+        task_packet = record["task_packet"]
+        task_id = str(task_packet.get("task_id") or task_packet.get("id") or "").strip()
+        run_id = str(record.get("run_id") or "").strip()
+        parent_session_id = str(record.get("session_id") or "").strip()
+        if not task_id or not run_id or not parent_session_id:
+            raise ABCError(
+                "codex_auxiliary_receipt_missing",
+                "Codex collaboration event has no bound parent task/session.",
+            )
+        extensions = dict(task_packet.get("extensions") or {})
+        primary = dict(extensions.get(SESSION_EXTENSION_KEY) or {})
+        primary.update(
+            {
+                "session_id": parent_session_id,
+                "session_state": "active",
+                "receipt_source": "jsonl_thread_started",
+                "official_receipt_bound": True,
+            }
+        )
+        extensions[SESSION_EXTENSION_KEY] = primary
+        parent_turn_id = str(payload.get("turnId") or payload.get("turn_id") or "").strip()
+        if method == "item/started":
+            updated, entry = handle_codex_collaboration_item_started(
+                extensions,
+                owner_task_id=task_id,
+                owner_run_id=run_id,
+                parent_session_id=parent_session_id,
+                parent_turn_id=parent_turn_id,
+                item=item,
+                occurred_at=_cleanup_now(),
+            )
+        else:
+            updated, entry = handle_codex_collaboration_item_completed(
+                extensions,
+                owner_task_id=task_id,
+                owner_run_id=run_id,
+                parent_session_id=parent_session_id,
+                item=item,
+                occurred_at=_cleanup_now(),
+            )
+        task_packet["extensions"] = updated
+        board = task_packet.get("task_board")
+        board_root = board.get("root") if isinstance(board, dict) else ""
+        if not board_root:
+            raise ABCError(
+                "codex_auxiliary_receipt_missing",
+                "Codex collaboration event has no authoritative task board.",
+            )
+        store = TaskStore(board_root)
+        persisted = store.read_task(task_id)
+        persisted["extensions"] = updated
+        store.write_task(task_id, persisted)
+        store.append_event(
+            task_id,
+            {
+                "event_type": "codex.collaboration_auxiliary_updated",
+                "task_id": task_id,
+                "run_id": run_id,
+                "aux_id": str(entry.get("aux_id") or ""),
+                "lifecycle": method,
+                "session_state": str(entry.get("session_state") or ""),
+                "created_at": _cleanup_now(),
+            },
         )
 
     def _app_server_permission_params(
@@ -1231,6 +1417,17 @@ class CodexExecutor(CLIExecutorBase):
                 "protocol_version": self._app_server_capability.get("protocol_version"),
                 "evidence": list(self._app_server_capability.get("evidence") or []),
             }
+        if self._collaboration_spawn_capability is not None:
+            collaboration = self._collaboration_spawn_capability
+            fixture = collaboration.get("fixture") if isinstance(collaboration.get("fixture"), dict) else {}
+            live = collaboration.get("live") if isinstance(collaboration.get("live"), dict) else {}
+            metadata["collaboration_spawn"] = {
+                "enabled": bool(collaboration.get("enabled")),
+                "version": str(collaboration.get("version") or ""),
+                "reason": str(collaboration.get("reason") or ""),
+                "fixture_ok": bool(fixture.get("ok")),
+                "live_ok": bool(live.get("ok")),
+            }
         return {"executor": {"codex": metadata}}
 
     def _store_metadata(
@@ -1287,7 +1484,8 @@ def _is_cleanup_timestamp(value: Any) -> bool:
 def _unknown_cleanup_verification() -> dict[str, dict[str, str]]:
     return {
         "cli": {"status": "unknown", "checked_at": _cleanup_now()},
-        "desktop": {"status": "unavailable", "checked_at": _cleanup_now()},
+        "desktop_backend": {"status": "unavailable", "checked_at": _cleanup_now()},
+        "desktop_live": {"status": "unavailable", "checked_at": _cleanup_now()},
     }
 
 
@@ -1384,7 +1582,10 @@ def _codex_cleanup_request_error(request: SessionCleanupRequest) -> str:
         return "codex_cleanup_mode_invalid"
     if request.strategy != "official_session_delete":
         return "codex_cleanup_strategy_mismatch"
-    if request.official_receipt_bound and request.receipt_source != "jsonl_thread_started":
+    if (
+        request.official_receipt_bound is not True
+        or request.receipt_source != "jsonl_thread_started"
+    ):
         return "codex_cleanup_receipt_unbound"
     session_id = str(request.session_id or "").strip()
     try:

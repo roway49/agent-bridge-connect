@@ -1,7 +1,7 @@
 # AgentBC 1.0.4A 需求开发清单
 
 > 制定日期：2026-08-26
-> 状态：需求冻结与开发规划阶段，尚未开始实现
+> 状态：持续开发与回归中；`SESSION-104-001` 保持 P0 未完成
 > 目标版本：AgentBC `1.0.4A` / Python `1.0.4a1`
 > 来源基线：`private/integration@01f3ce1`
 > 已发布基线：`v1.0.3A2@62757a4`；公开 Formula 收口 `public/main@87c4bca`
@@ -53,14 +53,14 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 
 | ID | 优先级 | 问题 | 目标结果 | 主要依赖 |
 | --- | --- | --- | --- | --- |
-| `PROTO-104-001` | P0 / 已完成（2026-08-27） | 上游 CLI version/help/argv/event 漂移只能靠临时补测试 | 三 Executor 完整版本化 fixture、capability matrix 和未知组合 fail-closed | 无 |
+| `PROTO-104-001` | P0 / fixture matrix 已完成（2026-08-27）；production collaboration_spawn wiring 待回归（2026-08-28） | 上游 CLI version/help/argv/event 漂移只能靠临时补测试 | 三 Executor 完整版本化 fixture、capability matrix 和未知组合 fail-closed；生产派生会话接线需通过版本 fixture + live probe 双门 | 无 |
 | `ARCH-104-001` | P1 / 按域执行 | Service、Runner、CLI、approval、notification 责任仍集中 | 每个功能项先完成对应窄模块机械拆分，公共 API/CLI/磁盘行为不变 | `PROTO-104-001` |
 | `PERM-104-001` | P0 | native Deny 后 Agent 仍可用 Prompt/callback 请求 full 并启动第二 worker | 审批渠道和 fallback 完全由可信 transport event 与 Core policy 决定 | permission fixtures；对应 ARCH slice |
 | `PERM-104-002` | P0 | 已批准动作仍被宿主 containment 拒绝时会重复弹窗、grant 和 continuation；显式 full 还可能进入不可再升级 recovery | 稳定 fingerprint + escalation domain；人工授予、临时申请和权限继承三条路径的 full 都必须真实生效且在声明范围内无阻塞；完成后执行 `PERM-104-002-R1` 详情回归 | `PERM-104-001` |
 | `FLOW-104-002` | P0 | report/record 超限可跳过终态通知和 cleanup receipt | terminal、report、notification、cleanup 独立且可重放，通知不被报告失败吞掉 | terminal fixtures；对应 ARCH slice |
 | `FLOW-104-001` | P1 | handoff 只能声明一个 step，自由文本多步骤直到 callback 才失败 | handoff 原生结构化 steps、dispatch 前预检、严格 callback 一致性 | schema fixtures；对应 ARCH slice |
 | `FLOW-103-001` | P1 / 跨版转入 | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | task/run/session scoped 单调 progress receipt；所有公共视图同源 | `FLOW-104-001` 的 declared steps |
-| `SESSION-104-001` | P0 / 已完成（2026-08-27） | cleanup 成功只证明 CLI delete 返回成功，未证明 Codex CLI 与 Desktop 的恢复列表都彻底移除同一临时会话 | 以官方 session ID 做双入口、重启后和保留边界的真实验收；不能确认时 fail closed | `PROTO-104-001` Codex session fixtures；`FLOW-104-002` cleanup receipt |
+| `SESSION-104-001` | P0 / 未完成（2026-08-28） | cleanup 成功只证明 CLI delete 返回成功，未证明 Codex CLI 与 Desktop 的恢复列表都彻底移除同一临时会话 | 以官方 session ID 做双入口、重启后和保留边界的真实验收；不能确认时 fail closed | `PROTO-104-001` Codex session fixtures；`FLOW-104-002` cleanup receipt；官方 Desktop 实时同步证据 |
 | `FLOW-104-003` | P0 / 恢复闭环 | 当前终态 `failed` 既不能 `task retry`，也不能作为普通 handoff 源，失败后只能人工绕行 | status/report 给出机械可判定的 retry/handoff 动作；同任务重试与新 iteration 交接均保留审计和进度 | failure taxonomy；`FLOW-104-002` terminal receipts；`FLOW-104-001` steps |
 | `INPUT-104-001` | P0 / 派发阻断 | 显式 custom path 时，位于项目根之外的 `--image`/输入文件被 `image input is outside task roots` 原子拒绝 | 项目根与只读附件根分离；Runner 受控导入外部文件且不扩大 Executor 项目权限 | PathPlan v2；atomic dispatch；input manifest |
 
@@ -302,6 +302,15 @@ callback invalid。
 
 ### 4.8 `SESSION-104-001`：Codex CLI/Desktop 双入口临时会话清理
 
+> 2026-08-28 `DEWX-001` continuation status：本项仍为 P0 未完成。`3XAZ-001` 在 Step 1 因
+> `permission_denied_by_user` 失败，完成 `0/5` 且没有合法 final callback；`WSR8-001` 是独立
+> primary canary，历史 report 的 CLI/Desktop 状态为 unknown；`8XF5-001` 因
+> `completion_marker_missing` 失败，不能把 `SESSION_CHILD_OK` 当作原生派生会话证据；`HHWC-001`
+> 因 `executor_exit_nonzero` 失败。当前 0.147.0 的 frozen fixture 缺少
+> `collabAgentToolCall`、`spawnAgent`、`receiverThreadId`，所以 production collaboration_spawn
+> wiring 保持 disabled。App Server backend `thread/list` 缺失只能证明 backend absent；当前没有受支持
+> Desktop 实时读取/重启后复验通道，必须记录 `codex_desktop_verification_unavailable`，不得将本项关闭。
+
 - 只清理由 AgentBC Executor 创建并从官方 early receipt 取得精确 ID 的临时会话；dispatcher
   conversation、用户会话、未登记会话和模糊名称匹配永不进入清理候选；
 - 测试必须把同一官方 session ID 在 Codex CLI `resume` 入口与 Codex Desktop 恢复列表中的可见性
@@ -318,14 +327,18 @@ callback invalid。
 完成证据必须包含官方 ID 绑定、cleanup receipt、CLI 与 Desktop 清理前后快照、重启后复验和保留哨兵；
 缺少任一项不得写 `succeeded`。
 
-2026-08-27 收尾证据：`agent/codex@d18697f` 完成 cleanup receipt v2、官方 UUID 绑定、App Server
-删除/新连接 read 验证、status/report/doctor 同源投影与 fail-closed 错误；`private/integration@8aa60a6`
-完成初次集成，`9fce6b6` 补齐生产 Desktop `thread/list` 全 source kind、分页和 archived/non-archived
-验证。受支持 Codex `0.147.0` 真实 canary 取得唯一 early receipt，目标在清理前为 `present`，清理后
-CLI 与 Desktop 均为 `absent`，dispatcher 保留哨兵前后均为 `present`。真实 `0.147.0/0.150.1`
-stdio 均可能不发 `thread/deleted`，因此该事件降为辅助证据，RPC 成功、新连接 `thread/read` 缺失与
-Desktop `thread/list` 缺失共同构成权威完成条件。全量回归 `1461 tests` 通过；原 `HHWC-001` 无最终
-callback 的 failed 状态不再作为实现状态来源。
+历史实现证据（2026-08-27）：`agent/codex@d18697f` 完成 cleanup receipt v2、官方 UUID 绑定、
+App Server 删除/新连接 read 验证、status/report/doctor 同源投影与 fail-closed 错误；
+`private/integration@8aa60a6` 完成初次集成，`9fce6b6` 补齐生产 Desktop `thread/list` 全 source kind、
+分页和 archived/non-archived 验证。该段只描述历史实现基线，不构成本次双入口真机验收。
+
+本次 continuation 的可验证结果：cleanup receipt 已升为向后兼容 v3，分别持久化 `cli`、
+`desktop_backend`、`desktop_live`，公共投影保留 `desktop` 聚合字段；`transport=auto` 的有官方 receipt
+路径统一使用 App Server，只有显式 `cli/direct` 允许 CLI action fallback，CLI exit 0 不产生 cleanup
+success。真实 0.147.0 单父 timeout canary 取得官方 thread ID；App Server delete 返回成功，新连接
+`thread/read` 返回缺失，active（3 页）与 archived（1 页）的全 source-kind `thread/list` 均不含该 ID。
+CLI `delete --help` 清理前后均为 exit 0，但仅作 action capability evidence。由于当前 Desktop 实时通道
+与应用重启后证据仍不可用，`SESSION-104-001` 保持未完成。
 
 ### 4.9 `FLOW-104-003`：Failed 任务 retry 与 handoff
 

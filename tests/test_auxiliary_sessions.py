@@ -38,7 +38,8 @@ T0 = "2026-08-25T00:00:00Z"
 PRIMARY_SESSION_ID = "00000000-0000-4000-8000-000000000001"
 CODEX_ABSENT_VERIFICATION = {
     "cli": {"status": "absent", "checked_at": T0},
-    "desktop": {"status": "absent", "checked_at": T0},
+    "desktop_backend": {"status": "absent", "checked_at": T0},
+    "desktop_live": {"status": "absent", "checked_at": T0},
 }
 
 

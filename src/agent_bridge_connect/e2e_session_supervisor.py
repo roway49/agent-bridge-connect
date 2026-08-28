@@ -49,6 +49,7 @@ from .auxiliary_sessions import (
 from .execution_policy import (
     MAX_SESSION_CLEANUP_ATTEMPTS,
     RESOLVED_CLEANUP_STATES,
+    _empty_cleanup_verification,
     build_session_cleanup_receipt,
     normalize_cleanup_verification,
     read_session_cleanup_receipt,
@@ -500,6 +501,8 @@ class E2ESessionSupervisor:
             if result.verification
             else None
         )
+        if result_verification is not None and executor != "codex":
+            result_verification = _empty_cleanup_verification("not_applicable")
         if result.state == "succeeded" and executor == "codex":
             from .session_cleanup import _strict_codex_success_result
 
@@ -511,10 +514,7 @@ class E2ESessionSupervisor:
             result_verification = (
                 result_verification
                 if result_verification is not None
-                else {
-                    "cli": {"status": "not_applicable", "checked_at": occurred_at},
-                    "desktop": {"status": "not_applicable", "checked_at": occurred_at},
-                }
+                else _empty_cleanup_verification("not_applicable", checked_at=occurred_at)
             )
             updated = self._resolved_receipt(
                 current,
@@ -587,10 +587,7 @@ class E2ESessionSupervisor:
                 "completed_at": "",
                 "error_code": "",
                 "retryable": False,
-                "verification": {
-                    "cli": {"status": "unknown", "checked_at": ""},
-                    "desktop": {"status": "unknown", "checked_at": ""},
-                },
+                "verification": _empty_cleanup_verification(),
             }
         )
         return _validated_receipt(updated)

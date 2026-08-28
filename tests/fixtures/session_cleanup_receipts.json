@@ -1,5 +1,36 @@
 {
   "default": {
+    "version": 3,
+    "capability": "unknown",
+    "strategy": "none",
+    "state": "not_requested",
+    "attempts": 0,
+    "requested_at": "",
+    "last_attempt_at": "",
+    "next_attempt_at": "",
+    "completed_at": "",
+    "error_code": "",
+    "retryable": false,
+    "verification": {
+      "cli": {
+        "status": "unknown",
+        "checked_at": ""
+      },
+      "desktop_backend": {
+        "status": "unknown",
+        "checked_at": ""
+      },
+      "desktop_live": {
+        "status": "unknown",
+        "checked_at": ""
+      }
+    }
+  },
+  "legacy_minimal": {
+    "state": "not_requested",
+    "attempts": 0
+  },
+  "legacy_v2": {
     "version": 2,
     "capability": "unknown",
     "strategy": "none",
@@ -21,10 +52,6 @@
         "checked_at": ""
       }
     }
-  },
-  "legacy_minimal": {
-    "state": "not_requested",
-    "attempts": 0
   },
   "unsupported": {
     "version": 1,

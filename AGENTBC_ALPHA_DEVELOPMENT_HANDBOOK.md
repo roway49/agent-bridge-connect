@@ -543,6 +543,20 @@ mock 通过不能替代真实 CLI；真实任务成功也不能替代源码、�
   与内部失败恢复已实现；Alpha 不提供公开 rollback 命令；
 - E2E teardown 与 task/run scoped auxiliary session ledger 完成，默认 `retain=false` 时按官方 receipt
   定向清理主会话和已登记派生会话；
+
+### 1.0.4A：Codex session continuation guard（当前未闭环）
+
+- Codex cleanup receipt 使用向后兼容 v3：`cli`、`desktop_backend`、`desktop_live` 分开记录，公共视图
+  保留 `desktop` 聚合字段；只有三项均为 `absent` 才能形成 cleanup success；v2 的 `desktop` 读作
+  `desktop_backend`，`desktop_live` 为 `unverified`；
+- `transport=auto` 且有官方 Codex receipt 时，执行和 cleanup 均走 App Server；显式 `cli/direct` 才能
+  进入 CLI fallback，CLI exit 0 只是动作证据；App Server backend absent 但 live present 必须报
+  `codex_desktop_ui_stale`，无受支持 live 通道必须报 `codex_desktop_verification_unavailable`；
+- collaboration_spawn 必须同时通过版本 fixture 与 live probe。Codex 0.147.0 frozen fixture 缺少
+  `collabAgentToolCall`、`spawnAgent`、`receiverThreadId`，因此生产派生会话保持 unsupported；不从 Prompt、
+  普通输出、进程或私有存储推断 child session；
+- `SESSION-104-001` 当前仍是 P0 未完成：自动化和 backend canary 证据不替代 Desktop 实时同步及应用
+  重启后复验。禁止私库扫描、GUI 自动删除和强制重启。
 - GitHub `v1.0.3A2`、PyPI `1.0.3a2`、macOS bundle、Intel/Apple Silicon Homebrew bottle 已发布；
 - `1.0.3A` 自 2026-08-26 起冻结。除发布资产完整性或高风险安全问题外，不回填新功能、状态机、
   schema、权限策略或 CLI；后续需求只进入 `1.0.4A` 清单。

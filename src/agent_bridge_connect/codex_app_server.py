@@ -79,6 +79,13 @@ CODEX_APP_SERVER_NOTIFICATIONS = frozenset({"item/completed", "turn/completed"})
 CODEX_APP_SERVER_EXECUTION_GROUP = "execution"
 CODEX_APP_SERVER_CLEANUP_GROUP = "cleanup"
 CODEX_APP_SERVER_DESKTOP_VISIBILITY_GROUP = "desktop_visibility"
+CODEX_APP_SERVER_COLLABORATION_SPAWN_GROUP = "collaboration_spawn"
+CODEX_APP_SERVER_COLLABORATION_MARKERS = frozenset(
+    {"collabAgentToolCall", "spawnAgent", "receiverThreadId"}
+)
+CODEX_APP_SERVER_COLLABORATION_LIFECYCLE = frozenset(
+    {"item/started", "item/completed"}
+)
 CODEX_APP_SERVER_CAPABILITY_GROUPS: dict[str, dict[str, frozenset[str]]] = {
     CODEX_APP_SERVER_EXECUTION_GROUP: {
         "client_methods": CODEX_APP_SERVER_CLIENT_METHODS,
@@ -95,6 +102,15 @@ CODEX_APP_SERVER_CAPABILITY_GROUPS: dict[str, dict[str, frozenset[str]]] = {
         "client_methods": frozenset({"thread/list"}),
         "server_requests": frozenset(),
         "notifications": frozenset(),
+    },
+    CODEX_APP_SERVER_COLLABORATION_SPAWN_GROUP: {
+        # The logical receiverThreadId marker maps to the plural
+        # receiverThreadIds field used by the 0.150 candidate schema.  The
+        # group is intentionally not enabled by the production version gate.
+        "client_methods": frozenset(),
+        "server_requests": frozenset(),
+        "notifications": CODEX_APP_SERVER_COLLABORATION_LIFECYCLE,
+        "schema_markers": CODEX_APP_SERVER_COLLABORATION_MARKERS,
     },
 }
 
@@ -219,6 +235,36 @@ def _schema_has_client_method(schema: dict[str, Any], method: str) -> bool:
     return False
 
 
+def _schema_contains_value(schema: dict[str, Any], expected: str) -> bool:
+    """Find one exact enum/value marker in a generated schema bundle."""
+    def walk(value: Any) -> bool:
+        if isinstance(value, dict):
+            if any(item == expected for item in value.get("enum", [])):
+                return True
+            return any(walk(child) for child in value.values())
+        if isinstance(value, list):
+            return any(walk(child) for child in value)
+        return False
+
+    return walk(schema)
+
+
+def _schema_has_collaboration_marker(schema: dict[str, Any], marker: str) -> bool:
+    """Verify a collaboration marker, including Codex's plural wire field."""
+    if marker == "receiverThreadId":
+        def has_receiver_key(value: Any) -> bool:
+            if isinstance(value, dict):
+                if "receiverThreadId" in value or "receiverThreadIds" in value:
+                    return True
+                return any(has_receiver_key(child) for child in value.values())
+            if isinstance(value, list):
+                return any(has_receiver_key(child) for child in value)
+            return False
+
+        return has_receiver_key(schema)
+    return _schema_contains_value(schema, marker)
+
+
 def _schema_matches_contract(schema: dict[str, Any]) -> list[str]:
     """Return missing frozen surface names as a fail-closed reason list."""
     missing: list[str] = []
@@ -257,7 +303,58 @@ def verify_capability_group(
     for method in sorted(definition.get("notifications", ())):
         if not _schema_has_notification(schema, method):
             missing.append(method)
+    if group == CODEX_APP_SERVER_COLLABORATION_SPAWN_GROUP:
+        for marker in sorted(definition.get("schema_markers", ())):
+            if not _schema_has_collaboration_marker(schema, marker):
+                missing.append(marker)
     return missing
+
+
+def codex_collaboration_spawn_fixture_contract(
+    version: str,
+    *,
+    fixture_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Check the frozen schema fixture for the collaboration spawn group."""
+    normalized = str(version or "").strip()
+    root = (
+        Path(fixture_root).expanduser()
+        if fixture_root is not None
+        else Path(__file__).resolve().parents[2]
+        / "tests"
+        / "fixtures"
+        / "executor_runtime"
+        / "matrix"
+        / "codex"
+    )
+    bundle_path = root / normalized / "app_server_schema.json"
+    result: dict[str, Any] = {
+        "ok": False,
+        "version": normalized,
+        "source": "fixture",
+        "schema_path": str(bundle_path),
+        "missing": [],
+        "reason": "",
+    }
+    try:
+        schema = json.loads(bundle_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        result["reason"] = "collaboration fixture is unavailable"
+        return result
+    if not isinstance(schema, dict):
+        result["reason"] = "collaboration fixture is malformed"
+        return result
+    missing = verify_capability_group(
+        schema,
+        CODEX_APP_SERVER_COLLABORATION_SPAWN_GROUP,
+    )
+    result["missing"] = missing
+    if missing:
+        result["reason"] = "collaboration fixture is missing: " + ", ".join(missing)
+        return result
+    result["ok"] = True
+    result["evidence"] = ["fixture_schema_markers_verified", "fixture_item_lifecycle_verified"]
+    return result
 
 
 def _read_bundle_directory(bundle_dir: str | Path) -> dict[str, Any] | None:
@@ -384,6 +481,124 @@ def codex_app_server_contract(
     return result
 
 
+def codex_collaboration_spawn_contract(
+    executable: str | Path,
+    *,
+    version_output: str = "",
+    schema_bundle: dict[str, Any] | None = None,
+    timeout: int = 15,
+) -> dict[str, Any]:
+    """Probe the live collaboration-spawn surface without enabling it.
+
+    Collaboration is a separate capability from the ordinary App Server
+    execution contract.  The caller must combine this live result with the
+    matching frozen fixture result before dispatching any collaboration work.
+    """
+    base = codex_app_server_contract(
+        executable,
+        version_output=version_output,
+        schema_bundle=schema_bundle,
+        timeout=timeout,
+    )
+    result: dict[str, Any] = {
+        "ok": False,
+        "transport": CODEX_APP_SERVER_TRANSPORT,
+        "version": base.get("version", ""),
+        "version_parsed": base.get("version_parsed"),
+        "missing": [],
+        "reason": "",
+        "live": base,
+    }
+    if not base.get("ok"):
+        result["reason"] = str(base.get("reason") or "App Server live probe failed")
+        return result
+    live_schema = schema_bundle
+    if live_schema is None:
+        # codex_app_server_contract intentionally keeps the schema ephemeral.
+        # Re-run the official bounded probe here only when the caller did not
+        # supply the already parsed bundle; no private storage is touched.
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="agentbc-codex-collab-schema-") as schema_dir:
+            try:
+                completed = subprocess.run(
+                    [
+                        str(Path(executable).expanduser()),
+                        "app-server",
+                        "generate-json-schema",
+                        "--out",
+                        schema_dir,
+                        "--experimental",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                    shell=False,
+                    timeout=timeout,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                result["reason"] = f"collaboration live schema probe unavailable: {exc}"
+                return result
+            if completed.returncode != 0:
+                result["reason"] = "collaboration live schema probe failed"
+                return result
+            live_schema = _read_bundle_directory(schema_dir)
+    if not isinstance(live_schema, dict):
+        result["reason"] = "collaboration live schema is malformed"
+        return result
+    missing = verify_capability_group(
+        live_schema,
+        CODEX_APP_SERVER_COLLABORATION_SPAWN_GROUP,
+    )
+    result["missing"] = missing
+    if missing:
+        result["reason"] = "collaboration live probe is missing: " + ", ".join(missing)
+        return result
+    result["ok"] = True
+    result["evidence"] = ["live_schema_markers_verified", "live_item_lifecycle_verified"]
+    return result
+
+
+def assert_codex_collaboration_spawn_capability(
+    executable: str | Path | None,
+    *,
+    transport: str | None = None,
+) -> dict[str, Any]:
+    """Require matching fixture and live proof before enabling collaboration."""
+    selected = str(transport or "").strip().lower()
+    if selected not in CODEX_APP_SERVER_TRANSPORT_ALIASES:
+        raise ABCError(
+            "codex_collaboration_spawn_unsupported",
+            "Collaboration spawn requires the Codex App Server transport.",
+        )
+    if executable is None:
+        raise ABCError(
+            "codex_collaboration_spawn_unsupported",
+            "Collaboration spawn requires a Codex executable.",
+        )
+    live = codex_collaboration_spawn_contract(executable)
+    if not live.get("ok"):
+        raise ABCError(
+            "codex_collaboration_spawn_unsupported",
+            str(live.get("reason") or "Codex collaboration live probe failed"),
+            {"live": live},
+        )
+    parsed_version = live.get("version_parsed")
+    version = (
+        ".".join(str(part) for part in parsed_version)
+        if isinstance(parsed_version, (tuple, list)) and len(parsed_version) == 3
+        else str(live.get("version") or "").splitlines()[0]
+    )
+    fixture = codex_collaboration_spawn_fixture_contract(version)
+    if not fixture.get("ok"):
+        raise ABCError(
+            "codex_collaboration_spawn_unsupported",
+            str(fixture.get("reason") or "Codex collaboration fixture failed"),
+            {"fixture": fixture, "live": live},
+        )
+    return {"enabled": True, "fixture": fixture, "live": live}
+
+
 def assert_codex_app_server_capability(
     executable: str | Path | None,
     *,
@@ -434,6 +649,9 @@ __all__ = [
     "CODEX_APP_SERVER_CAPABILITY_GROUPS",
     "CODEX_APP_SERVER_CLEANUP_GROUP",
     "CODEX_APP_SERVER_CLIENT_METHODS",
+    "CODEX_APP_SERVER_COLLABORATION_LIFECYCLE",
+    "CODEX_APP_SERVER_COLLABORATION_MARKERS",
+    "CODEX_APP_SERVER_COLLABORATION_SPAWN_GROUP",
     "CODEX_APP_SERVER_DESKTOP_VISIBILITY_GROUP",
     "CODEX_APP_SERVER_EXECUTION_GROUP",
     "CODEX_APP_SERVER_MAX_VERSION",
@@ -445,6 +663,9 @@ __all__ = [
     "CODEX_APP_SERVER_TRANSPORT",
     "CODEX_APP_SERVER_TRANSPORT_ALIASES",
     "assert_codex_app_server_capability",
+    "assert_codex_collaboration_spawn_capability",
+    "codex_collaboration_spawn_contract",
+    "codex_collaboration_spawn_fixture_contract",
     "codex_app_server_contract",
     "parse_codex_version",
     "verify_capability_group",
