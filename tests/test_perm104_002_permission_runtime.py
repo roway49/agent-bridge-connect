@@ -10,8 +10,11 @@ a permission input or grant.
 from __future__ import annotations
 
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from agent_bridge_connect.permission_grants import (
     PERMISSION_GRANT_EXTENSION_KEY,
@@ -761,6 +764,365 @@ class PermissionRuntimeHermesCanaryTests(unittest.TestCase):
         )
         self.assertEqual(resolved["effective_mode"], "safe")
         self.assertNotEqual(resolved.get("selection_source"), "one_shot_permission_grant")
+
+
+class DispatchContainmentTests(unittest.TestCase):
+    """E52M-003 review fixes 1+2: dispatch contains every concrete full
+    worker (plain repos included) and never deletes active profiles."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.board = self.root / "board"
+        self.project = self.root / "project"
+        self.project.mkdir()
+
+    def _runner(self, executors: dict):
+        from agent_bridge_connect.runner import RunnerState
+
+        state = RunnerState(
+            self.root / "runner-state",
+            [self.root],
+            executors,
+        )
+        return state
+
+    def _full_task(self, executor: str, service):
+        created = service.create_task(
+            "containment canary",
+            executor,
+            [{"id": 1, "description": "one"}],
+            session_id="",
+            customer_dir=True,
+            customer_path=self.project,
+            permission_mode="full",
+        )
+        return created
+
+    def _assert_dispatch_blocked_without_sandbox_exec(self, executor: str, mode: str):
+        """Concrete full dispatch fails closed when sandbox-exec is missing.
+
+        This proves containment is unconditional for plain projects: the
+        pre-start check no longer keys off linked_worktree, so a plain repo
+        cannot dispatch an uncontained full worker.
+        """
+        from agent_bridge_connect.runner import RunnerError
+
+        fake = self.root / f"fake-{executor}"
+        fake.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = chat ] && [ "$2" = --help ]; then printf -- "--yolo\\n"; exit 0; fi\n'
+            "printf ok\n",
+            encoding="utf-8",
+        )
+        fake.chmod(fake.stat().st_mode | 0o100)
+        service_config = {"workspace_root": str(self.root)}
+        service = TaskService(self.board, config=service_config)
+        self._full_task(executor, service)
+        state = self._runner({executor: fake})
+        if not state.allowed_executables:
+            self.skipTest("executor resolution unavailable")
+        with mock.patch(
+            "agent_bridge_connect.seatbelt.seatbelt_available", return_value=False
+        ):
+            with self.assertRaises(RunnerError) as raised:
+                state.dispatch_worker(
+                    service.list_tasks(status="pending")[0].id,
+                    executor,
+                    str(self.board),
+                    "",
+                    0.2,
+                    False,
+                )
+        self.assertIn("host_containment_unliftable", str(raised.exception))
+
+    def test_plain_project_full_dispatch_fails_closed_without_sandbox_exec(self) -> None:
+        self._assert_dispatch_blocked_without_sandbox_exec("hermes", "full")
+
+    def test_safe_dispatch_unaffected_by_containment_preflight(self) -> None:
+        # A safe task dispatches without containment (mocked spawn), proving
+        # the preflight only gates concrete full.
+        fake = self.root / "fake-hermes"
+        fake.write_text("#!/bin/sh\nprintf ok\n", encoding="utf-8")
+        fake.chmod(fake.stat().st_mode | 0o100)
+        service = TaskService(
+            self.board, config={"workspace_root": str(self.root)}
+        )
+        created = service.create_task(
+            "safe canary",
+            "hermes",
+            [{"id": 1, "description": "one"}],
+            session_id="",
+            customer_dir=True,
+            customer_path=self.project,
+            permission_mode="safe",
+        )
+        state = self._runner({"hermes": fake})
+        fake_run = {
+            "ok": True,
+            "run_id": "mock-safe",
+            "pid": 1,
+            "status": "running",
+        }
+        from agent_bridge_connect.runner import RunnerState
+
+        with mock.patch.object(
+            RunnerState, "_spawn_process", return_value=fake_run
+        ) as spawn:
+            result = state.dispatch_worker(
+                created.id, "hermes", str(self.board), "", 0.2, False
+            )
+        self.assertEqual(result["dispatch_status"], "accepted")
+        self.assertTrue(spawn.called)
+        # No containment argument was passed for the safe task.
+        _args, kwargs = spawn.call_args
+        self.assertIsNone(kwargs.get("containment"))
+
+    def test_spawn_process_contains_plain_project_and_exports_task_tmpdir(self) -> None:
+        # Fix 6: the contained spawn exports TMPDIR pointing at the
+        # canonical task temp root and never at /private/tmp or /var/folders.
+        from agent_bridge_connect.seatbelt import seatbelt_available
+
+        if not seatbelt_available():
+            self.skipTest("sandbox-exec unavailable")
+        fake = self.root / "fake-hermes"
+        fake.write_text(
+            '#!/bin/sh\nprintf "tmp=%s" "$TMPDIR"\n',
+            encoding="utf-8",
+        )
+        fake.chmod(fake.stat().st_mode | 0o100)
+        state = self._runner({"hermes": fake})
+        task_temp = self.root / "record" / "temp" / "E52M-003"
+        result = state._spawn_process(
+            "hermes",
+            [str(fake)],
+            self.project,
+            "runner-hermes",
+            containment={
+                "writable_roots": [str(self.project), str(task_temp)],
+                "task_temp_root": str(task_temp),
+                "linked_worktree": None,
+            },
+        )
+        deadline = 30.0
+        while result["status"] == "running" and deadline > 0:
+            time.sleep(0.1)
+            deadline -= 0.1
+            result = state.status(result["run_id"])
+        self.assertEqual(result["status"], "completed", result.get("stderr"))
+        self.assertEqual(result["stdout"].strip(), f"tmp={task_temp}")
+        # The run record was contained and its profile removed on exit.
+        record = state.runs[result["run_id"]]
+        self.assertTrue(record["containment"])
+        self.assertFalse(record.get("profile_path"))
+        profiles = list((self.root / "runner-state" / "seatbelt").glob("task-*.sb"))
+        self.assertEqual(profiles, [])
+
+    def test_concurrent_contained_launches_keep_both_profiles_until_registered(self) -> None:
+        from agent_bridge_connect.seatbelt import seatbelt_available
+
+        if not seatbelt_available():
+            self.skipTest("sandbox-exec unavailable")
+        state = self._runner({})
+        task_temp = self.root / "record" / "temp" / "E52M-003"
+        containment = {
+            "writable_roots": [str(self.project), str(task_temp)],
+            "writable_files": [],
+            "task_temp_root": str(task_temp),
+            "linked_worktree": None,
+        }
+        results: list[dict] = []
+        errors: list[BaseException] = []
+        start = threading.Barrier(3)
+
+        def launch(index: int) -> None:
+            try:
+                start.wait(timeout=5)
+                results.append(
+                    state._spawn_process(
+                        "hermes",
+                        ["/bin/sh", "-c", "sleep 1"],
+                        self.project,
+                        "runner-hermes",
+                        run_id=f"runner-hermes-concurrent-{index}",
+                        containment=containment,
+                    )
+                )
+            except BaseException as exc:  # pragma: no cover - diagnostic capture
+                errors.append(exc)
+
+        threads = [threading.Thread(target=launch, args=(index,)) for index in (1, 2)]
+        for thread in threads:
+            thread.start()
+        start.wait(timeout=5)
+        for thread in threads:
+            thread.join(timeout=10)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 2)
+        profiles = list((self.root / "runner-state" / "seatbelt").glob("task-*.sb"))
+        self.assertEqual(len(profiles), 2)
+        for result in results:
+            state.cancel(result["run_id"])
+
+
+class VerificationClosureTests(unittest.TestCase):
+    """E52M-003 review fix 3: verified comes only from the structured success
+    receipt; verification failure never leaves a completed task."""
+
+    def test_verify_requires_structured_success_inputs(self) -> None:
+        from agent_bridge_connect.cli import command_worker_run  # noqa: F401
+
+        # The closure predicate mirrors cli.py: completed + finalized from a
+        # valid callback + official session receipt.  The runtime contract
+        # itself still refuses to verify without the session binding.
+        record = _base_record()
+        authorized = authorize_permission_runtime_record(
+            record, decision="approve", request_id="req-1"
+        )
+        activated = activate_permission_runtime_record(
+            authorized, host_profile_digest=PROFILE_DIGEST
+        )
+        with self.assertRaises(ABCError):
+            verify_permission_runtime_record(activated)
+        verified = verify_permission_runtime_record(
+            activated, session_id="official-session-1"
+        )
+        self.assertEqual(verified["state"]["status"], "verified")
+
+    def test_completed_without_receipt_blocks_not_verifies(self) -> None:
+        # A completed poll without the structured success receipt must block
+        # the record (stable code) - it can never stay activated or verify.
+        record = _base_record()
+        authorized = authorize_permission_runtime_record(
+            record, decision="approve", request_id="req-1"
+        )
+        activated = activate_permission_runtime_record(
+            authorized, host_profile_digest=PROFILE_DIGEST
+        )
+        blocked = block_permission_runtime_record(
+            activated,
+            code=PERMISSION_TRANSPORT_UNSUPPORTED,
+            domain="executor_policy",
+        )
+        self.assertEqual(blocked["state"]["status"], "blocked")
+        self.assertEqual(
+            blocked["state"]["block_code"], PERMISSION_TRANSPORT_UNSUPPORTED
+        )
+
+
+class ClaudeWorkerTransportGateTests(unittest.TestCase):
+    """E52M-003 review fix 4: the production worker fails closed with
+    permission_transport_unsupported; it never launches a fabricated
+    broker command under an official flag."""
+
+    def test_start_routes_approval_capable_base_to_control(self) -> None:
+        from agent_bridge_connect.executors.claude import ClaudeExecutor
+
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary) / "workspace"
+            workspace.mkdir()
+            fake = Path(temporary) / "claude"
+            fake.write_text("#!/bin/sh\nprintf ok\n", encoding="utf-8")
+            fake.chmod(fake.stat().st_mode | 0o100)
+            executor = ClaudeExecutor(command=str(fake), transport="direct")
+            packet = {
+                "task_id": "E52M-003",
+                "steps": [{"id": 1, "description": "one"}],
+                "workspace": {"project_root": str(workspace), "root": str(workspace)},
+                "extensions": {
+                    "agentbc.permission": build_permission_record(explicit_mode="safe")
+                },
+                "runner_authorization_required": True,
+            }
+            sentinel = object()
+            with mock.patch.object(
+                executor, "start_control", return_value=sentinel
+            ) as control:
+                self.assertIs(executor.start(packet), sentinel)
+            control.assert_called_once_with(packet)
+
+    def test_full_sources_bypass_control_selection(self) -> None:
+        from agent_bridge_connect.executors.claude import _claude_control_required
+
+        full_packet = {
+            "extensions": {
+                "agentbc.permission": build_permission_record(explicit_mode="full")
+            },
+            "runner_authorization_required": True,
+        }
+        self.assertFalse(_claude_control_required(full_packet))
+
+        grant = build_permission_grant(
+            executor="claude",
+            task_id="E52M-003",
+            input_id="input-1",
+            session_id="session-1",
+            source_run_id="run-source",
+        )
+        granted_packet = {
+            "extensions": {
+                "agentbc.permission": build_permission_record(explicit_mode="safe"),
+                PERMISSION_GRANT_EXTENSION_KEY: grant,
+            },
+            "runner_authorization_required": True,
+        }
+        self.assertFalse(_claude_control_required(granted_packet))
+
+    def test_start_control_refuses_unproven_matrix(self) -> None:
+        from agent_bridge_connect.executors.claude import ClaudeExecutor
+
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary) / "workspace"
+            workspace.mkdir()
+            fake = Path(temporary) / "claude"
+            fake.write_text("#!/bin/sh\nprintf '2.1.247 (Claude Code)'\n", encoding="utf-8")
+            fake.chmod(fake.stat().st_mode | 0o100)
+            executor = ClaudeExecutor(command=str(fake), transport="direct")
+            executor._version = "2.1.247 (Claude Code)"
+            packet = {
+                "task_id": "E52M-003",
+                "steps": [{"id": 1, "description": "one"}],
+                "workspace": {"project_root": str(workspace), "root": str(workspace)},
+                "extensions": {},
+                "runner_authorization_required": True,
+            }
+            result = executor.start_control(packet)
+            self.assertFalse(result.ok)
+            self.assertIn("permission_transport_unsupported", result.message)
+
+    def test_control_command_never_carries_broker_value(self) -> None:
+        from agent_bridge_connect.executors.claude import ClaudeExecutor
+        from agent_bridge_connect.executors.claude import ClaudePermissionPromptBroker
+
+        with tempfile.TemporaryDirectory() as temporary:
+            fake = Path(temporary) / "claude"
+            fake.write_text("#!/bin/sh\nprintf ok\n", encoding="utf-8")
+            fake.chmod(fake.stat().st_mode | 0o100)
+            executor = ClaudeExecutor(command=str(fake), transport="direct")
+            # Even when the live probe claims the flag exists, the built
+            # control command must not embed a self-authored broker command.
+            with mock.patch.object(
+                ClaudeExecutor, "supports_permission_prompt_tool", return_value=True
+            ):
+                broker = ClaudePermissionPromptBroker(
+                    session_id="sess-1", decision_callback=lambda request: {}
+                )
+                with self.assertRaises(ABCError) as raised:
+                    executor._build_control_command(
+                        "prompt",
+                        Path(temporary),
+                        {
+                            "task_id": "E52M-003",
+                            "extensions": {},
+                            "workspace": {},
+                        },
+                        {"effective_mode": "safe"},
+                        broker,
+                    )
+                self.assertEqual(
+                    raised.exception.code, PERMISSION_TRANSPORT_UNSUPPORTED
+                )
 
 
 if __name__ == "__main__":

@@ -45,6 +45,30 @@ SEATBELT_EXECUTABLE = "sandbox-exec"
 _SAFE_REF_RE = re.compile(r"^refs/heads/[A-Za-z0-9][A-Za-z0-9._/-]{0,191}$")
 _GIT_TIMEOUT_S = 10.0
 
+# Run-lifecycle statuses after which a per-run profile is provably stale.
+# The Runner's own terminal set for a tracked process; kept here so the
+# seatbelt module never imports runner (import cycle).
+TERMINAL_RUN_STATUSES = frozenset({"completed", "failed", "cancelled", "cancelling"})
+
+# Canonical task-scoped temp directory name inside the task record root.
+TASK_TEMP_DIR_NAME = "temp"
+
+
+def task_temp_root(record_root: str | Path, task_id: str) -> Path:
+    """Return the exact task-scoped temp root for one task/iteration.
+
+    PERM-104-002 review fix (E52M-003): the profile no longer grants
+    ``/private/tmp`` or ``/var/folders``.  Scratch space is the canonical
+    ``<record_root>/<task_code>/<iteration>/temp`` directory of the current
+    task only; the Runner creates it, exports it as ``TMPDIR`` for the
+    contained worker and sweeps it on teardown.  Another task's temp, any
+    other iteration of the same task code, and the system staging trees
+    are all outside the profile.
+    """
+    root = Path(record_root).expanduser().resolve()
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "-", str(task_id or "").strip()) or "task"
+    return root / "temp" / safe
+
 
 def seatbelt_available() -> bool:
     """Return whether the macOS sandbox-exec binary is reachable."""
@@ -252,8 +276,8 @@ def canonical_task_roots(workspace: dict[str, Any] | None) -> list[Path]:
     * the frozen project/artifact root (one root for a customer task);
     * the current task's exact runtime-record directory
       (``<record_root>/<task_code>/<iteration>``);
-    * the current task's exact report directory
-      (``<agentbc_root>/tasks/report/<task_date>/<task_code>``);
+    * the current Executor ephemeral project/session directory when the
+      PathPlan froze one;
     * the task control directory (``<board>/.agentbc-control/<task_id>``)
       and a task temp directory under the record root, when present in the
       workspace snapshot.
@@ -273,10 +297,12 @@ def canonical_task_roots(workspace: dict[str, Any] | None) -> list[Path]:
     ).strip()
     if artifact_root:
         roots.append(Path(artifact_root).expanduser().resolve())
+    executor_project_root = str(values.get("executor_project_root") or "").strip()
+    if executor_project_root:
+        roots.append(Path(executor_project_root).expanduser().resolve())
     agentbc_root_text = str(values.get("agentbc_root") or "").strip()
     task_code = str(values.get("task_code") or "").strip()
     iteration = str(values.get("iteration") or "").strip()
-    task_date = str(values.get("task_date") or "").strip()
     internal_task_dir = str(values.get("internal_task_dir") or "").strip()
     if internal_task_dir:
         roots.append(Path(internal_task_dir).expanduser().resolve())
@@ -287,16 +313,6 @@ def canonical_task_roots(workspace: dict[str, Any] | None) -> list[Path]:
                 / "record"
                 / task_code
                 / iteration
-            ).resolve()
-        )
-    if agentbc_root_text and task_date and task_code:
-        roots.append(
-            (
-                Path(agentbc_root_text).expanduser().resolve()
-                / "tasks"
-                / "report"
-                / task_date
-                / task_code
             ).resolve()
         )
     control_dir = str(values.get("control_dir") or "").strip()
@@ -318,9 +334,24 @@ def canonical_task_roots(workspace: dict[str, Any] | None) -> list[Path]:
     return unique
 
 
+def canonical_task_files(workspace: dict[str, Any] | None) -> list[Path]:
+    """Return exact writable task files that must not widen to a shared dir.
+
+    Reports for all iterations of one task code share ``report_root``.  Giving
+    a worker that directory would therefore let one iteration rewrite another
+    iteration's evidence.  The Seatbelt profile instead grants only the
+    current task's exact ``report_file`` literal.  The task brief remains
+    read-only.
+    """
+    values = workspace if isinstance(workspace, dict) else {}
+    report_file = str(values.get("report_file") or "").strip()
+    return [Path(report_file).expanduser().resolve()] if report_file else []
+
+
 def build_seatbelt_profile(
     *,
     writable_roots: list[str | Path],
+    writable_files: list[str | Path] | None = None,
     executor_state_roots: list[str | Path] | None = None,
     linked_worktree: dict[str, Any] | None = None,
 ) -> str:
@@ -332,18 +363,24 @@ def build_seatbelt_profile(
     rules win in sandbox-exec, so the narrow ref allows follow the broad
     refs/worktrees denials.
 
-    PERM-104-002 review fix: the previous profile allowed ``file-write*``
-    for the entire user home.  That wide authorization let a contained
-    worker rewrite any user file, including other tasks' records, other
-    worktrees' refs and executor-wide configuration.  It is removed.  The
-    writable surface is exactly:
+    PERM-104-002 review fix (E52M-003): the previous profile allowed
+    ``file-write*`` for the entire ``/private/tmp`` and ``/var/folders``
+    staging trees.  Those are world-writable areas shared with every other
+    process on the host, so a contained worker could plant or rewrite any
+    other user's temporary state.  They are removed.  The writable surface
+    is now exactly:
 
-    * the frozen PathPlan roots (project/artifact/record/report/control/
-    temp - passed in as ``writable_roots`` by the Runner);
+    * the frozen PathPlan roots (project/artifact/record/report/control -
+      passed in as ``writable_roots`` by the Runner), which include the
+      current task's canonical task-scoped temp directory;
+    * ``/dev/null`` and ``/dev/dtracehelper`` (process necessity literals);
     * the executor's own current session/project state directories
       (``executor_state_roots``, validated by the Runner before launch);
     * a linked worktree's per-worktree git dir, common objects, and the
       current branch's exact ref/lock/reflog.
+
+    The Runner exports ``TMPDIR`` pointing at the task-scoped temp root so
+    every contained subprocess stages scratch data inside the task.
     """
     roots = [str(Path(root).expanduser().resolve()) for root in writable_roots or []]
     if not roots:
@@ -364,11 +401,10 @@ def build_seatbelt_profile(
         # deny default blocks device writes and breaks every subprocess.
         '(allow file-write* (literal "/dev/null"))',
         '(allow file-write* (literal "/dev/dtracehelper"))',
-        # Lexer/locale and runtime caches under /private/tmp and /var are
-        # denied by default; subprocesses need a bounded set of system
-        # temp locations.  These are world-staging areas, never user data.
-        '(allow file-write* (subpath "/private/tmp"))',
-        '(allow file-write* (subpath "/var/folders"))',
+        # E52M-003 review fix: no /private/tmp and no /var/folders writes.
+        # World-staging trees are shared with every other process; the
+        # only scratch surface is the current task's canonical temp root
+        # (part of ``writable_roots``) with TMPDIR pinned to it.
     ]
     linked = isinstance(linked_worktree, dict)
     if linked:
@@ -385,6 +421,11 @@ def build_seatbelt_profile(
         lines.append(f'(deny file-write* (literal "{_escape_sbpl(packed_refs)}"))')
     for root in roots:
         lines.append(f'(allow file-write* (subpath "{_escape_sbpl(root)}"))')
+    for file_path in writable_files or []:
+        resolved_file = Path(file_path).expanduser().resolve()
+        lines.append(
+            f'(allow file-write* (literal "{_escape_sbpl(str(resolved_file))}"))'
+        )
     # Executor session/project state is allowed only for exact validated
     # directories supplied by the Runner - never a home-wide subpath.  The
     # Runner resolves each root from the executor's documented state layout
@@ -438,36 +479,96 @@ def launch_with_seatbelt(
     return wrapped, profile_path
 
 
-def cleanup_seatbelt_profiles(profile_dir: str | Path) -> int:
-    """Delete leftover task-scoped ``.sb`` profiles (Runner crash/restart).
+def cleanup_stale_seatbelt_profiles(
+    profile_dir: str | Path,
+    *,
+    keep: list[str | Path] | None = None,
+) -> list[str]:
+    """Delete only provably stale task-scoped ``.sb`` profiles.
 
-    Profiles are per-run files; once the contained worker has exited (or the
-    Runner crashed and restarted), a stale profile must not survive: it is
-    only a template, but leaving it behind means containment evidence can be
-    replayed or tampered with.  Returns the number of profiles removed.  The
-    directory itself is preserved for the running Runner.
+    PERM-104-002 review fix (E52M-003): the previous
+    ``cleanup_seatbelt_profiles`` deleted **every** ``task-*.sb`` in the
+    directory.  Called after ``launch_with_seatbelt`` (as the Runner did),
+    it deleted the just-created profile of the launch in progress, and
+    called concurrently it deleted the profiles of other actively running
+    workers.  The stale sweep is now:
+
+    * executed strictly BEFORE the new profile is created, never after;
+    * scoped to ``task-*.sb`` files only;
+    * never removing a profile named in ``keep`` - the Runner passes the
+      ``profile_path`` of every run it currently tracks as active, so a
+      concurrent contained launch can never lose its own profile.
+
+    Returns the sorted list of removed profile paths.  The directory
+    itself is preserved.
     """
     directory = Path(profile_dir).expanduser().resolve()
     if not directory.is_dir():
-        return 0
-    removed = 0
+        return []
+    keep_names = {Path(str(item)).expanduser().resolve().name for item in keep or []}
+    removed: list[str] = []
     for profile in directory.glob("task-*.sb"):
+        if profile.name in keep_names:
+            continue
         try:
             profile.unlink(missing_ok=True)
-            removed += 1
+            removed.append(str(profile))
         except OSError:
             continue
-    return removed
+    return sorted(removed)
+
+
+def active_seatbelt_profiles(records: Any) -> list[str | Path]:
+    """Return the profile paths of tracked runs that are still active.
+
+    The Runner passes the result to :func:`cleanup_stale_seatbelt_profiles`
+    as ``keep`` so a stale sweep can never delete the profile of a
+    concurrently running worker (or of the launch in progress).
+    """
+    keep: list[str | Path] = []
+    if isinstance(records, dict):
+        values = records.values()
+    elif isinstance(records, (list, tuple)):
+        values = records
+    else:
+        return []
+    for record in values:
+        if not isinstance(record, dict):
+            continue
+        status = str(record.get("status") or "")
+        if status in TERMINAL_RUN_STATUSES:
+            continue
+        profile_path = str(record.get("profile_path") or "").strip()
+        if profile_path:
+            keep.append(profile_path)
+    return keep
+
+
+def cleanup_seatbelt_profiles(profile_dir: str | Path) -> int:
+    """Backward-compatible full sweep (tests and explicit teardown only).
+
+    Production code must call :func:`cleanup_stale_seatbelt_profiles`
+    before launching so active profiles survive.  This unrestricted
+    variant remains for the post-run per-profile unlink contract test and
+    for explicit Runner teardown, where no contained run is active.
+    """
+    return len(
+        cleanup_stale_seatbelt_profiles(profile_dir, keep=None)
+    )
 
 
 __all__ = [
     "SEATBELT_EXECUTABLE",
+    "active_seatbelt_profiles",
     "build_seatbelt_profile",
+    "canonical_task_files",
     "canonical_task_roots",
     "cleanup_seatbelt_profiles",
+    "cleanup_stale_seatbelt_profiles",
     "launch_with_seatbelt",
     "linked_worktree_git_metadata_dirs",
     "preflight_host_containment",
     "seatbelt_available",
+    "task_temp_root",
     "validate_linked_worktree",
 ]

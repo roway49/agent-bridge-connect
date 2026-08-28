@@ -24,8 +24,10 @@ from agent_bridge_connect.protocol import ABCError
 from agent_bridge_connect.seatbelt import (
     SEATBELT_EXECUTABLE,
     build_seatbelt_profile,
+    canonical_task_files,
     canonical_task_roots,
     cleanup_seatbelt_profiles,
+    cleanup_stale_seatbelt_profiles,
     launch_with_seatbelt,
     linked_worktree_git_metadata_dirs,
     preflight_host_containment,
@@ -355,6 +357,244 @@ class SeatbeltProfileTests(unittest.TestCase):
         self.assertEqual(cleanup_seatbelt_profiles(directory / "missing"), 0)
 
 
+class StaleProfileSweepTests(unittest.TestCase):
+    """E52M-003 review fix: the stale sweep must run BEFORE the new profile
+    is created and must never delete an active profile - including the
+    profile of the launch in progress and of concurrently running workers."""
+
+    def setUp(self) -> None:
+        if not seatbelt_available():
+            self.skipTest("sandbox-exec unavailable")
+
+    def test_sweep_before_launch_preserves_active_profiles(self) -> None:
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: cleanup_seatbelt_profiles(directory))
+        # Simulate a concurrently active worker's profile.
+        _, active_profile = launch_with_seatbelt(
+            ["true"], directory, "(version 1)\n", directory
+        )
+        removed = cleanup_stale_seatbelt_profiles(
+            directory, keep=[str(active_profile)]
+        )
+        self.assertEqual(removed, [])
+        self.assertTrue(active_profile.exists())
+
+    def test_sweep_removes_only_stale_and_keeps_named(self) -> None:
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: cleanup_seatbelt_profiles(directory))
+        _, stale = launch_with_seatbelt(
+            ["true"], directory, "(version 1)\n", directory
+        )
+        _, keep_me = launch_with_seatbelt(
+            ["true"], directory, "(version 1)\n", directory
+        )
+        removed = cleanup_stale_seatbelt_profiles(
+            directory, keep=[str(keep_me)]
+        )
+        self.assertEqual([Path(item).name for item in removed], [stale.name])
+        self.assertFalse(stale.exists())
+        self.assertTrue(keep_me.exists())
+
+    def test_launch_then_sweep_never_deletes_the_new_profile(self) -> None:
+        # The E52M-003 bug shape: create -> sweep-all deleted the profile
+        # the launch had just written, so sandbox-exec could not start.
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: cleanup_seatbelt_profiles(directory))
+        profile_text = build_seatbelt_profile(
+            writable_roots=[str(directory)],
+        )
+        _, new_profile = launch_with_seatbelt(
+            ["true"], directory, profile_text, directory
+        )
+        # Correct order: sweep first (nothing stale), keep-list includes the
+        # new profile once registered.
+        removed_before = cleanup_stale_seatbelt_profiles(
+            directory, keep=[str(new_profile)]
+        )
+        self.assertEqual(removed_before, [])
+        self.assertTrue(new_profile.exists())
+
+    def _real_contained_run(self, profile_text: str, script: str, cwd: Path):
+        wrapped, profile_path = launch_with_seatbelt(
+            ["/bin/sh", "-c", script], cwd, profile_text, cwd
+        )
+        process = subprocess.Popen(
+            wrapped,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        stdout, stderr = process.communicate(timeout=30)
+        return process.returncode, stdout, stderr, profile_path
+
+    def test_real_popen_plain_repo_containment_allows_task_root_denies_oob(self) -> None:
+        # Fix 2 + Fix 6: a plain repository's concrete full worker enters the
+        # task-scoped profile; writes inside the task root succeed and an
+        # out-of-bounds write into /private/tmp fails.
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            task_root = base / "task"
+            task_root.mkdir()
+            profile_text = build_seatbelt_profile(
+                writable_roots=[str(task_root), str(base / "state")],
+            )
+            # Inside the task root: allowed.
+            code, stdout, stderr, profile = self._real_contained_run(
+                profile_text,
+                "printf contained > in-task.txt && cat in-task.txt",
+                task_root,
+            )
+            self.addCleanup(lambda: profile.unlink(missing_ok=True))
+            self.assertEqual(code, 0, stderr)
+            self.assertIn("contained", stdout)
+            # Out-of-bounds write into the world-staging tree: denied.
+            code, _stdout, stderr, profile = self._real_contained_run(
+                profile_text,
+                "printf oops > /private/tmp/agentbc-oob-$$ && exit 0",
+                task_root,
+            )
+            self.addCleanup(lambda: profile.unlink(missing_ok=True))
+            self.assertNotEqual(code, 0)
+            self.assertIn("operation not permitted", stderr.lower())
+
+    def test_real_popen_allows_exact_report_file_but_denies_sibling_iteration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            task_root = base / "task"
+            reports = base / "reports" / "E52M"
+            task_root.mkdir()
+            reports.mkdir(parents=True)
+            current = reports / "E52M-003-report.md"
+            sibling = reports / "E52M-002-report.md"
+            profile_text = build_seatbelt_profile(
+                writable_roots=[task_root],
+                writable_files=[current],
+            )
+            code, _stdout, stderr, profile = self._real_contained_run(
+                profile_text,
+                f"printf current > {current}",
+                task_root,
+            )
+            self.addCleanup(lambda: profile.unlink(missing_ok=True))
+            self.assertEqual(code, 0, stderr)
+            self.assertEqual(current.read_text(encoding="utf-8"), "current")
+            code, _stdout, stderr, profile = self._real_contained_run(
+                profile_text,
+                f"printf sibling > {sibling}",
+                task_root,
+            )
+            self.addCleanup(lambda: profile.unlink(missing_ok=True))
+            self.assertNotEqual(code, 0)
+            self.assertFalse(sibling.exists())
+
+    def test_real_popen_linked_worktree_git_commit_and_oob_denied(self) -> None:
+        # Fix 5 joint constraint: inside the profile a real git commit works
+        # (ref/lock/reflog/objects allow), but writing outside the pinned
+        # metadata fails closed.
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            main = base / "main-repo"
+            main.mkdir()
+            env_extra = "GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null "
+            subprocess.run(
+                ["git", "init", "-q", str(main)],
+                check=True,
+                capture_output=True,
+                timeout=15,
+            )
+            subprocess.run(
+                ["git", "-C", str(main), "config", "user.email", "t@t"],
+                check=True,
+                capture_output=True,
+                timeout=15,
+            )
+            subprocess.run(
+                ["git", "-C", str(main), "config", "user.name", "t"],
+                check=True,
+                capture_output=True,
+                timeout=15,
+            )
+            (main / "seed.txt").write_text("seed\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(main), "add", "seed.txt"],
+                check=True,
+                capture_output=True,
+                timeout=15,
+            )
+            subprocess.run(
+                ["git", "-C", str(main), "commit", "-qm", "seed"],
+                check=True,
+                capture_output=True,
+                timeout=15,
+            )
+            branch = "agent/hermes"
+            subprocess.run(
+                ["git", "-C", str(main), "worktree", "add", "-b", branch,
+                 str(base / "wt"), "HEAD"],
+                check=True,
+                capture_output=True,
+                timeout=15,
+            )
+            from agent_bridge_connect.seatbelt import validate_linked_worktree
+
+            capability = validate_linked_worktree(base / "wt")
+            self.assertIsNotNone(capability)
+            assert capability is not None
+            state = base / "state"
+            state.mkdir()
+            task_temp = base / "task-temp"
+            task_temp.mkdir()
+            profile_text = build_seatbelt_profile(
+                writable_roots=[str(base / "wt"), str(state), str(task_temp)],
+                linked_worktree=capability,
+            )
+            # A real commit inside the linked worktree succeeds.
+            script = (
+                env_extra
+                + "printf change > seed.txt && "
+                "git add seed.txt && git commit -qm canary && git log --oneline -1"
+            )
+            code, stdout, stderr, profile = self._real_contained_run(
+                profile_text, script, base / "wt"
+            )
+            self.addCleanup(lambda: profile.unlink(missing_ok=True))
+            self.assertEqual(code, 0, stderr)
+            self.assertIn("canary", stdout)
+            # Writing another branch's ref inside the same profile fails.
+            oob_ref = (
+                f"mkdir -p {capability['common_dir']}/refs/heads/other && "
+                f"printf x > {capability['common_dir']}/refs/heads/other/x"
+            )
+            code, _stdout, stderr, profile = self._real_contained_run(
+                profile_text, oob_ref, base / "wt"
+            )
+            self.addCleanup(lambda: profile.unlink(missing_ok=True))
+            self.assertNotEqual(code, 0)
+
+    def test_task_temp_root_is_task_scoped(self) -> None:
+        from agent_bridge_connect.seatbelt import task_temp_root
+
+        with tempfile.TemporaryDirectory() as temporary:
+            record_root = Path(temporary).resolve() / "record"
+            one = task_temp_root(record_root, "E52M-003")
+            two = task_temp_root(record_root, "E52M-004")
+            self.assertEqual(one, record_root / "temp" / "E52M-003")
+            self.assertEqual(two, record_root / "temp" / "E52M-004")
+            self.assertNotEqual(one, two)
+            # Profile allows the task's own temp but not the sibling's.
+            one.mkdir(parents=True)
+            profile_text = build_seatbelt_profile(
+                writable_roots=[str(one)],
+            )
+            self.assertIn(f'(allow file-write* (subpath "{one}"))', profile_text)
+            self.assertNotIn(str(two), profile_text)
+            # No broad allow of the world-staging trees (only the task's own
+            # temp dir may appear, which on this host may sit under /var).
+            self.assertNotIn('(allow file-write* (subpath "/private/tmp"))', profile_text)
+            self.assertNotIn('(allow file-write* (subpath "/var/folders"))', profile_text)
+
+
 class CanonicalTaskRootsTests(unittest.TestCase):
     def test_roots_are_realpath_canonicalized(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -372,18 +612,28 @@ class CanonicalTaskRootsTests(unittest.TestCase):
                 "iteration": "002",
                 "task_date": "2026-08-28",
                 "task_id": "E52M-002",
+                "report_file": str(
+                    base
+                    / "workspace"
+                    / "tasks"
+                    / "report"
+                    / "2026-08-28"
+                    / "E52M"
+                    / "E52M-002-report.md"
+                ),
             }
             roots = canonical_task_roots(workspace)
             texts = {str(root) for root in roots}
             self.assertIn(str(project), texts)
             self.assertIn(str(project / "artifacts"), texts)
             # The whole AgentBC workspace is never a writable root: only the
-            # exact task record directory and the task report directory are.
+            # exact task record directory is; the shared task-code report
+            # directory is not.
             self.assertNotIn(str(base / "workspace"), texts)
             self.assertIn(
                 str(base / "workspace" / "record" / "E52M" / "002"), texts
             )
-            self.assertIn(
+            self.assertNotIn(
                 str(
                     base
                     / "workspace"
@@ -394,7 +644,37 @@ class CanonicalTaskRootsTests(unittest.TestCase):
                 ),
                 texts,
             )
+            files = {str(path) for path in canonical_task_files(workspace)}
+            self.assertEqual(
+                files,
+                {
+                    str(
+                        base
+                        / "workspace"
+                        / "tasks"
+                        / "report"
+                        / "2026-08-28"
+                        / "E52M"
+                        / "E52M-002-report.md"
+                    )
+                },
+            )
             self.assertEqual(len(roots), len(texts))
+
+    def test_report_file_is_literal_not_shared_report_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            report_file = base / "reports" / "E52M" / "E52M-003-report.md"
+            profile = build_seatbelt_profile(
+                writable_roots=[base / "record" / "E52M" / "003"],
+                writable_files=[report_file],
+            )
+            self.assertIn(
+                f'(allow file-write* (literal "{report_file}"))', profile
+            )
+            self.assertNotIn(
+                f'(allow file-write* (subpath "{report_file.parent}"))', profile
+            )
 
     def test_internal_task_dir_overrides_record_derivation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

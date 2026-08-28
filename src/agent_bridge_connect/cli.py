@@ -1755,11 +1755,15 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 callback=callback if isinstance(callback, dict) else None,
                 execution_session=execution_session,
             )
-            # PERM-104-002: after the structured flow declared completion, the
-            # production lifecycle closes ``activated -> verified`` and binds
-            # the real official session id from the validated receipt.  A
-            # blocked or failed run instead converges the record to
-            # ``blocked`` with a stable code; it never stays activated.
+            # PERM-104-002 (E52M-003 review fix): ``verified`` may only come
+            # from the structured success receipt of the declared target
+            # action - a valid agent callback finalized by Core plus the
+            # validated official session receipt.  ``poll.status ==
+            # "completed"`` alone is never proof.  Any verification failure
+            # moves the runtime record to ``blocked`` with a stable code and
+            # fails the task closed; the previous code caught ABCError and
+            # silently left a completed task behind.
+            runtime_closure_error: str = ""
             try:
                 current = service.get_task(task.id)
                 runtime_value = (current.extensions or {}).get(
@@ -1767,6 +1771,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 )
                 if isinstance(runtime_value, dict):
                     from .permission_runtime import (
+                        PERMISSION_ESCALATION_INEFFECTIVE,
                         PERMISSION_RUNTIME_DOMAINS,
                         block_permission_runtime_record,
                         verify_permission_runtime_record,
@@ -1780,33 +1785,99 @@ def command_worker_run(args: argparse.Namespace) -> int:
                         if isinstance(execution_session, dict)
                         else ""
                     )
-                    if poll.status == "completed":
-                        runtime_verified = verify_permission_runtime_record(
+                    structured_success = (
+                        poll.status == "completed"
+                        and finalized_from_worker is True
+                        and isinstance(callback, dict)
+                        and bool(session_id)
+                        and execution_session is not None
+                    )
+                    if structured_success:
+                        runtime_closed = verify_permission_runtime_record(
                             runtime_value,
-                            session_id=session_id or None,
+                            session_id=session_id,
                         )
                     elif session_id:
-                        runtime_verified = block_permission_runtime_record(
+                        runtime_closed = block_permission_runtime_record(
                             runtime_value,
-                            code="permission_escalation_ineffective",
+                            code=PERMISSION_ESCALATION_INEFFECTIVE,
                             domain="host_containment",
                         )
                     else:
-                        runtime_verified = block_permission_runtime_record(
+                        runtime_closed = block_permission_runtime_record(
                             runtime_value,
                             code=PERMISSION_TRANSPORT_UNSUPPORTED,
                             domain=PERMISSION_RUNTIME_DOMAINS[0],
                         )
+                    if poll.status == "completed" and not structured_success:
+                        runtime_closure_error = (
+                            "permission_runtime_verification_failed: completed "
+                            "run lacks the structured success receipt "
+                            "(valid callback + official session id)"
+                        )
                     current.extensions = dict(current.extensions or {})
                     current.extensions["agentbc.permission_runtime"] = (
-                        runtime_verified
+                        runtime_closed
                     )
                     current.updated_at = _utc_now_cli()
                     service.store.write_task(current.id, current.to_dict())
-            except ABCError:
-                # The runtime receipt is a projection of run truth; a failed
-                # closure must not turn a completed executor run into an error.
-                pass
+            except ABCError as closure_exc:
+                # E52M-003: a failed closure is never swallowed.  Persist the
+                # blocked state when the record is still writable and fail
+                # the completed task closed below.
+                try:
+                    failed_current = service.get_task(task.id)
+                    failed_value = (failed_current.extensions or {}).get(
+                        "agentbc.permission_runtime"
+                    )
+                    if isinstance(failed_value, dict):
+                        from .permission_runtime import (
+                            HOST_CONTAINMENT_UNLIFTABLE,
+                            block_permission_runtime_record,
+                        )
+
+                        failed_closed = block_permission_runtime_record(
+                            failed_value,
+                            code=HOST_CONTAINMENT_UNLIFTABLE,
+                            domain="host_containment",
+                        )
+                        failed_current.extensions = dict(
+                            failed_current.extensions or {}
+                        )
+                        failed_current.extensions[
+                            "agentbc.permission_runtime"
+                        ] = failed_closed
+                        failed_current.updated_at = _utc_now_cli()
+                        service.store.write_task(
+                            failed_current.id, failed_current.to_dict()
+                        )
+                except ABCError:
+                    pass
+                runtime_closure_error = (
+                    f"permission_runtime_verification_failed: {closure_exc}"
+                )
+            if runtime_closure_error and finalized_from_worker:
+                failure_message = runtime_closure_error
+                terminal_marked = service.mark_task_failed(
+                    task.id,
+                    "permission_runtime_verification_failed",
+                    failure_message,
+                    {"executor": args.executor},
+                    executor_run_id=start.run_id,
+                    execution_session=execution_session,
+                )
+                if terminal_marked:
+                    _write_terminal_report(task.id, service.board_root)
+                    _notify_terminal(
+                        service,
+                        task.id,
+                        "task.failed",
+                        "error",
+                        failure_message,
+                    )
+                _request_task_list_refresh(service.board_root)
+                print(f"worker_error: {failure_message}")
+                return 1
             finalized = service.get_task(task.id)
             final_status = finalized.status
             if final_status == "completed":

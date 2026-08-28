@@ -160,17 +160,28 @@ def claude_ephemeral_path_capability(
             "Claude Artifact root must be separate from its ephemeral project",
         )
 
-    # PERM-104-002: when the task's project root is a linked worktree, the
-    # inner sandbox must mirror the outer Seatbelt capability - the frozen
-    # task root is the only writable working tree, Git metadata is excluded
-    # from allowWrite and denied for Edit/Write.  A plain repository or
-    # directory contributes no Git metadata constraints.  The ephemeral
-    # project root itself is never the containment root.  The main repo's
-    # working tree is deliberately absent from allowWrite: not listed means
-    # not writable.
+    # PERM-104-002 (E52M-003 review fix): when the task's project root is a
+    # linked worktree, the inner sandbox mirrors the outer Seatbelt
+    # capability under the joint-constraint contract:
+    #
+    # * the controlled Git metadata (per-worktree git dir + common dir) is
+    #   IN ``sandbox.filesystem.allowWrite`` so Bash/Git subprocesses can
+    #   actually commit; the outer Seatbelt narrows that surface to the
+    #   exact current-branch ref/lock/reflog and the common objects;
+    # * metadata is NEVER in ``denyWrite`` (a sandbox-level deny would break
+    #   every git commit) and NEVER in ``--add-dir``;
+    # * the built-in Edit/Write file tools are blocked from metadata via
+    #   permission rules - only Bash/Git under the joint constraint may
+    #   touch it;
+    # * ``allowWrite`` and ``denyWrite`` never overlap: the previous
+    #   settings allowed ``project_root`` and denied the same path, which
+    #   is contradictory and broke Claude's own project state.
+    # A plain repository or directory contributes no Git metadata
+    # constraints.  The ephemeral project root itself is never the
+    # containment root.  The main repo's working tree is deliberately
+    # absent from allowWrite: not listed means not writable.
     git_dir: str | None = None
     git_common_dir: str | None = None
-    containment_root = artifact_root
     for probe_root in (artifact_root, project_root):
         if git_common_dir is not None:
             break
@@ -185,26 +196,30 @@ def claude_ephemeral_path_capability(
             git_common_dir = str(linked["common_dir"])
     containment_root = artifact_root
 
+    # File-tool deny rules cover Claude's built-in Write/Edit tools via the
+    # absolute // permission-rule syntax.  The deliverable/ephemeral roots
+    # deny the file tools by prior PERM-103-007 policy; metadata denies are
+    # the E52M-003 addition.  Git subprocesses are not affected by these
+    # rules - they are bounded by the joint outer Seatbelt + inner sandbox
+    # filesystem constraint instead.
+    file_tool_denies = [
+        f"Edit(//{str(project_root).lstrip('/')}/**)",
+        f"Edit(//{str(containment_root).lstrip('/')}/**)",
+        f"Write(//{str(containment_root).lstrip('/')}/**)",
+    ]
+    allow_write = [str(containment_root), str(project_root)]
+    if git_common_dir is not None:
+        file_tool_denies += [
+            f"Write(//{str(git_common_dir).lstrip('/')}/**)",
+            f"Edit(//{str(git_common_dir).lstrip('/')}/**)",
+            f"Write(//{str(git_dir).lstrip('/')}/**)",
+            f"Edit(//{str(git_dir).lstrip('/')}/**)",
+        ]
+        allow_write += [str(git_common_dir), str(git_dir)]
+
     settings = {
         "permissions": {
-            # Edit rules cover Claude's built-in Write/Edit file tools.  The
-            # absolute // syntax is Claude's permission-rule syntax.  Git
-            # metadata is denied for Edit AND Write so a contained model can
-            # never mutate refs, packed-refs, hooks or config through the
-            # file tools; Git subprocesses remain gated by the outer Seatbelt
-            # profile, which pins the exact current-branch metadata.
-            "deny": [
-                f"Edit(//{str(project_root).lstrip('/')}/**)",
-                f"Edit(//{str(containment_root).lstrip('/')}/**)",
-            ]
-            + (
-                [
-                    f"Write(//{str(git_common_dir).lstrip('/')}/**)",
-                    f"Edit(//{str(git_common_dir).lstrip('/')}/**)",
-                ]
-                if git_common_dir is not None
-                else [f"Write(//{str(containment_root).lstrip('/')}/**)"]
-            ),
+            "deny": file_tool_denies,
         },
         "sandbox": {
             "enabled": True,
@@ -214,19 +229,16 @@ def claude_ephemeral_path_capability(
             # boundary and must not silently auto-approve Bash actions.
             "autoAllowBashIfSandboxed": False,
             "filesystem": {
-                # PERM-104-002: allowWrite mirrors the outer Seatbelt
-                # containment exactly - the frozen task root (artifact root)
-                # is the only working-tree write surface; the ephemeral
-                # project dir stays writable for Claude's own state.  Git
-                # metadata never appears here, so the inner sandbox and the
-                # outer profile cannot disagree about writable roots.
-                "allowWrite": [str(containment_root), str(project_root)],
-                "denyWrite": [str(project_root)]
-                + (
-                    [str(git_common_dir), str(git_dir)]
-                    if git_common_dir is not None
-                    else []
-                ),
+                # E52M-003: allowWrite is the frozen task roots plus, for a
+                # linked worktree, the controlled Git metadata.  The outer
+                # Seatbelt profile narrows the metadata surface to the exact
+                # current-branch ref/lock/reflog and common objects, so the
+                # inner allow and the outer profile cannot disagree and
+                # Bash/Git can still commit.  denyWrite stays empty: it must
+                # never repeat an allowWrite path and must never carry the
+                # metadata (that broke git commit).
+                "allowWrite": allow_write,
+                "denyWrite": [],
             },
         },
     }

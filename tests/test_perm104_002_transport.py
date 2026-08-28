@@ -1,10 +1,13 @@
 """PERM-104-002: executor permission control-path capability matrix tests.
 
-Claude selects its control path from the versioned fixture matrix (MCP
-permission-prompt tool vs stdio can_use_tool/control_response); unknown
-version/transport combinations fail closed with
-``permission_transport_unsupported``.  The fixtures and the production matrix
-must agree, and the inner-sandbox contract stays frozen.
+E52M-003 review contract: a Claude control path may only be declared from a
+fixture captured against a real binary (``captured_live: true``) plus a live
+``can_use_tool``/``control_response`` canary.  The 2.1.226/2.1.233 declared
+capabilities were withdrawn and the production matrix is empty, so every
+version/transport combination fails closed with
+``permission_transport_unsupported``.  The live probe of the installed
+production binary (2.1.247) is recorded as evidence; its ``--help`` does not
+list ``--permission-prompt-tool``.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from agent_bridge_connect.permission_runtime import (
 )
 from agent_bridge_connect.permission_transport import (
     CLAUDE_INIT_RECEIPT_KIND,
+    CLAUDE_PERMISSION_PROMPT_TOOL_FLAG,
     CLAUDE_STDIO_CONTROL_RESPONSE,
     CONTROL_PATH_MCP_PERMISSION_TOOL,
     CONTROL_PATH_STDIO_CAN_USE_TOOL,
@@ -28,39 +32,31 @@ from agent_bridge_connect.permission_transport import (
     claude_control_path_capability,
     claude_inner_sandbox_contract,
     parse_claude_version,
+    probe_claude_permission_prompt_tool,
     select_claude_control_path,
 )
 from agent_bridge_connect.protocol import ABCError
 
 MATRIX = Path("tests/fixtures/executor_runtime/matrix")
-CLAUDE_VERSIONS = ("2.1.226", "2.1.233")
+WITHDRAWN_VERSIONS = ("2.1.226", "2.1.233")
+LIVE_PROBE_DIR = MATRIX / "claude" / "live_probe_2026-08-28"
 
 
 class ClaudeControlPathCapabilityTests(unittest.TestCase):
     def test_version_probe_line_is_parsed_to_canonical_triple(self) -> None:
         self.assertEqual(parse_claude_version("2.1.226 (Claude Code)"), "2.1.226")
-        self.assertEqual(parse_claude_version("2.1.233"), "2.1.233")
+        self.assertEqual(parse_claude_version("2.1.247"), "2.1.247")
         self.assertIsNone(parse_claude_version(""))
         self.assertIsNone(parse_claude_version("not-a-version"))
         self.assertIsNone(parse_claude_version(None))
 
-    def test_known_versions_expose_both_control_paths(self) -> None:
-        for version in CLAUDE_VERSIONS:
-            with self.subTest(version=version):
-                capability = claude_control_path_capability(version)
-                self.assertEqual(capability["executor"], "claude")
-                self.assertEqual(capability["version"], version)
-                self.assertTrue(capability["mcp_permission_tool"])
-                self.assertTrue(capability["stdio_can_use_tool"])
-                self.assertEqual(
-                    capability["control_response"], CLAUDE_STDIO_CONTROL_RESPONSE
-                )
-                self.assertEqual(capability["init_receipt"], CLAUDE_INIT_RECEIPT_KIND)
-                self.assertTrue(capability["same_process_approve_deny"])
-                self.assertTrue(capability["transport_death_invalidation"])
+    def test_matrix_is_empty_until_live_proof_exists(self) -> None:
+        # E52M-003: no version has a proven control path, so the production
+        # matrix must carry zero entries - fail closed, never fabricated.
+        self.assertEqual(KNOWN_CLAUDE_VERSIONS, frozenset())
 
-    def test_unknown_version_fails_closed(self) -> None:
-        for version in ("9.9.9", "2.1.234", "unknown", "", None):
+    def test_every_version_fails_closed(self) -> None:
+        for version in (*WITHDRAWN_VERSIONS, "2.1.247", "9.9.9", "", None):
             with self.subTest(version=version):
                 with self.assertRaises(ABCError) as raised:
                     claude_control_path_capability(version)
@@ -68,31 +64,41 @@ class ClaudeControlPathCapabilityTests(unittest.TestCase):
                     raised.exception.code, PERMISSION_TRANSPORT_UNSUPPORTED
                 )
 
-    def test_worker_selects_mcp_path_when_matrix_and_probe_agree(self) -> None:
-        for version in CLAUDE_VERSIONS:
-            with self.subTest(version=version):
-                self.assertEqual(
-                    select_claude_control_path(version, True),
-                    CONTROL_PATH_MCP_PERMISSION_TOOL,
-                )
-                self.assertEqual(
-                    select_claude_control_path(version, None),
-                    CONTROL_PATH_MCP_PERMISSION_TOOL,
-                )
+    def test_worker_never_selects_a_control_path(self) -> None:
+        for version in (*WITHDRAWN_VERSIONS, "2.1.247"):
+            for probe in (True, False, None):
+                with self.subTest(version=version, probe=probe):
+                    with self.assertRaises(ABCError) as raised:
+                        select_claude_control_path(version, probe)
+                    self.assertEqual(
+                        raised.exception.code, PERMISSION_TRANSPORT_UNSUPPORTED
+                    )
 
-    def test_worker_selects_stdio_path_when_probe_disagrees(self) -> None:
-        self.assertEqual(
-            select_claude_control_path("2.1.226", False),
-            CONTROL_PATH_STDIO_CAN_USE_TOOL,
+    def test_live_probe_gate_rejects_help_without_the_flag(self) -> None:
+        # The real production-host probe: the installed 2.1.247 help does not
+        # list --permission-prompt-tool, so the MCP path can never be chosen.
+        self.assertFalse(
+            probe_claude_permission_prompt_tool("Usage: claude [options]\n")
         )
+        self.assertTrue(
+            probe_claude_permission_prompt_tool(
+                f"  {CLAUDE_PERMISSION_PROMPT_TOOL_FLAG} <tool>\n"
+            )
+        )
+        self.assertFalse(probe_claude_permission_prompt_tool(None))
+        captured = (LIVE_PROBE_DIR / "help.txt").read_text(encoding="utf-8")
+        self.assertIn("Usage: claude", captured)
+        self.assertNotIn(CLAUDE_PERMISSION_PROMPT_TOOL_FLAG, captured)
 
-    def test_unknown_combination_never_selects_a_path(self) -> None:
-        with self.assertRaises(ABCError) as raised:
-            select_claude_control_path("9.9.9", True)
-        self.assertEqual(raised.exception.code, PERMISSION_TRANSPORT_UNSUPPORTED)
-        with self.assertRaises(ABCError) as raised:
-            select_claude_control_path("", False)
-        self.assertEqual(raised.exception.code, PERMISSION_TRANSPORT_UNSUPPORTED)
+    def test_live_probed_fixture_records_transport_unsupported(self) -> None:
+        fixture = json.loads(
+            (LIVE_PROBE_DIR / "permission_control.json").read_text(encoding="utf-8")
+        )
+        self.assertTrue(fixture["captured_live"])
+        self.assertFalse(fixture["probe"]["help_contains_permission_prompt_tool"])
+        self.assertEqual(fixture["decision"], PERMISSION_TRANSPORT_UNSUPPORTED)
+        self.assertFalse(fixture["mcp_permission_tool"]["supported"])
+        self.assertFalse(fixture["stdio_can_use_tool"]["supported"])
 
     def test_inner_sandbox_contract_is_frozen(self) -> None:
         contract = claude_inner_sandbox_contract()
@@ -123,18 +129,16 @@ class ClaudeControlPathCapabilityTests(unittest.TestCase):
 
 
 class ClaudeControlFixtureTests(unittest.TestCase):
-    def test_fixture_surfaces_declare_the_same_contract(self) -> None:
-        for version in CLAUDE_VERSIONS:
+    def test_withdrawn_fixtures_no_longer_declare_support(self) -> None:
+        for version in WITHDRAWN_VERSIONS:
             with self.subTest(version=version):
                 fixture_path = MATRIX / "claude" / version / "permission_control.json"
                 self.assertTrue(fixture_path.exists(), str(fixture_path))
                 fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-                self.assertTrue(
-                    fixture["mcp_permission_tool"]["supported"]
-                )
-                self.assertTrue(
-                    fixture["stdio_can_use_tool"]["supported"]
-                )
+                self.assertFalse(fixture["mcp_permission_tool"]["supported"])
+                self.assertFalse(fixture["stdio_can_use_tool"]["supported"])
+                self.assertTrue(fixture["e52m003_review"]["withdrawn"])
+                self.assertFalse(fixture["e52m003_review"]["production_matrix_entry"])
                 self.assertEqual(
                     fixture["stdio_can_use_tool"]["control_response"],
                     CLAUDE_STDIO_CONTROL_RESPONSE,
@@ -146,16 +150,8 @@ class ClaudeControlFixtureTests(unittest.TestCase):
                 self.assertFalse(fixture["inner_sandbox"]["git_metadata_in_add_dir"])
                 self.assertTrue(fixture["inner_sandbox"]["edit_deny"])
 
-    def test_fixtures_cover_the_whole_production_matrix(self) -> None:
-        for version in KNOWN_CLAUDE_VERSIONS:
-            with self.subTest(version=version):
-                self.assertIn(version, CLAUDE_VERSIONS)
-                self.assertTrue(
-                    (MATRIX / "claude" / version / "permission_control.json").exists()
-                )
-
     def test_fixture_sources_are_sanitized(self) -> None:
-        for version in CLAUDE_VERSIONS:
+        for version in WITHDRAWN_VERSIONS:
             with self.subTest(version=version):
                 text = (
                     MATRIX / "claude" / version / "permission_control.json"
@@ -163,12 +159,21 @@ class ClaudeControlFixtureTests(unittest.TestCase):
                 self.assertNotIn("sk-", text)
                 self.assertNotIn("token", text.lower())
                 self.assertNotIn("api_key", text.lower())
+        probe_text = (LIVE_PROBE_DIR / "permission_control.json").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("sk-", probe_text)
+        self.assertNotIn("token", probe_text.lower())
+        self.assertNotIn("api_key", probe_text.lower())
+        help_text = (LIVE_PROBE_DIR / "help.txt").read_text(encoding="utf-8")
+        self.assertNotIn("sk-", help_text)
+        self.assertNotIn("bearer ", help_text.lower())
 
     def test_manifest_lists_permission_control_surfaces(self) -> None:
         manifest = json.loads(
             (MATRIX / "manifest.json").read_text(encoding="utf-8")
         )
-        for version in CLAUDE_VERSIONS:
+        for version in WITHDRAWN_VERSIONS:
             with self.subTest(version=version):
                 surfaces = manifest["executors"]["claude"]["versions"][version][
                     "surfaces"
@@ -177,6 +182,14 @@ class ClaudeControlFixtureTests(unittest.TestCase):
                 metadata = surfaces["permission_control.json"]
                 self.assertGreater(metadata["bytes"], 0)
                 self.assertEqual(len(metadata["sha256"]), 64)
+        # The live probe is executor-level evidence, not a matrix version:
+        # it proves the installed binary has no AgentBC control path and
+        # adds no capability to the matrix.
+        live = manifest["executors"]["claude"]["live_probe_e52m003"]
+        self.assertTrue(live["live_capture"])
+        self.assertFalse(live["help_contains_permission_prompt_tool"])
+        self.assertEqual(live["decision"], PERMISSION_TRANSPORT_UNSUPPORTED)
+        self.assertNotIn("2.1.247", manifest["executors"]["claude"]["versions"])
 
 
 class TransportDomainConsistencyTests(unittest.TestCase):
@@ -203,6 +216,14 @@ class TransportDomainConsistencyTests(unittest.TestCase):
                 "linked_worktree_metadata",
             ],
         )
+
+    def test_control_path_identifiers_unchanged_for_future_proofs(self) -> None:
+        # The identifiers stay frozen so a future live proof can re-declare
+        # a control path without renaming the contract.
+        self.assertEqual(CONTROL_PATH_MCP_PERMISSION_TOOL, "mcp_permission_tool")
+        self.assertEqual(CONTROL_PATH_STDIO_CAN_USE_TOOL, "stdio_can_use_tool")
+        self.assertEqual(CLAUDE_STDIO_CONTROL_RESPONSE, "control_response")
+        self.assertEqual(CLAUDE_INIT_RECEIPT_KIND, "system/init")
 
 
 if __name__ == "__main__":

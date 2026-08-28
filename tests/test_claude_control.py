@@ -15,6 +15,10 @@ from agent_bridge_connect.executors.claude import (
     ClaudePermissionPromptBroker,
     _parse_stream_json_line,
 )
+from agent_bridge_connect.permission_runtime import (
+    PERMISSION_TRANSPORT_UNSUPPORTED,
+)
+from agent_bridge_connect.protocol import ABCError
 from agent_bridge_connect.service import TaskService
 
 RUN_ID = "claude-ABCD-001-run1"
@@ -161,26 +165,27 @@ class ClaudeControlCommandTests(unittest.TestCase):
         }
 
     @mock.patch("agent_bridge_connect.executors.claude.ClaudeExecutor.supports_permission_prompt_tool")
-    def test_control_command_preallocates_session_and_adds_prompt_tool(
+    def test_control_command_never_fabricates_a_prompt_tool_broker(
         self, supports: mock.Mock
     ) -> None:
+        # E52M-003: even when the live probe claims --permission-prompt-tool
+        # exists, the control command must NOT embed a self-authored broker
+        # shell command; the transport fails closed instead.
         supports.return_value = True
         executor = ClaudeExecutor(command=sys.executable, transport="direct")
         broker = ClaudePermissionPromptBroker(
             session_id=self.session_id,
             decision_callback=lambda request: {"permission": "deny"},
         )
-        command = executor._build_control_command(
-            "prompt",
-            self.project,
-            self._packet(),
-            {"requested_mode": "safe", "effective_mode": "safe", "selection_source": "x"},
-            broker,
-        )
-        self.assertEqual(command[command.index("--session-id") + 1], self.session_id)
-        self.assertIn(PERMISSION_PROMPT_TOOL_FLAG, command)
-        self.assertIn("--output-format", command)
-        self.assertEqual(command[command.index("--output-format") + 1], "stream-json")
+        with self.assertRaises(ABCError) as raised:
+            executor._build_control_command(
+                "prompt",
+                self.project,
+                self._packet(),
+                {"requested_mode": "safe", "effective_mode": "safe", "selection_source": "x"},
+                broker,
+            )
+        self.assertEqual(raised.exception.code, PERMISSION_TRANSPORT_UNSUPPORTED)
 
     @mock.patch("agent_bridge_connect.executors.claude.ClaudeExecutor.supports_permission_prompt_tool")
     def test_control_command_without_flag_uses_local_broker(self, supports: mock.Mock) -> None:

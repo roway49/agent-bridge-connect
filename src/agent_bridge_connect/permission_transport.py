@@ -6,12 +6,14 @@ exit codes.  A ``compatibility-full`` upgrade may only originate from a
 supported Adapter's structured permission-block event; this module supplies
 the transport half of that contract:
 
-* Claude fixtures declare whether a version drives the native MCP
-  permission-prompt tool (``mcp_permission_tool``) or the stdio stream-json
-  ``can_use_tool``/``control_response`` control channel
-  (``stdio_can_use_tool``);
-* unknown version/transport combinations fail closed with the stable code
-  ``permission_transport_unsupported``;
+* a Claude fixture declares a control path only when BOTH gates hold:
+  (a) the official ``--help`` of a real binary at that exact version lists
+  ``--permission-prompt-tool`` (for the MCP path), and (b) a live
+  ``can_use_tool``/``control_response`` exchange was captured against that
+  binary (for the stdio path).  A characterized expectation is never
+  evidence;
+* unknown versions, unproven surfaces and unprobed binaries fail closed
+  with the stable code ``permission_transport_unsupported``;
 * the inner (executor-owned) sandbox contract is frozen here so the outer
   Seatbelt containment and the inner sandbox can never disagree about
   writable roots or Git metadata.
@@ -19,6 +21,16 @@ the transport half of that contract:
 Only structured, sanitized facts are exposed: control-path identifiers,
 stable capability booleans and the frozen sandbox key names.  Raw argv,
 prompts, tokens and private paths never enter this module's projections.
+
+E52M-003 review fix: the previous matrix declared both 2.1.226 and 2.1.233
+as supporting ``mcp_permission_tool`` and ``stdio_can_use_tool`` although
+the recorded fixtures were declared expectations (``captured_live: false``)
+and the live probe of the installed binary (2.1.247) shows its official
+``--help`` does NOT contain ``--permission-prompt-tool``.  The matrix now
+carries no transport capability for any version: every combination fails
+closed until a fixture captured from a real binary plus a live canary
+proves otherwise.  Production therefore never selects a control path and
+never launches a fabricated broker command under an official flag.
 """
 
 from __future__ import annotations
@@ -38,39 +50,35 @@ CONTROL_PATH_STDIO_CAN_USE_TOOL = "stdio_can_use_tool"
 CLAUDE_STDIO_CONTROL_RESPONSE = "control_response"
 CLAUDE_INIT_RECEIPT_KIND = "system/init"
 
-# Frozen Claude control-path capability matrix.  Sources:
-# tests/fixtures/executor_runtime/matrix/claude/<version>/permission_control.json
-# (PROTO-104-001 fixture surfaces).  Adding a version requires a captured
-# fixture plus a live canary, exactly like the protocol fixture matrix.
-_CLAUDE_CONTROL_MATRIX: dict[str, dict[str, Any]] = {
-    "2.1.226": {
-        "mcp_permission_tool": {
-            "supported": True,
-            "flag": "--permission-prompt-tool",
-            "same_process_approve_deny": True,
-        },
-        "stdio_can_use_tool": {
-            "supported": True,
-            "control_response": CLAUDE_STDIO_CONTROL_RESPONSE,
-            "init_receipt": CLAUDE_INIT_RECEIPT_KIND,
-            "same_process_approve_deny": True,
-            "transport_death_invalidation": True,
-        },
-    },
-    "2.1.233": {
-        "mcp_permission_tool": {
-            "supported": True,
-            "flag": "--permission-prompt-tool",
-            "same_process_approve_deny": True,
-        },
-        "stdio_can_use_tool": {
-            "supported": True,
-            "control_response": CLAUDE_STDIO_CONTROL_RESPONSE,
-            "init_receipt": CLAUDE_INIT_RECEIPT_KIND,
-            "same_process_approve_deny": True,
-            "transport_death_invalidation": True,
-        },
-    },
+# The official flag a real Claude binary must list in its own ``--help``
+# before the MCP permission-prompt path may be declared supported.
+CLAUDE_PERMISSION_PROMPT_TOOL_FLAG = "--permission-prompt-tool"
+
+# Frozen Claude control-path capability matrix.
+#
+# E52M-003 review fix: every entry was removed.  The 2.1.226/2.1.233
+# entries previously claimed both control paths from declared (never
+# live-captured) fixtures.  Live probe evidence on the production host:
+#   * installed Claude Code is 2.1.247 (no matrix entry);
+#   * its official ``claude --help`` does not contain
+#     ``--permission-prompt-tool``;
+#   * no ``can_use_tool``/``control_response`` exchange has been captured
+#     live for any version.
+# Declaring capability without that evidence let the worker emit a
+# self-authored broker shell command under an official flag - a protocol
+# AgentBC invented, not the official one.  Adding an entry back requires:
+#   1. a fixture captured from a real binary at exactly that version
+#      (``captured_live: true``) whose help lists the flag, and
+#   2. a live canary proving the ``can_use_tool``/``control_response``
+#      exchange end to end.
+_CLAUDE_CONTROL_MATRIX: dict[str, dict[str, Any]] = {}
+
+# Fixture gates every declared surface must satisfy before production
+# trusts it.  Kept as data so tests and the capture tool share one truth.
+_CLAUDE_FIXTURE_GATES: dict[str, Any] = {
+    "captured_live_required": True,
+    "help_flag_required": CLAUDE_PERMISSION_PROMPT_TOOL_FLAG,
+    "stdio_exchange_required": (CLAUDE_STDIO_CONTROL_RESPONSE, CLAUDE_INIT_RECEIPT_KIND),
 }
 
 # Frozen inner-sandbox contract.  AgentBC never rewrites these keys and never
@@ -105,7 +113,9 @@ def claude_control_path_capability(version: str | None) -> dict[str, Any]:
 
     Unknown or unparseable versions fail closed with
     ``permission_transport_unsupported``; AgentBC never guesses a control
-    path from help text, stderr or exit codes alone.
+    path from help text, stderr or exit codes alone.  With the E52M-003
+    matrix this fails closed for every version until a live-captured
+    fixture proves a control path.
     """
     normalized = str(version or "").strip()
     if not normalized:
@@ -118,8 +128,13 @@ def claude_control_path_capability(version: str | None) -> dict[str, Any]:
     if entry is None:
         raise ABCError(
             PERMISSION_TRANSPORT_UNSUPPORTED,
-            f"Claude version {normalized!r} has no frozen permission control path.",
-            {"executor": "claude", "version": normalized, "transport": "unknown"},
+            f"Claude version {normalized!r} has no proven permission control path.",
+            {
+                "executor": "claude",
+                "version": normalized,
+                "transport": "unknown",
+                "reason": "no live-captured fixture proves a control path",
+            },
         )
     return {
         "executor": "claude",
@@ -138,16 +153,26 @@ def claude_control_path_capability(version: str | None) -> dict[str, Any]:
     }
 
 
+def probe_claude_permission_prompt_tool(help_text: str | None) -> bool:
+    """Return whether an official ``--help`` capture lists the prompt-tool flag.
+
+    This is the single live-probe gate for the MCP path.  It inspects only
+    captured help text; it never runs the binary itself so the matrix stays
+    a pure function over evidence.
+    """
+    return CLAUDE_PERMISSION_PROMPT_TOOL_FLAG in str(help_text or "")
+
+
 def select_claude_control_path(
     version: str | None,
     prompt_tool_supported: bool | None,
 ) -> str:
     """Select the worker control path from the capability matrix.
 
-    The native MCP permission-prompt tool wins when the matrix declares it
-    and the probe agrees; otherwise the stdio ``can_use_tool`` control
-    channel is selected.  Any combination the matrix cannot prove fails
-    closed with ``permission_transport_unsupported``.
+    With the E52M-003 matrix every combination fails closed with
+    ``permission_transport_unsupported``: no version has a proven control
+    path, so the worker must never enter ``start_control`` and never emit
+    a self-authored broker command under an official flag.
     """
     capability = claude_control_path_capability(version)
     if capability["mcp_permission_tool"] and prompt_tool_supported is not False:
@@ -161,6 +186,7 @@ def select_claude_control_path(
             "executor": "claude",
             "version": capability["version"],
             "control_paths": capability["control_paths"],
+            "probe_supports_prompt_tool": prompt_tool_supported,
         },
     )
 
@@ -222,6 +248,7 @@ def assert_inner_sandbox_within_outer(
 
 __all__ = [
     "CLAUDE_INIT_RECEIPT_KIND",
+    "CLAUDE_PERMISSION_PROMPT_TOOL_FLAG",
     "CLAUDE_STDIO_CONTROL_RESPONSE",
     "CONTROL_PATH_MCP_PERMISSION_TOOL",
     "CONTROL_PATH_STDIO_CAN_USE_TOOL",
@@ -233,5 +260,6 @@ __all__ = [
     "claude_control_path_capability",
     "claude_inner_sandbox_contract",
     "parse_claude_version",
+    "probe_claude_permission_prompt_tool",
     "select_claude_control_path",
 ]
