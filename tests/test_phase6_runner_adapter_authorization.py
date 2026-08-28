@@ -167,6 +167,41 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
             return packet["extensions"]["agentbc.session"]["project_path"]
         return str(self.project)
 
+    def test_issued_grant_prepares_outer_containment_before_worker_spawn(self) -> None:
+        service, packet, _source_run_id, _session_id = self._grant_packet("hermes")
+        task_id = packet["task_id"]
+        fake_run = {
+            "ok": True,
+            "run_id": "runner-worker-123456789abc",
+            "pid": 42,
+            "status": "running",
+        }
+        with mock.patch.object(
+            self.state, "_spawn_process", return_value=fake_run
+        ) as spawn:
+            result = self.state.dispatch_worker(
+                task_id,
+                "hermes",
+                str(self.board),
+                "",
+                0.2,
+                False,
+                resuming=True,
+            )
+        self.assertEqual(result["dispatch_status"], "accepted")
+        _args, kwargs = spawn.call_args
+        self.assertIsInstance(kwargs.get("containment"), dict)
+        runtime = service.get_task(task_id).extensions["agentbc.permission_runtime"]
+        self.assertEqual(
+            runtime["binding"]["permission_source"],
+            "one_shot_permission_grant",
+        )
+        self.assertEqual(runtime["state"]["status"], "activated")
+        # The outer Worker is contained first.  The exact Adapter run later
+        # consumes the grant through RunnerClient.authorize_command.
+        grant = service.get_task(task_id).extensions[PERMISSION_GRANT_EXTENSION_KEY]
+        self.assertEqual(grant["state"]["status"], "issued")
+
     def test_common_resolver_upgrades_only_the_approved_target_context(self) -> None:
         for executor in ("codex", "claude", "hermes"):
             with self.subTest(executor=executor):

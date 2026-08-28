@@ -52,6 +52,14 @@ from agent_bridge_connect.permission_modes import (
     assert_executor_permission_supported,
     permission_flags,
     permission_record_from_extensions,
+    permission_runtime_policy,
+)
+from agent_bridge_connect.permission_grants import permission_grant_from_extensions
+from agent_bridge_connect.permission_transport import (
+    CLAUDE_INIT_RECEIPT_KIND,
+    CLAUDE_STDIO_CONTROL_RESPONSE,
+    parse_claude_version,
+    select_claude_control_path,
 )
 from agent_bridge_connect.path_model import (
     validate_managed_cleanup_paths,
@@ -357,6 +365,11 @@ class ClaudeExecutor(CLIExecutorBase):
             return StartResult(ok=False, run_id="", message="no steps")
         if self.agent_bin is None:
             return StartResult(ok=False, run_id="", message="claude unavailable")
+        try:
+            if _claude_control_required(task_packet):
+                return self.start_control(task_packet)
+        except ABCError as exc:
+            return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
 
         root = _workspace_root(task_packet)
         if root is None or not root.is_dir():
@@ -579,6 +592,38 @@ class ClaudeExecutor(CLIExecutorBase):
         except ABCError as exc:
             self._close_run_lease(run_id)
             return StartResult(ok=False, run_id="", message=str(exc))
+
+        # PERM-104-002 (E52M-003 review fix): the worker selects its
+        # permission control path from the versioned fixture capability
+        # matrix only.  The matrix is empty until a fixture captured from a
+        # real binary (``captured_live: true``) plus a live canary prove the
+        # stdio ``can_use_tool``/``control_response`` exchange, so every
+        # version currently fails closed with
+        # ``permission_transport_unsupported`` before any session starts.
+        # The live ``--help`` probe is recorded as evidence; it can never
+        # widen the matrix by itself.
+        if (
+            task_packet.get("runner_authorization_required") is True
+            and permission["effective_mode"] != "full"
+        ):
+            live_prompt_tool = self.supports_permission_prompt_tool()
+            try:
+                control_path = select_claude_control_path(
+                    parse_claude_version(self._version),
+                    live_prompt_tool,
+                )
+            except ABCError as exc:
+                self._close_run_lease(run_id)
+                return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
+            self._run_metadata.setdefault(run_id, {}).update(
+                {
+                    "control_path": control_path,
+                    "control_started": True,
+                    "control_response": CLAUDE_STDIO_CONTROL_RESPONSE,
+                    "init_receipt": CLAUDE_INIT_RECEIPT_KIND,
+                    "live_probe_prompt_tool": live_prompt_tool,
+                }
+            )
 
         execution_session_id = (
             str(execution_session["session_id"]) if execution_session is not None else ""
@@ -811,6 +856,42 @@ class ClaudeExecutor(CLIExecutorBase):
         )
         summary = core_bounded_summary(executor="claude", operation=operation)
 
+        # PERM-104-002 convergence: an approved-but-ineffective escalation
+        # never creates a second permission input, grant, continuation or
+        # notification.  Only a Runner-attached trusted block context may
+        # re-request after an approve; this returns a fail-closed deny with
+        # the stable code and zero side effects.
+        block_context = task_packet.get("permission_block_context")
+        if isinstance(block_context, dict):
+            from agent_bridge_connect.permission_runtime import (
+                PERMISSION_BLOCK_EVIDENCE_UNAVAILABLE,
+                PERMISSION_RUNTIME_DOMAINS,
+                converge_approved_block,
+            )
+            from agent_bridge_connect.session import control_root_for_task
+
+            domain = str(block_context.get("escalation_domain") or "").strip().lower()
+            if domain:
+                if domain not in PERMISSION_RUNTIME_DOMAINS:
+                    return {
+                        "permission": "deny",
+                        "error": PERMISSION_BLOCK_EVIDENCE_UNAVAILABLE,
+                        "request_id": request_id,
+                    }
+                converged = converge_approved_block(
+                    control_root_for_task(task_id, board_root=board_root),
+                    task_id=task_id,
+                    session_id=session_id,
+                    executor="claude",
+                    operation=operation,
+                    domain=domain,
+                    profile_digest=str(
+                        block_context.get("host_profile_digest") or ""
+                    ).strip(),
+                )
+                if converged is not None:
+                    return {"permission": "deny", "error": converged, "request_id": request_id}
+
         # Concurrent second request fail-closed: only one single-action approval
         # may wait at a time, so one dialog can never authorize two actions.
         try:
@@ -984,7 +1065,19 @@ class ClaudeExecutor(CLIExecutorBase):
         )
         command.extend(claude_path_capability_args(capability))
         if self.supports_permission_prompt_tool():
-            command.extend([PERMISSION_PROMPT_TOOL_FLAG, broker.broker_command()])
+            # PERM-104-002 (E52M-003 review fix): the only official protocol
+            # value for ``--permission-prompt-tool`` is a real MCP server
+            # entrypoint that AgentBC has captured and canary-verified.  A
+            # self-authored shell command spec is not the official protocol;
+            # emitting one would silently fabricate a transport.  Fail closed
+            # instead of sending an invented broker.
+            raise ABCError(
+                "permission_transport_unsupported",
+                "The installed Claude lists --permission-prompt-tool but no "
+                "captured/canary-verified official MCP permission server "
+                "exists; AgentBC will not fabricate a broker command.",
+                {"executor": "claude", "flag": PERMISSION_PROMPT_TOOL_FLAG},
+            )
         if self.model:
             command.extend(["--model", self.model])
         if self.effort:
@@ -1591,6 +1684,30 @@ def _find_claude_binary() -> Path | None:
     if result.get("found"):
         return Path(str(result["path"])).expanduser()
     return None
+
+
+def _claude_control_required(task_packet: dict[str, Any]) -> bool:
+    """Select structured control only for an approval-capable base.
+
+    Explicit/inherited concrete full and a Runner-issued/consumed one-shot
+    full grant use the ordinary noninteractive full command.  Native or safe
+    bases require the version-gated control transport; an unproven version is
+    then rejected by ``start_control`` before a session starts.
+    """
+    if task_packet.get("runner_authorization_required") is not True:
+        return False
+    extensions = task_packet.get("extensions")
+    extensions = extensions if isinstance(extensions, dict) else {}
+    grant = permission_grant_from_extensions(extensions)
+    if (
+        isinstance(grant, dict)
+        and (grant.get("state") or {}).get("status") in {"issued", "consumed"}
+    ):
+        return False
+    permission = permission_record_from_extensions(extensions, allow_legacy=True)
+    if str(permission.get("effective_mode") or "").strip().lower() == "full":
+        return False
+    return bool(permission_runtime_policy(permission)["approval_on_block"])
 
 
 def _normalize_allowed_tools(value: list[str] | tuple[str, ...] | str | None) -> list[str]:

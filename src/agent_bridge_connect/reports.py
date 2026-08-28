@@ -8,6 +8,10 @@ from typing import Any
 
 from .execution_policy import execution_policy_view, public_workspace_view
 from .permission_modes import permission_record_from_extensions
+from .permission_runtime import (
+    permission_runtime_from_extensions,
+    permission_runtime_public_projection,
+)
 from .protocol import task_step_text
 from .run_lease import (
     RunLeaseState,
@@ -117,6 +121,15 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
     # report/status input projection must remain summary-only.
     input_request.pop("reason_detail", None)
     permission = permission_record_from_extensions(extensions)
+    # PERM-104-002: status/report/doctor project only mode, permission source,
+    # hierarchy statuses, stable error codes, timestamps and sanitized
+    # digests from the runtime capability record - never binding identifiers.
+    permission_runtime_projection = None
+    runtime_record = permission_runtime_from_extensions(extensions)
+    if runtime_record is not None:
+        permission_runtime_projection = permission_runtime_public_projection(
+            runtime_record
+        )
 
     report = {
         "task_id": task.get("id", task_id),
@@ -156,6 +169,7 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "timing": timing,
         "input": input_request,
         "permission": permission,
+        "permission_runtime": permission_runtime_projection,
         "execution_policy": execution_policy_view(extensions),
         "run_lease_state": lease_state,
         "time_since_last_heartbeat_s": heartbeat_age,

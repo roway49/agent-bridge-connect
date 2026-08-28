@@ -56,7 +56,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `PROTO-104-001` | P0 / fixture matrix 已完成（2026-08-27）；production collaboration_spawn wiring 待回归（2026-08-28） | 上游 CLI version/help/argv/event 漂移只能靠临时补测试 | 三 Executor 完整版本化 fixture、capability matrix 和未知组合 fail-closed；生产派生会话接线需通过版本 fixture + live probe 双门 | 无 |
 | `ARCH-104-001` | P1 / 按域执行 | Service、Runner、CLI、approval、notification 责任仍集中 | 每个功能项先完成对应窄模块机械拆分，公共 API/CLI/磁盘行为不变 | `PROTO-104-001` |
 | `PERM-104-001` | P0 | native Deny 后 Agent 仍可用 Prompt/callback 请求 full 并启动第二 worker | 审批渠道和 fallback 完全由可信 transport event 与 Core policy 决定 | permission fixtures；对应 ARCH slice |
-| `PERM-104-002` | P0 | 已批准动作仍被宿主 containment 拒绝时会重复弹窗、grant 和 continuation；显式 full 还可能进入不可再升级 recovery | 稳定 fingerprint + escalation domain；人工授予、临时申请和权限继承三条路径的 full 都必须真实生效且在声明范围内无阻塞；完成后执行 `PERM-104-002-R1` 详情回归 | `PERM-104-001` |
+| `PERM-104-002` | P0-Blocker / 实施中（2026-08-28） | 已批准动作仍被宿主 containment 拒绝时会重复弹窗、grant 和 continuation；显式 full 还可能进入不可再升级 recovery | 稳定 fingerprint + escalation domain；人工授予、临时申请和权限继承三条路径的 full 都必须真实生效且在声明范围内无阻塞；完成后执行 `PERM-104-002-R1` 详情回归 | `PERM-104-001` |
 | `FLOW-104-002` | P0 | report/record 超限可跳过终态通知和 cleanup receipt | terminal、report、notification、cleanup 独立且可重放，通知不被报告失败吞掉 | terminal fixtures；对应 ARCH slice |
 | `FLOW-104-001` | P1 | handoff 只能声明一个 step，自由文本多步骤直到 callback 才失败 | handoff 原生结构化 steps、dispatch 前预检、严格 callback 一致性 | schema fixtures；对应 ARCH slice |
 | `FLOW-103-001` | P1 / 跨版转入 | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | task/run/session scoped 单调 progress receipt；所有公共视图同源 | `FLOW-104-001` 的 declared steps |
@@ -285,6 +285,44 @@ Executor 拒绝必须在同 session、同 request Approve 后精确执行。
   full 权限继承 canary；三者都要完成同类声明动作，不得生成上述 recovery code、重复审批或 blocker；
 - 回归覆盖 Claude/Codex/Hermes、Runner/宿主 containment、restart/recover/retry/handoff，并保留原
   task/run/session/request/fingerprint 审计链。
+
+2026-08-28 实施证据（`E52M-001`，agent/hermes 本地提交，未 push）：
+
+- 新增 `agentbc.permission_runtime` v1 权威 runtime capability receipt：统一
+  `explicit_task` / `one_shot_permission_grant` / `inherited_task` 三种 full 来源，绑定
+  task/chain head/executor/run/官方 session、PathPlan digest 与 host profile digest；固定五级
+  escalation 层级 `executor_policy` → `agentbc_policy` → `runner_pathplan` → `host_containment`
+  → `linked_worktree_metadata`，生命周期 `prepared → authorized → activated → verified | blocked`；
+  grant 只在 authorized 后消费，同一 host profile 内 activated，结构化动作成功后 verified；
+- 七个稳定错误码落地：`permission_runtime_capability_unavailable`、
+  `permission_transport_unsupported`、`permission_escalation_ineffective`、
+  `permission_action_already_blocked`、`linked_worktree_capability_invalid`、
+  `host_containment_unliftable`、`permission_block_evidence_unavailable`；
+- 可信 block ledger 持久化 fingerprint/domain/profile digest/decision/execution result/domain
+  变化；Approve 后相同 task/session/action/fingerprint/domain/profile 再现时收敛为
+  `permission_escalation_ineffective`（needs_recovery、step blocked、零新增
+  input/grant/worker/continuation/deadline/通知）；concrete full 直接收敛，不再请求 full 或产生
+  `permission_mode_unsupported` / `permission_resume_session_unavailable`；
+- macOS Runner 在锁内 realpath 校验 frozen PathPlan 根与 linked-worktree
+  root/per-worktree git dir/git common dir/当前 symbolic ref/reflog，生成 Runner-owned
+  task-scoped Seatbelt profile 并在其中启动 worker；linked-worktree 只允许 per-worktree git dir、
+  common objects 与当前 branch 精确 ref/lock/reflog，禁止其他 refs/worktrees/common
+  config/hooks/packed-refs 与整个主仓库；普通仓库不加能力；detached/bare/submodule、拓扑漂移与
+  其他 ref 稳定 blocked；sandbox-exec 不可用时启动前返回 `host_containment_unliftable`，不弹窗、
+  不消费 grant；Git metadata 不进入 Executor 内层 sandbox（--add-dir/allowWrite 同 outer 根），
+  Claude 内层保持 sandbox.enabled/failIfUnavailable 与 Edit deny；
+- Claude 按 fixture 接入 MCP permission-tool / stdio can_use_tool+control_response 能力矩阵
+  （`permission_control.json` 已登记 matrix manifest），未知版本组合返回
+  `permission_transport_unsupported`；worker 按矩阵选择 control path 并保留同进程
+  Approve/Deny 与 transport-death 失效语义；
+- Hermes canary：Agent callback / stderr / 退出码只作为诊断（`record_agent_callback` 仅持久化
+  completion intent），不能创建 input/grant；本任务真机执行中两次 python3/pip 探测被 Hermes
+  终端审批门以超时 fail-closed 拒绝，未产生任何 grant/input/continuation，证明 Hermes 不存在
+  Claude 的审批循环；获批 continuation 后已补跑全部验证：定向 68 项与全量 1529 项 unittest
+  通过，Ruff（src + 新测试文件）、compileall、`uv build` wheel/sdist（含三个新模块）与
+  `git diff --check` 全部通过；
+- `PERM-104-002-R1` 已接入本项验收：首块审批与合法 approval identity 的脱敏只读
+  Details/View Details 投影回归在 `PERM-104-002` 收敛验收后执行，不单独占用 Wave。
 
 ### 4.5 `FLOW-104-001`：handoff 结构化多 steps
 

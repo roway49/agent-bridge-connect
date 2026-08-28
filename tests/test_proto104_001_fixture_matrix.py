@@ -87,6 +87,21 @@ class ManifestIntegrityTests(unittest.TestCase):
                     set(manifest["executors"][executor]["versions"]), versions
                 )
 
+    def test_e52m003_live_probe_is_executor_level_evidence(self) -> None:
+        # The live probe of the installed production binary is recorded as
+        # executor-level evidence, not a matrix version: it adds no
+        # capability and must never satisfy version surface requirements.
+        manifest = load_manifest()
+        probe = manifest["executors"]["claude"]["live_probe_e52m003"]
+        self.assertTrue(probe["live_capture"])
+        self.assertFalse(probe["help_contains_permission_prompt_tool"])
+        self.assertIsNone(probe["stdio_control_live_capture"])
+        self.assertEqual(probe["decision"], "permission_transport_unsupported")
+        probe_dir = MATRIX / probe["surface_dir"]
+        body = json.loads((probe_dir / "permission_control.json").read_text())
+        self.assertTrue(body["captured_live"])
+        self.assertFalse(body["probe"]["help_contains_permission_prompt_tool"])
+
     def test_declared_hashes_match_stored_files(self) -> None:
         manifest = load_manifest()
         checked = 0

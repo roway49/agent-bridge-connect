@@ -1,0 +1,28 @@
+{
+  "captured_live": false,
+  "origin": "PERM-104-002 declared fixture for the declared 2.1.233 baseline (PROTO-104-001).",
+  "surface": "permission_control",
+  "e52m003_review": {
+    "withdrawn": true,
+    "reason": "The declared mcp_permission_tool/stdio_can_use_tool support was a characterized expectation: no binary at exactly 2.1.233 was ever probed. The E52M-003 live probe of the installed 2.1.247 binary shows `claude --help` does NOT contain --permission-prompt-tool, and no can_use_tool/control_response exchange was ever captured live for any version. Declared capability without that evidence is withdrawn; the production matrix is empty and fails closed with permission_transport_unsupported.",
+    "production_matrix_entry": false
+  },
+  "mcp_permission_tool": {
+    "supported": false,
+    "flag": "--permission-prompt-tool",
+    "support_declared_previously": true,
+    "live_proof": null
+  },
+  "stdio_can_use_tool": {
+    "supported": false,
+    "control_response": "control_response",
+    "init_receipt": "system/init",
+    "support_declared_previously": true,
+    "live_proof": null
+  },
+  "inner_sandbox": {
+    "sandbox_keys": ["sandbox.enabled", "sandbox.failIfUnavailable"],
+    "edit_deny": true,
+    "git_metadata_in_add_dir": false
+  }
+}

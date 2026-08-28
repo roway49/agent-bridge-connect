@@ -21,7 +21,8 @@
             "capture_kind": "offline_frozen_evidence",
             "captured_by": "tests/fixtures/executor_runtime/tools/capture_protocol_fixture.py",
             "live_capture": false,
-            "origin": "Help/budget characterization frozen during PERM-103-007 and PERM-103-009."
+            "origin": "Help/budget characterization frozen during PERM-103-007 and PERM-103-009.",
+            "e52m003_permission_withdrawn": "permission_control support withdrawn by E52M-003 review: no live-captured fixture or can_use_tool/control_response exchange proves either control path; live probe of installed 2.1.247 shows --permission-prompt-tool absent from --help."
           },
           "in_production_supported_range": true,
           "promotion_blocker": null,
@@ -56,6 +57,10 @@
               "bytes": 619,
               "sha256": "f74e5f3bfef11d80aac6b5ca73cc411f127c02739ea98d1abf29d222ab513df6"
             },
+            "permission_control.json": {
+              "bytes": 1231,
+              "sha256": "4c037f7c19c78c56787f376af9a50e17e865b59bd6d91eabd3f603254893a1d9"
+            },
             "project_purge.json": {
               "bytes": 720,
               "sha256": "45393d57cc2d015b246f87270f0ad83b8d5bb6d7227602a0682c71efc4a39a10"
@@ -79,7 +84,8 @@
             "capture_kind": "characterized_expectation",
             "captured_by": "tests/fixtures/executor_runtime/tools/capture_protocol_fixture.py",
             "live_capture": false,
-            "origin": "Declared current baseline for PROTO-104-001; no binary at exactly this version existed on the capture host."
+            "origin": "Declared current baseline for PROTO-104-001; no binary at exactly this version existed on the capture host.",
+            "e52m003_permission_withdrawn": "permission_control support withdrawn by E52M-003 review: no live-captured fixture or can_use_tool/control_response exchange proves either control path; live probe of installed 2.1.247 shows --permission-prompt-tool absent from --help."
           },
           "in_production_supported_range": false,
           "promotion_blocker": "Requires an official-probe capture at exactly 2.1.233 plus a live canary before any Claude production bound may widen.",
@@ -98,6 +104,10 @@
               "bytes": 650,
               "sha256": "d91362ce508cd0265dd748d409e8b172e10b1dacf25cedaf0b03e48fa6104974"
             },
+            "permission_control.json": {
+              "bytes": 1267,
+              "sha256": "7943224e9fda3cff77f9406be9678569336d335aba1d38e79b0dae63269435b6"
+            },
             "project_purge.json": {
               "bytes": 752,
               "sha256": "52295c15a7e62e830a951b299fa9c75a42ed7c1d1eb67af0100722d737ef940c"
@@ -114,6 +124,30 @@
               "bytes": 377,
               "sha256": "7b46e9e50624421015cdeb3810d8c8192094f04a5640af6cff0eb67257b2bda2"
             }
+          }
+        }
+      },
+      "live_probe_e52m003": {
+        "captured_at": "2026-08-28",
+        "surface_dir": "claude/live_probe_2026-08-28",
+        "live_capture": true,
+        "installed_version": "2.1.247",
+        "help_contains_permission_prompt_tool": false,
+        "stdio_control_live_capture": null,
+        "decision": "permission_transport_unsupported",
+        "note": "Executor-level evidence: live probe of the production host binary. It is not a matrix version and adds no transport capability; it proves the installed binary supports no AgentBC permission control path.",
+        "surfaces": {
+          "version.json": {
+            "bytes": 265,
+            "sha256": "9f392c56e25b0e7f018b681bf34e189b3864634120a62f83f8962e2a3f9c71f1"
+          },
+          "permission_control.json": {
+            "bytes": 928,
+            "sha256": "fee47c92aee46cd20e7f933529e2d8719d5ae59dd0cce21fbd3b9d1e3d3c8ed7"
+          },
+          "help.txt": {
+            "bytes": 16890,
+            "sha256": "71ad650f59e08ae40ede14c534db4f49d8590ee5a4f92f6da2882d3a5560fea6"
           }
         }
       }
