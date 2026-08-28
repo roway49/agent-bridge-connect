@@ -16,8 +16,9 @@ from .protocol import ABCError
 
 EXECUTION_POLICY_VERSION = 1
 EXECUTION_SESSION_RECEIPT_VERSION = 1
-SESSION_CLEANUP_RECEIPT_VERSION = 2
+SESSION_CLEANUP_RECEIPT_VERSION = 3
 LEGACY_SESSION_CLEANUP_RECEIPT_VERSION = 1
+SESSION_CLEANUP_RECEIPT_VERSION_V2 = 2
 RESOURCE_EXTENSION_KEY = "agentbc.resources"
 SESSION_EXTENSION_KEY = "agentbc.session"
 RESOURCE_MULTIPLIER = 2
@@ -41,7 +42,10 @@ CLEANUP_STRATEGIES = frozenset(
     {"none", "retain", "claude_project_purge", "official_session_delete"}
 )
 RESOLVED_CLEANUP_STATES = frozenset({"retained", "succeeded", "unsupported"})
-CLEANUP_VERIFICATION_SIDES = frozenset({"cli", "desktop"})
+CLEANUP_VERIFICATION_SIDES_V2 = frozenset({"cli", "desktop"})
+CLEANUP_VERIFICATION_SIDES = frozenset(
+    {"cli", "desktop_backend", "desktop_live"}
+)
 CLEANUP_VERIFICATION_STATUSES = frozenset(
     {"unknown", "absent", "present", "unavailable", "unverified", "not_applicable"}
 )
@@ -60,6 +64,7 @@ CLEANUP_RECEIPT_FIELDS_V1 = frozenset(
         "retryable",
     }
 )
+CLEANUP_RECEIPT_FIELDS_V2 = CLEANUP_RECEIPT_FIELDS_V1 | {"verification"}
 CLEANUP_RECEIPT_FIELDS = CLEANUP_RECEIPT_FIELDS_V1 | {"verification"}
 RESOURCE_DECISIONS = frozenset({"", "increase", "terminate"})
 TERMINAL_SESSION_CLEANUP_STATUSES = frozenset(
@@ -277,16 +282,75 @@ def _empty_cleanup_verification(
 ) -> dict[str, dict[str, str]]:
     return {
         "cli": {"status": status, "checked_at": checked_at},
+        "desktop_backend": {"status": status, "checked_at": checked_at},
+        "desktop_live": {"status": status, "checked_at": checked_at},
+    }
+
+
+def _empty_cleanup_verification_v2(
+    status: str = "unknown",
+    *,
+    checked_at: str = "",
+) -> dict[str, dict[str, str]]:
+    return {
+        "cli": {"status": status, "checked_at": checked_at},
         "desktop": {"status": status, "checked_at": checked_at},
     }
 
 
+def _valid_cleanup_verification(value: Any, *, v2: bool) -> bool:
+    """Validate a persisted bounded verification object without projecting it."""
+    sides = CLEANUP_VERIFICATION_SIDES_V2 if v2 else CLEANUP_VERIFICATION_SIDES
+    if not isinstance(value, dict) or set(value) != sides:
+        return False
+    for side in sides:
+        item = value.get(side)
+        if not isinstance(item, dict) or set(item) != {"status", "checked_at"}:
+            return False
+        if (
+            type(item.get("status")) is not str
+            or item["status"] not in CLEANUP_VERIFICATION_STATUSES
+        ):
+            return False
+        checked_at = item.get("checked_at")
+        if type(checked_at) is not str or (
+            checked_at and not _valid_utc_timestamp(checked_at)
+        ):
+            return False
+    return True
+
+
+def cleanup_verification_public_view(value: Any) -> dict[str, dict[str, str]]:
+    """Project v3 verification with the v2-compatible aggregate ``desktop`` side."""
+    checked = normalize_cleanup_verification(value)
+    live = checked["desktop_live"]
+    backend = checked["desktop_backend"]
+    if live["status"] in {"absent", "present", "unavailable", "unverified"}:
+        aggregate = live
+    else:
+        aggregate = backend
+    return {
+        "cli": dict(checked["cli"]),
+        "desktop_backend": dict(backend),
+        "desktop_live": dict(live),
+        "desktop": dict(aggregate),
+    }
+
+
 def normalize_cleanup_verification(value: Any) -> dict[str, dict[str, str]]:
-    """Keep only the public v2 verification tuple for CLI and Desktop."""
-    if not isinstance(value, dict) or set(value) != CLEANUP_VERIFICATION_SIDES:
+    """Normalize v2 or v3 bounded verification into the v3 internal tuple."""
+    if not isinstance(value, dict):
+        return _empty_cleanup_verification()
+    if set(value) == CLEANUP_VERIFICATION_SIDES_V2:
+        value = {
+            "cli": value.get("cli"),
+            "desktop_backend": value.get("desktop"),
+            "desktop_live": {"status": "unverified", "checked_at": ""},
+        }
+    elif set(value) != CLEANUP_VERIFICATION_SIDES:
         return _empty_cleanup_verification()
     result: dict[str, dict[str, str]] = {}
-    for side in ("cli", "desktop"):
+    for side in ("cli", "desktop_backend", "desktop_live"):
         item = value.get(side)
         if not isinstance(item, dict) or set(item) != {"status", "checked_at"}:
             return _empty_cleanup_verification()
@@ -303,22 +367,29 @@ def normalize_cleanup_verification(value: Any) -> dict[str, dict[str, str]]:
 
 
 def _upgrade_cleanup_receipt(value: Any) -> dict[str, Any]:
-    """Upgrade a valid historical receipt for a new state transition only."""
+    """Upgrade a valid historical receipt to the v3 transition representation."""
     if set(value) == {"state", "attempts"}:
         receipt = build_session_cleanup_receipt()
         receipt["state"] = value["state"]
         receipt["attempts"] = value["attempts"]
         return receipt
-    if value.get("version") != LEGACY_SESSION_CLEANUP_RECEIPT_VERSION:
+    version = value.get("version")
+    if version == SESSION_CLEANUP_RECEIPT_VERSION:
         return copy.deepcopy(value)
     receipt = build_session_cleanup_receipt()
     for field in CLEANUP_RECEIPT_FIELDS_V1 - {"version"}:
         receipt[field] = copy.deepcopy(value[field])
+    if version == SESSION_CLEANUP_RECEIPT_VERSION_V2:
+        legacy_verification = value.get("verification")
+        normalized = normalize_cleanup_verification(legacy_verification)
+        receipt["verification"] = normalized
+    else:
+        receipt["verification"] = _empty_cleanup_verification("unverified")
     return receipt
 
 
 def build_session_cleanup_receipt() -> dict[str, Any]:
-    """Build the safe, inert v2 receipt used before cleanup is requested."""
+    """Build the safe, inert v3 receipt used before cleanup is requested."""
     return {
         "version": SESSION_CLEANUP_RECEIPT_VERSION,
         "capability": "unknown",
@@ -336,15 +407,15 @@ def build_session_cleanup_receipt() -> dict[str, Any]:
 
 
 def read_session_cleanup_receipt(value: Any) -> dict[str, Any]:
-    """Read v2, v1, or the exact historical two-field receipt read-only."""
+    """Read v3 and project v2/v1/minimal receipts into the v3 view."""
     errors = validate_session_cleanup_receipt(value, allow_legacy=True)
     if errors:
         _raise_policy_errors(errors, f"{SESSION_EXTENSION_KEY}.cleanup")
-    return _upgrade_cleanup_receipt(value) if set(value) == {"state", "attempts"} else copy.deepcopy(value)
+    return _upgrade_cleanup_receipt(value)
 
 
 def upgrade_session_cleanup_receipt(value: Any) -> dict[str, Any]:
-    """Return a v2 transition copy for a valid v1 or minimal receipt."""
+    """Return a v3 transition copy for a valid v1/v2 or minimal receipt."""
     errors = validate_session_cleanup_receipt(value, allow_legacy=True)
     if errors:
         _raise_policy_errors(errors, f"{SESSION_EXTENSION_KEY}.cleanup")
@@ -373,14 +444,18 @@ def session_cleanup_view(value: Any) -> dict[str, Any]:
             "state": "legacy",
             "error_code": "legacy_cleanup_unverified",
             "retryable": False,
-            "verification": _empty_cleanup_verification("unverified", checked_at=checked_at),
+            "verification": cleanup_verification_public_view(
+                _empty_cleanup_verification("unverified", checked_at=checked_at)
+            ),
         }
+    if original_version == LEGACY_SESSION_CLEANUP_RECEIPT_VERSION:
+        return base
     if receipt.get("version") == SESSION_CLEANUP_RECEIPT_VERSION:
         return {
             **base,
             "version": SESSION_CLEANUP_RECEIPT_VERSION,
             "strategy": receipt["strategy"],
-            "verification": normalize_cleanup_verification(receipt.get("verification")),
+            "verification": cleanup_verification_public_view(receipt.get("verification")),
         }
     return base
 
@@ -390,9 +465,14 @@ def _validate_cleanup_fields(
     *,
     fields: set[str],
     prefix: str,
-    v2: bool,
+    version: int,
 ) -> list[str]:
-    expected = CLEANUP_RECEIPT_FIELDS if v2 else CLEANUP_RECEIPT_FIELDS_V1
+    if version == LEGACY_SESSION_CLEANUP_RECEIPT_VERSION:
+        expected = CLEANUP_RECEIPT_FIELDS_V1
+    elif version == SESSION_CLEANUP_RECEIPT_VERSION_V2:
+        expected = CLEANUP_RECEIPT_FIELDS_V2
+    else:
+        expected = CLEANUP_RECEIPT_FIELDS
     errors: list[str] = []
     missing = sorted(expected - fields)
     unknown = sorted(fields - expected)
@@ -403,7 +483,7 @@ def _validate_cleanup_fields(
     if missing or unknown:
         return errors
 
-    expected_version = SESSION_CLEANUP_RECEIPT_VERSION if v2 else LEGACY_SESSION_CLEANUP_RECEIPT_VERSION
+    expected_version = version
     if type(value.get("version")) is not int or value.get("version") != expected_version:
         errors.append(f"{prefix}.version must be {expected_version}")
     capability = value.get("capability")
@@ -431,9 +511,13 @@ def _validate_cleanup_fields(
         errors.append(f"{prefix}.error_code must be a stable lowercase code")
     if type(value.get("retryable")) is not bool:
         errors.append(f"{prefix}.retryable must be a boolean")
-    if v2:
+    if version == SESSION_CLEANUP_RECEIPT_VERSION_V2:
         verification = value.get("verification")
-        if normalize_cleanup_verification(verification) != verification:
+        if not _valid_cleanup_verification(verification, v2=True):
+            errors.append(f"{prefix}.verification is invalid")
+    elif version == SESSION_CLEANUP_RECEIPT_VERSION:
+        verification = value.get("verification")
+        if not _valid_cleanup_verification(verification, v2=False):
             errors.append(f"{prefix}.verification is invalid")
     if errors:
         return errors
@@ -452,7 +536,9 @@ def _validate_cleanup_fields(
             errors.append(f"{prefix}.not_requested receipt must be inert")
         if capability != "unknown" or strategy != "none" or value["retryable"]:
             errors.append(f"{prefix}.not_requested receipt uses unsafe metadata")
-        if v2 and value["verification"] != _empty_cleanup_verification():
+        if version == SESSION_CLEANUP_RECEIPT_VERSION and value["verification"] != _empty_cleanup_verification():
+            errors.append(f"{prefix}.not_requested receipt uses unsafe verification metadata")
+        if version == SESSION_CLEANUP_RECEIPT_VERSION_V2 and value["verification"] != _empty_cleanup_verification_v2():
             errors.append(f"{prefix}.not_requested receipt uses unsafe verification metadata")
     elif state == "retained":
         if capability != "not_applicable" or strategy != "retain":
@@ -471,13 +557,27 @@ def _validate_cleanup_fields(
             errors.append(f"{prefix}.succeeded receipt requires a supported delete strategy")
         if not value["completed_at"] or value["retryable"] or error_code:
             errors.append(f"{prefix}.succeeded receipt must be resolved")
-        if v2:
+        if version == SESSION_CLEANUP_RECEIPT_VERSION_V2:
             verification = value["verification"]
             statuses = {verification["cli"]["status"], verification["desktop"]["status"]}
             if statuses != {"absent"} and statuses != {"not_applicable"}:
                 errors.append(f"{prefix}.succeeded receipt requires both verification sides absent")
             elif statuses == {"absent"} and any(
                 not verification[side]["checked_at"] for side in ("cli", "desktop")
+            ):
+                errors.append(f"{prefix}.succeeded receipt requires verification timestamps")
+        elif version == SESSION_CLEANUP_RECEIPT_VERSION:
+            verification = value["verification"]
+            statuses = {
+                verification["cli"]["status"],
+                verification["desktop_backend"]["status"],
+                verification["desktop_live"]["status"],
+            }
+            if statuses != {"absent"} and statuses != {"not_applicable"}:
+                errors.append(f"{prefix}.succeeded receipt requires all verification sides absent")
+            elif statuses == {"absent"} and any(
+                not verification[side]["checked_at"]
+                for side in ("cli", "desktop_backend", "desktop_live")
             ):
                 errors.append(f"{prefix}.succeeded receipt requires verification timestamps")
     elif state == "unsupported":
@@ -502,7 +602,7 @@ def validate_session_cleanup_receipt(
     *,
     allow_legacy: bool = False,
 ) -> list[str]:
-    """Validate the v2 receipt while accepting exact v1 compatibility forms."""
+    """Validate v3 receipts while accepting exact v1/v2 compatibility forms."""
     prefix = f"{SESSION_EXTENSION_KEY}.cleanup"
     if not isinstance(value, dict):
         return [f"{prefix} must be an object"]
@@ -515,9 +615,14 @@ def validate_session_cleanup_receipt(
         if type(attempts) is not int or attempts < 0:
             errors.append(f"{prefix}.attempts must be a non-negative integer")
         return errors
-    if value.get("version") == LEGACY_SESSION_CLEANUP_RECEIPT_VERSION:
-        return _validate_cleanup_fields(value, fields=fields, prefix=prefix, v2=False)
-    return _validate_cleanup_fields(value, fields=fields, prefix=prefix, v2=True)
+    version = value.get("version")
+    if version not in {
+        LEGACY_SESSION_CLEANUP_RECEIPT_VERSION,
+        SESSION_CLEANUP_RECEIPT_VERSION_V2,
+        SESSION_CLEANUP_RECEIPT_VERSION,
+    }:
+        version = SESSION_CLEANUP_RECEIPT_VERSION
+    return _validate_cleanup_fields(value, fields=fields, prefix=prefix, version=version)
 
 
 def validate_session_snapshot(
@@ -1038,12 +1143,12 @@ def transition_session_cleanup(
         )
         if str(session.get("executor") or "").strip().lower() == "codex":
             statuses = {
-                normalized_verification["cli"]["status"],
-                normalized_verification["desktop"]["status"],
+                normalized_verification[side]["status"]
+                for side in CLEANUP_VERIFICATION_SIDES
             }
             if statuses != {"absent"}:
                 _raise_cleanup_transition(
-                    "Codex cleanup succeeded without both CLI and Desktop absence verification"
+                    "Codex cleanup succeeded without all CLI, Desktop backend, and Desktop live absence verification"
                 )
         updated.update(
             {

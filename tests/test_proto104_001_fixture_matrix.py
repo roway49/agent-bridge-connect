@@ -31,6 +31,9 @@ from agent_bridge_connect.claude_path_capability import (
 from agent_bridge_connect.codex_app_server import (
     CODEX_APP_SERVER_CAPABILITY_GROUPS,
     CODEX_APP_SERVER_CLEANUP_GROUP,
+    CODEX_APP_SERVER_COLLABORATION_MARKERS,
+    CODEX_APP_SERVER_COLLABORATION_SPAWN_GROUP,
+    CODEX_APP_SERVER_COLLABORATION_LIFECYCLE,
     CODEX_APP_SERVER_CLIENT_METHODS,
     CODEX_APP_SERVER_DESKTOP_VISIBILITY_GROUP,
     CODEX_APP_SERVER_MAX_VERSION,
@@ -285,6 +288,12 @@ class CodexCapabilityGroupTests(unittest.TestCase):
                 "server_requests": frozenset(),
                 "notifications": frozenset(),
             },
+            CODEX_APP_SERVER_COLLABORATION_SPAWN_GROUP: {
+                "client_methods": frozenset(),
+                "server_requests": frozenset(),
+                "notifications": CODEX_APP_SERVER_COLLABORATION_LIFECYCLE,
+                "schema_markers": CODEX_APP_SERVER_COLLABORATION_MARKERS,
+            },
         })
 
     def test_desktop_visibility_group_is_exact(self) -> None:
@@ -315,6 +324,35 @@ class CodexCapabilityGroupTests(unittest.TestCase):
                 found_missing = verify_capability_group(schema, group)
                 with self.subTest(version=version, group=group):
                     self.assertEqual(found_missing, [])
+
+    def test_collaboration_group_is_fixture_evidence_only(self) -> None:
+        for version in ("0.146.0", "0.147.0"):
+            schema = json.loads(
+                (MATRIX / "codex" / version / "app_server_schema.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            missing = verify_capability_group(
+                schema,
+                CODEX_APP_SERVER_COLLABORATION_SPAWN_GROUP,
+            )
+            with self.subTest(version=version):
+                self.assertEqual(
+                    set(missing),
+                    set(CODEX_APP_SERVER_COLLABORATION_MARKERS),
+                )
+        candidate = json.loads(
+            (MATRIX / "codex" / "0.150.1" / "app_server_schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            verify_capability_group(
+                candidate,
+                CODEX_APP_SERVER_COLLABORATION_SPAWN_GROUP,
+            ),
+            [],
+        )
 
     def test_unknown_capability_group_fails_closed(self) -> None:
         schema = json.loads(

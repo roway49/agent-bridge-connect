@@ -7,6 +7,9 @@ from pathlib import Path
 from unittest import mock
 
 from agent_bridge_connect.adapters import SessionCleanupRequest
+from agent_bridge_connect.codex_session_cleanup import (
+    CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE,
+)
 from agent_bridge_connect.executors.codex import (
     CODEX_CLEANUP_UNSUPPORTED_CODE,
     CODEX_SESSION_DELETE_FAILED_CODE,
@@ -42,6 +45,8 @@ def _request(**overrides: object) -> SessionCleanupRequest:
         "session_id": CODEX_SESSION_ID,
         "task_id": "F5AH-001",
         "strategy": "official_session_delete",
+        "receipt_source": "jsonl_thread_started",
+        "official_receipt_bound": True,
     }
     values.update(overrides)
     return SessionCleanupRequest(**values)  # type: ignore[arg-type]
@@ -209,7 +214,9 @@ class HermesCapabilityProbeTests(unittest.TestCase):
 
 class CodexExecutorCleanupTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.executor = CodexExecutor(command=sys.executable)
+        # These cases exercise the explicitly selected legacy CLI fallback.
+        # Auto transport is covered by the App Server protocol tests.
+        self.executor = CodexExecutor(command=sys.executable, transport="cli")
         self.request = _request()
 
     @staticmethod
@@ -233,7 +240,8 @@ class CodexExecutorCleanupTests(unittest.TestCase):
             capability = self.executor.session_cleanup_capability(self.request)
             result = self.executor.cleanup_session(self.request)
         self.assertEqual(capability.capability, "supported")
-        self.assertEqual(result.state, "succeeded")
+        self.assertEqual(result.state, "failed")
+        self.assertEqual(result.error_code, CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE)
         self.assertEqual(
             run.call_args_list[2].args[0],
             [str(self.executor.agent_bin), "delete", "--force", CODEX_SESSION_ID],
@@ -252,7 +260,10 @@ class CodexExecutorCleanupTests(unittest.TestCase):
         ):
             first = self.executor.cleanup_session(self.request)
             second = self.executor.cleanup_session(self.request)
-        self.assertEqual(first, second)
+        self.assertEqual(first.state, "failed")
+        self.assertEqual(second.state, "failed")
+        self.assertEqual(first.error_code, CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE)
+        self.assertEqual(second.error_code, CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE)
 
     def test_invalid_uuid_fails_before_any_subprocess(self) -> None:
         with mock.patch("agent_bridge_connect.executors.codex.subprocess.run") as run:

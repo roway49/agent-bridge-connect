@@ -221,14 +221,14 @@ class CapabilityGateTests(unittest.TestCase):
         self.assertEqual(report["details"]["scope"], "single_action")
         self.assertIn("item/commandExecution/requestApproval", report["details"]["request_methods"])
 
-    def test_executor_capability_gate_accepts_inherit_and_rejects_full(self) -> None:
+    def test_executor_capability_gate_accepts_inherit_safe_and_receipted_full(self) -> None:
         executor = CodexExecutor(command=sys.executable, transport="app-server")
         executor._app_server_capability_override = capability_override()
         report = executor._freeze_app_server_capability({"effective_mode": "inherit"})
         self.assertTrue(report["ok"])
-        with self.assertRaises(ABCError) as raised:
-            executor._freeze_app_server_capability({"effective_mode": "full"})
-        self.assertEqual(raised.exception.code, "permission_capability_unsupported")
+        self.assertTrue(
+            executor._freeze_app_server_capability({"effective_mode": "full"})["ok"]
+        )
 
     def test_executor_capability_gate_accepts_safe_with_verified_report(self) -> None:
         executor = CodexExecutor(command=sys.executable, transport="app-server")

@@ -734,9 +734,13 @@ def _render_cleanup(cleanup: dict[str, Any]) -> list[str]:
             detail += f" strategy={_text_value(strategy)}"
         if isinstance(verification, dict):
             cli = verification.get("cli") if isinstance(verification.get("cli"), dict) else {}
+            desktop_backend = verification.get("desktop_backend") if isinstance(verification.get("desktop_backend"), dict) else {}
+            desktop_live = verification.get("desktop_live") if isinstance(verification.get("desktop_live"), dict) else {}
             desktop = verification.get("desktop") if isinstance(verification.get("desktop"), dict) else {}
             detail += (
                 f" cli={_text_value(cli.get('status'))}"
+                f" desktop_backend={_text_value(desktop_backend.get('status'))}"
+                f" desktop_live={_text_value(desktop_live.get('status'))}"
                 f" desktop={_text_value(desktop.get('status'))}"
             )
         lines.append(

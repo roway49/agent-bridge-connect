@@ -54,11 +54,14 @@ from .codex_session_cleanup import (
 )
 from .execution_policy import (
     CLEANUP_STRATEGIES,
+    CLEANUP_VERIFICATION_SIDES,
     MAX_SESSION_CLEANUP_ATTEMPTS,
     RESOLVED_CLEANUP_STATES,
     SESSION_EXTENSION_KEY,
     SESSION_RECEIPT_SOURCES,
     TERMINAL_SESSION_CLEANUP_STATUSES,
+    _empty_cleanup_verification,
+    cleanup_verification_public_view,
     normalize_cleanup_verification,
     read_session_cleanup_receipt,
     session_cleanup_blockers,
@@ -137,17 +140,22 @@ def _strict_codex_success_result(
     result: SessionCleanupResult,
     verification: dict[str, dict[str, str]] | None,
 ) -> tuple[SessionCleanupResult, dict[str, dict[str, str]]]:
-    """Fail closed if an adapter claims Codex success without both absences."""
+    """Fail closed if an adapter claims Codex success without all three absences."""
     checked = verification or normalize_cleanup_verification(None)
     cli_status = checked["cli"]["status"]
-    desktop_status = checked["desktop"]["status"]
-    if cli_status == "absent" and desktop_status == "absent":
+    backend_status = checked["desktop_backend"]["status"]
+    live_status = checked["desktop_live"]["status"]
+    if all(checked[side]["status"] == "absent" for side in CLEANUP_VERIFICATION_SIDES):
         return result, checked
-    if cli_status == "absent" and desktop_status == "present":
+    if backend_status == "absent" and live_status == "present":
         code = CODEX_DESKTOP_UI_STALE_CODE
-    elif cli_status == "present":
+    elif cli_status == "present" or backend_status == "present":
         code = CODEX_SESSION_DELETE_STILL_PRESENT_CODE
-    elif cli_status == "absent":
+    elif (
+        cli_status == "absent"
+        and backend_status in {"absent", "unavailable", "unverified"}
+        and live_status in {"unknown", "unavailable", "unverified"}
+    ):
         code = CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE
     else:
         code = CODEX_SESSION_DELETE_FAILED_CODE
@@ -557,6 +565,11 @@ class SessionCleanupCoordinator:
             else None
         )
         if (
+            result_verification is not None
+            and str(entry.get("executor") or "").strip().lower() != "codex"
+        ):
+            result_verification = _empty_cleanup_verification("not_applicable")
+        if (
             result.state == "succeeded"
             and str(entry.get("executor") or "").strip().lower() == "codex"
         ):
@@ -771,7 +784,7 @@ class SessionCleanupCoordinator:
                 "retryable": bool(receipt["retryable"]),
                 "next_attempt_at": receipt["next_attempt_at"],
                 "error_code": receipt["error_code"],
-                "verification": normalize_cleanup_verification(receipt.get("verification")),
+                "verification": cleanup_verification_public_view(receipt.get("verification")),
                 "created_at": occurred_at,
             },
         )
@@ -893,6 +906,11 @@ class SessionCleanupCoordinator:
             if result.verification
             else None
         )
+        if (
+            result_verification is not None
+            and str(session.get("executor") or "").strip().lower() != "codex"
+        ):
+            result_verification = _empty_cleanup_verification("not_applicable")
         if result.state == "succeeded" and str(session.get("executor") or "").strip().lower() == "codex":
             result, result_verification = _strict_codex_success_result(
                 result,
@@ -1095,7 +1113,7 @@ class SessionCleanupCoordinator:
                 "retryable": bool(receipt["retryable"]),
                 "next_attempt_at": receipt["next_attempt_at"],
                 "error_code": receipt["error_code"],
-                "verification": normalize_cleanup_verification(receipt.get("verification")),
+                "verification": cleanup_verification_public_view(receipt.get("verification")),
                 "created_at": occurred_at,
             },
         )

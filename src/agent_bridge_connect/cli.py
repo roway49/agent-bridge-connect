@@ -2270,14 +2270,18 @@ def _print_execution_policy(policy: Any) -> None:
                 f"error_code={cleanup.get('error_code') or '-'} "
                 f"retryable={'yes' if cleanup.get('retryable') else 'no'}"
             )
-            if cleanup.get("version") == 2:
+            if cleanup.get("version") == 3:
                 verification = cleanup.get("verification") or {}
                 cli_verification = verification.get("cli") if isinstance(verification, dict) else {}
+                backend_verification = verification.get("desktop_backend") if isinstance(verification, dict) else {}
+                live_verification = verification.get("desktop_live") if isinstance(verification, dict) else {}
                 desktop_verification = verification.get("desktop") if isinstance(verification, dict) else {}
                 print(
                     "Session cleanup verification: "
                     f"strategy={cleanup.get('strategy') or '-'} "
                     f"cli={cli_verification.get('status') if isinstance(cli_verification, dict) else 'unknown'} "
+                    f"desktop_backend={backend_verification.get('status') if isinstance(backend_verification, dict) else 'unknown'} "
+                    f"desktop_live={live_verification.get('status') if isinstance(live_verification, dict) else 'unknown'} "
                     f"desktop={desktop_verification.get('status') if isinstance(desktop_verification, dict) else 'unknown'}"
                 )
     grant = policy.get("permission_grant")

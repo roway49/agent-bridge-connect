@@ -787,12 +787,27 @@ class StdioJsonRpcTransport:
             pass
         try:
             process.terminate()
+        except OSError:
+            pass
+        try:
             process.wait(timeout=1)
-        except (OSError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired:
             try:
                 process.kill()
             except OSError:
                 pass
+            try:
+                process.wait(timeout=1)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        finally:
+            for stream in (process.stdout, process.stderr):
+                if stream is None:
+                    continue
+                try:
+                    stream.close()
+                except OSError:
+                    pass
 
 
 CodexAppServerTransport = StdioJsonRpcTransport

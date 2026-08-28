@@ -667,19 +667,27 @@ def _render_report_md(report: dict[str, Any]) -> str:
             f"- Cleanup retryable: `{'yes' if session_cleanup.get('retryable') else 'no'}`",
         ]
     )
-    if session_cleanup.get("version") == 2:
+    if session_cleanup.get("version") == 3:
         verification = session_cleanup.get("verification") or {}
         cli = verification.get("cli") if isinstance(verification, dict) else {}
+        desktop_backend = verification.get("desktop_backend") if isinstance(verification, dict) else {}
+        desktop_live = verification.get("desktop_live") if isinstance(verification, dict) else {}
         desktop = verification.get("desktop") if isinstance(verification, dict) else {}
         cli_status = cli.get("status") if isinstance(cli, dict) else "unknown"
         cli_checked_at = cli.get("checked_at") if isinstance(cli, dict) else ""
+        backend_status = desktop_backend.get("status") if isinstance(desktop_backend, dict) else "unknown"
+        backend_checked_at = desktop_backend.get("checked_at") if isinstance(desktop_backend, dict) else ""
+        live_status = desktop_live.get("status") if isinstance(desktop_live, dict) else "unknown"
+        live_checked_at = desktop_live.get("checked_at") if isinstance(desktop_live, dict) else ""
         desktop_status = desktop.get("status") if isinstance(desktop, dict) else "unknown"
         desktop_checked_at = desktop.get("checked_at") if isinstance(desktop, dict) else ""
         lines.extend(
             [
                 f"- Cleanup strategy: `{session_cleanup.get('strategy') or 'none'}`",
                 f"- CLI verification: `{cli_status}` checked_at=`{cli_checked_at}`",
-                f"- Desktop verification: `{desktop_status}` checked_at=`{desktop_checked_at}`",
+                f"- Desktop backend verification: `{backend_status}` checked_at=`{backend_checked_at}`",
+                f"- Desktop live verification: `{live_status}` checked_at=`{live_checked_at}`",
+                f"- Desktop verification (aggregate): `{desktop_status}` checked_at=`{desktop_checked_at}`",
             ]
         )
     if grant:

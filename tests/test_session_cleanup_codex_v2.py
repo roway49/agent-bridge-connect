@@ -14,6 +14,7 @@ from agent_bridge_connect.codex_session_cleanup import (
     CODEX_SESSION_DELETE_TRANSPORT_LOST_CODE,
 )
 from agent_bridge_connect.execution_policy import (
+    SESSION_CLEANUP_RECEIPT_VERSION,
     build_session_cleanup_receipt,
     build_session_snapshot,
     session_cleanup_blockers,
@@ -123,12 +124,14 @@ class CodexCleanupProtocolTests(unittest.TestCase):
             }
         )
         second = _read_transport(read_result={"thread": None})
-        factory = TransportFactory(first, second)
+        third = _list_transport()
+        factory = TransportFactory(first, second, third)
         result = self._executor(factory).cleanup_session(_request())
 
         self.assertEqual(result.state, "succeeded")
         self.assertEqual(result.verification["cli"]["status"], "absent")
-        self.assertEqual(result.verification["desktop"]["status"], "absent")
+        self.assertEqual(result.verification["desktop_backend"]["status"], "absent")
+        self.assertEqual(result.verification["desktop_live"]["status"], "absent")
         self.assertEqual(
             [item["method"] for item in first.sent],
             ["initialize", "initialized", "thread/delete"],
@@ -147,7 +150,9 @@ class CodexCleanupProtocolTests(unittest.TestCase):
             notification={"jsonrpc": "2.0", "method": "thread/deleted", "params": {"threadId": SESSION_ID}}
         )
         second = _read_transport(read_error={"code": "thread_not_found", "message": "thread not found"})
-        result = self._executor(TransportFactory(first, second)).cleanup_session(_request())
+        result = self._executor(
+            TransportFactory(first, second, _list_transport())
+        ).cleanup_session(_request())
         self.assertEqual(result.state, "succeeded")
         self.assertEqual(result.verification["cli"]["status"], "absent")
 
@@ -158,14 +163,18 @@ class CodexCleanupProtocolTests(unittest.TestCase):
         second = _read_transport(
             read_error={"code": -32600, "message": f"thread not loaded: {SESSION_ID}"}
         )
-        result = self._executor(TransportFactory(first, second)).cleanup_session(_request())
+        result = self._executor(
+            TransportFactory(first, second, _list_transport())
+        ).cleanup_session(_request())
         self.assertEqual(result.state, "succeeded")
         self.assertEqual(result.verification["cli"]["status"], "absent")
 
     def test_missing_notification_uses_fresh_read_as_authoritative_proof(self) -> None:
         first = _delete_transport()
         second = _read_transport(read_error={"code": -32600, "message": f"thread not loaded: {SESSION_ID}"})
-        result = self._executor(TransportFactory(first, second)).cleanup_session(_request())
+        result = self._executor(
+            TransportFactory(first, second, _list_transport())
+        ).cleanup_session(_request())
         self.assertEqual(result.state, "succeeded")
         self.assertEqual(result.verification["cli"]["status"], "absent")
 
@@ -203,6 +212,8 @@ class CodexCleanupProtocolTests(unittest.TestCase):
                     notification={"jsonrpc": "2.0", "method": "thread/deleted", "params": {"threadId": SESSION_ID}}
                 )
                 second = _read_transport(read_result={"thread": None})
+                if not extra:
+                    extra = [_list_transport()]
                 result = self._executor(
                     TransportFactory(first, second, *extra), desktop=desktop
                 ).cleanup_session(_request())
@@ -216,11 +227,12 @@ class CodexCleanupProtocolTests(unittest.TestCase):
         second = _read_transport(read_result={"thread": None})
         third = _list_transport()
         result = self._executor(
-            TransportFactory(first, second, third), desktop=None
+            TransportFactory(first, second, third), desktop="absent"
         ).cleanup_session(_request())
 
         self.assertEqual(result.state, "succeeded")
-        self.assertEqual(result.verification["desktop"]["status"], "absent")
+        self.assertEqual(result.verification["desktop_backend"]["status"], "absent")
+        self.assertEqual(result.verification["desktop_live"]["status"], "absent")
         list_requests = [item for item in third.sent if item.get("method") == "thread/list"]
         self.assertEqual([item["params"]["archived"] for item in list_requests], [False, True])
         self.assertIn("exec", list_requests[0]["params"]["sourceKinds"])
@@ -230,9 +242,9 @@ class CodexCleanupProtocolTests(unittest.TestCase):
             notification={"jsonrpc": "2.0", "method": "thread/deleted", "params": {"threadId": SESSION_ID}}
         )
         second = _read_transport(read_result={"thread": None})
-        third = _list_transport(data=[{"id": SESSION_ID}])
+        third = _list_transport()
         result = self._executor(
-            TransportFactory(first, second, third), desktop=None
+            TransportFactory(first, second, third), desktop="present"
         ).cleanup_session(_request())
 
         self.assertEqual(result.state, "failed")
@@ -240,12 +252,51 @@ class CodexCleanupProtocolTests(unittest.TestCase):
 
 
 class CodexCleanupContractTests(unittest.TestCase):
-    def test_v2_receipt_contains_only_bounded_verification(self) -> None:
+    def test_cleanup_auto_uses_app_server_and_only_explicit_cli_direct_fallback(self) -> None:
+        auto = CodexExecutor(command=sys.executable, transport="auto")
+        self.assertTrue(auto._uses_cleanup_app_server(_request()))
+        for mode in ("cli", "direct"):
+            with self.subTest(mode=mode):
+                executor = CodexExecutor(command=sys.executable, transport=mode)
+                self.assertFalse(executor._uses_cleanup_app_server(_request()))
+        self.assertTrue(
+            CodexExecutor(command=sys.executable, transport="full")._uses_cleanup_app_server(
+                _request()
+            )
+        )
+
+    def test_v3_receipt_contains_only_bounded_verification(self) -> None:
         receipt = build_session_cleanup_receipt()
-        self.assertEqual(receipt["version"], 2)
+        self.assertEqual(receipt["version"], SESSION_CLEANUP_RECEIPT_VERSION)
         self.assertEqual(validate_session_cleanup_receipt(receipt), [])
-        receipt["verification"]["cli"]["status"] = "raw_rpc"
+        receipt["verification"]["desktop_live"]["status"] = "raw_rpc"
         self.assertTrue(validate_session_cleanup_receipt(receipt))
+
+    def test_v2_receipt_projects_backend_and_unverified_live(self) -> None:
+        v2 = {
+            "version": 2,
+            "capability": "unknown",
+            "strategy": "none",
+            "state": "not_requested",
+            "attempts": 0,
+            "requested_at": "",
+            "last_attempt_at": "",
+            "next_attempt_at": "",
+            "completed_at": "",
+            "error_code": "",
+            "retryable": False,
+            "verification": {
+                "cli": {"status": "unknown", "checked_at": ""},
+                "desktop": {"status": "unknown", "checked_at": ""},
+            },
+        }
+        self.assertEqual(validate_session_cleanup_receipt(v2), [])
+        projected = session_cleanup_view(v2)
+        self.assertEqual(projected["version"], 3)
+        verification = projected["verification"]
+        self.assertEqual(verification["desktop_backend"]["status"], "unknown")
+        self.assertEqual(verification["desktop_live"]["status"], "unverified")
+        self.assertEqual(verification["desktop"]["status"], "unverified")
 
     def test_v1_success_is_publicly_legacy_and_unverified(self) -> None:
         v1 = {
@@ -298,8 +349,20 @@ class CodexCleanupContractTests(unittest.TestCase):
         )
         self.assertNotIn("session_receipt_unbound", retained_blockers)
 
+    def test_unbound_cleanup_request_fails_before_transport(self) -> None:
+        executor = CodexExecutor(command=sys.executable, transport="auto")
+        with mock.patch.object(executor, "_cleanup_session_app_server") as cleanup:
+            result = executor.cleanup_session(
+                _request(
+                    official_receipt_bound=False,
+                    receipt_source="",
+                )
+            )
+        self.assertEqual(result.state, "failed")
+        self.assertEqual(result.error_code, "codex_cleanup_receipt_unbound")
+        cleanup.assert_not_called()
+
     def test_cli_exit_zero_is_not_v2_success(self) -> None:
-        executor = CodexExecutor(command=sys.executable, transport="cli")
         help_text = (
             "codex-cli 0.146.0\n"
             "Usage: codex delete [OPTIONS] <SESSION>\n"
@@ -307,16 +370,19 @@ class CodexCleanupContractTests(unittest.TestCase):
             "--force\n"
             "SESSION must be a UUID\n"
         )
-        with mock.patch(
-            "agent_bridge_connect.executors.codex.subprocess.run",
-            side_effect=[
-                subprocess.CompletedProcess([], 0, stdout=help_text, stderr=""),
-                subprocess.CompletedProcess([], 0, stdout="", stderr=""),
-            ],
-        ):
-            result = executor.cleanup_session(_request())
-        self.assertEqual(result.state, "failed")
-        self.assertEqual(result.error_code, CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE)
+        for transport in ("cli", "direct"):
+            with self.subTest(transport=transport):
+                executor = CodexExecutor(command=sys.executable, transport=transport)
+                with mock.patch(
+                    "agent_bridge_connect.executors.codex.subprocess.run",
+                    side_effect=[
+                        subprocess.CompletedProcess([], 0, stdout=help_text, stderr=""),
+                        subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+                    ],
+                ):
+                    result = executor.cleanup_session(_request())
+                self.assertEqual(result.state, "failed")
+                self.assertEqual(result.error_code, CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE)
 
 
 class TransportClosedForTest(RuntimeError):
