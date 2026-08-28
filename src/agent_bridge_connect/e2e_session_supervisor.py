@@ -49,8 +49,10 @@ from .auxiliary_sessions import (
 from .execution_policy import (
     MAX_SESSION_CLEANUP_ATTEMPTS,
     RESOLVED_CLEANUP_STATES,
+    _empty_cleanup_commands,
     _empty_cleanup_verification,
     build_session_cleanup_receipt,
+    normalize_cleanup_commands,
     normalize_cleanup_verification,
     read_session_cleanup_receipt,
     session_cleanup_view,
@@ -604,6 +606,15 @@ class E2ESessionSupervisor:
         verification: dict[str, dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         updated = upgrade_session_cleanup_receipt(copy.deepcopy(receipt))
+        resolved_commands = normalize_cleanup_commands(updated.get("commands"))
+        if all(
+            resolved_commands.get(command, {}).get("status") == "not_requested"
+            for command in ("archive", "delete")
+        ):
+            # The supervisor resolved this receipt without command evidence
+            # (unsupported port, replay, or a pre-v4 journal): stamp
+            # not_applicable instead of leaving invalid not_requested proof.
+            resolved_commands = _empty_cleanup_commands("not_applicable", checked_at=occurred_at)
         updated.update(
             {
                 "capability": capability,
@@ -617,6 +628,7 @@ class E2ESessionSupervisor:
                 "verification": normalize_cleanup_verification(verification)
                 if verification is not None
                 else updated["verification"],
+                "commands": resolved_commands,
             }
         )
         return _validated_receipt(updated)
@@ -637,6 +649,7 @@ class E2ESessionSupervisor:
                 "error_code": "",
                 "retryable": False,
                 "verification": upgraded["verification"],
+                "commands": _empty_cleanup_commands("not_applicable", checked_at=occurred_at),
             }
         )
 

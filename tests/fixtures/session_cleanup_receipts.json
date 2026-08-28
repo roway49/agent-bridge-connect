@@ -1,6 +1,6 @@
 {
   "default": {
-    "version": 3,
+    "version": 4,
     "capability": "unknown",
     "strategy": "none",
     "state": "not_requested",
@@ -22,6 +22,16 @@
       },
       "desktop_live": {
         "status": "unknown",
+        "checked_at": ""
+      }
+    },
+    "commands": {
+      "archive": {
+        "status": "not_requested",
+        "checked_at": ""
+      },
+      "delete": {
+        "status": "not_requested",
         "checked_at": ""
       }
     }
@@ -50,6 +60,33 @@
       "desktop": {
         "status": "unknown",
         "checked_at": ""
+      }
+    }
+  },
+  "legacy_v3": {
+    "version": 3,
+    "capability": "supported",
+    "strategy": "official_session_delete",
+    "state": "failed",
+    "attempts": 1,
+    "requested_at": "2026-08-28T00:00:00Z",
+    "last_attempt_at": "2026-08-28T00:00:01Z",
+    "next_attempt_at": "2026-08-28T00:01:01Z",
+    "completed_at": "",
+    "error_code": "codex_desktop_verification_unavailable",
+    "retryable": true,
+    "verification": {
+      "cli": {
+        "status": "absent",
+        "checked_at": "2026-08-28T00:00:01Z"
+      },
+      "desktop_backend": {
+        "status": "absent",
+        "checked_at": "2026-08-28T00:00:01Z"
+      },
+      "desktop_live": {
+        "status": "unavailable",
+        "checked_at": "2026-08-28T00:00:01Z"
       }
     }
   },

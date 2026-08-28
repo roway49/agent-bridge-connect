@@ -93,10 +93,16 @@ CODEX_APP_SERVER_CAPABILITY_GROUPS: dict[str, dict[str, frozenset[str]]] = {
         "notifications": CODEX_APP_SERVER_NOTIFICATIONS,
     },
     CODEX_APP_SERVER_CLEANUP_GROUP: {
-        # Exactly the three members frozen by PROTO-104-001.
-        "client_methods": frozenset({"thread/delete", "thread/read"}),
+        # SESSION-104-001: the archive members join the frozen delete surface.
+        # ``thread/archive`` must be acknowledged before ``thread/delete`` is
+        # sent; ``thread/archived`` stays advisory exactly like
+        # ``thread/deleted``.  Extra schema members are never added, so the
+        # closed set still fails closed on unknown versions.
+        "client_methods": frozenset(
+            {"thread/archive", "thread/delete", "thread/read"}
+        ),
         "server_requests": frozenset(),
-        "notifications": frozenset({"thread/deleted"}),
+        "notifications": frozenset({"thread/archived", "thread/deleted"}),
     },
     CODEX_APP_SERVER_DESKTOP_VISIBILITY_GROUP: {
         "client_methods": frozenset({"thread/list"}),

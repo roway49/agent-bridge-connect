@@ -280,7 +280,15 @@ class CandidateIsolationTests(unittest.TestCase):
 class CodexCapabilityGroupTests(unittest.TestCase):
     """Named execution/cleanup groups agree across code, fixtures and schema."""
 
-    EXPECTED_CLEANUP = frozenset({"thread/delete", "thread/deleted", "thread/read"})
+    EXPECTED_CLEANUP = frozenset(
+        {
+            "thread/archive",
+            "thread/archived",
+            "thread/delete",
+            "thread/deleted",
+            "thread/read",
+        }
+    )
     EXPECTED_DESKTOP_VISIBILITY = frozenset({"thread/list"})
 
     def test_cleanup_group_membership_is_exact(self) -> None:
@@ -434,8 +442,16 @@ class FailClosedContractTests(unittest.TestCase):
                 self.assertTrue(body["timeout"]["fail_closed"])
                 self.assertTrue(body["transport_lost"]["fail_closed"])
 
-    def test_codex_cleanup_group_names_the_three_thread_members(self) -> None:
-        expected = frozenset({"thread/delete", "thread/deleted", "thread/read"})
+    def test_codex_cleanup_group_names_the_archive_and_delete_members(self) -> None:
+        expected = frozenset(
+            {
+                "thread/archive",
+                "thread/archived",
+                "thread/delete",
+                "thread/deleted",
+                "thread/read",
+            }
+        )
         body = json.loads(
             (MATRIX / "codex" / "0.146.0" / "app_server_cleanup.json").read_text(
                 encoding="utf-8"

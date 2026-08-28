@@ -93,6 +93,9 @@ class SessionCleanupResult:
     # Only bounded verification statuses/timestamps may cross the adapter
     # boundary.  Raw RPC, CLI output, prompts, tokens and paths are forbidden.
     verification: dict[str, dict[str, str]] = field(default_factory=dict, repr=False)
+    # SESSION-104-001 bounded per-command evidence (archive/delete).  Same
+    # boundary rules as verification; empty means the adapter supplies none.
+    commands: dict[str, dict[str, str]] = field(default_factory=dict, repr=False)
 
 
 @dataclass

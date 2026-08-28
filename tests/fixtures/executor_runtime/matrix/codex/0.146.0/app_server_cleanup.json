@@ -9,16 +9,18 @@
   },
   "exact_members": {
     "notifications": [
+      "thread/archived",
       "thread/deleted"
     ],
     "requests": [
+      "thread/archive",
       "thread/delete",
       "thread/read"
     ]
   },
   "integration_owner": "SESSION integrates through the named groups exposed by agent_bridge_connect.codex_app_server",
   "member_policy": "closed set; extra schema members are recorded but never relied on",
-  "notification_policy": "thread/deleted is advisory because supported live stdio can omit it; RPC success plus fresh thread/read and thread/list absence is authoritative",
+  "notification_policy": "thread/archived and thread/deleted are advisory because supported live stdio can omit them; the thread/archive RPC acknowledgement is a mandatory precondition for thread/delete, and fresh thread/read plus thread/list absence are recorded as diagnostics",
   "surface": "app_server_cleanup",
   "verification": "members must be present in app_server_schema.json definitions"
 }

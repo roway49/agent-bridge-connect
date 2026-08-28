@@ -681,7 +681,7 @@ def _render_report_md(report: dict[str, Any]) -> str:
             f"- Cleanup retryable: `{'yes' if session_cleanup.get('retryable') else 'no'}`",
         ]
     )
-    if session_cleanup.get("version") == 3:
+    if session_cleanup.get("version") in (3, 4):
         verification = session_cleanup.get("verification") or {}
         cli = verification.get("cli") if isinstance(verification, dict) else {}
         desktop_backend = verification.get("desktop_backend") if isinstance(verification, dict) else {}
@@ -704,6 +704,15 @@ def _render_report_md(report: dict[str, Any]) -> str:
                 f"- Desktop verification (aggregate): `{desktop_status}` checked_at=`{desktop_checked_at}`",
             ]
         )
+    if session_cleanup.get("version") == 4:
+        commands = session_cleanup.get("commands") or {}
+        for command in ("archive", "delete"):
+            entry = commands.get(command) if isinstance(commands, dict) else None
+            status = entry.get("status") if isinstance(entry, dict) else "not_requested"
+            checked_at = entry.get("checked_at") if isinstance(entry, dict) else ""
+            lines.append(
+                f"- Cleanup `{command}` command: `{status or 'not_requested'}` checked_at=`{checked_at}`"
+            )
     if grant:
         lines.extend(
             [

@@ -546,17 +546,30 @@ mock 通过不能替代真实 CLI；真实任务成功也不能替代源码、�
 
 ### 1.0.4A：Codex session continuation guard（当前未闭环）
 
-- Codex cleanup receipt 使用向后兼容 v3：`cli`、`desktop_backend`、`desktop_live` 分开记录，公共视图
-  保留 `desktop` 聚合字段；只有三项均为 `absent` 才能形成 cleanup success；v2 的 `desktop` 读作
-  `desktop_backend`，`desktop_live` 为 `unverified`；
+- Codex cleanup receipt 使用向后兼容 v4：`cli`、`desktop_backend`、`desktop_live` 分开记录，公共视图
+  保留 `desktop` 聚合字段；并新增有界 `commands.archive`/`commands.delete` status/checked_at 条目
+  （只允许 `not_requested`、`acknowledged`、`confirmed`、`failed`、`unverified`、`not_applicable`）。
+  v1/v2/v3 历史按原样读取与投影，绝不改写历史或追溯关闭旧失败；
+- 发布门控是官方 archive→delete 命令闭环：同一 App Server 连接先 `thread/archive` 并等待 RPC
+  acknowledgement，确认后才发送 `thread/delete`；archive 未确认（超时、传输中断、错误或
+  target-not-found）时 delete 调用为零。两条命令均 `acknowledged`/`confirmed` 才能形成 cleanup
+  success；新连接 `thread/read` 与分页 active/archived 全 source-kind `thread/list` 只是非门控
+  diagnostics，当前 Codex Desktop 刷新延迟被接受且不阻塞，`desktop_live` 在该策略下为
+  `not_applicable`。排序依据是 `SQKX-001` 真实 canary：先 delete 后 archive 返回 target-not-found；
+  该 canary 只解释排序，不证明新实现；
 - `transport=auto` 且有官方 Codex receipt 时，执行和 cleanup 均走 App Server；显式 `cli/direct` 才能
-  进入 CLI fallback，CLI exit 0 只是动作证据；App Server backend absent 但 live present 必须报
-  `codex_desktop_ui_stale`，无受支持 live 通道必须报 `codex_desktop_verification_unavailable`；
+  进入 CLI fallback，且 fallback 保留 `official_session_delete` 策略名、永不冒用 archive 门控；
+  CLI exit 0 只是动作证据；App Server backend absent 但 live present 记录 `codex_desktop_ui_stale`
+  诊断；无受支持 live 通道记录 `codex_desktop_verification_unavailable` 诊断；二者均不阻塞命令闭环
+  成功；
+- 部分命令证据（尤其已确认的 archive）随 receipt 与 cleanup 事件持久化：重试与 Runner 重启不得
+  丢失已确认的 archive，也不得伪造 delete 调用；已登记派生会话按同一规则清理，保持 primary-first
+  与最深/最新顺序；
 - collaboration_spawn 必须同时通过版本 fixture 与 live probe。Codex 0.147.0 frozen fixture 缺少
   `collabAgentToolCall`、`spawnAgent`、`receiverThreadId`，因此生产派生会话保持 unsupported；不从 Prompt、
   普通输出、进程或私有存储推断 child session；
-- `SESSION-104-001` 当前仍是 P0 未完成：自动化和 backend canary 证据不替代 Desktop 实时同步及应用
-  重启后复验。禁止私库扫描、GUI 自动删除和强制重启。
+- 禁止事项不变：私库扫描、GUI 自动删除/自动化、强制刷新/重启、dispatcher conversation 清理、
+  用户或无关会话清理。
 - GitHub `v1.0.3A2`、PyPI `1.0.3a2`、macOS bundle、Intel/Apple Silicon Homebrew bottle 已发布；
 - `1.0.3A` 自 2026-08-26 起冻结。除发布资产完整性或高风险安全问题外，不回填新功能、状态机、
   schema、权限策略或 CLI；后续需求只进入 `1.0.4A` 清单。

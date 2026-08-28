@@ -23,6 +23,7 @@ from agent_bridge_connect.adapters import (
 from agent_bridge_connect.codex_session_cleanup import (
     CODEX_DESKTOP_UI_STALE_CODE,
     CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE,
+    CODEX_SESSION_ARCHIVE_INVALID_ID_CODE,
     CODEX_SESSION_DELETE_FAILED_CODE,
     CODEX_SESSION_DELETE_INVALID_ID_CODE,
     CODEX_SESSION_DELETE_STILL_PRESENT_CODE,
@@ -173,9 +174,11 @@ class CodexExecutor(CLIExecutorBase):
         if self.agent_bin is None:
             return _codex_cleanup_unsupported()
         if self._uses_cleanup_app_server(request):
+            # SESSION-104-001: the official App Server sequence is always
+            # archive first (acknowledged) then delete.
             return SessionCleanupCapability(
                 "supported",
-                "official_session_delete",
+                "official_session_archive_then_delete",
             )
         try:
             completed = subprocess.run(
@@ -195,7 +198,7 @@ class CodexExecutor(CLIExecutorBase):
         )
 
     def cleanup_session(self, request: SessionCleanupRequest) -> SessionCleanupResult:
-        """Delete one exact official UUID through the official cleanup chain."""
+        """Archive-then-delete one exact official UUID through the official chain."""
         if request.retain is True:
             return SessionCleanupResult("retained", "not_applicable", "retain")
         request_error = _codex_cleanup_request_error(request)
@@ -203,7 +206,7 @@ class CodexExecutor(CLIExecutorBase):
             return SessionCleanupResult(
                 "failed",
                 "supported",
-                "official_session_delete",
+                _codex_cleanup_result_strategy(request),
                 request_error,
                 False,
             )
@@ -228,6 +231,7 @@ class CodexExecutor(CLIExecutorBase):
         request: SessionCleanupRequest,
     ) -> SessionCleanupResult:
         verification = _unknown_cleanup_verification()
+        commands = _unknown_cleanup_commands()
         try:
             assert self.agent_bin is not None
             root = _cleanup_workspace_root(request)
@@ -244,6 +248,7 @@ class CodexExecutor(CLIExecutorBase):
             )
             observation = cleanup_client.delete_and_verify(request.session_id)
             verification = observation.verification()
+            commands = observation.commands()
         except CodexSessionCleanupError as exc:
             live = self._desktop_live_cleanup_verification(request)
             verification = {
@@ -259,10 +264,11 @@ class CodexExecutor(CLIExecutorBase):
             return SessionCleanupResult(
                 "failed",
                 "supported",
-                "official_session_delete",
+                OFFICIAL_SESSION_ARCHIVE_THEN_DELETE,
                 exc.code,
                 exc.retryable,
                 verification=verification,
+                commands=exc.commands or _unknown_cleanup_commands(),
             )
         except (OSError, TransportClosed, RuntimeError):
             live = self._desktop_live_cleanup_verification(request)
@@ -273,10 +279,11 @@ class CodexExecutor(CLIExecutorBase):
             return SessionCleanupResult(
                 "failed",
                 "supported",
-                "official_session_delete",
+                OFFICIAL_SESSION_ARCHIVE_THEN_DELETE,
                 CODEX_SESSION_DELETE_TRANSPORT_LOST_CODE,
                 True,
                 verification=verification,
+                commands=_unknown_cleanup_commands(),
             )
 
         try:
@@ -289,34 +296,49 @@ class CodexExecutor(CLIExecutorBase):
         cli_status = verification["cli"]["status"]
         backend_status = desktop_backend["status"]
         live_status = desktop_live["status"]
-        if (
-            cli_status == "absent"
-            and backend_status == "absent"
-            and live_status == "absent"
+        # SESSION-104-001: under the archive-then-delete gate the two
+        # acknowledged commands are the success proof.  The fresh read/list
+        # observations stay as non-gating diagnostics, and the current Codex
+        # Desktop refresh delay is accepted: desktop_live becomes
+        # not_applicable and backend/live states never block the result.
+        if commands.get("archive", {}).get("status") in {"acknowledged", "confirmed"} and (
+            commands.get("delete", {}).get("status") in {"acknowledged", "confirmed"}
         ):
+            verification["desktop_live"] = {
+                "status": "not_applicable",
+                "checked_at": commands.get("delete", {}).get("checked_at")
+                or _cleanup_now(),
+            }
             return SessionCleanupResult(
-                "succeeded",
+                "succeeded" if cli_status == "absent" else "failed",
                 "supported",
-                "official_session_delete",
+                OFFICIAL_SESSION_ARCHIVE_THEN_DELETE,
+                ""
+                if cli_status == "absent"
+                else CODEX_SESSION_DELETE_STILL_PRESENT_CODE,
+                False,
                 verification=verification,
+                commands=commands,
             )
         if backend_status == "absent" and live_status == "present":
             return SessionCleanupResult(
                 "failed",
                 "supported",
-                "official_session_delete",
+                OFFICIAL_SESSION_ARCHIVE_THEN_DELETE,
                 CODEX_DESKTOP_UI_STALE_CODE,
                 False,
                 verification=verification,
+                commands=commands,
             )
         if cli_status == "present" or backend_status == "present":
             return SessionCleanupResult(
                 "failed",
                 "supported",
-                "official_session_delete",
+                OFFICIAL_SESSION_ARCHIVE_THEN_DELETE,
                 CODEX_SESSION_DELETE_STILL_PRESENT_CODE,
                 False,
                 verification=verification,
+                commands=commands,
             )
         if (
             cli_status == "absent"
@@ -326,20 +348,22 @@ class CodexExecutor(CLIExecutorBase):
             return SessionCleanupResult(
                 "failed",
                 "supported",
-                "official_session_delete",
+                OFFICIAL_SESSION_ARCHIVE_THEN_DELETE,
                 CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE,
                 False,
                 verification=verification,
+                commands=commands,
             )
         return SessionCleanupResult(
             "failed",
             "supported",
-            "official_session_delete",
+            OFFICIAL_SESSION_ARCHIVE_THEN_DELETE,
             CODEX_SESSION_DELETE_STILL_PRESENT_CODE
             if cli_status == "present"
             else CODEX_SESSION_DELETE_FAILED_CODE,
             False,
             verification=verification,
+            commands=commands,
         )
 
     def _desktop_live_cleanup_verification(
@@ -1489,6 +1513,23 @@ def _unknown_cleanup_verification() -> dict[str, dict[str, str]]:
     }
 
 
+# SESSION-104-001 strategy name.  The App Server path is the only producer;
+# the explicit cli/direct fallback keeps ``official_session_delete`` so the
+# fallback can never claim the archive gate it does not perform.
+OFFICIAL_SESSION_ARCHIVE_THEN_DELETE = "official_session_archive_then_delete"
+_CODEX_CLEANUP_REQUEST_STRATEGIES = frozenset(
+    {"official_session_delete", OFFICIAL_SESSION_ARCHIVE_THEN_DELETE}
+)
+
+
+def _unknown_cleanup_commands() -> dict[str, dict[str, str]]:
+    """Bounded v4 command evidence when nothing can be proven (fail closed)."""
+    return {
+        "archive": {"status": "unverified", "checked_at": _cleanup_now()},
+        "delete": {"status": "unverified", "checked_at": _cleanup_now()},
+    }
+
+
 def _cleanup_workspace_root(request: SessionCleanupRequest) -> Path:
     workspace = request.workspace if isinstance(request.workspace, dict) else {}
     candidate = str(workspace.get("root") or workspace.get("project_root") or ".")
@@ -1580,7 +1621,7 @@ def _codex_cleanup_request_error(request: SessionCleanupRequest) -> str:
         return "codex_cleanup_executor_mismatch"
     if request.retain is not False or request.project_mode != "none":
         return "codex_cleanup_mode_invalid"
-    if request.strategy != "official_session_delete":
+    if request.strategy not in _CODEX_CLEANUP_REQUEST_STRATEGIES:
         return "codex_cleanup_strategy_mismatch"
     if (
         request.official_receipt_bound is not True
@@ -1591,10 +1632,29 @@ def _codex_cleanup_request_error(request: SessionCleanupRequest) -> str:
     try:
         parsed = uuid.UUID(session_id)
     except (AttributeError, ValueError):
-        return CODEX_SESSION_DELETE_INVALID_ID_CODE
+        return _codex_invalid_id_code(request.strategy)
     if str(parsed) != session_id.lower():
-        return CODEX_SESSION_DELETE_INVALID_ID_CODE
+        return _codex_invalid_id_code(request.strategy)
     return ""
+
+
+def _codex_invalid_id_code(strategy: str) -> str:
+    """Return the strategy-scoped invalid-id code without widening the gate."""
+    if strategy == "official_session_archive_then_delete":
+        return CODEX_SESSION_ARCHIVE_INVALID_ID_CODE
+    return CODEX_SESSION_DELETE_INVALID_ID_CODE
+
+
+def _codex_cleanup_result_strategy(request: SessionCleanupRequest) -> str:
+    """Mirror the caller's strategy so a legacy request keeps its own name.
+
+    The new archive-then-delete strategy is only ever claimed by the App
+    Server path that actually performs the archive gate; the explicit
+    cli/direct fallback keeps reporting ``official_session_delete``.
+    """
+    if request.strategy == "official_session_archive_then_delete":
+        return "official_session_archive_then_delete"
+    return "official_session_delete"
 
 
 def _codex_writable_roots(task_packet: dict[str, Any], workspace_root: Path) -> list[Path]:

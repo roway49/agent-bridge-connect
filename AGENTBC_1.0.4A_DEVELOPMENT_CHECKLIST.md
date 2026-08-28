@@ -381,35 +381,65 @@ callback invalid。
 > `collabAgentToolCall`、`spawnAgent`、`receiverThreadId`，所以 production collaboration_spawn
 > wiring 保持 disabled。App Server backend `thread/list` 缺失只能证明 backend absent；当前没有受支持
 > Desktop 实时读取/重启后复验通道，必须记录 `codex_desktop_verification_unavailable`，不得将本项关闭。
+>
+> 2026-08-29 `QEEY-001` 修订：release gate 改为「官方 archive → delete 命令闭环」。
+> `thread/archive` RPC 必须先发送并取得绑定同一 UUID 的 RPC acknowledgement，之后才允许发送
+> `thread/delete`；archive 未确认时 delete 调用次数必须为零。`thread/archived` 与
+> `thread/deleted` 仅作 advisory。新连接 `thread/read` 与分页 active/archived 全 source-kind
+> `thread/list` 观察保留为非门控 diagnostics；当前 Codex Desktop 刷新延迟被接受且不阻塞成功；
+> `desktop_live` 在 archive-then-delete 策略下记为 `not_applicable`。私有库扫描、GUI 自动化、
+> 强制刷新/重启、dispatcher 清理与无关会话清理依旧禁止。排序依据：`SQKX-001` 真实 canary 证明
+> 先 delete 后 archive 会返回 target-not-found（详见 `SESSION-104-001_CANARY_EVIDENCE.md`）；
+> 该历史 canary 只解释排序，不证明新实现。
 
 - 只清理由 AgentBC Executor 创建并从官方 early receipt 取得精确 ID 的临时会话；dispatcher
   conversation、用户会话、未登记会话和模糊名称匹配永不进入清理候选；
 - 测试必须把同一官方 session ID 在 Codex CLI `resume` 入口与 Codex Desktop 恢复列表中的可见性
   关联起来；若上游不提供可验证关联，记录 `unsupported`/blocker，禁止扫描或改写私有数据库；
-- `thread/delete` RPC 成功只是动作证据，不是双端清理完成证据；`thread/deleted` 在受支持的真实 stdio
-  canary 中可能不发出，只作为绑定同一 UUID 的辅助事件；权威完成必须由新连接 `thread/read` 返回不存在，
-  并由覆盖全部 source kind、分页和归档分区的 `thread/list` 证明 Desktop 恢复列表无该精确 UUID；
+- 发布门控是官方 archive→delete 命令闭环：同一官方 App Server 连接上先 `thread/archive` 并等待
+  其 RPC acknowledgement（`thread/archived` 通知只作 advisory），确认后才发送 `thread/delete`；
+  archive 超时、传输中断、RPC 错误或 target-not-found 都必须以稳定 archive 错误码 fail closed，
+  且 delete 调用次数为零；`thread/delete` 的 RPC acknowledgement 同样强制，`thread/deleted`
+  通知仍为 advisory；
+- 新连接 `thread/read` 缺失与覆盖全部 source kind、分页和归档分区的 `thread/list` 缺失保留为
+  非门控 diagnostics：它们不阻塞成功，也不作为成功条件；Desktop 当前刷新延迟被接受；
+- cleanup receipt v4（向后兼容）新增有界 `commands.archive` 与 `commands.delete`
+  status/checked_at 条目，状态只允许 `not_requested`、`acknowledged`、`confirmed`、`failed`、
+  `unverified`、`not_applicable`；Codex cleanup 只有两条命令均 `acknowledged`/`confirmed` 才能
+  `succeeded`；部分命令证据（尤其已确认的 archive）随 receipt 与 cleanup 事件持久化，重试与
+  Runner 重启不得丢失；已登记派生会话按同一规则清理，并保持 primary-first 与最深/最新顺序；
+- 显式 `cli/direct` fallback 只保留 `official_session_delete` 策略名，永不冒用
+  `official_session_archive_then_delete`；CLI exit 0 仍只是动作证据；
 - 覆盖 completed、failed、cancelled、permission Deny/timeout、transport lost、Runner/Desktop 重启，
   并验证同一 receipt 重放幂等；
 - 每个用例同时创建一条非 AgentBC 控制会话作为保留哨兵，证明清理没有扩大到 dispatcher 或用户会话；
-- status/report/doctor 显示 cleanup capability、strategy、attempt、双入口验证状态与稳定 error code，
-  不泄露私有会话路径、原始 prompt 或用户会话清单。
+- status/report/doctor 显示 cleanup capability、strategy、attempt、命令确认状态、验证诊断与稳定
+  error code，不泄露私有会话路径、原始 prompt 或用户会话清单。
 
-完成证据必须包含官方 ID 绑定、cleanup receipt、CLI 与 Desktop 清理前后快照、重启后复验和保留哨兵；
-缺少任一项不得写 `succeeded`。
+完成证据必须包含官方 ID 绑定、cleanup receipt v4 命令闭环（archive 与 delete 均 acknowledged/
+confirmed）、持久化的部分命令证据与保留哨兵；命令闭环缺失任一 acknowledgement 不得写 `succeeded`。
+Desktop 恢复列表的最终肉眼确认是延迟性诊断，不阻塞发布门控。
 
 历史实现证据（2026-08-27）：`agent/codex@d18697f` 完成 cleanup receipt v2、官方 UUID 绑定、
 App Server 删除/新连接 read 验证、status/report/doctor 同源投影与 fail-closed 错误；
 `private/integration@8aa60a6` 完成初次集成，`9fce6b6` 补齐生产 Desktop `thread/list` 全 source kind、
 分页和 archived/non-archived 验证。该段只描述历史实现基线，不构成本次双入口真机验收。
 
-本次 continuation 的可验证结果：cleanup receipt 已升为向后兼容 v3，分别持久化 `cli`、
-`desktop_backend`、`desktop_live`，公共投影保留 `desktop` 聚合字段；`transport=auto` 的有官方 receipt
-路径统一使用 App Server，只有显式 `cli/direct` 允许 CLI action fallback，CLI exit 0 不产生 cleanup
-success。真实 0.147.0 单父 timeout canary 取得官方 thread ID；App Server delete 返回成功，新连接
-`thread/read` 返回缺失，active（3 页）与 archived（1 页）的全 source-kind `thread/list` 均不含该 ID。
-CLI `delete --help` 清理前后均为 exit 0，但仅作 action capability evidence。由于当前 Desktop 实时通道
-与应用重启后证据仍不可用，`SESSION-104-001` 保持未完成。
+`DEWX-001` continuation 的可验证结果（历史基线）：cleanup receipt 曾升为向后兼容 v3，分别持久化
+`cli`、`desktop_backend`、`desktop_live`，公共投影保留 `desktop` 聚合字段；`transport=auto` 的有官方
+receipt 路径统一使用 App Server，只有显式 `cli/direct` 允许 CLI action fallback，CLI exit 0 不产生
+cleanup success。真实 0.147.0 单父 timeout canary 取得官方 thread ID；App Server delete 返回成功，
+新连接 `thread/read` 返回缺失，active（3 页）与 archived（1 页）的全 source-kind `thread/list` 均不含
+该 ID。CLI `delete --help` 清理前后均为 exit 0，但仅作 action capability evidence。该历史 canary 只
+证明当时的 delete-only 链路，不构成 archive-then-delete 门控的验收。
+
+`QEEY-001` 实施结果（2026-08-29）：receipt 升为向后兼容 v4；`codex.session_cleanup` 能力组扩展为
+`thread/archive`、`thread/delete`、`thread/read` 与 advisory `thread/archived`、`thread/deleted`；
+新增策略 `official_session_archive_then_delete` 与 archive 稳定错误码
+（`codex_session_archive_failed`、`codex_session_archive_invalid_session_id`、
+`codex_session_archive_target_missing`、`codex_session_archive_timeout`、
+`codex_session_archive_transport_lost`）；App Server 清理路径先 archive 后 delete，零确认即零删除；
+status/report/doctor 投影命令证据。
 
 ### 4.9 `FLOW-104-003`：Failed 任务 retry 与 handoff
 

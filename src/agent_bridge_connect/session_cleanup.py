@@ -49,6 +49,7 @@ from .auxiliary_sessions import (
 from .codex_session_cleanup import (
     CODEX_DESKTOP_UI_STALE_CODE,
     CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE,
+    CODEX_SESSION_ARCHIVE_FAILED_CODE,
     CODEX_SESSION_DELETE_FAILED_CODE,
     CODEX_SESSION_DELETE_STILL_PRESENT_CODE,
 )
@@ -62,6 +63,7 @@ from .execution_policy import (
     TERMINAL_SESSION_CLEANUP_STATUSES,
     _empty_cleanup_verification,
     cleanup_verification_public_view,
+    normalize_cleanup_commands,
     normalize_cleanup_verification,
     read_session_cleanup_receipt,
     session_cleanup_blockers,
@@ -136,17 +138,59 @@ def _sanitize_strategy(value: Any) -> str:
     return ""
 
 
+def _codex_archive_strategy(strategy: Any) -> bool:
+    """Return True when this receipt runs the official archive-then-delete gate."""
+    return str(strategy or "") == "official_session_archive_then_delete"
+
+
 def _strict_codex_success_result(
     result: SessionCleanupResult,
     verification: dict[str, dict[str, str]] | None,
-) -> tuple[SessionCleanupResult, dict[str, dict[str, str]]]:
-    """Fail closed if an adapter claims Codex success without all three absences."""
+    commands: dict[str, dict[str, str]] | None = None,
+) -> tuple[SessionCleanupResult, dict[str, dict[str, str]], dict[str, dict[str, str]]]:
+    """Fail closed unless both official commands are acknowledged or confirmed.
+
+    Under the archive-then-delete strategy the command acknowledgements are
+    the success proof; ``desktop_live`` becomes ``not_applicable`` and the
+    backend/read/list sides are non-gating diagnostics.  A delete-only
+    ``official_session_delete`` result keeps the historical strict sides.
+    """
     checked = verification or normalize_cleanup_verification(None)
+    checked_commands = normalize_cleanup_commands(commands) if commands else None
+    if _codex_archive_strategy(result.strategy):
+        statuses = {
+            (checked_commands or {}).get("archive", {}).get("status"),
+            (checked_commands or {}).get("delete", {}).get("status"),
+        }
+        if statuses <= {"acknowledged", "confirmed"} and None not in statuses:
+            checked["desktop_live"] = {
+                "status": "not_applicable",
+                "checked_at": checked["desktop_live"]["checked_at"]
+                or (checked_commands or {}).get("delete", {}).get("checked_at", ""),
+            }
+            return result, checked, checked_commands or normalize_cleanup_commands(
+                "not_applicable"
+            )
+        # Command proof missing: choose the stable archive-scoped code.
+        code = CODEX_SESSION_ARCHIVE_FAILED_CODE
+        return (
+            SessionCleanupResult(
+                state="failed",
+                capability="supported",
+                strategy=result.strategy or "official_session_archive_then_delete",
+                error_code=code,
+                retryable=False,
+                verification=checked,
+                commands=checked_commands or normalize_cleanup_commands(None),
+            ),
+            checked,
+            checked_commands or normalize_cleanup_commands(None),
+        )
     cli_status = checked["cli"]["status"]
     backend_status = checked["desktop_backend"]["status"]
     live_status = checked["desktop_live"]["status"]
     if all(checked[side]["status"] == "absent" for side in CLEANUP_VERIFICATION_SIDES):
-        return result, checked
+        return result, checked, checked_commands or {}
     if backend_status == "absent" and live_status == "present":
         code = CODEX_DESKTOP_UI_STALE_CODE
     elif cli_status == "present" or backend_status == "present":
@@ -169,6 +213,7 @@ def _strict_codex_success_result(
             verification=checked,
         ),
         checked,
+        checked_commands or {},
     )
 
 
@@ -482,7 +527,12 @@ class SessionCleanupCoordinator:
             "pending",
             occurred_at,
             capability="supported",
-            strategy=strategy or "official_session_delete",
+            strategy=strategy
+            or (
+                "official_session_archive_then_delete"
+                if str(entry.get("executor") or "").strip().lower() == "codex"
+                else "official_session_delete"
+            ),
         )
 
     def _auxiliary_crash_recovery(
@@ -564,18 +614,24 @@ class SessionCleanupCoordinator:
             if result.verification
             else None
         )
-        if (
-            result_verification is not None
-            and str(entry.get("executor") or "").strip().lower() != "codex"
-        ):
+        result_commands = (
+            normalize_cleanup_commands(result.commands)
+            if result.commands
+            else None
+        )
+        if result_verification is not None and str(
+            entry.get("executor") or ""
+        ).strip().lower() != "codex":
             result_verification = _empty_cleanup_verification("not_applicable")
+            result_commands = normalize_cleanup_commands("not_applicable")
         if (
             result.state == "succeeded"
             and str(entry.get("executor") or "").strip().lower() == "codex"
         ):
-            result, result_verification = _strict_codex_success_result(
+            result, result_verification, result_commands = _strict_codex_success_result(
                 result,
                 result_verification,
+                result_commands,
             )
         if result.state == "succeeded":
             new_receipt = self._transition_auxiliary(
@@ -586,6 +642,7 @@ class SessionCleanupCoordinator:
                 capability="supported",
                 strategy=_sanitize_strategy(result.strategy) or current["strategy"],
                 verification=result_verification,
+                commands=result_commands,
             )
         elif result.state == "unsupported":
             new_receipt = self._transition_auxiliary(
@@ -597,6 +654,7 @@ class SessionCleanupCoordinator:
                 strategy="none",
                 error_code=_sanitize_error_code(result.error_code, "session_cleanup_unsupported"),
                 verification=result_verification,
+                commands=result_commands,
             )
         else:
             retryable, next_attempt_at = (
@@ -610,11 +668,12 @@ class SessionCleanupCoordinator:
                 "failed",
                 occurred_at,
                 capability=current["capability"] or "supported",
-                strategy=current["strategy"] or "official_session_delete",
+                strategy=current["strategy"] or self._auxiliary_request_strategy(entry),
                 error_code=_sanitize_error_code(result.error_code),
                 retryable=retryable,
                 next_attempt_at=next_attempt_at,
                 verification=result_verification,
+                commands=result_commands,
             )
         updated = self._auxiliary_with_receipt(entry, new_receipt, occurred_at)
         self._persist_auxiliary(task, updated, "result", occurred_at)
@@ -785,6 +844,12 @@ class SessionCleanupCoordinator:
                 "next_attempt_at": receipt["next_attempt_at"],
                 "error_code": receipt["error_code"],
                 "verification": cleanup_verification_public_view(receipt.get("verification")),
+                # SESSION-104-001: auxiliary partial command evidence is
+                # persisted with the same durability rules as the primary.
+                "commands": {
+                    command: dict((receipt.get("commands") or {}).get(command) or {})
+                    for command in ("archive", "delete")
+                },
                 "created_at": occurred_at,
             },
         )
@@ -809,7 +874,12 @@ class SessionCleanupCoordinator:
             task=task,
             occurred_at=occurred_at,
             capability="supported",
-            strategy=request.strategy or "official_session_delete",
+            strategy=request.strategy
+            or (
+                "official_session_archive_then_delete"
+                if str(session.get("executor") or "").strip().lower() == "codex"
+                else "official_session_delete"
+            ),
         )
 
     def _crash_recovery_receipt(
@@ -906,15 +976,24 @@ class SessionCleanupCoordinator:
             if result.verification
             else None
         )
-        if (
-            result_verification is not None
-            and str(session.get("executor") or "").strip().lower() != "codex"
-        ):
+        result_commands = (
+            normalize_cleanup_commands(result.commands)
+            if result.commands
+            else None
+        )
+        if result_verification is not None and str(
+            session.get("executor") or ""
+        ).strip().lower() != "codex":
             result_verification = _empty_cleanup_verification("not_applicable")
-        if result.state == "succeeded" and str(session.get("executor") or "").strip().lower() == "codex":
-            result, result_verification = _strict_codex_success_result(
+            result_commands = normalize_cleanup_commands("not_applicable")
+        if (
+            result.state == "succeeded"
+            and str(session.get("executor") or "").strip().lower() == "codex"
+        ):
+            result, result_verification, result_commands = _strict_codex_success_result(
                 result,
                 result_verification,
+                result_commands,
             )
         if result.state == "succeeded":
             new_receipt = self._transition(
@@ -925,6 +1004,7 @@ class SessionCleanupCoordinator:
                 capability="supported",
                 strategy=_sanitize_strategy(result.strategy) or pending["strategy"],
                 verification=result_verification,
+                commands=result_commands,
             )
         elif result.state == "unsupported":
             new_receipt = self._transition(
@@ -936,6 +1016,7 @@ class SessionCleanupCoordinator:
                 strategy="none",
                 error_code=_sanitize_error_code(result.error_code, "session_cleanup_unsupported"),
                 verification=result_verification,
+                commands=result_commands,
             )
         else:
             retryable, next_attempt_at = (
@@ -954,6 +1035,7 @@ class SessionCleanupCoordinator:
                 retryable=retryable,
                 next_attempt_at=next_attempt_at,
                 verification=result_verification,
+                commands=result_commands,
             )
         self._persist_receipt(task, new_receipt, "result", occurred_at)
         return self._result(task_id, new_receipt["state"], [], receipt=new_receipt)
@@ -994,6 +1076,9 @@ class SessionCleanupCoordinator:
         executor = str(session.get("executor") or "").strip().lower()
         if executor == "claude" and project_mode == "ephemeral":
             return "claude_project_purge"
+        if executor == "codex":
+            # SESSION-104-001: official Codex cleanup always archives first.
+            return "official_session_archive_then_delete"
         return "official_session_delete"
 
     @staticmethod
@@ -1114,6 +1199,13 @@ class SessionCleanupCoordinator:
                 "next_attempt_at": receipt["next_attempt_at"],
                 "error_code": receipt["error_code"],
                 "verification": cleanup_verification_public_view(receipt.get("verification")),
+                # SESSION-104-001: bounded per-command evidence survives in the
+                # durable event log so retries and Runner restarts never lose
+                # an acknowledged archive.
+                "commands": {
+                    command: dict((receipt.get("commands") or {}).get(command) or {})
+                    for command in ("archive", "delete")
+                },
                 "created_at": occurred_at,
             },
         )

@@ -510,7 +510,7 @@ def _one_auxiliary_diagnostic(entry: Any, task_id: str, now: datetime) -> dict[s
         "error_code": cleanup["error_code"],
         "retryable": cleanup["retryable"],
     }
-    for field in ("version", "strategy", "verification"):
+    for field in ("version", "strategy", "verification", "commands"):
         if field in cleanup:
             base[field] = cleanup[field]
     if retain:
@@ -735,6 +735,7 @@ def _render_cleanup(cleanup: dict[str, Any]) -> list[str]:
     for diagnostic in cleanup.get("diagnostics", []):
         strategy = diagnostic.get("strategy")
         verification = diagnostic.get("verification")
+        commands = diagnostic.get("commands")
         detail = ""
         if strategy:
             detail += f" strategy={_text_value(strategy)}"
@@ -748,6 +749,13 @@ def _render_cleanup(cleanup: dict[str, Any]) -> list[str]:
                 f" desktop_backend={_text_value(desktop_backend.get('status'))}"
                 f" desktop_live={_text_value(desktop_live.get('status'))}"
                 f" desktop={_text_value(desktop.get('status'))}"
+            )
+        if isinstance(commands, dict) and commands:
+            archive = commands.get("archive") if isinstance(commands.get("archive"), dict) else {}
+            delete = commands.get("delete") if isinstance(commands.get("delete"), dict) else {}
+            detail += (
+                f" archive={_text_value(archive.get('status'))}"
+                f" delete={_text_value(delete.get('status'))}"
             )
         lines.append(
             "  "
