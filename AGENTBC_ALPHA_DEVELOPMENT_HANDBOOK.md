@@ -3,7 +3,7 @@
 > 当前公开版本：AgentBC `1.0.3A` / Python `1.0.3a2`
 > 当前开发方向：`1.0.4A` 控制面机械判定、结构化流程与受保护重构
 > 私有开发入口：`/Users/wangroway/hermes-team/codex/AgentBC_Temp/agent-worktrees/integration`
-> 公开仓库：<https://github.com/roway49/agent-bridge-connect>
+> 公开仓库：[https://github.com/roway49/agent-bridge-connect](https://github.com/roway49/agent-bridge-connect)
 > 文档属性：私有长期维护基线；生成公开候选时必须排除本文件
 
 ## 0. 手册定位
@@ -160,14 +160,14 @@ TASKCODE-NNN   精确迭代，例如 4XMC-001
 
 ### 3.3 数据所有权
 
-| 数据 | 所有者 | 用途 | 清理边界 |
-| --- | --- | --- | --- |
-| Task Brief | Core | Executor 输入和用户核对 | 活跃及验收期保留 |
-| Report | Core | 终态、步骤、路径和错误摘要 | `record clean` 永不删除 |
-| Record | Core | 权威状态与有界运行证据 | 只清理 eligible 终态诊断 |
-| Artifact | 用户/Executor | 任务产物 | 仅删除 AgentBC 托管产物 |
-| Customer project | 用户 | 用户工程 | 永不自动删除 |
-| Executor session | 上游 Executor | 同会话恢复 | 只走官方定向清理能力 |
+| 数据             | 所有者        | 用途                       | 清理边界                  |
+| ---------------- | ------------- | -------------------------- | ------------------------- |
+| Task Brief       | Core          | Executor 输入和用户核对    | 活跃及验收期保留          |
+| Report           | Core          | 终态、步骤、路径和错误摘要 | `record clean` 永不删除 |
+| Record           | Core          | 权威状态与有界运行证据     | 只清理 eligible 终态诊断  |
+| Artifact         | 用户/Executor | 任务产物                   | 仅删除 AgentBC 托管产物   |
+| Customer project | 用户          | 用户工程                   | 永不自动删除              |
+| Executor session | 上游 Executor | 同会话恢复                 | 只走官方定向清理能力      |
 
 ## 4. 任务生命周期
 
@@ -175,13 +175,13 @@ TASKCODE-NNN   精确迭代，例如 4XMC-001
 
 必须区分任务状态、RunLease 状态和健康颜色。
 
-| 状态 | 含义 |
-| --- | --- |
-| `pending` / `running` | 等待或正在执行 |
-| `input_required` | 可恢复等待，不是终态 |
-| `completed` | 执行与严格流程合同成立 |
-| `needs_recovery` | 启动、恢复或进程证据不足 |
-| `failed` | 已执行但无法确认合法完成，或用户明确拒绝继续 |
+| 状态                      | 含义                                         |
+| ------------------------- | -------------------------------------------- |
+| `pending` / `running` | 等待或正在执行                               |
+| `input_required`        | 可恢复等待，不是终态                         |
+| `completed`             | 执行与严格流程合同成立                       |
+| `needs_recovery`        | 启动、恢复或进程证据不足                     |
+| `failed`                | 已执行但无法确认合法完成，或用户明确拒绝继续 |
 
 `terminal_states.py` 是公开终态集合的唯一入口。健康颜色只是最近进度与 lease 的展示，
 不能推动任务状态，也不能代替进程证据。
@@ -296,11 +296,11 @@ Runner 解决 Controller 沙箱无法直接访问用户 CLI、profile 和 custom
 
 ### 5.2 Adapter 合同
 
-| Executor | safe | full | session 关键点 |
-| --- | --- | --- | --- |
-| Codex | workspace-write sandbox | 官方 bypass approvals/sandbox | 只接受唯一 `thread.started.thread_id`，resume 不用 `--last` |
-| Claude | safe-mode + acceptEdits | 官方 skip permissions | fresh 使用预分配 session ID，resume 使用精确 ID |
-| Hermes | 正常审批语义，不启用故障排查 safe-mode | `--yolo` | 只接受官方 stderr receipt，禁止猜测或 `--continue` |
+| Executor | safe                                   | full                          | session 关键点                                                 |
+| -------- | -------------------------------------- | ----------------------------- | -------------------------------------------------------------- |
+| Codex    | workspace-write sandbox                | 官方 bypass approvals/sandbox | 只接受唯一`thread.started.thread_id`，resume 不用 `--last` |
+| Claude   | safe-mode + acceptEdits                | 官方 skip permissions         | fresh 使用预分配 session ID，resume 使用精确 ID                |
+| Hermes   | 正常审批语义，不启用故障排查 safe-mode | `--yolo`                    | 只接受官方 stderr receipt，禁止猜测或`--continue`            |
 
 具体 argv 必须由当前安装版 CLI help/capability probe 验证。缺少正式能力时返回 unsupported，
 不能猜测别名、降级权限或静默新建 session。
@@ -380,24 +380,24 @@ setup/doctor 区分 current、legacy、missing、modified、partial；更新不�
 
 ## 8. 模块责任索引
 
-| 模块 | 唯一职责 |
-| --- | --- |
-| `protocol.py` / `state_machine.py` / `terminal_states.py` | 模型、转换和终态集合 |
-| `task_id.py` / `task_store.py` | ID、原子持久化与 claim lease |
-| `service.py` | 生命周期、链路、干预与终态领域规则 |
-| `path_model.py` | Path Plan 唯一推导与验证 |
-| `execution_contract.py` / `prompt_contract.py` | final marker 与共享 prompt 合同 |
-| `execution_policy.py` | 资源、session、cleanup 和公共执行策略投影 |
-| `permission_modes.py` / `permission_grants.py` | 权限模式与一次性授权 |
-| `run_lease.py` / `session_cleanup.py` | 进程证据与终态 session cleanup |
-| `runner.py` | IPC、授权、进程、派发和 maintenance |
-| `executor_registry.py` / `executors/*` | Adapter 构造、argv 与上游结果解析 |
-| `reports.py` / `task_index.py` | Brief、Report 与索引派生视图 |
-| `record_management.py` | Record 预算、README 和诊断清理 |
-| `notifications.py` / `notifiers/*` | 结构化通知与投递 |
-| `doctor.py` | Doctor v2 collectors、projection 与退出码 |
-| `config.py` / `setup.py` / `skill_packages.py` | 配置、发现、安装、更新和 Skill 握手 |
-| `cli.py` | 参数、命令路由、展示和 worker 入口 |
+| 模块                                                            | 唯一职责                                  |
+| --------------------------------------------------------------- | ----------------------------------------- |
+| `protocol.py` / `state_machine.py` / `terminal_states.py` | 模型、转换和终态集合                      |
+| `task_id.py` / `task_store.py`                              | ID、原子持久化与 claim lease              |
+| `service.py`                                                  | 生命周期、链路、干预与终态领域规则        |
+| `path_model.py`                                               | Path Plan 唯一推导与验证                  |
+| `execution_contract.py` / `prompt_contract.py`              | final marker 与共享 prompt 合同           |
+| `execution_policy.py`                                         | 资源、session、cleanup 和公共执行策略投影 |
+| `permission_modes.py` / `permission_grants.py`              | 权限模式与一次性授权                      |
+| `run_lease.py` / `session_cleanup.py`                       | 进程证据与终态 session cleanup            |
+| `runner.py`                                                   | IPC、授权、进程、派发和 maintenance       |
+| `executor_registry.py` / `executors/*`                      | Adapter 构造、argv 与上游结果解析         |
+| `reports.py` / `task_index.py`                              | Brief、Report 与索引派生视图              |
+| `record_management.py`                                        | Record 预算、README 和诊断清理            |
+| `notifications.py` / `notifiers/*`                          | 结构化通知与投递                          |
+| `doctor.py`                                                   | Doctor v2 collectors、projection 与退出码 |
+| `config.py` / `setup.py` / `skill_packages.py`            | 配置、发现、安装、更新和 Skill 握手       |
+| `cli.py`                                                      | 参数、命令路由、展示和 worker 入口        |
 
 `task.py`、`task_board.py`、`task_completion.py` 和未正式接线的 `mcp_server.py` 属于 legacy 或
 dormant 范围，新功能不得继续依赖。删除前仍需查外部导入、补 characterization 并给出迁移。
@@ -496,34 +496,34 @@ mock 通过不能替代真实 CLI；真实任务成功也不能替代源码、�
 
 ## 12. 常见故障定位
 
-| 现象 | 首查 | 原则 |
-| --- | --- | --- |
-| accepted 后无执行 | Runner response、worker run、RunLease | accepted 不是 completed |
-| Task List 变黄/橙 | progress temp、RunLease、input | 颜色不改变状态 |
-| status 与进程矛盾 | task.json、RunLease、Runner identity | 重新派生公共视图 |
-| customer path 被拒绝 | Path Plan、canonical root、Runner roots | 不复制工程规避权限 |
-| safe 无法提交 linked worktree | `.git` containment、permission input | 不扩大 git common dir |
-| permission 没弹窗 | strict marker、官方 session receipt、reason bound | 文本不能授权 |
-| Hermes 没有 session ID | stderr receipt、transport、CLI 版本 | 不猜 ID、不新建 session |
-| Claude 临时目录异常 | frozen project mode/path、Path Plan | 用户工程不 purge |
-| 预算/turns 未生效 | config、task snapshot、argv、Runner audit | 更新只影响新任务 |
-| cleanup 未执行 | terminal、lease、report、notification、capability | 失败不改任务终态 |
-| Doctor 沙箱误报 | Runner storage probe 与 identity | 不信 Controller os.access |
-| Skill 行为仍旧 | manifest/hash、setup update、Agent 会话 | 更新后重启对应会话 |
-| Report 与真实进度不同 | callback、系统事件、progress receipt | 不从自然语言猜进度 |
+| 现象                          | 首查                                              | 原则                      |
+| ----------------------------- | ------------------------------------------------- | ------------------------- |
+| accepted 后无执行             | Runner response、worker run、RunLease             | accepted 不是 completed   |
+| Task List 变黄/橙             | progress temp、RunLease、input                    | 颜色不改变状态            |
+| status 与进程矛盾             | task.json、RunLease、Runner identity              | 重新派生公共视图          |
+| customer path 被拒绝          | Path Plan、canonical root、Runner roots           | 不复制工程规避权限        |
+| safe 无法提交 linked worktree | `.git` containment、permission input            | 不扩大 git common dir     |
+| permission 没弹窗             | strict marker、官方 session receipt、reason bound | 文本不能授权              |
+| Hermes 没有 session ID        | stderr receipt、transport、CLI 版本               | 不猜 ID、不新建 session   |
+| Claude 临时目录异常           | frozen project mode/path、Path Plan               | 用户工程不 purge          |
+| 预算/turns 未生效             | config、task snapshot、argv、Runner audit         | 更新只影响新任务          |
+| cleanup 未执行                | terminal、lease、report、notification、capability | 失败不改任务终态          |
+| Doctor 沙箱误报               | Runner storage probe 与 identity                  | 不信 Controller os.access |
+| Skill 行为仍旧                | manifest/hash、setup update、Agent 会话           | 更新后重启对应会话        |
+| Report 与真实进度不同         | callback、系统事件、progress receipt              | 不从自然语言猜进度        |
 
 ## 13. 版本核心变更
 
 本节只保留对当前架构仍有影响的核心变化，不记录开发过程。
 
-### 1.0.1A：可信执行基线
+### 1.0.1A：可信执行基线（已截止）
 
 - 严格 final callback、input_required/respond、RunLease 和终态竞态收口；
 - `inherit|safe|full` 权限审计；
 - dispatcher/executor 溯源、Doctor、构建身份和发布来源；
 - Report、通知、Record 和 Task List 的事实边界明确化。
 
-### 1.0.2A：资源、权限与执行会话治理
+### 1.0.2A：资源、权限与执行会话治理（已截止）
 
 - Claude budget、Hermes max turns 和 session retention 配置；
 - `SESSION-001` 完成三 Executor session receipt、retain/resume 和终态 cleanup 合同；

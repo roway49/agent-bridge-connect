@@ -64,6 +64,37 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `FLOW-104-003` | P0 / 恢复闭环 | 当前终态 `failed` 既不能 `task retry`，也不能作为普通 handoff 源，失败后只能人工绕行 | status/report 给出机械可判定的 retry/handoff 动作；同任务重试与新 iteration 交接均保留审计和进度 | failure taxonomy；`FLOW-104-002` terminal receipts；`FLOW-104-001` steps |
 | `INPUT-104-001` | P0 / 派发阻断 | 显式 custom path 时，位于项目根之外的 `--image`/输入文件被 `image input is outside task roots` 原子拒绝 | 项目根与只读附件根分离；Runner 受控导入外部文件且不扩大 Executor 项目权限 | PathPlan v2；atomic dispatch；input manifest |
 
+### 2.1 P1 待回归项（不新增权威开发项）
+
+| ID | 优先级 | 现场基线 | 回归目标 | 主要依赖 |
+| --- | --- | --- | --- | --- |
+| `RESOURCE-104-001-R1` | P1 / 待回归 | `E52M-002` 的 Hermes run 使用完 `150/150` 次迭代后，Core 已持久化 `input_required(type=choice, kind=resource_limit)`、RunLease 已挂起且 CLI 可响应，但 Codex Desktop 没有显示“提高预算并继续 / 终止任务”弹窗 | 每个仍有效的 resource-limit input 都有且只有一个 Desktop 弹窗；Approve 将当前 Task 上限翻倍并恢复同一官方 session，Deny 单调终止；CLI 响应保持等价兜底，但不能替代 Desktop 真机验收 | `FLOW-104-002` notification delivery；`FLOW-103-001` progress receipt；DialogNotifier |
+| `FLOW-104-003-R1` | P1 / 待回归 | `E52M-003` 中 Hermes 0.20.1 运行 `2h37m` 后以返回码 `0` 结束，但输出停留在代码 diff、未产生 `AGENTBC_FINAL_CALLBACK`；Runner 明确记录 `output_truncated=false`、`marker_seen=false`，且没有可识别的迭代耗尽 receipt | 进程成功退出与任务合同完成继续严格分离；Hermes 必须提供结构化 terminal reason、实际/上限 turns 和最终响应边界。确属资源耗尽时生成唯一可恢复 input；仍有 pending step 却正常退出时给出稳定的 incomplete-exit 分类、保留部分进度并允许受审计 retry/handoff；不得伪造 callback | `FLOW-104-003` failed recovery；`FLOW-103-001` progress receipt；Hermes ACP/CLI terminal receipt |
+
+`RESOURCE-104-001-R1` 的固定验收合同：
+
+- 弹窗只投影持久化的 `agentbc.input`，展示 Task、Executor、已用/当前/下一上限、阻塞原因和两个固定
+  决策按钮；不得从 Agent 文本或 stderr 临时合成；
+- Approve 必须绑定原 `input_id`，保持 Task ID、官方 session ID、冻结权限与已完成进度，将当前上限按
+  已冻结 multiplier 提高后只启动一个 continuation；Deny 不启动 continuation，并记录资源耗尽终态；
+- Desktop 未运行、Notifier 投递失败或应用重启时必须保存可行动的 notification receipt；恢复投递后最多
+  重放一次，已由 CLI 响应或过期的 input 不得再次弹窗；
+- 回归覆盖首次耗尽、第二次耗尽、Runner 重启、Desktop 重启、重复/乱序投递、Approve、Deny、超时及
+  CLI/Desktop 竞争响应；公共 status/report/notification 必须同源；
+- CLI `agentbc task respond ... --approve|--deny` 是弹窗缺失时的正式恢复入口，但仅证明控制面可恢复，
+  不得据此把 Desktop 弹窗回归标记为通过。
+
+`FLOW-104-003-R1` 的固定验收合同：
+
+- 返回码 `0` 只证明 Executor 进程正常结束；只有合法且唯一的 `AGENTBC_FINAL_CALLBACK` 才能声明任务
+  flow completed，Core 不得从 diff、自然语言总结或退出码补写 callback；
+- Hermes terminal receipt 必须绑定 Task、run、官方 session 与冻结资源快照，并明确区分 completed、
+  max-turn/context exhaustion、user stop、transport failure 和 incomplete normal exit；未知原因 fail closed；
+- 资源耗尽分类不得只依赖人类可读 stderr 正则；fixture 与 live probe 必须覆盖当前支持版本，协议未知时保存
+  原始脱敏 reason 并进入可恢复诊断，而不是静默退化为不可重试的 `completion_marker_missing`；
+- 回归覆盖合法 callback、缺 callback 的返回码 0、非零退出、输出截断、最大 turns、上下文耗尽、Runner
+  重启，以及同 Executor retry/跨 Executor handoff；每条路径验证唯一 RunLease、部分进度单调和通知幂等。
+
 ## 3. 开发顺序与并行边界
 
 ### Gate 0：冻结基线
@@ -121,6 +152,8 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 
 - 运行三 Executor permission Approve/Deny/blocked、handoff multi-step、资源耗尽和 terminal failure
   真实 canary；
+- 执行 `RESOURCE-104-001-R1` 的 Desktop/CLI 双入口资源耗尽回归，保存弹窗、notification receipt、
+  同 session continuation、资源上限变化与去重证据；
 - 运行 Update、Homebrew、session teardown/auxiliary cleanup 全套回归；
 - 构建 `1.0.4a1` 候选并完成 macOS bundle、PyPI dist、Homebrew Formula/bottle 与双机验证；
 - 所有 Gate 完成前不创建公开 tag、GitHub Release 或 PyPI 文件。
@@ -415,6 +448,10 @@ callback 的 failed 状态不再作为实现状态来源。
 - custom path 同时传入项目外单图/多图并成功原子派发，证明附件只读、父目录不可访问、失败无残留；
 - handoff 单 step 与 multi-step 分别跨至少两个不同 Executor；
 - progress canary 包含部分 step 完成后资源/permission/transport 阻塞；
+- 资源耗尽 canary 必须触发 `RESOURCE-104-001-R1` 的 Desktop 弹窗；Approve 后同 Task、同 session、
+  唯一 continuation 继续，CLI fallback 只作控制面兜底而不替代 UI 通过证据；
+- Hermes terminal canary 必须触发 `FLOW-104-003-R1` 的正常完成、资源耗尽和 incomplete normal exit 三条
+  路径，证明返回码 `0` 不替代 callback，且缺 marker 的部分进度可通过正式 retry/handoff 继续；
 - terminal canary 注入 report 不可写、record 超限、UI notifier 失败和 Runner 重启；
 - 不把弹窗出现、`accepted`、退出码 0 或聊天总结当通过证据。
 
@@ -459,6 +496,10 @@ callback 的 failed 状态不再作为实现状态来源。
 - custom path 可安全组合项目外只读附件，input manifest 可复验、失败零残留且不扩大项目权限；
 - handoff multi-step 在 dispatch 前完成合同校验，callback 严格一致；
 - progress receipt 单调且不被资源/permission/terminal 覆盖回退；
+- `RESOURCE-104-001-R1` 证明资源耗尽 input 在 Desktop 稳定显示、决策幂等、应用/Runner 重启可重放，
+  且 CLI 响应与 UI 使用同一持久化 input；
+- `FLOW-104-003-R1` 证明 Hermes 的 terminal reason 与 turns receipt 可机械判定，返回码 `0` 且缺失
+  callback 时不会误报完成、丢失部分进度或陷入不可继续的 failed 终态；
 - report/record/notification/cleanup 任一阶段失败时其余阶段仍可独立完成或重放；
 - Update、Homebrew、session cleanup 和 `1.0.3A` 权限行为无回归；
 - integration 与三个 agent 分支干净，Runner identity match，Doctor blocker 为 0；
