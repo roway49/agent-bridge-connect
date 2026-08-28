@@ -211,6 +211,10 @@ def build_doctor_report(
         "blockers",
         lambda: _collect_blockers(effective_board_root, cleanup=cleanup),
     )
+    permission_runtime, permission_runtime_checks = _safe_collect(
+        "permission_runtime",
+        lambda: _collect_permission_runtime(),
+    )
     checks = _build_checks(
         package_checks=package_checks,
         config_checks=config_checks,
@@ -219,6 +223,7 @@ def build_doctor_report(
         skills_checks=skills_checks,
         executors_checks=executors_checks,
         cleanup=cleanup,
+        permission_runtime_checks=permission_runtime_checks,
         blockers_checks=blockers_checks,
     )
     status = _overall_status(checks)
@@ -234,6 +239,7 @@ def build_doctor_report(
         "executors": executors,
         "session_cleanup": cleanup,
         "blockers": blockers,
+        "permission_runtime": permission_runtime,
         "checks": checks,
     }
 
@@ -1435,6 +1441,42 @@ def _collect_blockers(
     )
 
 
+def _collect_permission_runtime() -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """PERM-104-002: project host containment capability and stable codes.
+
+    Only stable capability facts and error codes are exposed; raw argv,
+    tokens and private paths never enter the projection.
+    """
+    from .permission_runtime import (
+        HOST_CONTAINMENT_UNLIFTABLE,
+        PERMISSION_TRANSPORT_UNSUPPORTED,
+        PERMISSION_RUNTIME_BLOCK_CODES,
+    )
+    from .seatbelt import seatbelt_available
+
+    available = seatbelt_available()
+    checks: list[dict[str, str]] = [
+        {
+            "id": "permission.runtime",
+            "status": "healthy" if available else "warning",
+            "message": (
+                "Seatbelt host containment is available for full-mode linked-worktree tasks."
+                if available
+                else "sandbox-exec is unavailable; full-mode linked-worktree tasks cannot expand host containment."
+            ),
+        }
+    ]
+    return (
+        {
+            "seatbelt_available": available,
+            "host_containment_unliftable": HOST_CONTAINMENT_UNLIFTABLE,
+            "permission_transport_unsupported": PERMISSION_TRANSPORT_UNSUPPORTED,
+            "stable_block_codes": sorted(PERMISSION_RUNTIME_BLOCK_CODES),
+        },
+        checks,
+    )
+
+
 def _build_checks(
     *,
     package_checks: list[dict[str, str]],
@@ -1445,6 +1487,7 @@ def _build_checks(
     executors_checks: list[dict[str, str]],
     cleanup: dict[str, Any],
     blockers_checks: list[dict[str, str]],
+    permission_runtime_checks: list[dict[str, str]],
 ) -> list[dict[str, str]]:
     checks: list[dict[str, str]] = [
         *package_checks,
@@ -1453,6 +1496,7 @@ def _build_checks(
         *storage_checks,
         *skills_checks,
         *executors_checks,
+        *permission_runtime_checks,
     ]
     if cleanup["warnings"]:
         checks.append(

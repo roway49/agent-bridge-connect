@@ -1,0 +1,22 @@
+{
+  "captured_live": false,
+  "origin": "PERM-104-002 declared fixture for the declared 2.1.233 baseline (PROTO-104-001).",
+  "surface": "permission_control",
+  "mcp_permission_tool": {
+    "supported": true,
+    "flag": "--permission-prompt-tool",
+    "same_process_approve_deny": true
+  },
+  "stdio_can_use_tool": {
+    "supported": true,
+    "control_response": "control_response",
+    "init_receipt": "system/init",
+    "same_process_approve_deny": true,
+    "transport_death_invalidation": true
+  },
+  "inner_sandbox": {
+    "sandbox_keys": ["sandbox.enabled", "sandbox.failIfUnavailable"],
+    "edit_deny": true,
+    "git_metadata_in_add_dir": false
+  }
+}

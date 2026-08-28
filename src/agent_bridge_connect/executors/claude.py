@@ -53,6 +53,10 @@ from agent_bridge_connect.permission_modes import (
     permission_flags,
     permission_record_from_extensions,
 )
+from agent_bridge_connect.permission_transport import (
+    parse_claude_version,
+    select_claude_control_path,
+)
 from agent_bridge_connect.path_model import (
     validate_managed_cleanup_paths,
     validate_path_plan_workspace,
@@ -580,6 +584,22 @@ class ClaudeExecutor(CLIExecutorBase):
             self._close_run_lease(run_id)
             return StartResult(ok=False, run_id="", message=str(exc))
 
+        # PERM-104-002: the worker selects its permission control path from
+        # the versioned fixture capability matrix.  Unknown combinations fail
+        # closed with permission_transport_unsupported before any session
+        # starts; agent self-reports, stderr and exit codes never select a
+        # control path.
+        if task_packet.get("runner_authorization_required") is True:
+            try:
+                control_path = select_claude_control_path(
+                    parse_claude_version(self._version),
+                    self.supports_permission_prompt_tool(),
+                )
+            except ABCError as exc:
+                self._close_run_lease(run_id)
+                return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
+            self._run_metadata.setdefault(run_id, {})["control_path"] = control_path
+
         execution_session_id = (
             str(execution_session["session_id"]) if execution_session is not None else ""
         )
@@ -810,6 +830,42 @@ class ClaudeExecutor(CLIExecutorBase):
             tool_input=request.get("tool_input") or {},
         )
         summary = core_bounded_summary(executor="claude", operation=operation)
+
+        # PERM-104-002 convergence: an approved-but-ineffective escalation
+        # never creates a second permission input, grant, continuation or
+        # notification.  Only a Runner-attached trusted block context may
+        # re-request after an approve; this returns a fail-closed deny with
+        # the stable code and zero side effects.
+        block_context = task_packet.get("permission_block_context")
+        if isinstance(block_context, dict):
+            from agent_bridge_connect.permission_runtime import (
+                PERMISSION_BLOCK_EVIDENCE_UNAVAILABLE,
+                PERMISSION_RUNTIME_DOMAINS,
+                converge_approved_block,
+            )
+            from agent_bridge_connect.session import control_root_for_task
+
+            domain = str(block_context.get("escalation_domain") or "").strip().lower()
+            if domain:
+                if domain not in PERMISSION_RUNTIME_DOMAINS:
+                    return {
+                        "permission": "deny",
+                        "error": PERMISSION_BLOCK_EVIDENCE_UNAVAILABLE,
+                        "request_id": request_id,
+                    }
+                converged = converge_approved_block(
+                    control_root_for_task(task_id, board_root=board_root),
+                    task_id=task_id,
+                    session_id=session_id,
+                    executor="claude",
+                    operation=operation,
+                    domain=domain,
+                    profile_digest=str(
+                        block_context.get("host_profile_digest") or ""
+                    ).strip(),
+                )
+                if converged is not None:
+                    return {"permission": "deny", "error": converged, "request_id": request_id}
 
         # Concurrent second request fail-closed: only one single-action approval
         # may wait at a time, so one dialog can never authorize two actions.

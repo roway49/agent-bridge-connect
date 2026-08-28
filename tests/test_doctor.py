@@ -41,6 +41,7 @@ _TOP_LEVEL_KEYS = {
     "executors",
     "session_cleanup",
     "blockers",
+    "permission_runtime",
     "checks",
 }
 

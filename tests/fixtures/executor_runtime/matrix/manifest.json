@@ -56,6 +56,10 @@
               "bytes": 619,
               "sha256": "f74e5f3bfef11d80aac6b5ca73cc411f127c02739ea98d1abf29d222ab513df6"
             },
+            "permission_control.json": {
+              "bytes": 660,
+              "sha256": "0a99a15dfc14eab05f854417e8947b4650ee572a0655c870e6f95de5164b178d"
+            },
             "project_purge.json": {
               "bytes": 720,
               "sha256": "45393d57cc2d015b246f87270f0ad83b8d5bb6d7227602a0682c71efc4a39a10"
@@ -97,6 +101,10 @@
             "path_capability.json": {
               "bytes": 650,
               "sha256": "d91362ce508cd0265dd748d409e8b172e10b1dacf25cedaf0b03e48fa6104974"
+            },
+            "permission_control.json": {
+              "bytes": 662,
+              "sha256": "591c30db79ea4faf4fb8d5b126b055ddf0d4a9d42f7f61b00420c0bd3870d641"
             },
             "project_purge.json": {
               "bytes": 752,

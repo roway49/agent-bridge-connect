@@ -20,6 +20,14 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .approval import compute_request_fingerprint
+from .permission_runtime import (
+    PERMISSION_BLOCK_EVIDENCE_UNAVAILABLE,
+    PERMISSION_RUNTIME_DOMAINS,
+    action_fingerprint,
+    block_fingerprint,
+    converge_approved_block,
+    record_block_decision,
+)
 from .session import (
     SessionFirstGate,
     SessionRecoveryRequired,
@@ -416,6 +424,46 @@ class ApprovalControlPlane:
                 evidence = {"pending_request_id": pending.get("request_id"), "request_id": request.request_id}
                 self._recovery(code, message_text, evidence)
                 raise ControlPlaneError(code, message_text, evidence)
+            # PERM-104-002 convergence: an identical approved-but-ineffective
+            # escalation never creates a second permission input.  Only a
+            # trusted structured escalation domain on the block event can
+            # reach this point; stderr, natural language and exit codes are
+            # diagnostics only.
+            domain = str(message.get("escalation_domain") or "").strip().lower()
+            profile_digest = str(message.get("host_profile_digest") or "").strip()
+            if domain:
+                if domain not in PERMISSION_RUNTIME_DOMAINS:
+                    evidence = {"domain": domain, "request_id": request.request_id}
+                    raise ControlPlaneError(
+                        PERMISSION_BLOCK_EVIDENCE_UNAVAILABLE,
+                        "Permission block evidence names an unsupported escalation domain.",
+                        evidence,
+                    )
+                converged = converge_approved_block(
+                    self.root,
+                    task_id=self.task_id,
+                    session_id=exact_session,
+                    executor=self.executor,
+                    operation=str(request.operation or "").strip(),
+                    domain=domain,
+                    profile_digest=profile_digest,
+                )
+                if converged is not None:
+                    evidence = {
+                        "request_id": request.request_id,
+                        "domain": domain,
+                        "code": converged,
+                    }
+                    self._recovery(
+                        converged,
+                        "The approved action is still blocked by the same escalation domain; escalation is ineffective.",
+                        evidence,
+                    )
+                    raise ControlPlaneError(
+                        converged,
+                        "The approved action is still blocked by the same escalation domain; escalation is ineffective.",
+                        evidence,
+                    )
             if state.get("status") == "needs_recovery":
                 raise ControlPlaneError("approval_control_needs_recovery", "Approval control state requires recovery.")
             pending = {
@@ -425,6 +473,21 @@ class ApprovalControlPlane:
                 "created_at": utc_now(),
                 "expires_at": time.time() + self.approval_timeout_s,
             }
+            if domain:
+                pending["escalation_domain"] = domain
+                pending["action_fingerprint"] = action_fingerprint(
+                    executor=self.executor,
+                    session_id=exact_session,
+                    operation=str(request.operation or "").strip(),
+                )
+                pending["profile_digest"] = profile_digest
+                pending["block_fingerprint"] = block_fingerprint(
+                    task_id=self.task_id,
+                    session_id=exact_session,
+                    action_fingerprint_value=pending["action_fingerprint"],
+                    domain=domain,
+                    profile_digest=profile_digest,
+                )
             state.update(
                 {
                     "version": CONTROL_VERSION,
@@ -558,6 +621,20 @@ class ApprovalControlPlane:
             state["status"] = "approval_responded"
             state["updated_at"] = utc_now()
             self._save_state(state)
+            # PERM-104-002: persist the trusted decision in the block ledger so
+            # a later identical block converges instead of re-asking.
+            domain = str(pending.get("escalation_domain") or "").strip()
+            if domain:
+                record_block_decision(
+                    self.root,
+                    fingerprint=str(pending.get("block_fingerprint") or ""),
+                    task_id=self.task_id,
+                    session_id=self.session_id,
+                    action_fingerprint_value=str(pending.get("action_fingerprint") or ""),
+                    domain=domain,
+                    profile_digest=str(pending.get("profile_digest") or ""),
+                    decision=selected,
+                )
             return {"ok": True, **response}
 
     def wait_for_decision(self, request_id: str, timeout_s: float | None = None) -> dict[str, Any]:
