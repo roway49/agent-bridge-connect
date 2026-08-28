@@ -1755,6 +1755,58 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 callback=callback if isinstance(callback, dict) else None,
                 execution_session=execution_session,
             )
+            # PERM-104-002: after the structured flow declared completion, the
+            # production lifecycle closes ``activated -> verified`` and binds
+            # the real official session id from the validated receipt.  A
+            # blocked or failed run instead converges the record to
+            # ``blocked`` with a stable code; it never stays activated.
+            try:
+                current = service.get_task(task.id)
+                runtime_value = (current.extensions or {}).get(
+                    "agentbc.permission_runtime"
+                )
+                if isinstance(runtime_value, dict):
+                    from .permission_runtime import (
+                        PERMISSION_RUNTIME_DOMAINS,
+                        block_permission_runtime_record,
+                        verify_permission_runtime_record,
+                    )
+                    from .permission_transport import (
+                        PERMISSION_TRANSPORT_UNSUPPORTED,
+                    )
+
+                    session_id = (
+                        str(execution_session.get("session_id") or "").strip()
+                        if isinstance(execution_session, dict)
+                        else ""
+                    )
+                    if poll.status == "completed":
+                        runtime_verified = verify_permission_runtime_record(
+                            runtime_value,
+                            session_id=session_id or None,
+                        )
+                    elif session_id:
+                        runtime_verified = block_permission_runtime_record(
+                            runtime_value,
+                            code="permission_escalation_ineffective",
+                            domain="host_containment",
+                        )
+                    else:
+                        runtime_verified = block_permission_runtime_record(
+                            runtime_value,
+                            code=PERMISSION_TRANSPORT_UNSUPPORTED,
+                            domain=PERMISSION_RUNTIME_DOMAINS[0],
+                        )
+                    current.extensions = dict(current.extensions or {})
+                    current.extensions["agentbc.permission_runtime"] = (
+                        runtime_verified
+                    )
+                    current.updated_at = _utc_now_cli()
+                    service.store.write_task(current.id, current.to_dict())
+            except ABCError:
+                # The runtime receipt is a projection of run truth; a failed
+                # closure must not turn a completed executor run into an error.
+                pass
             finalized = service.get_task(task.id)
             final_status = finalized.status
             if final_status == "completed":

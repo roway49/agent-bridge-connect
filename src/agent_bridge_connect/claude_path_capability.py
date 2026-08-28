@@ -160,11 +160,51 @@ def claude_ephemeral_path_capability(
             "Claude Artifact root must be separate from its ephemeral project",
         )
 
+    # PERM-104-002: when the task's project root is a linked worktree, the
+    # inner sandbox must mirror the outer Seatbelt capability - the frozen
+    # task root is the only writable working tree, Git metadata is excluded
+    # from allowWrite and denied for Edit/Write.  A plain repository or
+    # directory contributes no Git metadata constraints.  The ephemeral
+    # project root itself is never the containment root.  The main repo's
+    # working tree is deliberately absent from allowWrite: not listed means
+    # not writable.
+    git_dir: str | None = None
+    git_common_dir: str | None = None
+    containment_root = artifact_root
+    for probe_root in (artifact_root, project_root):
+        if git_common_dir is not None:
+            break
+        try:
+            from .seatbelt import validate_linked_worktree
+
+            linked = validate_linked_worktree(probe_root)
+        except (ABCError, OSError, ValueError):
+            linked = None
+        if isinstance(linked, dict):
+            git_dir = str(linked["git_dir"])
+            git_common_dir = str(linked["common_dir"])
+    containment_root = artifact_root
+
     settings = {
         "permissions": {
             # Edit rules cover Claude's built-in Write/Edit file tools.  The
-            # absolute // syntax is Claude's permission-rule syntax.
-            "deny": [f"Edit(//{str(project_root).lstrip('/')}/**)"]
+            # absolute // syntax is Claude's permission-rule syntax.  Git
+            # metadata is denied for Edit AND Write so a contained model can
+            # never mutate refs, packed-refs, hooks or config through the
+            # file tools; Git subprocesses remain gated by the outer Seatbelt
+            # profile, which pins the exact current-branch metadata.
+            "deny": [
+                f"Edit(//{str(project_root).lstrip('/')}/**)",
+                f"Edit(//{str(containment_root).lstrip('/')}/**)",
+            ]
+            + (
+                [
+                    f"Write(//{str(git_common_dir).lstrip('/')}/**)",
+                    f"Edit(//{str(git_common_dir).lstrip('/')}/**)",
+                ]
+                if git_common_dir is not None
+                else [f"Write(//{str(containment_root).lstrip('/')}/**)"]
+            ),
         },
         "sandbox": {
             "enabled": True,
@@ -174,8 +214,19 @@ def claude_ephemeral_path_capability(
             # boundary and must not silently auto-approve Bash actions.
             "autoAllowBashIfSandboxed": False,
             "filesystem": {
-                "allowWrite": [str(artifact_root)],
-                "denyWrite": [str(project_root)],
+                # PERM-104-002: allowWrite mirrors the outer Seatbelt
+                # containment exactly - the frozen task root (artifact root)
+                # is the only working-tree write surface; the ephemeral
+                # project dir stays writable for Claude's own state.  Git
+                # metadata never appears here, so the inner sandbox and the
+                # outer profile cannot disagree about writable roots.
+                "allowWrite": [str(containment_root), str(project_root)],
+                "denyWrite": [str(project_root)]
+                + (
+                    [str(git_common_dir), str(git_dir)]
+                    if git_common_dir is not None
+                    else []
+                ),
             },
         },
     }

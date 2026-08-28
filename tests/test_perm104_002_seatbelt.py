@@ -25,6 +25,7 @@ from agent_bridge_connect.seatbelt import (
     SEATBELT_EXECUTABLE,
     build_seatbelt_profile,
     canonical_task_roots,
+    cleanup_seatbelt_profiles,
     launch_with_seatbelt,
     linked_worktree_git_metadata_dirs,
     preflight_host_containment,
@@ -329,6 +330,30 @@ class SeatbeltProfileTests(unittest.TestCase):
         self.assertEqual(profile_path.read_text(encoding="utf-8"), "(version 1)\n(deny default)\n")
         self.assertEqual(oct(profile_path.stat().st_mode & 0o777), "0o600")
 
+    def test_cleanup_removes_stale_profiles_after_crash(self) -> None:
+        # Runner crash/restart: stale task-scoped profiles must not survive.
+        directory = Path(tempfile.mkdtemp())
+        stale: list[Path] = []
+        for _ in range(3):
+            _, profile_path = launch_with_seatbelt(
+                ["python", "-m", "worker"],
+                directory,
+                "(version 1)\n",
+                directory,
+            )
+            stale.append(profile_path)
+        # Unrelated files stay untouched by the sweep.
+        unrelated = directory / "unrelated.txt"
+        unrelated.write_text("keep me", encoding="utf-8")
+        removed = cleanup_seatbelt_profiles(directory)
+        self.assertEqual(removed, 3)
+        for profile in stale:
+            self.assertFalse(profile.exists())
+        self.assertTrue(unrelated.exists())
+        # Sweeping an empty/missing directory is a no-op.
+        self.assertEqual(cleanup_seatbelt_profiles(directory), 0)
+        self.assertEqual(cleanup_seatbelt_profiles(directory / "missing"), 0)
+
 
 class CanonicalTaskRootsTests(unittest.TestCase):
     def test_roots_are_realpath_canonicalized(self) -> None:
@@ -343,13 +368,70 @@ class CanonicalTaskRootsTests(unittest.TestCase):
                 "artifact_root": str(project / "artifacts"),
                 "report_root": str(base / "report"),
                 "agentbc_root": str(base / "workspace"),
+                "task_code": "E52M",
+                "iteration": "002",
+                "task_date": "2026-08-28",
+                "task_id": "E52M-002",
             }
             roots = canonical_task_roots(workspace)
             texts = {str(root) for root in roots}
             self.assertIn(str(project), texts)
             self.assertIn(str(project / "artifacts"), texts)
-            self.assertIn(str(base / "workspace"), texts)
+            # The whole AgentBC workspace is never a writable root: only the
+            # exact task record directory and the task report directory are.
+            self.assertNotIn(str(base / "workspace"), texts)
+            self.assertIn(
+                str(base / "workspace" / "record" / "E52M" / "002"), texts
+            )
+            self.assertIn(
+                str(
+                    base
+                    / "workspace"
+                    / "tasks"
+                    / "report"
+                    / "2026-08-28"
+                    / "E52M"
+                ),
+                texts,
+            )
             self.assertEqual(len(roots), len(texts))
+
+    def test_internal_task_dir_overrides_record_derivation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            internal = base / "record" / "E52M" / "003"
+            internal.mkdir(parents=True)
+            workspace = {
+                "project_root": str(base / "project"),
+                "agentbc_root": str(base / "workspace"),
+                "internal_task_dir": str(internal),
+                "task_code": "E52M",
+                "iteration": "003",
+            }
+            roots = canonical_task_roots(workspace)
+            texts = {str(root) for root in roots}
+            self.assertIn(str(internal), texts)
+            self.assertEqual(
+                texts - {str(internal)},
+                {str(base / "project")},
+            )
+
+    def test_control_and_temp_dirs_enter_containment_when_named(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            control = base / "board" / ".agentbc-control" / "E52M-002"
+            control.mkdir(parents=True)
+            temp = base / "record" / "E52M" / "002" / "temp"
+            temp.mkdir(parents=True)
+            workspace = {
+                "project_root": str(base / "project"),
+                "control_dir": str(control),
+                "temp_dir": str(temp),
+            }
+            roots = canonical_task_roots(workspace)
+            texts = {str(root) for root in roots}
+            self.assertIn(str(control), texts)
+            self.assertIn(str(temp), texts)
 
     def test_empty_workspace_yields_no_roots(self) -> None:
         self.assertEqual(canonical_task_roots(None), [])

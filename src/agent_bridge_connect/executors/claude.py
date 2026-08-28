@@ -54,6 +54,8 @@ from agent_bridge_connect.permission_modes import (
     permission_record_from_extensions,
 )
 from agent_bridge_connect.permission_transport import (
+    CLAUDE_INIT_RECEIPT_KIND,
+    CLAUDE_STDIO_CONTROL_RESPONSE,
     parse_claude_version,
     select_claude_control_path,
 )
@@ -598,7 +600,14 @@ class ClaudeExecutor(CLIExecutorBase):
             except ABCError as exc:
                 self._close_run_lease(run_id)
                 return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
-            self._run_metadata.setdefault(run_id, {})["control_path"] = control_path
+            self._run_metadata.setdefault(run_id, {}).update(
+                {
+                    "control_path": control_path,
+                    "control_started": True,
+                    "control_response": CLAUDE_STDIO_CONTROL_RESPONSE,
+                    "init_receipt": CLAUDE_INIT_RECEIPT_KIND,
+                }
+            )
 
         execution_session_id = (
             str(execution_session["session_id"]) if execution_session is not None else ""
@@ -1040,7 +1049,18 @@ class ClaudeExecutor(CLIExecutorBase):
         )
         command.extend(claude_path_capability_args(capability))
         if self.supports_permission_prompt_tool():
-            command.extend([PERMISSION_PROMPT_TOOL_FLAG, broker.broker_command()])
+            # PERM-104-002: the broker value is a shell command spec for
+            # ``--permission-prompt-tool`` (the stdio MCP-equivalent server
+            # entrypoint), never an MCP tool name.  A tool name would be a
+            # single token without shell structure; fail closed on that shape
+            # so the transport cannot silently degrade.
+            broker_spec = broker.broker_command()
+            if " " not in broker_spec or "python" not in broker_spec:
+                raise ABCError(
+                    "permission_transport_unsupported",
+                    "The permission prompt tool value must be the stdio broker command spec.",
+                )
+            command.extend([PERMISSION_PROMPT_TOOL_FLAG, broker_spec])
         if self.model:
             command.extend(["--model", self.model])
         if self.effort:

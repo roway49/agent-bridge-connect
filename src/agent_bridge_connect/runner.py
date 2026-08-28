@@ -1524,13 +1524,34 @@ class RunnerState:
         # pins any linked-worktree Git metadata, preflights host containment
         # (no dialog, no grant consumption) and persists an
         # ``agentbc.permission_runtime`` v1 record.
+        #
+        # Review fixes (E52M-002):
+        # * explicit full, temporary (one-shot grant) full and inherited full
+        #   get the identical pre-start treatment - containment is decided
+        #   here, before the worker process exists, so a grant is never
+        #   consumed by a worker that was started outside the profile.  The
+        #   three sources differ only in ``selection_source``.
+        # * ``chain_head_id`` is read from ``agentbc.lineage`` (falling back
+        #   to the task id itself only when the extension is absent).
+        # * the lifecycle is wired for production: the record is persisted
+        #   as ``prepared``, moved to ``authorized`` once the grant (if any)
+        #   has been consumed and the worker run is bound, ``activated``
+        #   only after the process is actually spawned inside the profile,
+        #   and verified by the worker when its structured run completes.
+        #   Any failure before activation moves the record to ``blocked``
+        #   with a stable code - a prepared record can never activate.
         containment: dict[str, Any] | None = None
         runtime_record: dict[str, Any] | None = None
+        runtime_authorized: dict[str, Any] | None = None
         profile_digest = ""
         worker_run_id = f"runner-worker-{uuid.uuid4().hex[:12]}"
         from .permission_runtime import (
+            HOST_CONTAINMENT_UNLIFTABLE,
+            PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE,
             PERMISSION_RUNTIME_EXTENSION_KEY,
             activate_permission_runtime_record,
+            authorize_permission_runtime_record,
+            block_permission_runtime_record,
             build_permission_runtime_record,
             host_profile_digest as host_profile_digest_fn,
             path_plan_digest,
@@ -1543,18 +1564,31 @@ class RunnerState:
         )
 
         if permission["effective_mode"] == "full":
+            source: str | None = None
             try:
                 source = runtime_source_for_permission(permission)
                 if source is None:
-                    raise RunnerError(
-                        "permission_runtime_capability_unavailable: "
-                        "concrete full requires a runtime capability source"
+                    raise ABCError(
+                        PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE,
+                        "concrete full requires a runtime capability source",
                     )
                 workspace_values = (
                     task.get("workspace")
                     if isinstance(task.get("workspace"), dict)
                     else {}
                 )
+                lineage = (
+                    task.get("lineage")
+                    if isinstance(task.get("lineage"), dict)
+                    else (task.get("extensions") or {}).get("agentbc.lineage")
+                    if isinstance(
+                        (task.get("extensions") or {}).get("agentbc.lineage"), dict
+                    )
+                    else {}
+                )
+                chain_head_id = str(
+                    lineage.get("chain_root_task_id") or task_id
+                ).strip()
                 plan_digest = path_plan_digest(workspace_values)
                 profile_digest = host_profile_digest_fn()
                 with self.lock:
@@ -1566,16 +1600,9 @@ class RunnerState:
                         "writable_roots": [str(root) for root in real_roots],
                         "linked_worktree": linked_worktree,
                     }
-                lineage = (
-                    task.get("lineage")
-                    if isinstance(task.get("lineage"), dict)
-                    else {}
-                )
                 runtime_record = build_permission_runtime_record(
                     task_id=task_id,
-                    chain_head_id=str(
-                        lineage.get("chain_root_task_id") or task_id
-                    ),
+                    chain_head_id=chain_head_id,
                     executor=executor,
                     executor_run_id=worker_run_id,
                     session_id="",
@@ -1607,18 +1634,64 @@ class RunnerState:
         ]
         if config is not None:
             command.extend(["--config", str(config)])
-        result = self._spawn_process(
-            f"worker:{executor}",
-            command,
-            workspace,
-            "runner-worker",
-            run_id=worker_run_id,
-            containment=containment,
-        )
+        # The record stays ``prepared`` through process spawn; ``authorized``
+        # requires the consumed one-shot grant (temporary full) or the frozen
+        # task base (explicit/inherited full) and the live worker run id.
         if runtime_record is not None:
+            if source == "one_shot_permission_grant":
+                binding = permission.get("binding")
+                binding_map = binding if isinstance(binding, dict) else {}
+                grant_id = str(
+                    binding_map.get("grant_id")
+                    or (permission.get("grant_id") if isinstance(permission, dict) else "")
+                    or ""
+                ).strip()
+            else:
+                grant_id = ""
             try:
-                activated = activate_permission_runtime_record(
+                runtime_authorized = authorize_permission_runtime_record(
                     runtime_record,
+                    decision="approve",
+                    request_id=f"runner-dispatch-{worker_run_id}",
+                    grant_id=grant_id,
+                )
+                task["extensions"][PERMISSION_RUNTIME_EXTENSION_KEY] = (
+                    runtime_authorized
+                )
+                TaskStore(board).write_task(task_id, task)
+            except ABCError as exc:
+                raise RunnerError(f"{exc.code}: {exc}") from exc
+        try:
+            result = self._spawn_process(
+                f"worker:{executor}",
+                command,
+                workspace,
+                "runner-worker",
+                run_id=worker_run_id,
+                containment=containment,
+            )
+        except RunnerError:
+            # Fail closed: a spawned-or-not record must never pretend the
+            # capability became effective.  No dialog, no grant consumption
+            # beyond what dispatch already did; the stable code is surfaced.
+            if runtime_authorized is not None:
+                try:
+                    blocked = block_permission_runtime_record(
+                        runtime_authorized,
+                        code=HOST_CONTAINMENT_UNLIFTABLE,
+                        domain="host_containment",
+                    )
+                    task["extensions"][PERMISSION_RUNTIME_EXTENSION_KEY] = blocked
+                    TaskStore(board).write_task(task_id, task)
+                except ABCError:
+                    pass
+            raise
+        if runtime_authorized is not None:
+            try:
+                # ``activated`` only after the process exists inside the same
+                # host profile that was digested at preparation time.
+                activated = activate_permission_runtime_record(
+                    runtime_authorized,
                     host_profile_digest=profile_digest,
                 )
                 task["extensions"][PERMISSION_RUNTIME_EXTENSION_KEY] = activated
@@ -2321,6 +2394,7 @@ class RunnerState:
         stdout_file = stdout_path.open("wb")
         stderr_file = stderr_path.open("wb")
         wrapped_command = command
+        profile_path: Path | None = None
         if containment is not None:
             # PERM-104-002: launch the worker inside a Runner-owned,
             # task-scoped Seatbelt profile.  The profile is built exclusively
@@ -2350,12 +2424,18 @@ class RunnerState:
                 ],
                 linked_worktree=containment.get("linked_worktree"),
             )
-            wrapped_command, _profile_path = launch_with_seatbelt(
+            wrapped_command, profile_path = launch_with_seatbelt(
                 command,
                 work_dir,
                 profile_text,
                 self.state_root / "seatbelt",
             )
+            # Remove any profile left behind by a crashed or restarted Runner
+            # before registering this run: a stale ``.sb`` template must never
+            # survive alongside a new containment decision.
+            from .seatbelt import cleanup_seatbelt_profiles
+
+            cleanup_seatbelt_profiles(self.state_root / "seatbelt")
         try:
             process = subprocess.Popen(
                 wrapped_command,
@@ -2383,6 +2463,9 @@ class RunnerState:
             "stderr_path": str(stderr_path),
             "cancel_requested": False,
             "containment": containment is not None,
+            "profile_path": (
+                str(profile_path) if profile_path is not None else ""
+            ),
             "process": process,
         }
         with self.lock:
@@ -3047,6 +3130,11 @@ class RunnerState:
         returncode = process.wait()
         stdout_file.close()
         stderr_file.close()
+        # PERM-104-002: the task-scoped Seatbelt profile outlives the worker
+        # by design only while the run is active.  Once the process exits
+        # (normally, cancelled, crashed), the Runner deletes the profile so
+        # no stale containment template, grant, worker or lock survives a
+        # crash/restart cycle.
         with self.lock:
             record = self.runs[run_id]
             record["returncode"] = returncode
@@ -3056,6 +3144,13 @@ class RunnerState:
                 if record["cancel_requested"]
                 else "completed" if returncode == 0 else "failed"
             )
+            profile_path = record.get("profile_path")
+            if profile_path:
+                try:
+                    Path(profile_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+                record["profile_path"] = None
             self._write_metadata(record)
 
     def _public_record(self, record: dict[str, Any]) -> dict[str, Any]:

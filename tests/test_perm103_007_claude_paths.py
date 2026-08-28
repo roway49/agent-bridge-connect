@@ -81,13 +81,17 @@ class Perm103007ClaudePathCapabilityTests(unittest.TestCase):
                 self.assertEqual(command.count("--add-dir"), 1)
                 settings_text = command[command.index("--settings") + 1]
                 settings = json.loads(settings_text)
+                # PERM-104-002: allowWrite mirrors the outer containment -
+                # the frozen task root plus the ephemeral project root - and
+                # the deny list pins both the ephemeral project and (for a
+                # linked worktree) the Git metadata directories.
                 self.assertEqual(
                     settings["sandbox"]["filesystem"]["allowWrite"],
-                    [str(self.plan.artifact_root)],
+                    [str(self.plan.artifact_root), str(self.plan.executor_project_root)],
                 )
                 self.assertEqual(
-                    settings["sandbox"]["filesystem"]["denyWrite"],
-                    [str(self.plan.executor_project_root)],
+                    settings["sandbox"]["filesystem"]["denyWrite"][0],
+                    str(self.plan.executor_project_root),
                 )
                 self.assertFalse(settings["sandbox"]["autoAllowBashIfSandboxed"])
                 self.assertFalse(settings["sandbox"]["allowUnsandboxedCommands"])

@@ -471,14 +471,31 @@ def activate_permission_runtime_record(
 def verify_permission_runtime_record(
     value: Any,
     *,
+    session_id: str | None = None,
     verified_at: str | None = None,
 ) -> dict[str, Any]:
-    """Move an activated record to ``verified`` after structured success."""
+    """Move an activated record to ``verified`` after structured success.
+
+    PERM-104-002 review fix: verification is the production point where the
+    record binds the executor's real official session id (from the validated
+    session receipt).  A record without a session binding can never be
+    verified, so ``full`` is only ever proven effective for a run that the
+    executor itself confirmed.
+    """
     record = validate_permission_runtime_record(value)
     if record["state"]["status"] != "activated":
         _invalid(
             "permission_runtime_state_invalid",
             "Only an activated permission runtime can be verified",
+        )
+    if session_id is not None:
+        normalized = str(session_id or "").strip()
+        _require_identifier(normalized, "binding.session_id")
+        record["binding"]["session_id"] = normalized
+    elif not str(record["binding"].get("session_id") or "").strip():
+        _invalid(
+            "permission_runtime_state_invalid",
+            "Verified permission runtime requires the bound official session id",
         )
     record["state"]["status"] = "verified"
     record["audit"]["verified_at"] = verified_at or _utc_now()

@@ -242,25 +242,69 @@ def linked_worktree_git_metadata_dirs(capability: dict[str, Any] | None) -> list
 
 
 def canonical_task_roots(workspace: dict[str, Any] | None) -> list[Path]:
-    """Realpath-canonicalize every frozen PathPlan root (no raw writes).
+    """Realpath-canonicalize the frozen PathPlan roots for containment.
 
-    The Seatbelt profile pins real paths, so aliased paths (for example
-    ``/tmp`` vs ``/private/tmp``) cannot bypass containment.
+    PERM-104-002 review fix: the previous version returned the whole
+    ``agentbc_root``, which made the entire AgentBC workspace a writable
+    root - every other task's record/report/control directories included.
+    The containment surface is now exactly task-scoped:
+
+    * the frozen project/artifact root (one root for a customer task);
+    * the current task's exact runtime-record directory
+      (``<record_root>/<task_code>/<iteration>``);
+    * the current task's exact report directory
+      (``<agentbc_root>/tasks/report/<task_date>/<task_code>``);
+    * the task control directory (``<board>/.agentbc-control/<task_id>``)
+      and a task temp directory under the record root, when present in the
+      workspace snapshot.
+
+    Other tasks' directories, the workspace root itself and any user
+    directory outside the plan are never writable.  The plan digest is
+    computed from the unmodified workspace snapshot by the caller, so this
+    narrowing cannot silently widen the digest semantics.
     """
     values = workspace if isinstance(workspace, dict) else {}
     roots: list[Path] = []
-    for key in (
-        "agentbc_root",
-        "project_root",
-        "root",
-        "artifact_root",
-        "artifacts_dir",
-        "report_root",
-        "output_dir",
-    ):
-        text = str(values.get(key) or "").strip()
-        if text:
-            roots.append(Path(text).expanduser().resolve())
+    project_root = str(values.get("project_root") or values.get("root") or "").strip()
+    if project_root:
+        roots.append(Path(project_root).expanduser().resolve())
+    artifact_root = str(
+        values.get("artifact_root") or values.get("artifacts_dir") or ""
+    ).strip()
+    if artifact_root:
+        roots.append(Path(artifact_root).expanduser().resolve())
+    agentbc_root_text = str(values.get("agentbc_root") or "").strip()
+    task_code = str(values.get("task_code") or "").strip()
+    iteration = str(values.get("iteration") or "").strip()
+    task_date = str(values.get("task_date") or "").strip()
+    internal_task_dir = str(values.get("internal_task_dir") or "").strip()
+    if internal_task_dir:
+        roots.append(Path(internal_task_dir).expanduser().resolve())
+    elif agentbc_root_text and task_code and iteration:
+        roots.append(
+            (
+                Path(agentbc_root_text).expanduser().resolve()
+                / "record"
+                / task_code
+                / iteration
+            ).resolve()
+        )
+    if agentbc_root_text and task_date and task_code:
+        roots.append(
+            (
+                Path(agentbc_root_text).expanduser().resolve()
+                / "tasks"
+                / "report"
+                / task_date
+                / task_code
+            ).resolve()
+        )
+    control_dir = str(values.get("control_dir") or "").strip()
+    if control_dir:
+        roots.append(Path(control_dir).expanduser().resolve())
+    temp_dir = str(values.get("temp_dir") or "").strip()
+    if temp_dir:
+        roots.append(Path(temp_dir).expanduser().resolve())
     customer_path = str(values.get("customer_path") or "").strip()
     if customer_path:
         roots.append(Path(customer_path).expanduser().resolve())
@@ -277,14 +321,29 @@ def canonical_task_roots(workspace: dict[str, Any] | None) -> list[Path]:
 def build_seatbelt_profile(
     *,
     writable_roots: list[str | Path],
+    executor_state_roots: list[str | Path] | None = None,
     linked_worktree: dict[str, Any] | None = None,
 ) -> str:
     """Build the task-scoped SBPL profile from frozen roots only.
 
     The profile denies everything by default, allows reads, and allows
-    writes only inside the frozen task roots plus the pinned linked-worktree
-    Git metadata.  Later rules win in sandbox-exec, so the narrow ref allows
-    follow the broad refs/worktrees denials.
+    writes only inside the frozen task roots, the executor's exact task
+    state directories and the pinned linked-worktree Git metadata.  Later
+    rules win in sandbox-exec, so the narrow ref allows follow the broad
+    refs/worktrees denials.
+
+    PERM-104-002 review fix: the previous profile allowed ``file-write*``
+    for the entire user home.  That wide authorization let a contained
+    worker rewrite any user file, including other tasks' records, other
+    worktrees' refs and executor-wide configuration.  It is removed.  The
+    writable surface is exactly:
+
+    * the frozen PathPlan roots (project/artifact/record/report/control/
+    temp - passed in as ``writable_roots`` by the Runner);
+    * the executor's own current session/project state directories
+      (``executor_state_roots``, validated by the Runner before launch);
+    * a linked worktree's per-worktree git dir, common objects, and the
+      current branch's exact ref/lock/reflog.
     """
     roots = [str(Path(root).expanduser().resolve()) for root in writable_roots or []]
     if not roots:
@@ -301,13 +360,16 @@ def build_seatbelt_profile(
         "(allow mach-lookup)",
         "(allow ipc-posix-shm)",
         "(allow file-read*)",
+        # Git and executors open /dev/null read-write for suppressed stdio;
+        # deny default blocks device writes and breaks every subprocess.
+        '(allow file-write* (literal "/dev/null"))',
+        '(allow file-write* (literal "/dev/dtracehelper"))',
+        # Lexer/locale and runtime caches under /private/tmp and /var are
+        # denied by default; subprocesses need a bounded set of system
+        # temp locations.  These are world-staging areas, never user data.
+        '(allow file-write* (subpath "/private/tmp"))',
+        '(allow file-write* (subpath "/var/folders"))',
     ]
-    # Executor-owned state (Claude/Codex/Hermes config and history) lives
-    # under the user's home; without it the executor cannot run at all.  The
-    # Git metadata denies below are evaluated after this allow, so they still
-    # pin the repository boundary exactly.
-    home = str(Path.home().expanduser().resolve())
-    lines.append(f'(allow file-write* (subpath "{_escape_sbpl(home)}"))')
     linked = isinstance(linked_worktree, dict)
     if linked:
         # sandbox-exec applies the last matching rule, so every broad deny is
@@ -323,6 +385,20 @@ def build_seatbelt_profile(
         lines.append(f'(deny file-write* (literal "{_escape_sbpl(packed_refs)}"))')
     for root in roots:
         lines.append(f'(allow file-write* (subpath "{_escape_sbpl(root)}"))')
+    # Executor session/project state is allowed only for exact validated
+    # directories supplied by the Runner - never a home-wide subpath.  The
+    # Runner resolves each root from the executor's documented state layout
+    # for this task (e.g. the current session/project directory) and fails
+    # closed when a root cannot be pinned.
+    for root in executor_state_roots or []:
+        resolved = Path(str(root)).expanduser().resolve()
+        if not resolved.is_dir():
+            raise ABCError(
+                HOST_CONTAINMENT_UNLIFTABLE,
+                "Executor state root for host containment must be an existing directory.",
+                {"code": "executor_state_root_missing"},
+            )
+        lines.append(f'(allow file-write* (subpath "{_escape_sbpl(str(resolved))}"))')
     if linked:
         git_dir = str(linked_worktree["git_dir"])
         ref_path = str(linked_worktree["ref_path"])
@@ -362,10 +438,33 @@ def launch_with_seatbelt(
     return wrapped, profile_path
 
 
+def cleanup_seatbelt_profiles(profile_dir: str | Path) -> int:
+    """Delete leftover task-scoped ``.sb`` profiles (Runner crash/restart).
+
+    Profiles are per-run files; once the contained worker has exited (or the
+    Runner crashed and restarted), a stale profile must not survive: it is
+    only a template, but leaving it behind means containment evidence can be
+    replayed or tampered with.  Returns the number of profiles removed.  The
+    directory itself is preserved for the running Runner.
+    """
+    directory = Path(profile_dir).expanduser().resolve()
+    if not directory.is_dir():
+        return 0
+    removed = 0
+    for profile in directory.glob("task-*.sb"):
+        try:
+            profile.unlink(missing_ok=True)
+            removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 __all__ = [
     "SEATBELT_EXECUTABLE",
     "build_seatbelt_profile",
     "canonical_task_roots",
+    "cleanup_seatbelt_profiles",
     "launch_with_seatbelt",
     "linked_worktree_git_metadata_dirs",
     "preflight_host_containment",

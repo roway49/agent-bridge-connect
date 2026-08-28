@@ -143,8 +143,15 @@ class PermissionRuntimeRecordTests(unittest.TestCase):
             authorized, host_profile_digest=PROFILE_DIGEST
         )
         self.assertEqual(activated["state"]["status"], "activated")
-        verified = verify_permission_runtime_record(activated)
+        # Verification binds the real official session id in production; a
+        # record without that binding can never be verified.
+        with self.assertRaises(ABCError):
+            verify_permission_runtime_record(activated)
+        verified = verify_permission_runtime_record(
+            activated, session_id="sess-official-1"
+        )
         self.assertEqual(verified["state"]["status"], "verified")
+        self.assertEqual(verified["binding"]["session_id"], "sess-official-1")
         self.assertTrue(verified["audit"]["verified_at"])
 
     def test_activation_requires_same_host_profile(self) -> None:
@@ -548,8 +555,109 @@ class PermissionRuntimeConvergenceTests(unittest.TestCase):
             classify_block_domain(None)
 
 
+class PermissionRuntimeConvergenceSideEffectTests(unittest.TestCase):
+    """PERM-104-002-R1 review fix: a repeated identical block after Approve
+    must converge with ZERO new inputs/grants/workers/continuations."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.board = self.root / "board"
+        self.service = TaskService(
+            self.board,
+            config={"workspace_root": str(self.root / "workspace")},
+        )
+        created = self.service.create_task(
+            "convergence canary",
+            "hermes",
+            [{"id": 1, "description": "one"}],
+            session_id="",
+            customer_path="default path",
+        )
+        self.task_id = created.id
+
+    def _snapshot(self) -> dict:
+        task = self.service.get_task(self.task_id)
+        extensions = task.extensions or {}
+        return {
+            "status": task.status,
+            "inputs": len(extensions.get("agentbc.input", {}).get("inputs", [])
+            if isinstance(extensions.get("agentbc.input"), dict)
+            else []),
+            "grants": 1 if extensions.get("agentbc.permission_grant") else 0,
+            "continuations": 1 if extensions.get("agentbc.continuation") else 0,
+        }
+
+    def test_repeat_block_after_approve_converges_without_new_inputs(self) -> None:
+        action = action_fingerprint(
+            executor="hermes",
+            session_id="sess-canary",
+            operation="git-commit",
+        )
+        block_fp = block_fingerprint(
+            task_id=self.task_id,
+            session_id="sess-canary",
+            action_fingerprint_value=action,
+            domain="host_containment",
+            profile_digest=PROFILE_DIGEST,
+        )
+        # First approve is recorded (pending execution result).
+        record_block_decision(
+            self.root,
+            fingerprint=block_fp,
+            task_id=self.task_id,
+            session_id="sess-canary",
+            action_fingerprint_value=action,
+            domain="host_containment",
+            profile_digest=PROFILE_DIGEST,
+            decision="approve",
+        )
+        before = self._snapshot()
+        # The identical block reappears after the approved escalation still
+        # failed: converge to the stable code with zero side effects.
+        code = converge_approved_block(
+            self.root,
+            task_id=self.task_id,
+            session_id="sess-canary",
+            executor="hermes",
+            operation="git-commit",
+            domain="host_containment",
+            profile_digest=PROFILE_DIGEST,
+        )
+        self.assertEqual(code, PERMISSION_ESCALATION_INEFFECTIVE)
+        after = self._snapshot()
+        self.assertEqual(before["inputs"], after["inputs"])
+        self.assertEqual(before["grants"], after["grants"])
+        self.assertEqual(before["continuations"], after["continuations"])
+        # Convergence is stable: a third occurrence replays the same code.
+        code_again = converge_approved_block(
+            self.root,
+            task_id=self.task_id,
+            session_id="sess-canary",
+            executor="hermes",
+            operation="git-commit",
+            domain="host_containment",
+            profile_digest=PROFILE_DIGEST,
+        )
+        self.assertEqual(code_again, PERMISSION_ESCALATION_INEFFECTIVE)
+        final = self._snapshot()
+        self.assertEqual(before["inputs"], final["inputs"])
+        self.assertEqual(before["grants"], final["grants"])
+        self.assertEqual(before["continuations"], final["continuations"])
+
+
 class PermissionRuntimeHermesCanaryTests(unittest.TestCase):
-    """Hermes canary: no approval loop - callbacks and stderr are inert."""
+    """Hermes canary: no approval loop - callbacks and stderr are inert.
+
+    PERM-104-002 review fix: every canary task is created with a config that
+    pins ``workspace_root`` to a temporary directory.  Without it,
+    ``TaskService`` resolves the real AgentBC workspace from the default
+    config root and canary task creation wrote task/report files (and raised
+    permission errors on restricted hosts) inside
+    ``/Users/<user>/Documents/AgentBC/workspace``.  Unit tests must never
+    touch the real workspace.
+    """
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -557,7 +665,10 @@ class PermissionRuntimeHermesCanaryTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.board = self.root / "board"
         self.board.mkdir()
-        self.service = TaskService(self.board)
+        self.service = TaskService(
+            self.board,
+            config={"workspace_root": str(self.root / "workspace")},
+        )
 
     def _task(self) -> str:
         created = self.service.create_task(
