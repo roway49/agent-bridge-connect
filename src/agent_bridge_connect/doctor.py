@@ -1502,6 +1502,9 @@ def _collect_claude_sdk_capability(config: dict[str, Any] | None) -> dict[str, s
     absolute Claude CLI 2.1.233).  Missing/mismatched/unsupported/failed
     environments are doctor ``warning`` checks with a stable code and a
     remediation hint — they never crash doctor and never widen capability.
+    A configuration that does not use the Claude executor at all keeps the
+    ``healthy`` baseline: the transport is optional and its absence is only
+    a warning when the user actually configured Claude.
     """
     from .permission_transport import (
         CLAUDE_SDK_PINNED_VERSION,
@@ -1518,12 +1521,15 @@ def _collect_claude_sdk_capability(config: dict[str, Any] | None) -> dict[str, s
     )
     configured_command = str(claude_config.get("command") or "").strip()
     if not configured_command:
+        # Claude is not configured: nothing to gate, and a Codex/Hermes-only
+        # install must keep the doctor healthy baseline.
         return {
             "id": "permission.claude_sdk",
-            "status": "warning",
+            "status": "healthy",
             "message": (
-                "The Claude executor is not configured; the SDK permission "
-                "transport stays unsupported (permission_transport_unsupported)."
+                "The Claude executor is not configured; the optional SDK "
+                "permission transport is not applicable (transport stays "
+                "permission_transport_unsupported if Claude is added)."
             ),
         }
     try:

@@ -1150,7 +1150,14 @@ class DoctorExecutorMatrixTests(unittest.TestCase):
         self.assertEqual(entry["auth"]["configured"], True)
         self.assertEqual(entry["capability"]["level"], 2)
         self.assertEqual(entry["status"], "healthy")
-        self.assertEqual(report["status"], "healthy")
+        # PERM-104-002: the fake fixture CLI path cannot satisfy the probed
+        # SDK tuple, so the optional permission.claude_sdk check reports a
+        # warning while the executor matrix entries themselves stay healthy.
+        self.assertEqual(report["status"], "warning")
+        sdk_check = next(
+            check for check in report["checks"] if check["id"] == "permission.claude_sdk"
+        )
+        self.assertEqual(sdk_check["status"], "warning")
 
     def test_executor_probe_uses_strict_public_projection_and_redacts_extras(
         self,

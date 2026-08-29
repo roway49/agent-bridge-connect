@@ -332,6 +332,34 @@ Executor 拒绝必须在同 session、同 request Approve 后精确执行。
   Claude 的审批循环；获批 continuation 后已补跑全部验证：定向 68 项与全量 1529 项 unittest
   通过，Ruff（src + 新测试文件）、compileall、`uv build` wheel/sdist（含三个新模块）与
   `git diff --check` 全部通过；
+- 2026-08-30 官方 SDK transport 实施证据（`QJXH-001`，agent/hermes 本地提交
+  `2d493cc` → `1aba319` → `50b4d4e` → 第四笔，未 push）：
+  - 生产路径只剩官方 `claude_agent_sdk==0.2.142` `can_use_tool` transport；raw
+    `ClaudePermissionPromptBroker`、shell `--permission-prompt-tool` 与 CLI resume 均
+    不是生产路径；`can_use_tool` 在 worker event-loop 上 await ControlPlane 往返，
+    同一 ClaudeSDKClient 进程/会话跨审批保持存活，并发第二个请求 fail closed；
+  - transport 记录 in-flight `tool_use_id` 并把它交给 `record_transport_failed`，
+    transport 死亡时精确失效该 pending request；已接受过的 native identity 全程去重，
+    重复 `tool_use_id` 不产生第二个 permission input；审批 identity 绑定
+    task/run/session/`tool_use_id`/fingerprint，escalation domain 与 host profile
+    digest 顶层进入 ControlPlane，可信 approve 后相同 domain 再次阻塞收敛为
+    `permission_escalation_ineffective`（零新增 input/grant/worker/continuation）；
+  - 临时 full：consume 的一次性 grant 绑定到 transport，run 终态/崩溃/handoff/
+    reassign 时精确撤销一次；explicit 与 inherited full 经冻结 flag→mode 映射以
+    `bypassPermissions` 启动，safe/inherit 保持 SDK default 让 `can_use_tool` 继续触发；
+  - hooks feed（PreToolUse/PostToolUse/PostToolUseFailure）只持久化脱敏结构化记录，
+    verify 仅接受结构化 PostToolUse success；配置拆分 `tools`（可见性）与
+    `auto_approve_tools`（显式预批准），legacy `allowed_tools` 仅警告式双读为 `tools`，
+    setup/registry 同步；doctor `permission.claude_sdk` 投影保持脱敏；
+  - 修复 SDK 环境门平台标签（`Darwin`→`macOS`）使被探针 macOS arm64 tuple 通过自身
+    gate；live probe 于 2026-08-30 在隔离 venv 重跑通过（allow 原样执行、deny 零执行、
+    同一 session 三阶段存活；证据 `probe_evidence_rerun_2026-08-30.json`）；
+  - 定向 unittest：transport 19、sdk_transport 17、packaging 5、permission_runtime+
+    seatbelt 75、phase10c/d 176、permission_modes/canary 32 全部通过；Ruff（src+tests）、
+    compileall、`uv build` wheel/sdist、wheel metadata（`Requires-Dist:
+    claude-agent-sdk==0.2.142; extra == "claude"`）与 `git diff --check` 全部通过；
+  - 剩余门禁：deployed 三来源 canary（explicit/temporary/inherited 真机 full 生效）、
+    `PERM-104-002-R1` 详情回归在合并后执行；P0 在 canary 通过前不宣布关闭；
 - `PERM-104-002-R1` 已接入本项验收：首块审批与合法 approval identity 的脱敏只读
   Details/View Details 投影回归在 `PERM-104-002` 收敛验收后执行，不单独占用 Wave。
 

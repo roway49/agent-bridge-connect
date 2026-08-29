@@ -31,12 +31,8 @@ from agent_bridge_connect.claude_sdk_transport import (
     ClaudeSDKTransportError,
     build_sdk_options,
 )
-from agent_bridge_connect.control import ApprovalControlPlane, ControlPlaneError
+from agent_bridge_connect.control import ApprovalControlPlane
 from agent_bridge_connect.executors.claude import ClaudeExecutor
-from agent_bridge_connect.permission_transport import (
-    CLAUDE_SDK_PINNED_VERSION,
-    CONTROL_PATH_SDK_TRANSPORT,
-)
 
 
 def _plane(tmp: str, *, task_id: str = "SDKT-001", run_id: str = "claude-sdk-1",
@@ -75,7 +71,6 @@ class ClaudeSdkOptionsTests(unittest.TestCase):
 
     def test_options_bind_cli_path_and_callback(self) -> None:
         sdk = self._sdk()
-        seen: dict = {}
 
         async def cb(tool_name, input_data, context):  # pragma: no cover
             return None

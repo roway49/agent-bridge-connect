@@ -355,6 +355,7 @@ class ClaudeSDKControlTransport:
                 "executor_run_id": self.run_id,
                 "tool_use_id": tool_use_id,
                 "tool_name": tool,
+                "request_fingerprint": fingerprint,
                 "control_path": control_path,
                 "escalation_domain": self.escalation_domain,
                 "host_profile_digest": self.host_profile_digest,
