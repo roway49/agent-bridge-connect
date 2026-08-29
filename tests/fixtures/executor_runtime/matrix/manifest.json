@@ -156,7 +156,7 @@
       "capability_groups_reference": "agent_bridge_connect.codex_app_server",
       "production": {
         "app_server_bounds": {
-          "max_inclusive": "0.147.0",
+          "max_inclusive": "0.150.1",
           "min_inclusive": "0.146.0"
         },
         "binding_constants": [
@@ -170,7 +170,8 @@
         "codex/shared/app_server_v2_contract_summary.json": {
           "applies_to": [
             "0.146.0",
-            "0.147.0"
+            "0.147.0",
+            "0.150.1"
           ],
           "bytes": 1126,
           "note": "Distilled v2 protocol contract summary used by the App Server control tests.",
@@ -301,10 +302,10 @@
             "live_capture": true,
             "origin": "Official read-only probes captured locally on 2026-08-27; every frozen execution method and the full cleanup group are present in the generated schema bundle."
           },
-          "in_production_supported_range": false,
-          "promotion_blocker": "Candidate stays outside production: the full help/event/canary contract has not been run against a paid live canary.",
+          "in_production_supported_range": true,
+          "promotion_blocker": "",
           "release_channel": "observed_path_binary",
-          "status": "candidate",
+          "status": "supported",
           "surfaces": {
             "app_server_cleanup.json": {
               "bytes": 1012,
@@ -316,7 +317,7 @@
             },
             "app_server_schema.json": {
               "bytes": 598692,
-              "sha256": "5299e1c756474c9ae92d21d3bbd682bb88627c72e9965bdfb8194d6eef7cd627"
+              "sha256": "2d3830122e5e8196d920144462cd7bec1ae02c78e4bd2d78fc2e3baf969b6738"
             },
             "argv_contract.json": {
               "bytes": 792,
@@ -352,7 +353,7 @@
             },
             "version.json": {
               "bytes": 170,
-              "sha256": "1238249fbfdc498e012a6f5c88e275814323868ebc7c2887d66bb51e52a06c31"
+              "sha256": "88d7cb4ea9cc9c66ba444b095f8ab7cadc372811b7b5d83e4d853e2fd2d2f090"
             }
           }
         }

@@ -945,6 +945,7 @@ class RunnerClient:
         interval_s: float = 2.0,
         monitor: bool = False,
         permission_mode: str | None = None,
+        collaboration_spawn: bool = False,
     ) -> dict[str, Any]:
         return self._request(
             {
@@ -962,6 +963,7 @@ class RunnerClient:
                 "interval_s": interval_s,
                 "monitor": monitor,
                 "permission_mode": permission_mode,
+                "collaboration_spawn": bool(collaboration_spawn),
             }
         )
 
@@ -1858,6 +1860,7 @@ class RunnerState:
             customer_path=customer_path or None,
             images=request.get("images") or [],
             permission_mode=request.get("permission_mode"),
+            collaboration_spawn=request.get("collaboration_spawn") is True,
         )
         return self._atomic_dispatch_task(service, task, config, request)
 

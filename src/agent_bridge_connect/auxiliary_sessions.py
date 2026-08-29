@@ -87,7 +87,12 @@ AUXILIARY_ENTRY_FIELDS = frozenset(
     }
 )
 _AUXILIARY_OPTIONAL_ENTRY_FIELDS = frozenset(
-    {"collaboration_item_id", "parent_turn_id"}
+    {
+        "collaboration_item_id",
+        "parent_turn_id",
+        "archive_acknowledged",
+        "archive_checked_at",
+    }
 )
 _AUX_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _PURPOSE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -171,8 +176,16 @@ def validate_auxiliary_entry(value: Any) -> list[str]:
     if missing or unknown:
         return errors
     for field in _AUXILIARY_OPTIONAL_ENTRY_FIELDS:
+        if field == "archive_acknowledged":
+            if field in value and type(value[field]) is not bool:
+                errors.append(f"{field} must be a boolean")
+            continue
         if field in value and not isinstance(value[field], str):
             errors.append(f"{field} must be a string")
+    if value.get("archive_acknowledged") is True and not str(
+        value.get("archive_checked_at") or ""
+    ).strip():
+        errors.append("archive_checked_at is required after archive acknowledgement")
     if value.get("version") != AUXILIARY_ENTRY_VERSION:
         errors.append(f"version must be {AUXILIARY_ENTRY_VERSION}")
     aux_id = value.get("aux_id")

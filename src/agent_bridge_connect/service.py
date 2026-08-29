@@ -160,6 +160,7 @@ class TaskService:
         images: list[str | Path] | None = None,
         permission_mode: str | None = None,
         inherited_permission: dict[str, Any] | None = None,
+        collaboration_spawn: bool = False,
     ) -> TaskModel:
         assert_maintenance_command_allowed(self, "create")
         title = title.strip()
@@ -243,6 +244,16 @@ class TaskService:
             resources=resources,
             session=executor_session,
         )
+        if collaboration_spawn:
+            if assignee != "codex":
+                raise ABCError(
+                    "task_create_error",
+                    "collaboration_spawn is supported only for Codex tasks",
+                )
+            extensions["agentbc.codex.collaboration_spawn"] = {
+                "version": 1,
+                "enabled": True,
+            }
         task = TaskModel(
             id=task_id,
             title=title,

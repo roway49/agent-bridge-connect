@@ -738,6 +738,8 @@ class SessionCleanupCoordinator:
             workspace=dict(task.get("workspace") or {}),
             receipt_source=str(entry.get("source") or ""),
             official_receipt_bound=bool(str(entry.get("source") or "").strip()),
+            archive_acknowledged=entry.get("archive_acknowledged") is True,
+            archive_checked_at=str(entry.get("archive_checked_at") or ""),
         )
         return request
 

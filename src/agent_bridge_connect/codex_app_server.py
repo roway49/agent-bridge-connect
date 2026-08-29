@@ -59,7 +59,10 @@ CODEX_APP_SERVER_TRANSPORT_ALIASES = frozenset(
 # release is 0.146.0 and the locally installed surface is 0.147.0.  Any other
 # version is rejected until a new schema fixture and probe evidence exist.
 CODEX_APP_SERVER_MIN_VERSION = (0, 146, 0)
-CODEX_APP_SERVER_MAX_VERSION = (0, 147, 0)
+CODEX_APP_SERVER_MAX_VERSION = (0, 150, 1)
+CODEX_APP_SERVER_SUPPORTED_VERSIONS = frozenset(
+    {(0, 146, 0), (0, 147, 0), (0, 150, 1)}
+)
 CODEX_APP_SERVER_REQUIRED_PROTOCOL = 2
 
 # Frozen App Server surface for the AgentBC single-action chain.
@@ -428,9 +431,7 @@ def codex_app_server_contract(
     if parsed is None:
         result["reason"] = f"codex version is not parseable: {result['version']}"
         return result
-    if not (
-        CODEX_APP_SERVER_MIN_VERSION <= parsed <= CODEX_APP_SERVER_MAX_VERSION
-    ):
+    if parsed not in CODEX_APP_SERVER_SUPPORTED_VERSIONS:
         result["reason"] = (
             f"codex version {'.'.join(str(part) for part in parsed)} is outside the "
             f"frozen App Server surface "
@@ -663,6 +664,7 @@ __all__ = [
     "CODEX_APP_SERVER_MAX_VERSION",
     "CODEX_APP_SERVER_MIN_VERSION",
     "CODEX_APP_SERVER_NOTIFICATIONS",
+    "CODEX_APP_SERVER_SUPPORTED_VERSIONS",
     "CODEX_APP_SERVER_REQUIRED_PROTOCOL",
     "CODEX_APP_SERVER_REQUEST_METHODS",
     "CODEX_APP_SERVER_SCHEMA_EVIDENCE_VERSIONS",

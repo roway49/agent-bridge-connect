@@ -212,7 +212,7 @@ class ProductionBoundAgreementTests(unittest.TestCase):
                 if entry["in_production_supported_range"]
             }
             with self.subTest(executor=executor):
-                self.assertEqual(supported, {"codex": {"0.146.0", "0.147.0"},
+                self.assertEqual(supported, {"codex": {"0.146.0", "0.147.0", "0.150.1"},
                                              "claude": {"2.1.226"},
                                              "hermes": {"0.17.0"}}[executor])
 
@@ -245,9 +245,9 @@ class CandidateIsolationTests(unittest.TestCase):
                         f"{executor}/{version} must not look production-ready",
                     )
 
-    def test_newer_path_binary_does_not_widen_codex_gate(self) -> None:
+    def test_promoted_collaboration_binary_is_frozen_in_codex_gate(self) -> None:
         codex = load_manifest()["executors"]["codex"]
-        self.assertNotIn("0.150.1", {
+        self.assertIn("0.150.1", {
             version
             for version, entry in codex["versions"].items()
             if entry["in_production_supported_range"]
@@ -259,7 +259,7 @@ class CandidateIsolationTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
-        self.assertEqual(schema["_fixture"]["capture_status"], "candidate_unpromoted")
+        self.assertEqual(schema["_fixture"]["capture_status"], "supported_live_probe")
 
     def test_hermes_cleanup_freeze_text_stays_pinned(self) -> None:
         hermes = load_manifest()["executors"]["hermes"]

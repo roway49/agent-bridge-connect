@@ -163,7 +163,7 @@ class SchemaContractTests(unittest.TestCase):
 
     def test_min_max_version_bounds_are_frozen(self) -> None:
         self.assertEqual(CODEX_APP_SERVER_MIN_VERSION, (0, 146, 0))
-        self.assertEqual(CODEX_APP_SERVER_MAX_VERSION, (0, 147, 0))
+        self.assertEqual(CODEX_APP_SERVER_MAX_VERSION, (0, 150, 1))
 
     def test_transport_aliases_are_only_backward_compatible(self) -> None:
         self.assertEqual(CODEX_APP_SERVER_TRANSPORT, "app-server")

@@ -189,6 +189,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the configured permission mode for this task.",
     )
     task_create.add_argument(
+        "--collaboration-spawn",
+        action="store_true",
+        help="Require one verified native Codex collaboration/spawn capability for this task.",
+    )
+    task_create.add_argument(
         "--customer-dir",
         choices=["true", "false"],
         help=argparse.SUPPRESS,
@@ -500,6 +505,7 @@ def command_task_create(args: argparse.Namespace) -> int:
                 interval_s=getattr(args, "interval", 2),
                 monitor=getattr(args, "monitor", False),
                 permission_mode=_permission_mode_arg(args),
+                collaboration_spawn=getattr(args, "collaboration_spawn", False) is True,
             )
         except (ABCError, RunnerError) as exc:
             print(f"atomic_dispatch_error: {exc}")
@@ -518,6 +524,7 @@ def command_task_create(args: argparse.Namespace) -> int:
             customer_path=customer_path,
             images=_image_args(args),
             permission_mode=_permission_mode_arg(args),
+            collaboration_spawn=getattr(args, "collaboration_spawn", False) is True,
         )
     except ABCError as exc:
         print(f"task_create_error: {exc}")

@@ -65,6 +65,26 @@ def _item(*, item_id: str = "item-104", receiver: str = "") -> dict:
 
 
 class CollaborationCapabilityTests(unittest.TestCase):
+    def test_task_contract_explicitly_freezes_collaboration_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            service = TaskService(
+                root / "record",
+                config={"workspace_root": str(root / "workspace")},
+            )
+            task = service.create_task(
+                "Codex collaboration contract",
+                "codex",
+                [{"id": 1, "description": "spawn exactly once"}],
+                customer_dir=False,
+                collaboration_spawn=True,
+            )
+            self.assertEqual(
+                task.extensions["agentbc.codex.collaboration_spawn"],
+                {"version": 1, "enabled": True},
+            )
+            self.assertTrue(CodexExecutor._collaboration_spawn_requested(task.to_dict()))
+
     def test_0147_fixture_is_explicitly_unsupported(self) -> None:
         result = codex_collaboration_spawn_fixture_contract("0.147.0")
         self.assertFalse(result["ok"])
@@ -74,7 +94,7 @@ class CollaborationCapabilityTests(unittest.TestCase):
             {"collabAgentToolCall", "spawnAgent", "receiverThreadId"},
         )
 
-    def test_candidate_fixture_does_not_promote_production(self) -> None:
+    def test_promoted_fixture_requires_matching_live_proof(self) -> None:
         candidate = codex_collaboration_spawn_fixture_contract("0.150.1")
         self.assertTrue(candidate["ok"])
         schema = json.loads(
@@ -258,6 +278,87 @@ class CollaborationLedgerTests(unittest.TestCase):
             ),
             [CHILD_SESSION_ID],
         )
+
+    def test_registered_child_is_archived_on_owning_transport_and_receipted(self) -> None:
+        class ArchiveTransport:
+            def __init__(self) -> None:
+                self.sent: list[dict] = []
+                self.responses: list[dict] = []
+
+            def send(self, message: dict) -> None:
+                self.sent.append(message)
+                self.responses.append(
+                    {"jsonrpc": "2.0", "id": message["id"], "result": {}}
+                )
+
+            def recv(self) -> dict:
+                return self.responses.pop(0)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            board = root / "record"
+            service = TaskService(
+                board,
+                config={"workspace_root": str(root / "workspace")},
+            )
+            task = service.create_task(
+                "Codex child archive lifecycle",
+                "codex",
+                [{"id": 1, "description": "exercise child archive"}],
+                customer_dir=False,
+                collaboration_spawn=True,
+            )
+            raw = service.store.read_task(task.id)
+            raw["extensions"][SESSION_EXTENSION_KEY] = _parent_extensions()[
+                SESSION_EXTENSION_KEY
+            ]
+            extensions, _ = handle_codex_collaboration_item_started(
+                raw["extensions"],
+                owner_task_id=task.id,
+                owner_run_id="run-104",
+                parent_session_id=PARENT_SESSION_ID,
+                parent_turn_id="turn-104",
+                item=_item(),
+                occurred_at=T0,
+            )
+            extensions, _ = handle_codex_collaboration_item_completed(
+                extensions,
+                owner_task_id=task.id,
+                owner_run_id="run-104",
+                parent_session_id=PARENT_SESSION_ID,
+                item=_item(receiver=CHILD_SESSION_ID),
+                occurred_at=T0,
+            )
+            raw["extensions"] = extensions
+            service.store.write_task(task.id, raw)
+            transport = ArchiveTransport()
+            executor = CodexExecutor(command=sys.executable, transport="app-server")
+            record = {
+                "task_packet": {
+                    "task_id": task.id,
+                    "task_board": {"root": str(board)},
+                    "extensions": copy.deepcopy(extensions),
+                },
+                "run_id": "run-104",
+                "session_id": PARENT_SESSION_ID,
+                "transport": transport,
+                "next_rpc_id": 1,
+                "events": [],
+            }
+            executor._archive_registered_auxiliary_sessions(record)
+
+            self.assertEqual(
+                [message["method"] for message in transport.sent],
+                ["thread/archive"],
+            )
+            self.assertEqual(
+                transport.sent[0]["params"],
+                {"threadId": CHILD_SESSION_ID},
+            )
+            persisted = service.store.read_task(task.id)
+            entry = read_auxiliary_ledger(persisted["extensions"])["sessions"][0]
+            self.assertTrue(entry["archive_acknowledged"])
+            self.assertTrue(entry["archive_checked_at"])
         with self.assertRaises(ABCError) as unknown:
             reconcile_codex_descendants(
                 extensions,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import re
 import subprocess
@@ -759,10 +760,87 @@ class CodexExecutor(CLIExecutorBase):
 
     @staticmethod
     def _collaboration_spawn_requested(task_packet: dict[str, Any]) -> bool:
+        extensions = (
+            task_packet.get("extensions")
+            if isinstance(task_packet.get("extensions"), dict)
+            else {}
+        )
+        frozen = extensions.get("agentbc.codex.collaboration_spawn")
         return bool(
             task_packet.get("collaboration_spawn") is True
             or task_packet.get("enable_collaboration_spawn") is True
+            or (isinstance(frozen, dict) and frozen.get("enabled") is True)
         )
+
+    def _archive_registered_auxiliary_sessions(self, record: dict[str, Any]) -> None:
+        """Archive exact registered Codex children on the owning connection."""
+        from agent_bridge_connect.auxiliary_sessions import (
+            AUXILIARY_EXTENSION_KEY,
+            read_auxiliary_ledger,
+            validate_auxiliary_ledger,
+        )
+        from agent_bridge_connect.task_store import TaskStore
+
+        packet = record["task_packet"]
+        extensions = copy.deepcopy(packet.get("extensions") or {})
+        ledger = read_auxiliary_ledger(extensions)
+        owner_task_id = str(packet.get("task_id") or packet.get("id") or "").strip()
+        owner_run_id = str(record.get("run_id") or "").strip()
+        parent_session_id = str(record.get("session_id") or "").strip()
+        candidates = [
+            entry
+            for entry in ledger["sessions"]
+            if str(entry.get("owner_task_id") or "") == owner_task_id
+            and str(entry.get("owner_run_id") or "") == owner_run_id
+            and str(entry.get("parent_session_id") or "") == parent_session_id
+            and str(entry.get("executor") or "").strip().lower() == "codex"
+            and entry.get("retain") is False
+            and str(entry.get("session_state") or "") == "terminal"
+            and str(entry.get("session_id") or "").strip()
+        ]
+        candidates.sort(
+            key=lambda entry: (
+                str(entry.get("updated_at") or ""),
+                str(entry.get("aux_id") or ""),
+            ),
+            reverse=True,
+        )
+        for candidate in candidates:
+            session_id = str(candidate["session_id"]).strip()
+            archive_id = self._app_rpc(
+                record,
+                "thread/archive",
+                {"threadId": session_id},
+            )
+            self._app_wait_response(record, archive_id)
+            checked_at = _cleanup_now()
+            for entry in ledger["sessions"]:
+                if entry.get("aux_id") == candidate.get("aux_id"):
+                    entry["archive_acknowledged"] = True
+                    entry["archive_checked_at"] = checked_at
+                    entry["updated_at"] = checked_at
+                    break
+        if not candidates:
+            return
+        errors = validate_auxiliary_ledger(ledger)
+        if errors:
+            raise ABCError(
+                "codex_auxiliary_receipt_missing",
+                "; ".join(errors),
+            )
+        extensions[AUXILIARY_EXTENSION_KEY] = ledger
+        packet["extensions"] = extensions
+        board = packet.get("task_board")
+        board_root = board.get("root") if isinstance(board, dict) else ""
+        if not board_root:
+            raise ABCError(
+                "codex_auxiliary_receipt_missing",
+                "Codex collaboration archive has no authoritative task board.",
+            )
+        store = TaskStore(board_root)
+        persisted = store.read_task(owner_task_id)
+        persisted["extensions"] = extensions
+        store.write_task(owner_task_id, persisted)
 
     def _build_app_server_command(self) -> list[str]:
         if self.agent_bin is None:
@@ -1334,6 +1412,7 @@ class CodexExecutor(CLIExecutorBase):
                 else None
             )
             if isinstance(session_policy, dict) and session_policy.get("retain") is False:
+                self._archive_registered_auxiliary_sessions(record)
                 archive_id = self._app_rpc(
                     record,
                     "thread/archive",

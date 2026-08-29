@@ -16,7 +16,7 @@ from pathlib import Path
 
 from agent_bridge_connect.codex_app_server import (
     CODEX_APP_SERVER_MAX_VERSION,
-    CODEX_APP_SERVER_MIN_VERSION,
+    CODEX_APP_SERVER_SUPPORTED_VERSIONS,
     codex_app_server_contract,
     parse_codex_version,
 )
@@ -110,7 +110,7 @@ class CodexSurfaceTests(unittest.TestCase):
             "codex-cli 0.146.0": "schema",
             "codex-cli 0.147.0": "schema",
             "codex-cli 0.148.0": "outside",
-            "codex-cli 0.150.1": "outside",
+            "codex-cli 0.150.1": "schema",
             "not-a-version": "parseable",
             "": "unavailable",
         }
@@ -126,18 +126,12 @@ class CodexSurfaceTests(unittest.TestCase):
                 self.assertIn(expected_reason, probe["reason"])
                 parsed = parse_codex_version(output)
                 if parsed is not None:
-                    in_bounds = (
-                        CODEX_APP_SERVER_MIN_VERSION
-                        <= parsed
-                        <= CODEX_APP_SERVER_MAX_VERSION
-                    )
+                    in_bounds = parsed in CODEX_APP_SERVER_SUPPORTED_VERSIONS
                     self.assertEqual(in_bounds, expected_reason == "schema")
-        # The locally observed candidate binary is outside the production gate
-        # even though its schema bundle was captured and complete.
+        # The live-captured collaboration build is an explicitly supported
+        # non-contiguous version; unrecorded intermediate versions remain out.
         candidate = parse_codex_version("codex-cli 0.150.1")
-        self.assertFalse(
-            CODEX_APP_SERVER_MIN_VERSION <= candidate <= CODEX_APP_SERVER_MAX_VERSION
-        )
+        self.assertTrue(candidate <= CODEX_APP_SERVER_MAX_VERSION)
 
 
 class HermesSurfaceTests(unittest.TestCase):
