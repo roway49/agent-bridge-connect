@@ -435,6 +435,45 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
             },
         }
 
+    def test_collaboration_task_selects_official_explicit_request_mode(self) -> None:
+        fake = BlockingFakeTransport(self.board, self.task_id, emit_callback=False)
+        executor = self._executor(fake, version="0.150.1")
+        executor._collaboration_spawn_capability = {
+            "enabled": True,
+            "version": "0.150.1",
+            "fixture": {"ok": True},
+            "live": {"ok": True},
+        }
+        packet = self._packet()
+        packet["extensions"]["agentbc.codex.collaboration_spawn"] = {
+            "version": 1,
+            "enabled": True,
+        }
+        with (
+            mock.patch.object(executor, "_start_run_lease"),
+            mock.patch.object(executor, "_suspend_run"),
+            mock.patch.object(executor, "_resume_run"),
+            mock.patch.object(executor, "_close_run_lease"),
+        ):
+            started = executor.start(packet)
+            self.assertEqual(
+                self._wait_status(executor, started.run_id, {"input_required"}),
+                "input_required",
+            )
+            executor.cancel(started.run_id)
+        thread_start = next(
+            message for message in fake.sent if message.get("method") == "thread/start"
+        )
+        turn_start = next(
+            message for message in fake.sent if message.get("method") == "turn/start"
+        )
+        self.assertEqual(
+            thread_start["params"]["multiAgentMode"], "explicitRequestOnly"
+        )
+        self.assertEqual(
+            turn_start["params"]["multiAgentMode"], "explicitRequestOnly"
+        )
+
     def _executor(self, fake: BlockingFakeTransport, *, version: str = "0.146.0") -> CodexExecutor:
         executor = CodexExecutor(
             command=sys.executable,

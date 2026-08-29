@@ -1335,6 +1335,17 @@ class CodexExecutor(CLIExecutorBase):
             else:
                 thread_params = dict(common_params)
                 thread_method = "thread/start"
+            collaboration_enabled = bool(
+                isinstance(record.get("collaboration_spawn"), dict)
+                and record["collaboration_spawn"].get("enabled") is True
+            )
+            if collaboration_enabled:
+                # Codex 0.150.1 advertises the collaboration lifecycle in its
+                # schema, but does not expose the native tools to a new App
+                # Server thread unless the official explicit-request mode is
+                # selected.  Keep it task-scoped and never enable proactive
+                # delegation for ordinary AgentBC tasks.
+                thread_params["multiAgentMode"] = "explicitRequestOnly"
             thread_rpc_id = self._app_rpc(record, thread_method, thread_params)
             thread_response = self._app_wait_response(record, thread_rpc_id)
             official_thread_id = self._thread_id_from_message(thread_response)
@@ -1381,11 +1392,13 @@ class CodexExecutor(CLIExecutorBase):
                 for image in task_image_paths(record["task_packet"])
             ]
             inputs.append({"type": "text", "text": prompt})
-            turn_id = self._app_rpc(
-                record,
-                "turn/start",
-                {"threadId": official_thread_id, "input": inputs},
-            )
+            turn_params: dict[str, Any] = {
+                "threadId": official_thread_id,
+                "input": inputs,
+            }
+            if collaboration_enabled:
+                turn_params["multiAgentMode"] = "explicitRequestOnly"
+            turn_id = self._app_rpc(record, "turn/start", turn_params)
             turn_response = self._app_wait_response(record, turn_id)
             turn_result = turn_response.get("result") if isinstance(turn_response.get("result"), dict) else {}
             turn = turn_result.get("turn") if isinstance(turn_result.get("turn"), dict) else {}
