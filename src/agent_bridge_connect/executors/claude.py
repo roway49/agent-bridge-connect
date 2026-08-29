@@ -45,6 +45,7 @@ from agent_bridge_connect.claude_path_capability import (
     claude_path_capability_args,
 )
 from agent_bridge_connect.claude_sdk_transport import (
+    SDK_PERMISSION_MODE_BY_FLAG,
     ClaudeSDKControlTransport,
     ClaudeSDKTransportError,
     build_sdk_options,
@@ -60,7 +61,10 @@ from agent_bridge_connect.permission_modes import (
     permission_record_from_extensions,
     permission_runtime_policy,
 )
-from agent_bridge_connect.permission_grants import permission_grant_from_extensions
+from agent_bridge_connect.permission_grants import (
+    consume_permission_grant,
+    permission_grant_from_extensions,
+)
 from agent_bridge_connect.permission_transport import (
     CLAUDE_INIT_RECEIPT_KIND,
     CLAUDE_STDIO_CONTROL_RESPONSE,
@@ -119,6 +123,8 @@ class ClaudeExecutor(CLIExecutorBase):
         output_format: str = "text",
         max_budget_usd: float | None = 10.0,
         allowed_tools: list[str] | tuple[str, ...] | str | None = None,
+        auto_approve_tools: list[str] | tuple[str, ...] | str | None = None,
+        tools: list[str] | tuple[str, ...] | str | None = None,
         command: str | None = None,
         transport: str = "runner",
         runner_spool: str | None = None,
@@ -138,7 +144,31 @@ class ClaudeExecutor(CLIExecutorBase):
         self.safe_mode = bool(safe_mode)
         self.output_format = output_format
         self.max_budget_usd = max_budget_usd
-        self.allowed_tools = _normalize_allowed_tools(allowed_tools)
+        # PERM-104-002 config split: ``tools`` is the tool-visibility list
+        # (SDK ``tools``); ``auto_approve_tools`` is the explicit
+        # pre-approval list (SDK ``allowed_tools``).  The legacy
+        # ``allowed_tools`` key is dual-read as ``tools`` with a warning and
+        # NEVER becomes an auto-approval.
+        if allowed_tools is not None:
+            import warnings
+
+            warnings.warn(
+                "claude executor config 'allowed_tools' is legacy: it is read "
+                "as 'tools' (tool visibility) and never auto-approves; use "
+                "'tools' and 'auto_approve_tools'.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if tools is None and auto_approve_tools is None:
+            # Legacy dual-read path: ``allowed_tools`` maps onto ``tools``.
+            self.tools = _normalize_allowed_tools(allowed_tools)
+        else:
+            self.tools = _normalize_allowed_tools(tools)
+        self.auto_approve_tools = (
+            _normalize_allowed_tools(auto_approve_tools)
+            if auto_approve_tools is not None
+            else []
+        )
         self.transport = transport
         self.runner_spool = runner_spool
         self.runner_token = runner_token
@@ -673,6 +703,14 @@ class ClaudeExecutor(CLIExecutorBase):
             executor="claude",
             approval_timeout_s=getattr(self, "approval_timeout_s", 300.0),
         )
+        # PERM-104-002: a consumed one-shot grant backs exactly this run's
+        # temporary full; the transport revokes it on terminal/crash.
+        if permission.get("temporary") is True:
+            grant = permission_grant_from_extensions(
+                task_packet.get("extensions") if isinstance(task_packet.get("extensions"), dict) else {}
+            )
+            if isinstance(grant, dict):
+                transport.attach_consumed_grant(consume_permission_grant(grant, run_id))
         transport.start()
         self._transport = transport
 
@@ -1061,7 +1099,24 @@ class ClaudeExecutor(CLIExecutorBase):
         execution_session_id: str,
         sdk_facts: dict[str, str],
     ) -> Any:
-        """Build official ClaudeAgentOptions frozen to the probed tuple."""
+        """Build official ClaudeAgentOptions frozen to the probed tuple.
+
+        Frozen semantics (PERM-104-002): safe/inherit-safe bases keep the SDK
+        default mode so ``can_use_tool`` fires for ask-path actions; explicit
+        and inherited concrete ``full`` start ``bypassPermissions`` via the
+        frozen flag→mode mapping.  ``full`` is never inferred from callback
+        text, stderr, prose, or exit status — only from the resolved frozen
+        permission record.
+        """
+        permission = permission_record_from_extensions(task_packet.get("extensions"))
+        effective = str(permission.get("effective_mode") or "").strip().lower()
+        sdk_mode = "default"
+        if effective == "full":
+            full_flags = permission_flags("claude", "full")
+            if full_flags:
+                sdk_mode = SDK_PERMISSION_MODE_BY_FLAG.get(
+                    full_flags[0], "bypassPermissions"
+                )
         capability = (
             claude_ephemeral_path_capability(
                 task_packet,
@@ -1077,16 +1132,33 @@ class ClaudeExecutor(CLIExecutorBase):
             if flag == "--add-dir" and index + 1 < len(additions)
         ]
         max_budget_usd = _claude_max_budget_usd(task_packet, self.max_budget_usd)
+        hooks = None
+        try:
+            from agent_bridge_connect.claude_sdk_hooks import build_sdk_hooks
+            from agent_bridge_connect.session import control_root_for_task
+
+            board_root = (
+                task_packet.get("task_board") or {}
+            ).get("root") or _workspace_root(task_packet)
+            hooks = build_sdk_hooks(
+                control_root_for_task(
+                    str(task_packet.get("task_id") or ""),
+                    board_root=board_root,
+                )
+            )
+        except Exception:  # noqa: BLE001 - hook feed is diagnostic-only.
+            hooks = None
         return build_sdk_options(
             cli_path=str(self.agent_bin),
             cwd=str(execution_root),
             can_use_tool=self._transport.can_use_tool,
-            permission_mode="default",
+            permission_mode=sdk_mode,
             session_id=execution_session_id,
             allowed_tools=self.tools,
             model=self.model,
             max_budget_usd=max_budget_usd,
             add_dirs=add_dirs,
+            hooks=hooks,
         )
 
     def _invalidate_approval_after_transport_death(
@@ -1214,11 +1286,12 @@ class ClaudeExecutor(CLIExecutorBase):
         max_budget_usd = _claude_max_budget_usd(task_packet, self.max_budget_usd)
         if max_budget_usd is not None:
             command.extend(["--max-budget-usd", str(max_budget_usd)])
-        if self.allowed_tools:
-            tools_arg = _claude_tools_argument(self.allowed_tools)
+        if self.tools:
+            tools_arg = _claude_tools_argument(self.tools)
             if tools_arg:
                 command.extend(["--tools", tools_arg])
-            command.extend(["--allowedTools", ",".join(self.allowed_tools)])
+        if self.auto_approve_tools:
+            command.extend(["--allowedTools", ",".join(self.auto_approve_tools)])
         command.extend(["--disallowedTools", "TaskCreate,TaskUpdate,TodoWrite"])
         return command
 
@@ -1320,11 +1393,12 @@ class ClaudeExecutor(CLIExecutorBase):
         max_budget_usd = _claude_max_budget_usd(task_packet, self.max_budget_usd)
         if max_budget_usd is not None:
             command.extend(["--max-budget-usd", str(max_budget_usd)])
-        if self.allowed_tools:
-            tools_arg = _claude_tools_argument(self.allowed_tools)
+        if self.tools:
+            tools_arg = _claude_tools_argument(self.tools)
             if tools_arg:
                 command.extend(["--tools", tools_arg])
-            command.extend(["--allowedTools", ",".join(self.allowed_tools)])
+        if self.auto_approve_tools:
+            command.extend(["--allowedTools", ",".join(self.auto_approve_tools)])
         command.extend(["--disallowedTools", "TaskCreate,TaskUpdate,TodoWrite"])
         return command
 

@@ -3445,7 +3445,9 @@ class Phase10dIntegrationTests(unittest.TestCase):
         self.assertEqual(executor.permission_mode, "acceptEdits")
         self.assertTrue(executor.safe_mode)
         self.assertEqual(executor.output_format, "text")
-        self.assertEqual(executor.allowed_tools, ["Read", "Write"])
+        # PERM-104-002: legacy ``allowed_tools`` is dual-read as ``tools``.
+        self.assertEqual(executor.tools, ["Read", "Write"])
+        self.assertEqual(executor.auto_approve_tools, [])
 
     def test_executor_registry_rejects_claude_bypass_permissions(self):
         from agent_bridge_connect.executor_registry import get_executor

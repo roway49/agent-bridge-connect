@@ -49,6 +49,13 @@ from agent_bridge_connect.control import (
 )
 from agent_bridge_connect.session import SessionRecoveryRequired
 
+# The frozen mapping from the AgentBC full-mode contract flag to the official
+# SDK permission mode.  Only the AgentBC-generated flag value is ever mapped;
+# callback text, stderr, prose and exit status can never select a mode.
+SDK_PERMISSION_MODE_BY_FLAG = {
+    "--dangerously-skip-permissions": "bypassPermissions",
+}
+
 # The transport marks worker threads so a second worker can be detected and
 # refused deterministically in tests and diagnostics.
 _WORKER_THREAD_PREFIX = "agentbc-claude-sdk-"
@@ -104,6 +111,17 @@ class ClaudeSDKControlTransport:
         self._pending_tool_use_ids: set[str] = set()
         self._pending_lock = threading.Lock()
         self._last_error: dict[str, Any] | None = None
+        # Every tool_use_id ever accepted on this transport: a duplicate
+        # native identity can never create a second permission input.
+        self._seen_tool_use_ids: set[str] = set()
+        # The tool_use_id of the one in-flight single-action approval (or the
+        # empty string): the concurrency gate and death-invalidation anchor.
+        self._active_request = ""
+        # PERM-104-002 temporary-full lifecycle: the grant envelope consumed
+        # for this run, revoked on terminal/crash/handoff/reassign (the
+        # Service layer owns durable revocation; the transport mirrors the
+        # same grant object it verified at start).
+        self._consumed_grant: dict[str, Any] | None = None
 
     # ── worker event-loop lifecycle ────────────────────────────────────────
 
@@ -242,7 +260,9 @@ class ClaudeSDKControlTransport:
 
         Runs on the worker loop inside the SDK's own permission plumbing; the
         returned coroutine result is the official ``PermissionResult`` the
-        SDK hands back to the CLI on the same process/session.
+        SDK hands back to the CLI on the same process/session.  A concurrent
+        second ``can_use_tool`` fails closed instead of queueing behind the
+        first, so one dialog can never authorize two actions.
         """
         from agent_bridge_connect.permission_transport import (
             CONTROL_PATH_SDK_TRANSPORT,
@@ -258,70 +278,64 @@ class ClaudeSDKControlTransport:
                 "the action was denied (claude_sdk_tool_use_id_missing)."
             )
         with self._pending_lock:
-            if tool_use_id in self._pending_tool_use_ids:
+            if (
+                tool_use_id in self._seen_tool_use_ids
+                or tool_use_id in self._pending_tool_use_ids
+                or self._active_request
+            ):
                 return self._deny_result(
-                    "A duplicate tool call identity was rejected "
-                    "(claude_sdk_tool_use_id_duplicate)."
+                    "A duplicate or concurrent tool call identity was "
+                    "rejected (claude_sdk_tool_use_id_duplicate)."
                 )
+            self._seen_tool_use_ids.add(tool_use_id)
             self._pending_tool_use_ids.add(tool_use_id)
+            self._active_request = tool_use_id
         try:
-            return await self._bridge_to_control_plane(
+            # The bridge is awaited (not the blocking helper): the worker
+            # loop stays responsive and the SDK client keeps streaming while
+            # the human decision is pending on the same process/session.
+            return await self._request_and_wait(
                 CONTROL_PATH_SDK_TRANSPORT, tool, tool_use_id, dict(input_data or {})
             )
         finally:
             with self._pending_lock:
                 self._pending_tool_use_ids.discard(tool_use_id)
+                self._active_request = ""
 
     def _deny_result(self, message: str) -> Any:
-        from agent_bridge_connect.permission_transport import _sdk_deny
+        from claude_agent_sdk import PermissionResultDeny
 
-        return _sdk_deny(message)
+        return PermissionResultDeny(message=str(message or ""))
 
     def _allow_result(self, original_input: dict[str, Any]) -> Any:
-        from agent_bridge_connect.permission_transport import _sdk_allow
+        from claude_agent_sdk import PermissionResultAllow
 
-        return _sdk_allow(original_input)
+        return PermissionResultAllow(updated_input=dict(original_input or {}))
 
-    def _bridge_to_control_plane(
+    async def _request_and_wait(
         self,
         control_path: str,
         tool: str,
         tool_use_id: str,
         tool_input: dict[str, Any],
     ) -> Any:
-        # The control-plane round trip is blocking (it waits for a human);
-        # run it on a helper thread so the worker loop stays responsive and
-        # the SDK client keeps streaming.
-        outcome: dict[str, Any] = {}
+        """Bridge one SDK permission request into the frozen ControlPlane.
 
-        def _runner() -> None:
-            try:
-                outcome["result"] = self._request_and_wait(
-                    control_path, tool, tool_use_id, tool_input
-                )
-            except BaseException as exc:  # noqa: BLE001 - isolated thread.
-                outcome["error"] = exc
+        The approval identity binds task, run, official session, the native
+        ``tool_use_id``, the tool fingerprint, the escalation domain and the
+        host profile digest.  A decision recorded against a different native
+        request is never returned as ``allow``.
+        """
+        from agent_bridge_connect.approval import compute_request_fingerprint
 
-        helper = threading.Thread(
-            target=_runner,
-            name=f"{_WORKER_THREAD_PREFIX}decision-{tool_use_id[:12]}",
-            daemon=True,
-        )
-        helper.start()
-        helper.join()
-        error = outcome.get("error")
-        if error is not None:
-            raise error
-        return outcome.get("result")
-
-    def _request_and_wait(
-        self,
-        control_path: str,
-        tool: str,
-        tool_use_id: str,
-        tool_input: dict[str, Any],
-    ) -> Any:
         request_id = new_request_id()
+        fingerprint = compute_request_fingerprint(
+            executor=self.executor,
+            session_id=self.session_id,
+            tool_name=tool,
+            tool_input=tool_input,
+            extra={"tool_use_id": tool_use_id},
+        )
         summary = core_bounded_summary(executor=self.executor, operation=tool)
         message = {
             "jsonrpc": "2.0",
@@ -333,6 +347,9 @@ class ClaudeSDKControlTransport:
                 "itemId": tool_use_id,
                 "reason": summary,
             },
+            # Identity fields are top level so ``normalize_approval_request``
+            # reads them directly; the nested ``_agentbc`` block stays for
+            # wire-level diagnostics only.
             "_agentbc": {
                 "task_id": self.task_id,
                 "executor_run_id": self.run_id,
@@ -342,42 +359,46 @@ class ClaudeSDKControlTransport:
                 "escalation_domain": self.escalation_domain,
                 "host_profile_digest": self.host_profile_digest,
             },
+            "escalation_domain": self.escalation_domain,
+            "host_profile_digest": self.host_profile_digest,
         }
         try:
-            event = self.plane.request_approval(message)
+            event = await asyncio.to_thread(self.plane.request_approval, message)
+            event_request_id = str(event.get("request_id") or "")
+            decision_request_id = event_request_id or request_id
+            try:
+                response = await asyncio.to_thread(
+                    self.plane.wait_for_decision,
+                    decision_request_id,
+                    self.approval_timeout_s,
+                )
+            except ControlPlaneError as exc:
+                if exc.code in {"approval_request_expired", "approval_request_stale"}:
+                    raise ClaudeSDKTransportError(
+                        "claude_sdk_approval_timeout",
+                        "The SDK permission request expired or was invalidated "
+                        "before a decision arrived.",
+                        {"request_id": decision_request_id, "tool_use_id": tool_use_id},
+                    ) from exc
+                raise ClaudeSDKTransportError(
+                    exc.code,
+                    f"The SDK permission wait failed: {exc}",
+                    {"request_id": decision_request_id, "tool_use_id": tool_use_id},
+                ) from exc
+            decision = str(response.get("decision") or "").strip().lower()
+            if decision == "accept":
+                # Approve authorizes only the original action: the official
+                # allow MUST carry the untouched original input.
+                return self._allow_result(tool_input)
+            return self._deny_result(
+                "The user denied this action through AgentBC."
+            )
         except (ControlPlaneError, SessionRecoveryRequired) as exc:
             raise ClaudeSDKTransportError(
                 getattr(exc, "code", "claude_sdk_approval_rejected"),
                 f"The control plane rejected the SDK permission request: {exc}",
                 {"request_id": request_id, "tool_use_id": tool_use_id},
             ) from exc
-        event_request_id = str(event.get("request_id") or "")
-        decision_request_id = event_request_id or request_id
-        try:
-            response = self.plane.wait_for_decision(
-                decision_request_id, self.approval_timeout_s
-            )
-        except ControlPlaneError as exc:
-            if exc.code in {"approval_request_expired", "approval_request_stale"}:
-                raise ClaudeSDKTransportError(
-                    "claude_sdk_approval_timeout",
-                    "The SDK permission request expired or was invalidated "
-                    "before a decision arrived.",
-                    {"request_id": decision_request_id, "tool_use_id": tool_use_id},
-                ) from exc
-            raise ClaudeSDKTransportError(
-                exc.code,
-                f"The SDK permission wait failed: {exc}",
-                {"request_id": decision_request_id, "tool_use_id": tool_use_id},
-            ) from exc
-        decision = str(response.get("decision") or "").strip().lower()
-        if decision == "accept":
-            # Approve authorizes only the original action: the official
-            # allow MUST carry the untouched original input.
-            return self._allow_result(tool_input)
-        return self._deny_result(
-            "The user denied this action through AgentBC."
-        )
 
     # ── transport-death invalidation ───────────────────────────────────────
 
@@ -385,10 +406,16 @@ class ClaudeSDKControlTransport:
         """Invalidate any pending request when the transport dies.
 
         A dead transport can never be resumed into; recovery must mint a
-        fresh run/request identity.
+        fresh run/request identity.  The in-flight request is tracked on the
+        transport itself so the control plane invalidates exactly that
+        request (status ``invalidated``) instead of leaving it pending
+        behind a dead client.
         """
+        with self._pending_lock:
+            active = str(self._active_request or "")
         return self.plane.record_transport_failed(
             f"Claude SDK {reason}",
+            request_id=active,
             evidence={"run_id": self.run_id, "executor": self.executor},
         )
 
@@ -427,16 +454,54 @@ class ClaudeSDKControlTransport:
         ``decision_callback`` (when supplied) is consulted after the frozen
         ControlPlane decision so executor-level receipts stay authoritative;
         the returned result carries redacted, structured facts only.
+
+        Temporary-full lifecycle (PERM-104-002): when a consumed one-shot
+        grant is attached via :meth:`attach_consumed_grant`, the run starts
+        in ``bypassPermissions`` through the SDK options and the grant is
+        revoked the moment this run reaches its terminal state — the extra
+        capability never outlives the single run that consumed it.
         """
-        return self._submit(
-            lambda: self._run_session_async(
-                options,
-                prompt,
-                decision_callback,
-                on_started,
-            ),
-            timeout_s,
-        )
+        try:
+            return self._submit(
+                lambda: self._run_session_async(
+                    options,
+                    prompt,
+                    decision_callback,
+                    on_started,
+                ),
+                timeout_s,
+            )
+        finally:
+            # Terminal state (result returned OR timeout/crash): a consumed
+            # temporary-full grant is revoked exactly once.  Handoff and
+            # reassign run this same path when the old run is superseded.
+            self._revoke_consumed_grant("claude_run_terminal")
+
+    def attach_consumed_grant(self, grant: dict[str, Any]) -> None:
+        """Attach the consumed one-shot grant backing this run's full mode.
+
+        ``grant`` must already be validated and marked ``consumed`` by the
+        Runner/Service layer; the transport only mirrors it for lifecycle
+        revocation and never mints or re-issues grants itself.
+        """
+        if str((grant or {}).get("state", {}).get("status") or "") != "consumed":
+            raise ClaudeSDKTransportError(
+                "claude_sdk_grant_not_consumed",
+                "Only a consumed one-shot grant may back a temporary full run.",
+            )
+        self._consumed_grant = dict(grant)
+
+    def _revoke_consumed_grant(self, code: str) -> None:
+        grant = self._consumed_grant
+        self._consumed_grant = None
+        if grant is None:
+            return
+        try:
+            from agent_bridge_connect.permission_grants import revoke_permission_grant
+
+            revoke_permission_grant(grant, code)
+        except Exception:  # noqa: BLE001 - revocation is best-effort at this layer.
+            pass
 
     async def _run_session_async(
         self,
@@ -481,20 +546,6 @@ class ClaudeSDKControlTransport:
                 "session_id": sorted(session_ids)[0] if session_ids else "",
                 "result": result_payload,
             }
-
-
-def _sdk_allow(original_input: dict[str, Any]) -> Any:  # pragma: no cover - thin shim
-    """Build the official allow result (updated_input = original input)."""
-    from claude_agent_sdk import PermissionResultAllow
-
-    return PermissionResultAllow(updated_input=dict(original_input or {}))
-
-
-def _sdk_deny(message: str) -> Any:  # pragma: no cover - thin shim
-    """Build the official deny result."""
-    from claude_agent_sdk import PermissionResultDeny
-
-    return PermissionResultDeny(message=str(message or ""))
 
 
 def build_sdk_options(

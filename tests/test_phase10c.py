@@ -434,7 +434,10 @@ class SetupModeTests(unittest.TestCase):
         self.assertTrue(config["safe_mode"])
         self.assertEqual(config["permission_mode"], "acceptEdits")
         self.assertEqual(config["output_format"], "text")
-        self.assertEqual(config["allowed_tools"], ["Read", "Write", "Edit", "Bash"])
+        # PERM-104-002: setup writes the split keys; nothing auto-approves.
+        self.assertEqual(config["tools"], ["Read", "Write", "Edit", "Bash"])
+        self.assertEqual(config["auto_approve_tools"], [])
+        self.assertNotIn("allowed_tools", config)
 
     def setUp(self):
         self.test_dir = Path(tempfile.mkdtemp())

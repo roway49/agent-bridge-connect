@@ -40,6 +40,12 @@ BUILTIN_EXECUTOR_RUNTIME_KEYS = {
             "safe_mode",
             "output_format",
             "max_budget_usd",
+            # PERM-104-002: ``tools`` (visibility) and ``auto_approve_tools``
+            # (explicit pre-approval) are the supported keys; the legacy
+            # ``allowed_tools`` stays accepted and is dual-read as ``tools``
+            # with a deprecation warning, never as auto-approval.
+            "tools",
+            "auto_approve_tools",
             "allowed_tools",
             "command",
             "transport",

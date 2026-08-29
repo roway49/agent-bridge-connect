@@ -226,10 +226,19 @@ def select_claude_control_path(
 
 
 def current_platform() -> str:
-    """Return the redacted AgentBC platform label for SDK gate checks."""
+    """Return the redacted AgentBC platform label for SDK gate checks.
+
+    ``platform.system()`` reports ``Darwin`` on macOS while every AgentBC
+    matrix fixture and the doctor projection use the human label
+    ``macOS``; the mapping stays explicit so the gate can never silently
+    admit a non-macOS host.
+    """
     import platform
 
-    return f"{platform.system()} {platform.machine()}"
+    system = platform.system()
+    machine = platform.machine()
+    label = {"Darwin": "macOS"}.get(system, system)
+    return f"{label} {machine}"
 
 
 def assert_claude_sdk_environment(cli_path: str | Path | None) -> dict[str, str]:

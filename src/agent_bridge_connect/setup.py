@@ -1200,7 +1200,11 @@ def _executor_config_for(agent: dict[str, Any]) -> dict[str, Any]:
         result["permission_mode"] = "acceptEdits"
         result["output_format"] = "text"
         result["max_budget_usd"] = DEFAULT_CLAUDE_MAX_BUDGET_USD
-        result["allowed_tools"] = ["Read", "Write", "Edit", "Bash"]
+        # PERM-104-002: ``tools`` governs visibility; ``auto_approve_tools``
+        # stays empty so nothing is pre-approved by default.  The legacy
+        # ``allowed_tools`` key is no longer written by setup.
+        result["tools"] = ["Read", "Write", "Edit", "Bash"]
+        result["auto_approve_tools"] = []
     return result
 
 

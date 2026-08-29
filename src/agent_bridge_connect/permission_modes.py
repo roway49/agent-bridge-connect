@@ -415,6 +415,15 @@ def permission_record_from_extensions(
 
 
 def permission_flags(executor: str, mode: str) -> list[str]:
+    """Frozen CLI flag mapping for one AgentBC permission mode.
+
+    PERM-104-002: the Claude full mapping now runs through the official SDK
+    transport's ``permission_mode="bypassPermissions"`` (``--dangerously-skip-
+    permissions`` on the SDK-spawned CLI) instead of a raw CLI invocation.
+    The flag string stays the frozen contract token; the SDK transport maps
+    it (see ``claude_sdk_transport.SDK_PERMISSION_MODE_BY_FLAG``).  safe/
+    inherit keep the SDK default modes so ``can_use_tool`` still fires.
+    """
     selected = normalize_permission_mode(mode)
     if executor == "codex":
         if selected == "safe":
