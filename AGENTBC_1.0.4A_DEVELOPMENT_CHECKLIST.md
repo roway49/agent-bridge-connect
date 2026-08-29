@@ -1,7 +1,7 @@
 # AgentBC 1.0.4A 需求开发清单
 
 > 制定日期：2026-08-26
-> 状态：持续开发与回归中；`SESSION-104-001` 保持 P0 未完成
+> 状态：持续开发与回归中；`SESSION-104-001` 已通过，当前主线为 Claude `PERM-104-002` 审批循环
 > 目标版本：AgentBC `1.0.4A` / Python `1.0.4a1`
 > 来源基线：`private/integration@01f3ce1`
 > 已发布基线：`v1.0.3A2@62757a4`；公开 Formula 收口 `public/main@87c4bca`
@@ -56,11 +56,11 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `PROTO-104-001` | P0 / fixture matrix 已完成（2026-08-27）；production collaboration_spawn wiring 待回归（2026-08-28） | 上游 CLI version/help/argv/event 漂移只能靠临时补测试 | 三 Executor 完整版本化 fixture、capability matrix 和未知组合 fail-closed；生产派生会话接线需通过版本 fixture + live probe 双门 | 无 |
 | `ARCH-104-001` | P1 / 按域执行 | Service、Runner、CLI、approval、notification 责任仍集中 | 每个功能项先完成对应窄模块机械拆分，公共 API/CLI/磁盘行为不变 | `PROTO-104-001` |
 | `PERM-104-001` | P0 | native Deny 后 Agent 仍可用 Prompt/callback 请求 full 并启动第二 worker | 审批渠道和 fallback 完全由可信 transport event 与 Core policy 决定 | permission fixtures；对应 ARCH slice |
-| `PERM-104-002` | P0-Blocker / 实施中（2026-08-28） | 已批准动作仍被宿主 containment 拒绝时会重复弹窗、grant 和 continuation；显式 full 还可能进入不可再升级 recovery | 稳定 fingerprint + escalation domain；人工授予、临时申请和权限继承三条路径的 full 都必须真实生效且在声明范围内无阻塞；完成后执行 `PERM-104-002-R1` 详情回归 | `PERM-104-001` |
+| `PERM-104-002` | P0-Blocker / 当前唯一主线（2026-08-29） | Claude 已批准动作仍被宿主 containment 拒绝时会重复弹窗、grant 和 continuation；显式 full 还可能进入不可再升级 recovery | 稳定 fingerprint + escalation domain；人工授予、临时申请和权限继承三条路径的 full 都必须真实生效且在声明范围内无阻塞；完成后执行 `PERM-104-002-R1` 详情回归 | `PERM-104-001` |
 | `FLOW-104-002` | P0 | report/record 超限可跳过终态通知和 cleanup receipt | terminal、report、notification、cleanup 独立且可重放，通知不被报告失败吞掉 | terminal fixtures；对应 ARCH slice |
 | `FLOW-104-001` | P1 | handoff 只能声明一个 step，自由文本多步骤直到 callback 才失败 | handoff 原生结构化 steps、dispatch 前预检、严格 callback 一致性 | schema fixtures；对应 ARCH slice |
 | `FLOW-103-001` | P1 / 跨版转入 | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | task/run/session scoped 单调 progress receipt；所有公共视图同源 | `FLOW-104-001` 的 declared steps |
-| `SESSION-104-001` | P0 / 未完成（2026-08-28） | cleanup 成功只证明 CLI delete 返回成功，未证明 Codex CLI 与 Desktop 的恢复列表都彻底移除同一临时会话 | 以官方 session ID 做双入口、重启后和保留边界的真实验收；不能确认时 fail closed | `PROTO-104-001` Codex session fixtures；`FLOW-104-002` cleanup receipt；官方 Desktop 实时同步证据 |
+| `SESSION-104-001` | P0 / 已通过（2026-08-29） | 历史 cleanup 只证明 CLI delete；现已建立同一官方 session 的 archive→delete 命令闭环并完成 CLI/Desktop 后端真机验收 | `QV46-001` completed 与 `NMY4-001` failed 均对精确主会话完成 archive/delete acknowledgement，CLI、Desktop backend 及当前应用 active/archived 列表均 absent；Desktop 刷新延迟不作为门禁 | 已完成；原生派生子会话未实际触发转 `PROTO-105-001` P2 |
 | `FLOW-104-003` | P0 / 恢复闭环 | 当前终态 `failed` 既不能 `task retry`，也不能作为普通 handoff 源，失败后只能人工绕行 | status/report 给出机械可判定的 retry/handoff 动作；同任务重试与新 iteration 交接均保留审计和进度 | failure taxonomy；`FLOW-104-002` terminal receipts；`FLOW-104-001` steps |
 | `INPUT-104-001` | P0 / 派发阻断 | 显式 custom path 时，位于项目根之外的 `--image`/输入文件被 `image input is outside task roots` 原子拒绝 | 项目根与只读附件根分离；Runner 受控导入外部文件且不扩大 Executor 项目权限 | PathPlan v2；atomic dispatch；input manifest |
 
@@ -95,6 +95,15 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 - 回归覆盖合法 callback、缺 callback 的返回码 0、非零退出、输出截断、最大 turns、上下文耗尽、Runner
   重启，以及同 Executor retry/跨 Executor handoff；每条路径验证唯一 RunLease、部分进度单调和通知幂等。
 
+### 2.2 P2 待优化项（视进度决定是否并入 1.0.5A）
+
+| ID | 优先级 | 现场基线 | 优化目标 | 发布关系 |
+| --- | --- | --- | --- | --- |
+| `PROTO-105-001` | P2 / 待优化 | Codex 0.150.1 schema、fixture 与 live probe 均声明 `collabAgentToolCall`/`spawnAgent`，且 AgentBC 已显式选择 collaboration 与 Ultra；但 `C5FN-001`、`NMY4-001` 仍由父模型直接输出 `CHILD_SESSION_CANARY_OK`，没有官方 `spawnAgent` lifecycle、receiver thread ID 或 auxiliary ledger | 找到官方、可验证的原生协作工具启用合同；只有收到真实 `item/started`→`item/completed`、官方 receiver thread receipt 并完成父子 cleanup 后才算通过。禁止把模型文字或模拟子代理当作成功 | 不重新打开 `SESSION-104-001`；根据 1.0.5A 开发容量决定是否并入，未并入时继续 fail closed |
+
+`PROTO-105-001` 不属于 `1.0.4A` 发布门禁。当前主会话 completed/failed cleanup 已通过；由于上述 canary
+没有实际创建派生会话，它既不能证明派生清理通过，也不能否定已登记 auxiliary receipt 的现有清理实现。
+
 ## 3. 开发顺序与并行边界
 
 ### Gate 0：冻结基线
@@ -128,6 +137,8 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 
 ### Wave 2：权限机械判定与不可升级阻塞收敛
 
+- 当前开发资源优先投入 Claude `PERM-104-002` 审批循环；在显式 full、临时 full、继承 full 三条真机
+  canary 收敛前，不继续扩展 Codex 原生派生会话能力；
 - `PERM-104-002` 必须在 `PERM-104-001` 的 Core-owned approval decision 落地后实施；
 - `PERM-104-002` 完成前不实施或单独验收详情按钮修复；先证明相同不可升级阻塞不会生成第二个 permission input；
 - `PERM-104-002` 通过定向/全量测试后执行派生项 `PERM-104-002-R1`，只补齐/验证 Core 详情投影和
@@ -139,7 +150,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 
 - `FLOW-104-002` 先建立独立 terminal/report/notification/cleanup receipt，作为失败恢复的审计基础；
 - `FLOW-104-003` 随后开放 Failed retry/handoff，禁止用清空失败记录或复制任务伪装恢复；
-- `SESSION-104-001` 在 terminal/cleanup receipt 稳定后跑 CLI/Desktop 真机矩阵并实施窄修复；
+- `SESSION-104-001` 已完成 CLI/Desktop 后端真机矩阵并通过；后续仅执行不改变发布结论的防回归；
 - 三项必须共同覆盖“旧 session 已清理后 retry 不得恢复已删除 session”与“handoff 不删除派发端对话”。
 
 ### Wave 4：结构化流程与权威进度
@@ -373,6 +384,12 @@ callback invalid。
 
 ### 4.8 `SESSION-104-001`：Codex CLI/Desktop 双入口临时会话清理
 
+> 2026-08-29 最终状态：本项已通过 `1.0.4A` 发布门禁。`QV46-001` 与 `NMY4-001`
+> 均对绑定任务的精确官方主会话取得 archive、delete acknowledgement，并在 CLI、Desktop
+> backend 及当前应用 active/archived 列表确认 absent；完整证据见
+> `SESSION-104-001_CANARY_EVIDENCE.md`。以下未完成结论仅保留为历史过程记录。原生派生子会话
+> 未实际触发的问题已降级为 `PROTO-105-001` P2 候选，不重新打开本项。
+>
 > 2026-08-28 `DEWX-001` continuation status：本项仍为 P0 未完成。`3XAZ-001` 在 Step 1 因
 > `permission_denied_by_user` 失败，完成 `0/5` 且没有合法 final callback；`WSR8-001` 是独立
 > primary canary，历史 report 的 CLI/Desktop 状态为 unknown；`8XF5-001` 因

@@ -158,3 +158,32 @@ historical canary is not evidence that the new archive-then-delete gate works.
   refresh/restart, dispatcher conversation cleanup, and unrelated-session
   cleanup. Desktop visibility is not a success gate; GUI refresh, app
   restart, and sidebar disappearance are never used to judge cleanup.
+
+## SESSION-104-001 final acceptance (2026-08-29)
+
+`SESSION-104-001` is accepted for the `1.0.4A` release gate. Historical
+incomplete statements above remain valid for their individual canaries but are
+superseded by the following installed-build evidence:
+
+- installed AgentBC build identity: `private/integration@d2f77b8`, Codex CLI
+  `0.150.1`;
+- `QV46-001` completed with one valid `AGENTBC_FINAL_CALLBACK`, official parent
+  session `01a04db3-2a59-70f1-859a-cce2a044ff7e`, archive acknowledged,
+  delete acknowledged, cleanup `succeeded`, CLI `absent`, Desktop backend
+  `absent`;
+- `NMY4-001` correctly failed with `completion_marker_missing`, but its exact
+  parent session `01a04db3-4135-7d52-ada4-a26c786b8264` still completed archive
+  acknowledgement, delete acknowledgement, cleanup `succeeded`, CLI `absent`,
+  and Desktop backend `absent` after terminal notification;
+- a fresh read through the current Codex Desktop application control plane
+  found neither exact session ID in active nor archived task listings;
+- both tasks froze `retain=false`; no dispatcher conversation, unrelated task,
+  private database, GUI automation, forced refresh, or application restart was
+  used.
+
+The attempted child canary did not create an official derived conversation:
+there was no `spawnAgent` lifecycle, receiver thread receipt, or auxiliary
+ledger, and the parent model merely emitted `CHILD_SESSION_CANARY_OK`. This is
+recorded separately as P2 `PROTO-105-001`, considered for `1.0.5A`; it does not
+reopen the accepted primary/failed-session cleanup gate and must remain
+fail-closed until an official native collaboration receipt exists.
