@@ -435,7 +435,7 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
             },
         }
 
-    def test_collaboration_task_selects_official_explicit_request_mode(self) -> None:
+    def test_collaboration_task_selects_official_ultra_activation(self) -> None:
         fake = BlockingFakeTransport(self.board, self.task_id, emit_callback=False)
         executor = self._executor(fake, version="0.150.1")
         executor._collaboration_spawn_capability = {
@@ -473,6 +473,8 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
         self.assertEqual(
             turn_start["params"]["multiAgentMode"], "explicitRequestOnly"
         )
+        self.assertEqual(thread_start["params"]["effort"], "ultra")
+        self.assertEqual(turn_start["params"]["effort"], "ultra")
 
     def _executor(self, fake: BlockingFakeTransport, *, version: str = "0.146.0") -> CodexExecutor:
         executor = CodexExecutor(

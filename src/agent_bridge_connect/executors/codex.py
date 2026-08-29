@@ -1340,12 +1340,12 @@ class CodexExecutor(CLIExecutorBase):
                 and record["collaboration_spawn"].get("enabled") is True
             )
             if collaboration_enabled:
-                # Codex 0.150.1 advertises the collaboration lifecycle in its
-                # schema, but does not expose the native tools to a new App
-                # Server thread unless the official explicit-request mode is
-                # selected.  Keep it task-scoped and never enable proactive
-                # delegation for ordinary AgentBC tasks.
+                # Codex 0.150.1 marks multiAgentMode as deprecated/ignored and
+                # names Ultra effort as the supported activation path. Keep
+                # both the explicit-request policy and activation task-scoped;
+                # ordinary AgentBC tasks retain their configured effort.
                 thread_params["multiAgentMode"] = "explicitRequestOnly"
+                thread_params["effort"] = "ultra"
             thread_rpc_id = self._app_rpc(record, thread_method, thread_params)
             thread_response = self._app_wait_response(record, thread_rpc_id)
             official_thread_id = self._thread_id_from_message(thread_response)
@@ -1398,6 +1398,7 @@ class CodexExecutor(CLIExecutorBase):
             }
             if collaboration_enabled:
                 turn_params["multiAgentMode"] = "explicitRequestOnly"
+                turn_params["effort"] = "ultra"
             turn_id = self._app_rpc(record, "turn/start", turn_params)
             turn_response = self._app_wait_response(record, turn_id)
             turn_result = turn_response.get("result") if isinstance(turn_response.get("result"), dict) else {}
