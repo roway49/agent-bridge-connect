@@ -213,7 +213,7 @@ def build_doctor_report(
     )
     permission_runtime, permission_runtime_checks = _safe_collect(
         "permission_runtime",
-        lambda: _collect_permission_runtime(),
+        lambda: _collect_permission_runtime(loaded_config),
     )
     checks = _build_checks(
         package_checks=package_checks,
@@ -1453,7 +1453,9 @@ def _collect_blockers(
     )
 
 
-def _collect_permission_runtime() -> tuple[dict[str, Any], list[dict[str, str]]]:
+def _collect_permission_runtime(
+    config: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """PERM-104-002: project host containment capability and stable codes.
 
     Only stable capability facts and error codes are exposed; raw argv,
@@ -1478,15 +1480,114 @@ def _collect_permission_runtime() -> tuple[dict[str, Any], list[dict[str, str]]]
             ),
         }
     ]
+    sdk_check = _collect_claude_sdk_capability(config)
+    checks.append(sdk_check)
     return (
         {
             "seatbelt_available": available,
             "host_containment_unliftable": HOST_CONTAINMENT_UNLIFTABLE,
             "permission_transport_unsupported": PERMISSION_TRANSPORT_UNSUPPORTED,
             "stable_block_codes": sorted(PERMISSION_RUNTIME_BLOCK_CODES),
+            "claude_sdk_capability": _claude_sdk_capability_projection(config),
         },
         checks,
     )
+
+
+def _collect_claude_sdk_capability(config: dict[str, Any] | None) -> dict[str, str]:
+    """PERM-104-002: fail-closed doctor check for the probed SDK tuple.
+
+    The Claude SDK permission transport is supported only on the exact
+    probed tuple (macOS arm64, claude-agent-sdk 0.2.142, the configured
+    absolute Claude CLI 2.1.233).  Missing/mismatched/unsupported/failed
+    environments are doctor ``warning`` checks with a stable code and a
+    remediation hint — they never crash doctor and never widen capability.
+    """
+    from .permission_transport import (
+        CLAUDE_SDK_PINNED_VERSION,
+        assert_claude_sdk_environment,
+        current_platform,
+    )
+    from .protocol import ABCError
+
+    executors = (config or {}).get("executors")
+    claude_config = (
+        executors.get("claude")
+        if isinstance(executors, dict) and isinstance(executors.get("claude"), dict)
+        else {}
+    )
+    configured_command = str(claude_config.get("command") or "").strip()
+    if not configured_command:
+        return {
+            "id": "permission.claude_sdk",
+            "status": "warning",
+            "message": (
+                "The Claude executor is not configured; the SDK permission "
+                "transport stays unsupported (permission_transport_unsupported)."
+            ),
+        }
+    try:
+        assert_claude_sdk_environment(configured_command)
+    except ABCError as exc:
+        return {
+            "id": "permission.claude_sdk",
+            "status": "warning",
+            "message": (
+                f"Claude SDK transport unsupported ({exc.code}); the "
+                "permission matrix fails closed to permission_transport_unsupported."
+            ),
+        }
+    except Exception:  # noqa: BLE001 - a probe failure must never crash doctor.
+        return {
+            "id": "permission.claude_sdk",
+            "status": "warning",
+            "message": (
+                "The Claude SDK environment probe failed; the permission "
+                "matrix fails closed to permission_transport_unsupported."
+            ),
+        }
+    return {
+        "id": "permission.claude_sdk",
+        "status": "healthy",
+        "message": (
+            "The Claude SDK permission transport matches the probed tuple "
+            f"({CLAUDE_SDK_PINNED_VERSION} on {current_platform()})."
+        ),
+    }
+
+
+def _claude_sdk_capability_projection(
+    config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Redacted public projection of the Claude SDK transport capability."""
+    from .permission_transport import (
+        CLAUDE_SDK_PINNED_VERSION,
+        CLAUDE_SDK_PLATFORM,
+        assert_claude_sdk_environment,
+    )
+
+    projection: dict[str, Any] = {
+        "probed_sdk_version": CLAUDE_SDK_PINNED_VERSION,
+        "probed_platform": CLAUDE_SDK_PLATFORM,
+        "supported": False,
+        "status": "permission_transport_unsupported",
+    }
+    executors = (config or {}).get("executors")
+    claude_config = (
+        executors.get("claude")
+        if isinstance(executors, dict) and isinstance(executors.get("claude"), dict)
+        else {}
+    )
+    configured_command = str(claude_config.get("command") or "").strip()
+    if not configured_command:
+        return projection
+    try:
+        assert_claude_sdk_environment(configured_command)
+    except Exception:  # noqa: BLE001 - fail closed, redacted.
+        return projection
+    projection["supported"] = True
+    projection["status"] = "healthy"
+    return projection
 
 
 def _build_checks(

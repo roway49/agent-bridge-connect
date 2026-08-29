@@ -46,6 +46,19 @@ LINKED_WORKTREE_CAPABILITY_INVALID = "linked_worktree_capability_invalid"
 
 CONTROL_PATH_MCP_PERMISSION_TOOL = "mcp_permission_tool"
 CONTROL_PATH_STDIO_CAN_USE_TOOL = "stdio_can_use_tool"
+CONTROL_PATH_SDK_TRANSPORT = "sdk_control_transport"
+
+# The exact SDK tuple proven by the isolated live probe.  Anything else
+# (missing package, other SDK version, other platform, PATH-discovered CLI)
+# fails closed with a stable code and redacted diagnostics.
+CLAUDE_SDK_PACKAGE = "claude-agent-sdk"
+CLAUDE_SDK_PINNED_VERSION = "0.2.142"
+CLAUDE_SDK_PLATFORM = "macOS arm64"
+
+SDK_CLAUDE_DEPENDENCY_MISSING = "claude_sdk_dependency_missing"
+SDK_CLAUDE_DEPENDENCY_MISMATCH = "claude_sdk_dependency_mismatch"
+SDK_CLAUDE_PLATFORM_UNSUPPORTED = "claude_sdk_platform_unsupported"
+SDK_CLAUDE_CLI_PATH_UNVERIFIED = "claude_sdk_cli_path_unverified"
 
 CLAUDE_STDIO_CONTROL_RESPONSE = "control_response"
 CLAUDE_INIT_RECEIPT_KIND = "system/init"
@@ -56,22 +69,39 @@ CLAUDE_PERMISSION_PROMPT_TOOL_FLAG = "--permission-prompt-tool"
 
 # Frozen Claude control-path capability matrix.
 #
-# E52M-003 review fix: every entry was removed.  The 2.1.226/2.1.233
-# entries previously claimed both control paths from declared (never
-# live-captured) fixtures.  Live probe evidence on the production host:
-#   * installed Claude Code is 2.1.247 (no matrix entry);
-#   * its official ``claude --help`` does not contain
-#     ``--permission-prompt-tool``;
-#   * no ``can_use_tool``/``control_response`` exchange has been captured
-#     live for any version.
-# Declaring capability without that evidence let the worker emit a
-# self-authored broker shell command under an official flag - a protocol
-# AgentBC invented, not the official one.  Adding an entry back requires:
-#   1. a fixture captured from a real binary at exactly that version
-#      (``captured_live: true``) whose help lists the flag, and
-#   2. a live canary proving the ``can_use_tool``/``control_response``
-#      exchange end to end.
-_CLAUDE_CONTROL_MATRIX: dict[str, dict[str, Any]] = {}
+# E52M-003 review fix: the 2.1.226/2.1.233 entries previously claimed both
+# control paths from declared (never live-captured) fixtures and were
+# withdrawn.  The only re-admitted path is the OFFICIAL Claude Agent SDK
+# ``can_use_tool`` transport, admitted solely from the isolated live probe of
+# 2026-08-29 (PERM-104-002): claude-agent-sdk 0.2.142 bound to
+# ``cli_path=/Users/wangroway/.local/share/claude/versions/2.1.233`` proved
+#   * a stable non-empty ``context.tool_use_id`` per request;
+#   * ``PermissionResultAllow(updated_input=original_input)`` executed the
+#     exact original action in the same client/session;
+#   * ``PermissionResultDeny`` produced zero execution;
+#   * the same client/session kept working after both decisions.
+# Evidence: tests/fixtures/executor_runtime/matrix/claude/live_probe_sdk_2026-08-29
+# (probe script + redacted JSON evidence).  Adding any further entry requires
+# the same class of live probe at the exact version tuple.  Production
+# doctor/matrix support only this probed tuple; no PATH fallback and no
+# unprobed binary is ever trusted.
+_CLAUDE_CONTROL_MATRIX: dict[str, dict[str, Any]] = {
+    "2.1.233": {
+        "mcp_permission_tool": {"supported": False},
+        "stdio_can_use_tool": {
+            "supported": True,
+            "same_process_approve_deny": True,
+            "transport_death_invalidation": True,
+        },
+        "sdk_control_transport": {
+            "supported": True,
+            "sdk_package": "claude-agent-sdk",
+            "sdk_version": "0.2.142",
+            "platform": "macOS arm64",
+            "cli_path_must_match_configured": True,
+        },
+    },
+}
 
 # Fixture gates every declared surface must satisfy before production
 # trusts it.  Kept as data so tests and the capture tool share one truth.
@@ -136,12 +166,17 @@ def claude_control_path_capability(version: str | None) -> dict[str, Any]:
                 "reason": "no live-captured fixture proves a control path",
             },
         )
+    sdk_entry = entry.get("sdk_control_transport") or {}
     return {
         "executor": "claude",
         "version": normalized,
         "control_paths": sorted(entry),
         "mcp_permission_tool": bool(entry["mcp_permission_tool"]["supported"]),
         "stdio_can_use_tool": bool(entry["stdio_can_use_tool"]["supported"]),
+        "sdk_control_transport": bool(sdk_entry.get("supported")),
+        "sdk_package": str(sdk_entry.get("sdk_package") or ""),
+        "sdk_version": str(sdk_entry.get("sdk_version") or ""),
+        "sdk_platform": str(sdk_entry.get("platform") or ""),
         "control_response": CLAUDE_STDIO_CONTROL_RESPONSE,
         "init_receipt": CLAUDE_INIT_RECEIPT_KIND,
         "same_process_approve_deny": bool(
@@ -169,16 +204,15 @@ def select_claude_control_path(
 ) -> str:
     """Select the worker control path from the capability matrix.
 
-    With the E52M-003 matrix every combination fails closed with
-    ``permission_transport_unsupported``: no version has a proven control
-    path, so the worker must never enter ``start_control`` and never emit
-    a self-authored broker command under an official flag.
+    Only the official Claude Agent SDK transport is ever selected.  The MCP
+    permission-prompt path stays unproven for every version, and the raw
+    stdio ``control_response`` wire (an SDK implementation detail AgentBC
+    must not re-implement) is never selected directly.  Every unsupported
+    combination fails closed with ``permission_transport_unsupported``.
     """
     capability = claude_control_path_capability(version)
-    if capability["mcp_permission_tool"] and prompt_tool_supported is not False:
-        return CONTROL_PATH_MCP_PERMISSION_TOOL
-    if capability["stdio_can_use_tool"]:
-        return CONTROL_PATH_STDIO_CAN_USE_TOOL
+    if capability["sdk_control_transport"]:
+        return CONTROL_PATH_SDK_TRANSPORT
     raise ABCError(
         PERMISSION_TRANSPORT_UNSUPPORTED,
         f"Claude version {capability['version']!r} exposes no supported permission control path.",
@@ -189,6 +223,80 @@ def select_claude_control_path(
             "probe_supports_prompt_tool": prompt_tool_supported,
         },
     )
+
+
+def current_platform() -> str:
+    """Return the redacted AgentBC platform label for SDK gate checks."""
+    import platform
+
+    return f"{platform.system()} {platform.machine()}"
+
+
+def assert_claude_sdk_environment(cli_path: str | Path | None) -> dict[str, str]:
+    """Fail closed unless the exact probed SDK tuple is installed and bound.
+
+    Gates, in order (each with a stable code and redacted diagnostics):
+      1. ``claude-agent-sdk`` importable at all
+         (``claude_sdk_dependency_missing``);
+      2. its ``__version__`` equals the probed pin
+         (``claude_sdk_dependency_mismatch``);
+      3. the host platform is the probed one
+         (``claude_sdk_platform_unsupported``);
+      4. an explicit absolute ``cli_path`` is supplied by configuration —
+         never a PATH discovery (``claude_sdk_cli_path_unverified``).
+
+    Returns the redacted facts {sdk_version, platform, cli_path} on success.
+    """
+    try:
+        import claude_agent_sdk as _sdk  # noqa: F401
+    except Exception as exc:  # pragma: no cover - import failure path
+        raise ABCError(
+            SDK_CLAUDE_DEPENDENCY_MISSING,
+            "The official Claude Agent SDK is not installed; the SDK "
+            "permission transport is unsupported.",
+            {
+                "executor": "claude",
+                "transport": CONTROL_PATH_SDK_TRANSPORT,
+                "reason": "import_failed",
+                "error_type": type(exc).__name__,
+            },
+        ) from exc
+    installed = str(getattr(_sdk, "__version__", "") or "").strip()
+    if installed != CLAUDE_SDK_PINNED_VERSION:
+        raise ABCError(
+            SDK_CLAUDE_DEPENDENCY_MISMATCH,
+            "The installed Claude Agent SDK does not match the probed pin.",
+            {
+                "executor": "claude",
+                "transport": CONTROL_PATH_SDK_TRANSPORT,
+                "expected": CLAUDE_SDK_PINNED_VERSION,
+            },
+        )
+    host = current_platform()
+    if host != CLAUDE_SDK_PLATFORM:
+        raise ABCError(
+            SDK_CLAUDE_PLATFORM_UNSUPPORTED,
+            "The Claude SDK permission transport is probed on macOS arm64 only.",
+            {"executor": "claude", "transport": CONTROL_PATH_SDK_TRANSPORT, "host": host},
+        )
+    resolved = str(cli_path or "").strip()
+    if (
+        not resolved
+        or not resolved.startswith("/")
+        or not Path(resolved).is_absolute()
+        or not Path(resolved).is_file()
+    ):
+        raise ABCError(
+            SDK_CLAUDE_CLI_PATH_UNVERIFIED,
+            "The SDK transport requires the configured absolute Claude CLI path; "
+            "PATH discovery is never trusted.",
+            {"executor": "claude", "transport": CONTROL_PATH_SDK_TRANSPORT},
+        )
+    return {
+        "sdk_version": installed,
+        "platform": host,
+        "cli_path": resolved,
+    }
 
 
 def claude_inner_sandbox_contract() -> dict[str, Any]:
@@ -249,16 +357,26 @@ def assert_inner_sandbox_within_outer(
 __all__ = [
     "CLAUDE_INIT_RECEIPT_KIND",
     "CLAUDE_PERMISSION_PROMPT_TOOL_FLAG",
+    "CLAUDE_SDK_PACKAGE",
+    "CLAUDE_SDK_PINNED_VERSION",
+    "CLAUDE_SDK_PLATFORM",
     "CLAUDE_STDIO_CONTROL_RESPONSE",
     "CONTROL_PATH_MCP_PERMISSION_TOOL",
+    "CONTROL_PATH_SDK_TRANSPORT",
     "CONTROL_PATH_STDIO_CAN_USE_TOOL",
     "KNOWN_CLAUDE_VERSIONS",
     "LINKED_WORKTREE_CAPABILITY_INVALID",
     "PERMISSION_TRANSPORT_UNSUPPORTED",
+    "SDK_CLAUDE_CLI_PATH_UNVERIFIED",
+    "SDK_CLAUDE_DEPENDENCY_MISMATCH",
+    "SDK_CLAUDE_DEPENDENCY_MISSING",
+    "SDK_CLAUDE_PLATFORM_UNSUPPORTED",
+    "assert_claude_sdk_environment",
     "assert_git_metadata_not_in_add_dir",
     "assert_inner_sandbox_within_outer",
     "claude_control_path_capability",
     "claude_inner_sandbox_contract",
+    "current_platform",
     "parse_claude_version",
     "probe_claude_permission_prompt_tool",
     "select_claude_control_path",

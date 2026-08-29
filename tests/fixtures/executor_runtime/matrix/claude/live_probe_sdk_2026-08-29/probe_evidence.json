@@ -1,0 +1,84 @@
+{
+  "checks": {
+    "allow_with_original_input": {
+      "allow_file_content": "probe-allow",
+      "allow_file_created": true,
+      "ok": true,
+      "returned_updated_input_matches_original": true
+    },
+    "can_use_tool_fired_with_stable_tool_use_id": {
+      "ok": true,
+      "requests": [
+        {
+          "input": {
+            "command": "echo probe-allow > allow.txt",
+            "description": "Write probe-allow to allow.txt"
+          },
+          "tool": "Bash",
+          "tool_use_id": "call_34d80f82e5a34f5ca10cbc4d"
+        },
+        {
+          "input": {
+            "command": "echo probe-deny > deny.txt",
+            "description": "Write probe-deny to deny.txt"
+          },
+          "tool": "Bash",
+          "tool_use_id": "call_72c4d7f7c85b41289b425c2c"
+        }
+      ]
+    },
+    "cli_version": {
+      "ok": true,
+      "version": "2.1.233 (Claude Code)"
+    },
+    "deny_zero_execution": {
+      "deny_file_created": false,
+      "ok": true
+    },
+    "same_client_session_continued": {
+      "ok": true,
+      "session_ids": [
+        "0ad6442d-88c7-4d67-9587-d39f6380651f",
+        "0ad6442d-88c7-4d67-9587-d39f6380651f",
+        "0ad6442d-88c7-4d67-9587-d39f6380651f"
+      ],
+      "single_session_all_phases": true,
+      "tail_reply": "ALIVE"
+    }
+  },
+  "cli_path": "/Users/wangroway/.local/share/claude/versions/2.1.233",
+  "cli_version": "2.1.233 (Claude Code)",
+  "events": [
+    {
+      "event": "can_use_tool",
+      "input_keys": [
+        "command",
+        "description"
+      ],
+      "tool": "Bash",
+      "tool_use_id": "call_34d80f82e5a34f5ca10cbc4d"
+    },
+    {
+      "event": "result_allow_phase",
+      "is_error": false,
+      "session_id": "0ad6442d-88c7-4d67-9587-d39f6380651f"
+    },
+    {
+      "event": "can_use_tool",
+      "input_keys": [
+        "command",
+        "description"
+      ],
+      "tool": "Bash",
+      "tool_use_id": "call_72c4d7f7c85b41289b425c2c"
+    },
+    {
+      "event": "result_deny_phase",
+      "session_id": "0ad6442d-88c7-4d67-9587-d39f6380651f"
+    }
+  ],
+  "probe": "PERM-104-002-sliceA-repeat",
+  "sdk_package": "claude-agent-sdk==0.2.142",
+  "sdk_version": "0.2.142",
+  "verdict": "pass"
+}

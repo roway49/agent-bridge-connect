@@ -1,0 +1,195 @@
+"""PERM-104-002 isolated live probe (Slice A).
+
+Proves the official claude-agent-sdk can_use_tool round trip against the
+configured Claude CLI 2.1.233:
+  1. can_use_tool fires with a stable tool_use_id;
+  2. Allow with PermissionResultAllow(updated_input=original_input) lets the
+     exact original action execute in the same client/session;
+  3. Deny with PermissionResultDeny blocks execution (zero side effects);
+  4. the same client/session keeps working after both decisions.
+
+Records redacted JSON evidence. No raw argv/tokens; only structured facts.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+import claude_agent_sdk
+from claude_agent_sdk import (
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    PermissionResultAllow,
+    PermissionResultDeny,
+)
+
+CLI_PATH = "/Users/wangroway/.local/share/claude/versions/2.1.233"
+
+evidence: dict = {
+    "probe": "PERM-104-002-sliceA",
+    "sdk_version": getattr(claude_agent_sdk, "__version__", "unknown"),
+    "cli_path": CLI_PATH,
+    "cli_version": None,
+    "checks": {},
+    "events": [],
+    "errors": [],
+}
+
+
+def record(check: str, ok: bool, detail: dict) -> None:
+    evidence["checks"][check] = {"ok": ok, **detail}
+    print(f"[{'PASS' if ok else 'FAIL'}] {check}: {json.dumps(detail, sort_keys=True)}", flush=True)
+
+
+def log(event: str, **fields) -> None:
+    entry = {"event": event, **fields}
+    evidence["events"].append(entry)
+    print(f"[EVT] {json.dumps(entry, sort_keys=True)}", flush=True)
+
+
+async def main() -> int:
+    # 0. CLI version receipt from the exact configured binary.
+    proc = await asyncio.create_subprocess_exec(
+        CLI_PATH, "--version",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+    )
+    out, _ = await proc.communicate()
+    cli_version = out.decode().strip()
+    evidence["cli_version"] = cli_version
+    record("cli_version", proc.returncode == 0, {"version": cli_version})
+
+    workdir = Path(tempfile.mkdtemp(prefix="perm104-probe-"))
+    allow_file = workdir / "allow.txt"
+    deny_file = workdir / "deny.txt"
+
+    decisions: dict = {"seen": [], "results": []}
+    phases = {"allow_done": asyncio.Event(), "deny_done": asyncio.Event()}
+    state = {"phase": "allow"}
+
+    async def can_use_tool(tool_name: str, input_data: dict, context) :
+        tool_use_id = getattr(context, "tool_use_id", None)
+        log(
+            "can_use_tool",
+            tool=tool_name,
+            tool_use_id=str(tool_use_id or ""),
+            input_keys=sorted(input_data.keys()),
+        )
+        decisions["seen"].append(
+            {"tool": tool_name, "tool_use_id": str(tool_use_id or ""), "input": input_data}
+        )
+        if state["phase"] == "allow":
+            state["phase"] = "deny"
+            result = PermissionResultAllow(updated_input=input_data)
+            decisions["results"].append(
+                {"tool_use_id": str(tool_use_id or ""), "decision": "allow", "original_input": input_data}
+            )
+            return result
+        result = PermissionResultDeny(message="AgentBC probe deny")
+        decisions["results"].append({"tool_use_id": str(tool_use_id or ""), "decision": "deny"})
+        return result
+
+    options = ClaudeAgentOptions(
+        cli_path=CLI_PATH,
+        cwd=str(workdir),
+        permission_mode="default",
+        can_use_tool=can_use_tool,
+        allowed_tools=[],
+    )
+
+    session_ids: list[str] = []
+    saw_allow_success = False
+    saw_deny_refusal = False
+    continued_after_both = False
+
+    async with ClaudeSDKClient(options) as client:
+        init = await client.receive_response() if False else None  # noqa: F841
+        # Phase 1: ask Claude to create the allow-file via Bash (triggers canUseTool).
+        await client.query(
+            "Use the Bash tool to run exactly: echo probe-allow > allow.txt\n"
+            "Then reply with the single word DONE."
+        )
+        saw_allow_success = False
+        async for message in client.receive_response():
+            kind = type(message).__name__
+            if kind == "SystemMessage" and getattr(message, "subtype", "") == "init":
+                session_ids.append(str(getattr(message, "session_id", "") or ""))
+                log("init", session_id=session_ids[-1])
+            if kind == "ResultMessage":
+                log("result_allow_phase", is_error=bool(getattr(message, "is_error", None)))
+            if allow_file.exists():
+                saw_allow_success = True
+        phases["allow_done"].set()
+
+        allow_existed = allow_file.exists()
+        deny_absent_before = not deny_file.exists()
+
+        # Phase 2: ask for a second action that will be denied.
+        state["phase"] = "deny"
+        await client.query(
+            "Use the Bash tool to run exactly: echo probe-deny > deny.txt\n"
+            "The tool call may be refused; if so, just reply with the single word REFUSED. "
+            "Do not retry. Do not use any other tool."
+        )
+        async for message in client.receive_response():
+            kind = type(message).__name__
+            if kind == "SystemMessage" and getattr(message, "subtype", "") == "init":
+                session_ids.append(str(getattr(message, "session_id", "") or ""))
+            if kind == "ResultMessage":
+                log("result_deny_phase", is_error=bool(getattr(message, "is_error", None)))
+
+        # Phase 3: continued operation in the same client/session.
+        await client.query("Reply with the single word ALIVE and nothing else.")
+        tail = ""
+        async for message in client.receive_response():
+            kind = type(message).__name__
+            text = getattr(message, "result", None)
+            if kind == "ResultMessage" and isinstance(text, str):
+                tail = text
+        continued_after_both = "ALIVE" in tail
+
+    deny_absent_after = not deny_file.exists()
+
+    seen = decisions["seen"]
+    results = decisions["results"]
+    stable_ids = len(seen) >= 2 and all(s["tool_use_id"] for s in seen) and seen[0]["tool_use_id"] != seen[1]["tool_use_id"]
+
+    record("can_use_tool_fired_with_stable_tool_use_id", stable_ids, {
+        "requests": [
+            {"tool": s["tool"], "tool_use_id": s["tool_use_id"], "input": s["input"]}
+            for s in seen
+        ],
+    })
+    record("allow_with_original_input", allow_existed and bool(results) and results[0]["decision"] == "allow", {
+        "allow_file_created": allow_existed,
+        "allow_file_content": allow_file.read_text().strip() if allow_existed else None,
+        "returned_updated_input_matches_original": (
+            results and results[0]["decision"] == "allow"
+            and results[0].get("original_input") == next(
+                (s["input"] for s in seen if s["tool_use_id"] == results[0]["tool_use_id"]), None
+            )
+        ),
+    })
+    record("deny_zero_execution", deny_absent_before and deny_absent_after, {
+        "deny_file_created": not deny_absent_after,
+    })
+    record("same_client_session_continued", continued_after_both and len(set(session_ids)) <= 1, {
+        "session_ids": session_ids,
+        "tail_reply": tail,
+        "saw_allow_success": saw_allow_success,
+    })
+
+    ok = all(c["ok"] for c in evidence["checks"].values())
+    evidence["verdict"] = "pass" if ok else "fail"
+    out_path = workdir / "probe-evidence.json"
+    out_path.write_text(json.dumps(evidence, indent=2, sort_keys=True))
+    print(f"EVIDENCE={out_path}", flush=True)
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))
