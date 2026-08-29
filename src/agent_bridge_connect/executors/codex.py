@@ -1060,6 +1060,12 @@ class CodexExecutor(CLIExecutorBase):
         item = payload["item"]
         if str(item.get("type") or "") != "collabAgentToolCall":
             return
+        # Collaboration-mode turns also publish lifecycle items for wait,
+        # listAgents, and the other coordination tools.  Only spawnAgent
+        # creates a new session receipt; those sibling calls are not malformed
+        # spawn events and must not abort the parent transport.
+        if str(item.get("tool") or "") != "spawnAgent":
+            return
         from agent_bridge_connect.auxiliary_sessions import (
             handle_codex_collaboration_item_completed,
             handle_codex_collaboration_item_started,

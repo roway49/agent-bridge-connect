@@ -400,6 +400,26 @@ class CollaborationLedgerTests(unittest.TestCase):
 
 
 class CollaborationEventPersistenceTests(unittest.TestCase):
+    def test_non_spawn_collaboration_items_do_not_abort_or_create_receipts(self) -> None:
+        executor = CodexExecutor(command=sys.executable, transport="app-server")
+        record = {
+            "collaboration_spawn": {"enabled": True},
+            "task_packet": {"extensions": {}},
+        }
+        for tool in ("listAgents", "wait", "sendInput"):
+            executor._handle_collaboration_event(
+                record,
+                "item/completed",
+                {
+                    "item": {
+                        "id": f"item-{tool}",
+                        "type": "collabAgentToolCall",
+                        "tool": tool,
+                    }
+                },
+            )
+        self.assertNotIn(AUXILIARY_EXTENSION_KEY, record["task_packet"]["extensions"])
+
     def test_lifecycle_events_persist_the_task_scoped_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
