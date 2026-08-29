@@ -65,6 +65,11 @@ def _item(*, item_id: str = "item-104", receiver: str = "") -> dict:
 
 
 class CollaborationCapabilityTests(unittest.TestCase):
+    def test_promoted_fixture_is_packaged_for_production(self) -> None:
+        result = codex_collaboration_spawn_fixture_contract("0.150.1")
+        self.assertTrue(result["ok"])
+        self.assertIn("protocol_fixtures", result["schema_path"])
+
     def test_task_contract_explicitly_freezes_collaboration_request(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

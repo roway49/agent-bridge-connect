@@ -326,16 +326,19 @@ def codex_collaboration_spawn_fixture_contract(
 ) -> dict[str, Any]:
     """Check the frozen schema fixture for the collaboration spawn group."""
     normalized = str(version or "").strip()
-    root = (
-        Path(fixture_root).expanduser()
-        if fixture_root is not None
-        else Path(__file__).resolve().parents[2]
-        / "tests"
-        / "fixtures"
-        / "executor_runtime"
-        / "matrix"
-        / "codex"
-    )
+    if fixture_root is not None:
+        root = Path(fixture_root).expanduser()
+    else:
+        packaged_root = Path(__file__).resolve().parent / "protocol_fixtures" / "codex"
+        source_root = (
+            Path(__file__).resolve().parents[2]
+            / "tests"
+            / "fixtures"
+            / "executor_runtime"
+            / "matrix"
+            / "codex"
+        )
+        root = packaged_root if (packaged_root / normalized).is_dir() else source_root
     bundle_path = root / normalized / "app_server_schema.json"
     result: dict[str, Any] = {
         "ok": False,

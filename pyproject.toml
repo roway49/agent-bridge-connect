@@ -30,5 +30,6 @@ agent_bridge_connect = [
     "skills/*.md",
     "skills/*.yaml",
     "skills/references/*.md",
+    "protocol_fixtures/codex/*/*.json",
     "_build_info.json",
 ]
