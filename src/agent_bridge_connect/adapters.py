@@ -73,6 +73,12 @@ class SessionCleanupRequest:
     # request metadata and are deliberately excluded from repr/log surfaces.
     receipt_source: str = field(default="", repr=False)
     official_receipt_bound: bool = field(default=False, repr=False)
+    # Codex App Server owns a live writer for the Executor thread. The
+    # Executor may acknowledge archive on that same connection before
+    # publishing its terminal result. Only this bounded acknowledgement is
+    # forwarded; raw RPC data never crosses the adapter boundary.
+    archive_acknowledged: bool = field(default=False, repr=False)
+    archive_checked_at: str = field(default="", repr=False)
 
 
 @dataclass(frozen=True)

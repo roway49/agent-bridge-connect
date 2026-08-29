@@ -1063,6 +1063,8 @@ class SessionCleanupCoordinator:
             workspace=workspace,
             receipt_source=str(session.get("receipt_source") or ""),
             official_receipt_bound=session.get("official_receipt_bound") is True,
+            archive_acknowledged=session.get("archive_acknowledged") is True,
+            archive_checked_at=str(session.get("archive_checked_at") or ""),
         )
 
     @staticmethod

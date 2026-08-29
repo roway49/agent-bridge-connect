@@ -246,7 +246,11 @@ class CodexExecutor(CLIExecutorBase):
                 ),
                 timeout_s=_CODEX_CLEANUP_TIMEOUT_S,
             )
-            observation = cleanup_client.delete_and_verify(request.session_id)
+            observation = cleanup_client.delete_and_verify(
+                request.session_id,
+                archive_acknowledged=request.archive_acknowledged,
+                archive_checked_at=request.archive_checked_at,
+            )
             verification = observation.verification()
             commands = observation.commands()
         except CodexSessionCleanupError as exc:
@@ -1318,6 +1322,29 @@ class CodexExecutor(CLIExecutorBase):
                 0,
                 executor_name="codex",
             )
+            # Archive while this exact App Server connection still owns the
+            # thread writer. A separate cleanup process is rejected by Codex
+            # with "already has an active writer". Publishing terminal state
+            # before this acknowledgement creates that race. The bounded
+            # receipt lets cleanup skip the non-idempotent archive call and
+            # retain the existing delete implementation.
+            session_policy = (
+                record["task_packet"].get("extensions", {}).get(SESSION_EXTENSION_KEY)
+                if isinstance(record["task_packet"].get("extensions"), dict)
+                else None
+            )
+            if isinstance(session_policy, dict) and session_policy.get("retain") is False:
+                archive_id = self._app_rpc(
+                    record,
+                    "thread/archive",
+                    {"threadId": official_thread_id},
+                )
+                self._app_wait_response(record, archive_id)
+                receipt["archive_acknowledged"] = True
+                receipt["archive_checked_at"] = _cleanup_now()
+                self._transport_close(transport)
+                transport = None
+                record["transport"] = None
             result = {
                 "events": list(record["events"]),
                 "summary": _extract_summary(agent_events),

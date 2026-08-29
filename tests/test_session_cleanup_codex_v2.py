@@ -193,6 +193,47 @@ class ArchiveThenDeleteOrderTests(unittest.TestCase):
         # desktop_live is not_applicable under the archive-then-delete gate.
         self.assertEqual(result.verification["desktop_live"]["status"], "not_applicable")
 
+    def test_executor_prearchive_receipt_skips_non_idempotent_archive(self) -> None:
+        first = FakeTransport(
+            [
+                _initialize_response(1),
+                {"jsonrpc": "2.0", "id": 2, "result": {}},
+            ]
+        )
+        second = FakeTransport(
+            [
+                _initialize_response(3),
+                {"jsonrpc": "2.0", "id": 4, "result": {"thread": None}},
+            ]
+        )
+        third = FakeTransport(
+            [
+                _initialize_response(5),
+                {
+                    "jsonrpc": "2.0",
+                    "id": 6,
+                    "result": {"data": [], "nextCursor": None},
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": 7,
+                    "result": {"data": [], "nextCursor": None},
+                },
+            ]
+        )
+        result = _executor(TransportFactory(first, second, third)).cleanup_session(
+            _request(archive_acknowledged=True, archive_checked_at=T0)
+        )
+
+        self.assertEqual(result.state, "succeeded")
+        self.assertEqual(
+            [item["method"] for item in first.sent],
+            ["initialize", "initialized", "thread/delete"],
+        )
+        self.assertEqual(result.commands["archive"]["checked_at"], T0)
+        self.assertEqual(result.commands["archive"]["status"], "acknowledged")
+        self.assertEqual(result.commands["delete"]["status"], "acknowledged")
+
     def test_capability_reports_the_archive_then_delete_strategy(self) -> None:
         executor = CodexExecutor(command=sys.executable, transport="auto")
         capability = executor.session_cleanup_capability(_request())

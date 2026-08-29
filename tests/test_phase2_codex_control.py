@@ -149,6 +149,10 @@ class BlockingFakeTransport:
                         },
                     }
                 )
+            elif method == "thread/archive":
+                self.queue.append(
+                    {"jsonrpc": "2.0", "id": message["id"], "result": {}}
+                )
             self.condition.notify_all()
 
     def recv(self) -> dict:

@@ -3494,6 +3494,11 @@ class TaskService:
         # candidates; Claude/Hermes retain their existing cleanup behavior.
         session["receipt_source"] = str(validated.get("source") or "")
         session["official_receipt_bound"] = True
+        if validated.get("archive_acknowledged") is True:
+            session["archive_acknowledged"] = True
+            session["archive_checked_at"] = str(
+                validated.get("archive_checked_at") or _utc_now()
+            )
         session["session_state"] = session_state
         errors = validate_session_snapshot(session, executor=task.assignee)
         if errors:

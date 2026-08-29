@@ -324,6 +324,10 @@ class BlockingFakeTransport:
                         },
                     }
                 )
+            elif method == "thread/archive":
+                self.queue.append(
+                    {"jsonrpc": "2.0", "id": message["id"], "result": {}}
+                )
             elif message.get("id") == 90:
                 self.approval_count += 1
                 if self.emit_callback:
@@ -489,6 +493,7 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
             status = self._wait_status(executor, started.run_id, {"completed", "needs_recovery", "failed"})
             result = executor.poll(started.run_id)
         self.assertEqual(status, "completed")
+        self.assertTrue(fake.closed)
         self.assertTrue(suspend_lease.called)
         self.assertTrue(resume_lease.called)
         # The decision is returned to the same live App Server session.
@@ -503,6 +508,9 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
         )
         self.assertEqual(result.result["execution_session"]["session_id"], "thread-fake-1")
         self.assertFalse(result.result["execution_session"]["resumed"])
+        self.assertTrue(
+            result.result["execution_session"]["archive_acknowledged"]
+        )
         self.assertTrue(result.result["marker_valid"])
         self.assertEqual(
             result.result["agent_callback"]["summary"],

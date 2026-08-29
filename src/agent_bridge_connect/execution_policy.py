@@ -792,6 +792,16 @@ def validate_session_snapshot(
         errors.append(f"{SESSION_EXTENSION_KEY}.official_receipt_bound must be a boolean")
     if "receipt_source" in value and not isinstance(value.get("receipt_source"), str):
         errors.append(f"{SESSION_EXTENSION_KEY}.receipt_source must be a string")
+    if "archive_acknowledged" in value and type(value.get("archive_acknowledged")) is not bool:
+        errors.append(f"{SESSION_EXTENSION_KEY}.archive_acknowledged must be a boolean")
+    if "archive_checked_at" in value and not isinstance(value.get("archive_checked_at"), str):
+        errors.append(f"{SESSION_EXTENSION_KEY}.archive_checked_at must be a string")
+    if value.get("archive_acknowledged") is True and not str(
+        value.get("archive_checked_at") or ""
+    ).strip():
+        errors.append(
+            f"{SESSION_EXTENSION_KEY}.archive_checked_at is required after archive acknowledgement"
+        )
     if (
         actual_executor == "codex"
         and value.get("official_receipt_bound") is True
