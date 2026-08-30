@@ -69,5 +69,44 @@ class ClaudeExtraPackagingTests(unittest.TestCase):
         self.assertNotIn("sk-", rendered.lower())
 
 
+class FrozenLiveProbeEvidenceTests(unittest.TestCase):
+    """The frozen live allow/deny probe evidence stays on the probed tuple.
+
+    The evidence file is produced by the isolated live probe of the exact
+    pinned tuple (claude-agent-sdk 0.2.142 + Claude 2.1.233, macOS arm64);
+    packaging may only reference it, never widen it.
+    """
+
+    EVIDENCE = (
+        REPO
+        / "tests"
+        / "fixtures"
+        / "executor_runtime"
+        / "matrix"
+        / "claude"
+        / "live_probe_sdk_2026-08-29"
+        / "probe_evidence_ggqn_2026-08-30.json"
+    )
+
+    def test_ggqn_rerun_evidence_records_pass_on_pinned_tuple(self) -> None:
+        import json
+
+        self.assertTrue(self.EVIDENCE.is_file(), "GGQN live-probe evidence missing")
+        data = json.loads(self.EVIDENCE.read_text(encoding="utf-8"))
+        self.assertEqual(data["verdict"], "pass")
+        self.assertEqual(data["sdk_version"], "0.2.142")
+        self.assertEqual(data["cli_version"], "2.1.233 (Claude Code)")
+        checks = data["checks"]
+        self.assertTrue(checks["allow_file_created"])
+        self.assertFalse(checks["deny_file_created"])
+        self.assertTrue(checks["single_session_all_phases"])
+        self.assertTrue(
+            any(
+                event.get("event") == "can_use_tool" and event.get("tool_use_id")
+                for event in data["events"]
+            )
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
