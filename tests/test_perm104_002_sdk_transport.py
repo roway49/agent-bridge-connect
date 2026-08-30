@@ -460,7 +460,6 @@ class ClaudeSdkRuntimeVerifierTests(unittest.TestCase):
         current.extensions = dict(current.extensions or {})
         current.extensions[PERMISSION_RUNTIME_EXTENSION_KEY] = activated
         service.store.write_task(current.id, current.to_dict())
-
     def _captured(self) -> dict:
         return {
             "stdout": "done",
@@ -472,7 +471,10 @@ class ClaudeSdkRuntimeVerifierTests(unittest.TestCase):
         }
 
     def test_verified_only_after_structured_post_tool_use_success(self) -> None:
-        from agent_bridge_connect.claude_sdk_hooks import append_hook_record
+        from agent_bridge_connect.claude_sdk_hooks import (
+            append_hook_record,
+            bind_hook_log_session,
+        )
         from agent_bridge_connect.permission_runtime import (
             permission_runtime_from_extensions,
         )
@@ -483,6 +485,9 @@ class ClaudeSdkRuntimeVerifierTests(unittest.TestCase):
             self._packet(task_id), RUN_ID, {"session_id": self.session_id}
         )
         control_root = control_root_for_task(task_id, board_root=self.board)
+        # GGQN-002: the hook log is bound to the official session before the
+        # prompt; an unbound log never verifies a session-bound run.
+        bind_hook_log_session(control_root, self.session_id)
         # Without any hook record the run cannot verify.
         first = verifier("call-verify-1", self._captured())
         self.assertFalse(first["verified"])
@@ -521,6 +526,35 @@ class ClaudeSdkRuntimeVerifierTests(unittest.TestCase):
         self.assertIsNotNone(persisted)
         self.assertEqual(persisted["state"]["status"], "verified")
 
+    def test_unbound_or_foreign_hook_log_never_verifies(self) -> None:
+        """GGQN-002: verification is fail-closed to the bound session log."""
+        from agent_bridge_connect.claude_sdk_hooks import (
+            append_hook_record,
+            bind_hook_log_session,
+        )
+
+        task_id = self._started_task()
+        self._activated_task(task_id)
+        verifier = self.executor._sdk_runtime_verifier(
+            self._packet(task_id), RUN_ID, {"session_id": self.session_id}
+        )
+        control_root = control_root_for_task(task_id, board_root=self.board)
+        append_hook_record(
+            control_root,
+            {"event": "PostToolUse", "tool_use_id": "call-xrun-1", "tool_name": "Bash"},
+            extra={"blocked": False},
+        )
+        # Unbound log: the PostToolUse record exists but its provenance was
+        # never pinned to the official session — never verifies.
+        outcome = verifier("call-xrun-1", self._captured())
+        self.assertFalse(outcome["verified"])
+        self.assertEqual(outcome["reason"], "claude_sdk_post_tool_use_success_missing")
+        # A log bound to a DIFFERENT session is a cross-run replay — the
+        # stale record cannot verify this session's run either.
+        bind_hook_log_session(control_root, str(uuid.uuid4()))
+        outcome = verifier("call-xrun-1", self._captured())
+        self.assertFalse(outcome["verified"])
+
     def test_missing_or_errored_result_never_verifies(self) -> None:
         task_id = self._started_task()
         self._activated_task(task_id)
@@ -537,6 +571,7 @@ class ClaudeSdkRuntimeVerifierTests(unittest.TestCase):
         self.assertFalse(outcome["verified"])
 
     def test_record_not_activated_never_verifies(self) -> None:
+        from agent_bridge_connect.claude_sdk_hooks import bind_hook_log_session
         from agent_bridge_connect.permission_runtime import (
             PERMISSION_RUNTIME_EXTENSION_KEY,
             build_permission_runtime_record,
@@ -563,10 +598,13 @@ class ClaudeSdkRuntimeVerifierTests(unittest.TestCase):
         service.store.write_task(current.id, current.to_dict())
         # Structured success evidence IS present: the record's own state
         # (prepared, not activated) must be what blocks verification.
+        control_root_3 = control_root_for_task(task_id, board_root=self.board)
+        bind_hook_log_session(control_root_3, self.session_id)
         append_hook_record(
-            control_root_for_task(task_id, board_root=self.board),
+            control_root_3,
             {"event": "PostToolUse", "tool_use_id": "call-verify-3", "tool_name": "Bash"},
             extra={"blocked": False},
+            session_id=self.session_id,
         )
         verifier = self.executor._sdk_runtime_verifier(
             self._packet(task_id), RUN_ID, {"session_id": self.session_id}

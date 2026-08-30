@@ -37,7 +37,7 @@ from agent_bridge_connect.permission_grants import (
     consume_permission_grant,
     permission_grant_from_extensions,
     revoke_permission_grant,
-)
+)  # noqa: F401 - revoke_permission_grant re-exported for durable-store tests
 from agent_bridge_connect.permission_modes import build_permission_record
 from agent_bridge_connect.service import TaskService
 
@@ -427,22 +427,43 @@ class TemporaryFullGrantLifecycleTests(unittest.TestCase):
         self.assertEqual(permission["effective_mode"], "safe")
 
     def test_transport_revokes_grant_exactly_once_on_terminal(self) -> None:
+        revoked_envelopes: list[tuple[dict, str]] = []
+
+        def _revoke(grant: dict, code: str) -> None:
+            revoked_envelopes.append((grant, code))
+
+        transport = ClaudeSDKControlTransport(
+            plane=mock.MagicMock(),
+            task_id="GGQN-001",
+            run_id=RUN_ID,
+            session_id="",
+            grant_revoke_callback=_revoke,
+        )
+        grant = consume_permission_grant(self._grant(), RUN_ID)
+        transport.attach_consumed_grant(grant)
+        transport._revoke_consumed_grant("claude_run_terminal")
+        # A second terminal-state call is a no-op: exactly one revocation.
+        transport._revoke_consumed_grant("claude_run_terminal")
+        self.assertEqual(len(revoked_envelopes), 1)
+        self.assertEqual(revoked_envelopes[0][1], "claude_run_terminal")
+        self.assertEqual(
+            revoked_envelopes[0][0]["grant_id"], grant["grant_id"]
+        )
+        self.assertIsNone(transport._consumed_grant)
+
+    def test_revoke_without_durable_callback_fails_closed(self) -> None:
         transport = ClaudeSDKControlTransport(
             plane=mock.MagicMock(),
             task_id="GGQN-001",
             run_id=RUN_ID,
             session_id="",
         )
-        grant = consume_permission_grant(self._grant(), RUN_ID)
-        transport.attach_consumed_grant(grant)
-        with mock.patch(
-            "agent_bridge_connect.permission_grants.revoke_permission_grant",
-            wraps=revoke_permission_grant,
-        ) as revoke:
+        transport.attach_consumed_grant(consume_permission_grant(self._grant(), RUN_ID))
+        with self.assertRaises(ClaudeSDKTransportError) as raised:
             transport._revoke_consumed_grant("claude_run_terminal")
-            transport._revoke_consumed_grant("claude_run_terminal")
-            self.assertEqual(revoke.call_count, 1)
-        self.assertIsNone(transport._consumed_grant)
+        self.assertEqual(raised.exception.code, "claude_sdk_grant_revoke_failed")
+        # The grant stays attached: it must surface, not vanish silently.
+        self.assertIsNotNone(transport._consumed_grant)
 
     def test_run_controlled_revokes_on_timeout_and_crash(self) -> None:
         for failure in (
@@ -450,11 +471,17 @@ class TemporaryFullGrantLifecycleTests(unittest.TestCase):
             TimeoutError("run timeout"),
         ):
             with self.subTest(failure=type(failure).__name__):
+                revoked: list[str] = []
+
+                def _revoke(grant: dict, code: str, _revoked: list = revoked) -> None:
+                    _revoked.append(code)
+
                 transport = ClaudeSDKControlTransport(
                     plane=mock.MagicMock(),
                     task_id="GGQN-001",
                     run_id=RUN_ID,
                     session_id="",
+                    grant_revoke_callback=_revoke,
                 )
                 transport.attach_consumed_grant(consume_permission_grant(self._grant(), RUN_ID))
 
@@ -462,15 +489,11 @@ class TemporaryFullGrantLifecycleTests(unittest.TestCase):
                     raise failure
 
                 with mock.patch.object(transport, "_submit", side_effect=_fail):
-                    with mock.patch(
-                        "agent_bridge_connect.permission_grants.revoke_permission_grant",
-                        wraps=revoke_permission_grant,
-                    ) as revoke:
-                        with self.assertRaises(type(failure)):
-                            transport.run_controlled(
-                                options=object(), prompt="p", timeout_s=1.0
-                            )
-                        self.assertEqual(revoke.call_count, 1)
+                    with self.assertRaises(type(failure)):
+                        transport.run_controlled(
+                            options=object(), prompt="p", timeout_s=1.0
+                        )
+                self.assertEqual(revoked, ["claude_run_terminal"])
                 self.assertIsNone(transport._consumed_grant)
 
     def test_handoff_reassign_and_recovery_revoke_durably(self) -> None:
