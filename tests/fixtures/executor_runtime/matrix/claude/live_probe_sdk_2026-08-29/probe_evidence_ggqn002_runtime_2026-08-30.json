@@ -5,13 +5,23 @@
   "events": [
     {
       "event": "can_use_tool",
-      "tool_use_id": "call_4e12a8a9074b41778d82cc0a",
+      "tool_use_id": "call_add7c7a768b546e18895348e",
       "tool": "Bash"
     },
     {
+      "event": "control_response",
+      "tool_use_id": "call_add7c7a768b546e18895348e",
+      "decision": "accept"
+    },
+    {
       "event": "can_use_tool",
-      "tool_use_id": "call_f69e8d2a802f4aeaae5c4676",
+      "tool_use_id": "call_0b905a30851f47ad8b019de9",
       "tool": "Bash"
+    },
+    {
+      "event": "control_response",
+      "tool_use_id": "call_0b905a30851f47ad8b019de9",
+      "decision": "decline"
     }
   ],
   "checks": {
@@ -24,7 +34,9 @@
     "structured_post_tool_use_success_for_anchor": true,
     "anchor_post_session_bound": true,
     "hook_log_session_bound": true,
-    "two_can_use_tool_requests": true
+    "two_can_use_tool_requests": true,
+    "real_control_plane_responses": true,
+    "ledger_decisions_normalized": true
   },
   "verdict": "pass"
 }

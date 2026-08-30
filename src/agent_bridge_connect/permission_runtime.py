@@ -823,6 +823,22 @@ def record_block_decision(
     decision: str,
 ) -> None:
     """Record one trusted approval decision in the block ledger (pending result)."""
+    # The public control protocols use ``accept``/``decline`` while the
+    # convergence ledger deliberately stores the executor-neutral
+    # ``approve``/``deny`` vocabulary.  Normalize only at this boundary so
+    # wire responses retain their official shape and ledger validation stays
+    # strict everywhere else.
+    normalized_decision = {
+        "accept": "approve",
+        "decline": "deny",
+        "approve": "approve",
+        "deny": "deny",
+    }.get(str(decision or "").strip().lower(), "")
+    if not normalized_decision:
+        _invalid(
+            "permission_runtime_ledger_invalid",
+            "Block ledger decision must be accept, decline, approve or deny",
+        )
     ledger = load_block_ledger(control_root)
     remember_block_outcome(
         ledger,
@@ -832,7 +848,7 @@ def record_block_decision(
         action_fingerprint_value=action_fingerprint_value,
         domain=domain,
         profile_digest=profile_digest,
-        decision=decision,
+        decision=normalized_decision,
         execution_result="",
         domain_changed=False,
         code=PERMISSION_ESCALATION_INEFFECTIVE,
@@ -849,6 +865,7 @@ def converge_approved_block(
     operation: str,
     domain: str,
     profile_digest: str,
+    action_fingerprint_value: str = "",
 ) -> str | None:
     """Converge one approved-but-ineffective escalation to a stable code.
 
@@ -859,7 +876,7 @@ def converge_approved_block(
     blocked step with zero new permission inputs, grants, workers,
     continuations, deadlines or notifications.
     """
-    action_fp = action_fingerprint(
+    action_fp = str(action_fingerprint_value or "").strip() or action_fingerprint(
         executor=executor,
         session_id=session_id,
         operation=operation,

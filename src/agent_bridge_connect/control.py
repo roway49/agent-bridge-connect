@@ -26,7 +26,9 @@ from .permission_runtime import (
     action_fingerprint,
     block_fingerprint,
     converge_approved_block,
+    load_block_ledger,
     record_block_decision,
+    save_block_ledger,
 )
 from .session import (
     SessionFirstGate,
@@ -431,6 +433,20 @@ class ApprovalControlPlane:
             # diagnostics only.
             domain = str(message.get("escalation_domain") or "").strip().lower()
             profile_digest = str(message.get("host_profile_digest") or "").strip()
+            agentbc_identity = (
+                message.get("_agentbc")
+                if isinstance(message.get("_agentbc"), dict)
+                else {}
+            )
+            structured_action_fingerprint = str(
+                agentbc_identity.get("action_fingerprint") or ""
+            ).strip()
+            if not structured_action_fingerprint.startswith("fp-"):
+                structured_action_fingerprint = action_fingerprint(
+                    executor=self.executor,
+                    session_id=exact_session,
+                    operation=str(request.operation or "").strip(),
+                )
             if domain:
                 if domain not in PERMISSION_RUNTIME_DOMAINS:
                     evidence = {"domain": domain, "request_id": request.request_id}
@@ -447,6 +463,7 @@ class ApprovalControlPlane:
                     operation=str(request.operation or "").strip(),
                     domain=domain,
                     profile_digest=profile_digest,
+                    action_fingerprint_value=structured_action_fingerprint,
                 )
                 if converged is not None:
                     evidence = {
@@ -475,11 +492,7 @@ class ApprovalControlPlane:
             }
             if domain:
                 pending["escalation_domain"] = domain
-                pending["action_fingerprint"] = action_fingerprint(
-                    executor=self.executor,
-                    session_id=exact_session,
-                    operation=str(request.operation or "").strip(),
-                )
+                pending["action_fingerprint"] = structured_action_fingerprint
                 pending["profile_digest"] = profile_digest
                 pending["block_fingerprint"] = block_fingerprint(
                     task_id=self.task_id,
@@ -614,27 +627,66 @@ class ApprovalControlPlane:
                 "response_payload": response_payload,
                 "responded_at": utc_now(),
             }
-            atomic_write_json(path, response)
+            # Commit the decision as one fail-closed control-plane
+            # transaction.  The response file is the worker-visible commit
+            # marker and is therefore written LAST: if ledger or state
+            # persistence fails, the worker cannot observe an approval that
+            # the controller reported as failed.  On a final response-write
+            # failure, restore the pre-decision state and ledger before
+            # propagating the error.
+            domain = str(pending.get("escalation_domain") or "").strip()
+            previous_state = json.loads(json.dumps(state))
+            previous_ledger = load_block_ledger(self.root) if domain else None
             pending = dict(pending)
             pending.update({"status": "responded", "decision": selected, "responded_at": response["responded_at"]})
             state["pending_request"] = pending
             state["status"] = "approval_responded"
             state["updated_at"] = utc_now()
-            self._save_state(state)
-            # PERM-104-002: persist the trusted decision in the block ledger so
-            # a later identical block converges instead of re-asking.
-            domain = str(pending.get("escalation_domain") or "").strip()
-            if domain:
-                record_block_decision(
-                    self.root,
-                    fingerprint=str(pending.get("block_fingerprint") or ""),
-                    task_id=self.task_id,
-                    session_id=self.session_id,
-                    action_fingerprint_value=str(pending.get("action_fingerprint") or ""),
-                    domain=domain,
-                    profile_digest=str(pending.get("profile_digest") or ""),
-                    decision=selected,
-                )
+            try:
+                # PERM-104-002: persist the trusted decision in the block
+                # ledger so a later identical block converges instead of
+                # re-asking. ``record_block_decision`` owns the protocol to
+                # ledger decision mapping (accept/decline -> approve/deny).
+                if domain:
+                    record_block_decision(
+                        self.root,
+                        fingerprint=str(pending.get("block_fingerprint") or ""),
+                        task_id=self.task_id,
+                        session_id=self.session_id,
+                        action_fingerprint_value=str(pending.get("action_fingerprint") or ""),
+                        domain=domain,
+                        profile_digest=str(pending.get("profile_digest") or ""),
+                        decision=selected,
+                    )
+                self._save_state(state)
+                atomic_write_json(path, response)
+            except Exception as exc:
+                # No response file was committed, so the worker remains
+                # blocked.  Restore both durable projections to the exact
+                # pre-decision snapshots.  Attempt both rollbacks even if one
+                # fails; an incomplete rollback becomes an explicit recovery
+                # state instead of hiding behind the original I/O error.
+                rollback_errors: list[str] = []
+                try:
+                    self._save_state(previous_state)
+                except Exception as rollback_exc:
+                    rollback_errors.append(f"state:{rollback_exc}")
+                if previous_ledger is not None:
+                    try:
+                        save_block_ledger(self.root, previous_ledger)
+                    except Exception as rollback_exc:
+                        rollback_errors.append(f"ledger:{rollback_exc}")
+                if rollback_errors:
+                    raise ControlPlaneError(
+                        "approval_decision_transaction_incomplete",
+                        "Approval decision persistence failed and its rollback "
+                        "was incomplete; explicit recovery is required.",
+                        {
+                            "request_id": str(request_id),
+                            "rollback_errors": rollback_errors,
+                        },
+                    ) from exc
+                raise
             return {"ok": True, **response}
 
     def wait_for_decision(self, request_id: str, timeout_s: float | None = None) -> dict[str, Any]:

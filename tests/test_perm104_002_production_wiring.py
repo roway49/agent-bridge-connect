@@ -56,6 +56,7 @@ from agent_bridge_connect.permission_runtime import (
     activate_permission_runtime_record,
     authorize_permission_runtime_record,
     build_permission_runtime_record,
+    load_block_ledger,
     permission_runtime_from_extensions,
 )
 from agent_bridge_connect.service import TaskService
@@ -321,6 +322,36 @@ async def _drain_hook(hooks: dict, event: str, tool_use_id: str, tool_name: str 
             await hook(payload, tool_use_id, {"signal": None})
 
 
+async def _respond_when_pending(
+    transport: ClaudeSDKControlTransport,
+    harness: _Harness,
+    decision: str,
+) -> dict:
+    """Wait for the real ControlPlane request and propagate response errors.
+
+    GGQN-002 originally used detached daemon threads here.  An exception in
+    ``respond_approval`` therefore printed a traceback while unittest still
+    reported success.  Running the blocking response through ``to_thread``
+    and awaiting the task makes every control-plane failure fail the test.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 5.0
+    plane = transport.plane
+    while loop.time() < deadline:
+        pending = (plane.status() or {}).get("pending_request") or {}
+        if pending.get("status") == "pending":
+            return await asyncio.to_thread(
+                plane.respond_approval,
+                harness.task_id,
+                RUN_ID,
+                SESSION_ID,
+                str(pending.get("request_id") or ""),
+                decision,
+            )
+        await asyncio.sleep(0.02)
+    raise AssertionError("ControlPlane approval request did not become pending")
+
+
 class ProductionSessionWiringTests(unittest.TestCase):
     """Real transport session path with a fake official SDK client."""
 
@@ -348,30 +379,10 @@ class ProductionSessionWiringTests(unittest.TestCase):
         transport = self._transport(harness)
         hooks = _hooked_transport(harness, transport)
         approved_id = f"call_{uuid.uuid4().hex[:16]}"
-        client = _FakeSDKClient()
-
-        def decide() -> None:
-            client.messages.append(_result_message(is_error=False))
 
         # The can_use_tool decision lands through the frozen ControlPlane;
-        # drive it with a responding thread, then complete the session.
-        import threading
-        import time
-
-        def approve_when_pending() -> None:
-            deadline = time.time() + 5
-            plane = transport.plane
-            while time.time() < deadline:
-                pending = (plane.status() or {}).get("pending_request") or {}
-                if pending.get("status") == "pending":
-                    plane.respond_approval(
-                        harness.task_id, RUN_ID, SESSION_ID,
-                        str(pending.get("request_id") or ""), "accept",
-                    )
-                    return
-                time.sleep(0.02)
-
-        async def scenario() -> None:
+        # await the responder so its exceptions are part of the test result.
+        async def scenario() -> dict:
             client = _FakeSDKClient()
             # The approved identity becomes the anchor BEFORE the session
             # drive: can_use_tool runs its ControlPlane wait, the approved
@@ -384,14 +395,23 @@ class ProductionSessionWiringTests(unittest.TestCase):
                     mock.MagicMock(tool_use_id=approved_id),
                 )
             )
-            threading.Thread(target=approve_when_pending, daemon=True).start()
-            await approval
+            responder = asyncio.create_task(
+                _respond_when_pending(transport, harness, "accept")
+            )
+            await asyncio.gather(approval, responder)
             await _drain_hook(hooks, "PreToolUse", approved_id)
             await _drain_hook(hooks, "PostToolUse", approved_id)
             client.messages.append(_result_message(is_error=False))
             await transport._drive_session(client, "prompt", None, None)
+            return responder.result()
 
-        asyncio.run(scenario())
+        response = asyncio.run(scenario())
+        self.assertEqual(response["decision"], "accept")
+        ledger = load_block_ledger(transport.plane.root)
+        self.assertEqual(
+            {entry["decision"] for entry in ledger["entries"].values()},
+            {"approve"},
+        )
         captured_harness = harness.verifier(transport)
         outcome = captured_harness(approved_id, {
             "result": {"is_error": False},
@@ -415,23 +435,7 @@ class ProductionSessionWiringTests(unittest.TestCase):
         hooks = _hooked_transport(harness, transport)
         denied_id = f"call_{uuid.uuid4().hex[:16]}"
 
-        import threading
-        import time
-
-        def deny_when_pending() -> None:
-            deadline = time.time() + 5
-            plane = transport.plane
-            while time.time() < deadline:
-                pending = (plane.status() or {}).get("pending_request") or {}
-                if pending.get("status") == "pending":
-                    plane.respond_approval(
-                        harness.task_id, RUN_ID, SESSION_ID,
-                        str(pending.get("request_id") or ""), "decline",
-                    )
-                    return
-                time.sleep(0.02)
-
-        async def scenario() -> None:
+        async def scenario() -> dict:
             client = _FakeSDKClient()
             # The deny decision flows through the ControlPlane; the denied
             # call never executes, so NO PostToolUse success may exist for
@@ -442,18 +446,144 @@ class ProductionSessionWiringTests(unittest.TestCase):
                     mock.MagicMock(tool_use_id=denied_id),
                 )
             )
-            threading.Thread(target=deny_when_pending, daemon=True).start()
-            await approval
+            responder = asyncio.create_task(
+                _respond_when_pending(transport, harness, "decline")
+            )
+            await asyncio.gather(approval, responder)
             await _drain_hook(hooks, "PreToolUse", denied_id)
             client.messages.append(_result_message(is_error=False))
             await transport._drive_session(client, "prompt", None, None)
+            return responder.result()
 
-        asyncio.run(scenario())
+        response = asyncio.run(scenario())
+        self.assertEqual(response["decision"], "decline")
+        ledger = load_block_ledger(transport.plane.root)
+        self.assertEqual(
+            {entry["decision"] for entry in ledger["entries"].values()},
+            {"deny"},
+        )
         outcome = harness.verifier(transport)(denied_id, {"result": {"is_error": False}})
         self.assertFalse(outcome["verified"])
         self.assertEqual(
             outcome["reason"], "claude_sdk_post_tool_use_success_missing"
         )
+
+    def test_response_file_is_last_commit_and_failure_rolls_back(self) -> None:
+        """A failed response write exposes neither approval nor ledger state."""
+        from agent_bridge_connect import control as control_module
+
+        harness = _Harness(self.root, with_runtime_record=True)
+        transport = self._transport(harness)
+        tool_use_id = f"call_{uuid.uuid4().hex[:16]}"
+
+        async def scenario() -> Path:
+            approval = asyncio.create_task(
+                transport.can_use_tool(
+                    "Bash",
+                    {"command": "echo hi"},
+                    mock.MagicMock(tool_use_id=tool_use_id),
+                )
+            )
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 5.0
+            pending: dict = {}
+            while loop.time() < deadline:
+                pending = (transport.plane.status() or {}).get("pending_request") or {}
+                if pending.get("status") == "pending":
+                    break
+                await asyncio.sleep(0.02)
+            self.assertEqual(pending.get("status"), "pending")
+            response_path = transport.plane._response_path(
+                str(pending.get("request_id") or "")
+            )
+            original_atomic_write = control_module.atomic_write_json
+
+            def fail_response_write(path: object, value: dict) -> Path:
+                if Path(path).resolve() == response_path.resolve():
+                    raise OSError("simulated response commit failure")
+                return original_atomic_write(path, value)
+
+            with mock.patch.object(
+                control_module, "atomic_write_json", side_effect=fail_response_write
+            ):
+                with self.assertRaises(OSError):
+                    await asyncio.to_thread(
+                        transport.plane.respond_approval,
+                        harness.task_id,
+                        RUN_ID,
+                        SESSION_ID,
+                        str(pending.get("request_id") or ""),
+                        "accept",
+                    )
+            rollback_evidence = {
+                "response_exists": response_path.exists(),
+                "pending_status": (transport.plane.status() or {})
+                .get("pending_request", {})
+                .get("status"),
+                "ledger": load_block_ledger(transport.plane.root)["entries"],
+            }
+            # Release the still-blocked transport through the real plane so
+            # asyncio does not leave its blocking wait_for_decision thread
+            # alive after the rollback assertions were captured.
+            await asyncio.to_thread(
+                transport.plane.respond_approval,
+                harness.task_id,
+                RUN_ID,
+                SESSION_ID,
+                str(pending.get("request_id") or ""),
+                "decline",
+            )
+            await approval
+            return rollback_evidence
+
+        rollback = asyncio.run(scenario())
+        self.assertFalse(rollback["response_exists"])
+        self.assertEqual(rollback["pending_status"], "pending")
+        self.assertEqual(rollback["ledger"], {})
+
+    def test_distinct_actions_are_independent_and_identical_retry_converges(self) -> None:
+        """Action identity includes tool input but excludes the per-call id."""
+        harness = _Harness(self.root, with_runtime_record=True)
+        transport = self._transport(harness)
+
+        async def decide(command: str, tool_use_id: str, decision: str) -> object:
+            approval = asyncio.create_task(
+                transport.can_use_tool(
+                    "Bash",
+                    {"command": command},
+                    mock.MagicMock(tool_use_id=tool_use_id),
+                )
+            )
+            responder = asyncio.create_task(
+                _respond_when_pending(transport, harness, decision)
+            )
+            await asyncio.gather(approval, responder)
+            return approval.result()
+
+        async def scenario() -> str:
+            await decide("echo first", "call_distinct_1", "accept")
+            # A different Bash input remains independently approvable.
+            await decide("echo second", "call_distinct_2", "decline")
+            # Retrying the first action under a fresh native call identity
+            # converges without creating a third permission input.
+            try:
+                await transport.can_use_tool(
+                    "Bash",
+                    {"command": "echo first"},
+                    mock.MagicMock(tool_use_id="call_distinct_3"),
+                )
+            except ClaudeSDKTransportError as exc:
+                return exc.code
+            return ""
+
+        self.assertEqual(
+            asyncio.run(scenario()), "permission_escalation_ineffective"
+        )
+        decisions = sorted(
+            entry["decision"]
+            for entry in load_block_ledger(transport.plane.root)["entries"].values()
+        )
+        self.assertEqual(decisions, ["approve", "deny"])
 
     # ── explicit full / inherited full ────────────────────────────────────
 

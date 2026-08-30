@@ -151,12 +151,20 @@ class Ggqn002RuntimeProbeEvidenceTests(unittest.TestCase):
         self.assertTrue(checks["result_session_matches_probe_session"])
         # Exactly two native requests with stable non-empty identities.
         self.assertTrue(checks["two_can_use_tool_requests"])
+        self.assertTrue(checks["real_control_plane_responses"])
+        self.assertTrue(checks["ledger_decisions_normalized"])
         can_use_events = [
             event
             for event in data["events"]
             if event.get("event") == "can_use_tool" and event.get("tool_use_id")
         ]
         self.assertEqual(len(can_use_events), 2)
+        control_decisions = [
+            event.get("decision")
+            for event in data["events"]
+            if event.get("event") == "control_response"
+        ]
+        self.assertEqual(control_decisions, ["accept", "decline"])
 
 
 if __name__ == "__main__":

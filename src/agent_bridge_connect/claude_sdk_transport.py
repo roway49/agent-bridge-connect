@@ -404,6 +404,16 @@ class ClaudeSDKControlTransport:
             tool_input=tool_input,
             extra={"tool_use_id": tool_use_id},
         )
+        # Stable action identity excludes the native tool_use_id, which is a
+        # per-attempt transport identity.  The same blocked command retried
+        # under a fresh SDK call id must converge, while a different command
+        # in the same Bash tool must remain independently approvable.
+        action_fingerprint_value = compute_request_fingerprint(
+            executor=self.executor,
+            session_id=self.session_id,
+            tool_name=tool,
+            tool_input=tool_input,
+        )
         summary = core_bounded_summary(executor=self.executor, operation=tool)
         message = {
             "jsonrpc": "2.0",
@@ -424,6 +434,7 @@ class ClaudeSDKControlTransport:
                 "tool_use_id": tool_use_id,
                 "tool_name": tool,
                 "request_fingerprint": fingerprint,
+                "action_fingerprint": action_fingerprint_value,
                 "control_path": control_path,
                 "escalation_domain": self.escalation_domain,
                 "host_profile_digest": self.host_profile_digest,
