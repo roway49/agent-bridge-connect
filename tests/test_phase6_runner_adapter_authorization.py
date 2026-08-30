@@ -570,6 +570,12 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                         return_value=completed,
                     )
                 elif executor_name == "claude":
+                    # PERM-104-002 correction (GGQN-001): a granted full run
+                    # routes through the official SDK control transport; the
+                    # raw CLI full argv branch no longer exists.  Prove the
+                    # authorized command carries the same frozen executor
+                    # run id and that the SDK session argv keeps the exact
+                    # resume binding instead.
                     completed = subprocess.CompletedProcess(
                         [], 0, stdout='{"type":"result","result":"done"}\n', stderr=""
                     )
@@ -577,10 +583,53 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                         "agent_bridge_connect.executors.claude.RunnerClient.authorize_command",
                         return_value={"ok": True},
                     )
+                    authorize_calls: dict[str, object] = {}
+
+                    def _capture_authorize(*args, **kwargs):
+                        authorize_calls["executor_run_id"] = kwargs.get("executor_run_id")
+                        return {"ok": True}
+
+                    options = object()
+                    options_patch = mock.patch.object(
+                        executor,
+                        "_build_sdk_options_for_task",
+                        return_value=options,
+                    )
                     run_patch = mock.patch(
                         "agent_bridge_connect.executors.claude.subprocess.run",
                         return_value=completed,
                     )
+                    captured: dict[str, object] = {}
+
+                    def _capture_run_controlled(**kwargs):
+                        captured["options"] = kwargs.get("options")
+                        return {
+                            "stdout": '{"type":"result","result":"done"}',
+                            "stderr": "",
+                            "returncode": 0,
+                            "init_verified": True,
+                            "session_id": "",
+                            "result": {"is_error": False},
+                        }
+
+                    transport_patch = mock.patch(
+                        "agent_bridge_connect.executors.claude.ClaudeSDKControlTransport.run_controlled",
+                        side_effect=_capture_run_controlled,
+                    )
+                    select_patch = mock.patch(
+                        "agent_bridge_connect.executors.claude.select_claude_control_path",
+                        return_value="sdk_control_transport",
+                    )
+                    sdk_env_patch = mock.patch(
+                        "agent_bridge_connect.permission_transport.assert_claude_sdk_environment",
+                        return_value={"sdk_version": "0.2.142", "platform": "macOS arm64", "cli_path": "/opt/claude"},
+                    )
+                    authorize_patch = mock.patch(
+                        "agent_bridge_connect.executors.claude.RunnerClient.authorize_command",
+                        side_effect=_capture_authorize,
+                    )
+                    unused = None
+                    _ = unused
                 else:
                     completed = subprocess.CompletedProcess(
                         [], 0, stdout="done", stderr=f"session_id: {session_id}\n"
@@ -604,6 +653,30 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                     authorize_patch as authorize,
                     run_patch as run,
                 ):
+                    if executor_name == "claude":
+                        # Corrected contract: the granted full run is
+                        # authorized with the frozen run id and dispatched
+                        # into the SDK control transport (no raw CLI argv).
+                        with (
+                            options_patch,
+                            transport_patch,
+                            select_patch,
+                            sdk_env_patch,
+                        ):
+                            started = executor.start(packet)
+                        self.assertTrue(started.ok, started.message)
+                        self.assertEqual(
+                            authorize_calls["executor_run_id"], started.run_id
+                        )
+                        self.assertIs(captured["options"], options)
+                        # The control-plane authorize call must never carry a
+                        # raw full argv for the SDK transport path.
+                        for call in run.call_args_list:
+                            self.assertNotIn(
+                                permission_flags("claude", "full")[0],
+                                call.args[0],
+                            )
+                        continue
                     started = executor.start(packet)
                 self.assertTrue(started.ok, started.message)
                 self.assertEqual(

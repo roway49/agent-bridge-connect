@@ -1042,7 +1042,11 @@ class ClaudeWorkerTransportGateTests(unittest.TestCase):
                 self.assertIs(executor.start(packet), sentinel)
             control.assert_called_once_with(packet)
 
-    def test_full_sources_bypass_control_selection(self) -> None:
+    def test_full_sources_route_through_sdk_control(self) -> None:
+        """PERM-104-002 correction (GGQN-001): explicit full and an
+        issued/consumed one-shot grant route through the official SDK
+        control transport like every other Runner-managed task — the raw
+        CLI full path is no longer a production branch."""
         from agent_bridge_connect.executors.claude import _claude_control_required
 
         full_packet = {
@@ -1051,7 +1055,7 @@ class ClaudeWorkerTransportGateTests(unittest.TestCase):
             },
             "runner_authorization_required": True,
         }
-        self.assertFalse(_claude_control_required(full_packet))
+        self.assertTrue(_claude_control_required(full_packet))
 
         grant = build_permission_grant(
             executor="claude",
@@ -1067,7 +1071,12 @@ class ClaudeWorkerTransportGateTests(unittest.TestCase):
             },
             "runner_authorization_required": True,
         }
-        self.assertFalse(_claude_control_required(granted_packet))
+        self.assertTrue(_claude_control_required(granted_packet))
+
+    def test_non_runner_packet_keeps_direct_path(self) -> None:
+        from agent_bridge_connect.executors.claude import _claude_control_required
+
+        self.assertFalse(_claude_control_required({"extensions": {}}))
 
     def test_start_control_refuses_unproven_matrix(self) -> None:
         from agent_bridge_connect.executors.claude import ClaudeExecutor

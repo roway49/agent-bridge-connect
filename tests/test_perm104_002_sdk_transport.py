@@ -32,7 +32,11 @@ from agent_bridge_connect.claude_sdk_transport import (
     build_sdk_options,
 )
 from agent_bridge_connect.control import ApprovalControlPlane
+from agent_bridge_connect.session import control_root_for_task
 from agent_bridge_connect.executors.claude import ClaudeExecutor
+from agent_bridge_connect.service import TaskService
+
+RUN_ID = "claude-GGQN-001-run1"
 
 
 def _plane(tmp: str, *, task_id: str = "SDKT-001", run_id: str = "claude-sdk-1",
@@ -373,7 +377,206 @@ class ClaudeExecutorSdkSemanticsTests(unittest.TestCase):
             )
 
 
-class ClaudeSdkHooksFeedTests(unittest.TestCase):
+class ClaudeSdkRuntimeVerifierTests(unittest.TestCase):
+    """PERM-104-002 correction (GGQN-001): the executor's runtime verifier
+    transitions the durable agentbc.permission_runtime record to verified
+    ONLY on structured PostToolUse success for the exact approved
+    tool_use_id plus a structured non-error ResultMessage.  PreToolUse
+    records, failure records, and callback prose never verify."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name).resolve()
+        self.board = self.root / "record"
+        self.project = self.root / "customer"
+        self.project.mkdir()
+        self.session_id = str(uuid.uuid4())
+        self.executor = ClaudeExecutor(command=sys.executable, transport="direct")
+
+    def _started_task(self) -> str:
+        service = TaskService(
+            self.board,
+            config={"workspace_root": str(self.root), "permission_mode": "safe"},
+        )
+        task = service.create_task(
+            "sdk runtime verify",
+            "claude",
+            [{"id": 1, "description": "finish"}],
+            customer_dir=True,
+            customer_path=self.project,
+            permission_mode="safe",
+        )
+        service.start_task_run(task.id, "claude")
+        service.record_executor_run_started(task.id, RUN_ID)
+        return task.id
+
+    def _packet(self, task_id: str) -> dict:
+        return {
+            "task_id": task_id,
+            "steps": [{"id": 1, "description": "finish"}],
+            "workspace": {"root": str(self.project), "project_root": str(self.project)},
+            "task_board": {"root": str(self.board)},
+            "extensions": {},
+        }
+
+    def _record(self) -> dict:
+        from agent_bridge_connect.permission_runtime import (
+            build_permission_runtime_record,
+        )
+
+        return build_permission_runtime_record(
+            task_id="GGQN-001",
+            chain_head_id="GGQN-001",
+            executor="claude",
+            executor_run_id=RUN_ID,
+            session_id=self.session_id,
+            permission_source="one_shot_permission_grant",
+            path_plan_digest="sha256:" + "0" * 64,
+            host_profile_digest="sha256:" + "1" * 64,
+        )
+
+    def _activated_task(self, task_id: str) -> None:
+        from agent_bridge_connect.permission_runtime import (
+            PERMISSION_RUNTIME_EXTENSION_KEY,
+            activate_permission_runtime_record,
+            authorize_permission_runtime_record,
+        )
+
+        service = TaskService(
+            self.board,
+            config={"workspace_root": str(self.root), "permission_mode": "safe"},
+        )
+        current = service.get_task(task_id)
+        record = self._record()
+        record["binding"]["task_id"] = task_id
+        record["binding"]["executor_run_id"] = RUN_ID
+        authorized = authorize_permission_runtime_record(
+            record, decision="approve", request_id="runner-dispatch-" + RUN_ID
+        )
+        activated = activate_permission_runtime_record(
+            authorized, host_profile_digest="sha256:" + "1" * 64
+        )
+        current.extensions = dict(current.extensions or {})
+        current.extensions[PERMISSION_RUNTIME_EXTENSION_KEY] = activated
+        service.store.write_task(current.id, current.to_dict())
+
+    def _captured(self) -> dict:
+        return {
+            "stdout": "done",
+            "stderr": "",
+            "returncode": 0,
+            "init_verified": True,
+            "session_id": self.session_id,
+            "result": {"is_error": False, "num_turns": 1, "session_id": self.session_id, "result": "done"},
+        }
+
+    def test_verified_only_after_structured_post_tool_use_success(self) -> None:
+        from agent_bridge_connect.claude_sdk_hooks import append_hook_record
+        from agent_bridge_connect.permission_runtime import (
+            permission_runtime_from_extensions,
+        )
+
+        task_id = self._started_task()
+        self._activated_task(task_id)
+        verifier = self.executor._sdk_runtime_verifier(
+            self._packet(task_id), RUN_ID, {"session_id": self.session_id}
+        )
+        control_root = control_root_for_task(task_id, board_root=self.board)
+        # Without any hook record the run cannot verify.
+        first = verifier("call-verify-1", self._captured())
+        self.assertFalse(first["verified"])
+        self.assertEqual(
+            first["reason"], "claude_sdk_post_tool_use_success_missing"
+        )
+        # A PreToolUse record is not success evidence.
+        append_hook_record(
+            control_root,
+            {"event": "PreToolUse", "tool_use_id": "call-verify-1", "tool_name": "Bash"},
+        )
+        self.assertFalse(verifier("call-verify-1", self._captured())["verified"])
+        # A failure record is not success evidence.
+        append_hook_record(
+            control_root,
+            {"event": "PostToolUseFailure", "tool_use_id": "call-verify-1", "tool_name": "Bash"},
+            extra={"blocked": True},
+        )
+        self.assertFalse(verifier("call-verify-1", self._captured())["verified"])
+        # The structured PostToolUse success for the exact tool_use_id
+        # verifies the activated record and persists the transition.
+        append_hook_record(
+            control_root,
+            {"event": "PostToolUse", "tool_use_id": "call-verify-1", "tool_name": "Bash"},
+            extra={"blocked": False},
+        )
+        outcome = verifier("call-verify-1", self._captured())
+        self.assertTrue(outcome["verified"], outcome)
+        service = TaskService(
+            self.board,
+            config={"workspace_root": str(self.root), "permission_mode": "safe"},
+        )
+        persisted = permission_runtime_from_extensions(
+            service.get_task(task_id).extensions, task_id=task_id, executor_run_id=RUN_ID
+        )
+        self.assertIsNotNone(persisted)
+        self.assertEqual(persisted["state"]["status"], "verified")
+
+    def test_missing_or_errored_result_never_verifies(self) -> None:
+        task_id = self._started_task()
+        self._activated_task(task_id)
+        verifier = self.executor._sdk_runtime_verifier(
+            self._packet(task_id), RUN_ID, {"session_id": self.session_id}
+        )
+        errored = self._captured()
+        errored["result"]["is_error"] = True
+        outcome = verifier("call-verify-2", errored)
+        self.assertFalse(outcome["verified"])
+        self.assertEqual(outcome["reason"], "claude_run_result_not_structured_success")
+        # No approval identity: nothing to verify.
+        outcome = verifier("", self._captured())
+        self.assertFalse(outcome["verified"])
+
+    def test_record_not_activated_never_verifies(self) -> None:
+        from agent_bridge_connect.permission_runtime import (
+            PERMISSION_RUNTIME_EXTENSION_KEY,
+            build_permission_runtime_record,
+        )
+
+        task_id = self._started_task()
+        service = TaskService(
+            self.board,
+            config={"workspace_root": str(self.root), "permission_mode": "safe"},
+        )
+        current = service.get_task(task_id)
+        record = build_permission_runtime_record(
+            task_id=task_id,
+            chain_head_id=task_id,
+            executor="claude",
+            executor_run_id=RUN_ID,
+            session_id=self.session_id,
+            permission_source="explicit_task",
+            path_plan_digest="sha256:" + "0" * 64,
+            host_profile_digest="sha256:" + "1" * 64,
+        )
+        current.extensions = dict(current.extensions or {})
+        current.extensions[PERMISSION_RUNTIME_EXTENSION_KEY] = record
+        service.store.write_task(current.id, current.to_dict())
+        # Structured success evidence IS present: the record's own state
+        # (prepared, not activated) must be what blocks verification.
+        append_hook_record(
+            control_root_for_task(task_id, board_root=self.board),
+            {"event": "PostToolUse", "tool_use_id": "call-verify-3", "tool_name": "Bash"},
+            extra={"blocked": False},
+        )
+        verifier = self.executor._sdk_runtime_verifier(
+            self._packet(task_id), RUN_ID, {"session_id": self.session_id}
+        )
+        outcome = verifier("call-verify-3", self._captured())
+        self.assertFalse(outcome["verified"])
+        self.assertEqual(outcome["reason"], "permission_runtime_state_invalid")
+
+
+class ClaudeControlCommandTests(unittest.TestCase):
     """Hook feed records structured PostToolUse success evidence only."""
 
     def test_sanitize_rejects_unknown_events(self) -> None:
