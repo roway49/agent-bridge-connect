@@ -99,6 +99,18 @@ class ClaudeSdkOptionsTests(unittest.TestCase):
             options.disallowed_tools, ["TaskCreate", "TaskUpdate", "TodoWrite"]
         )
 
+    def test_tools_visibility_does_not_shadow_permission_callback(self) -> None:
+        self._sdk()
+        options = build_sdk_options(
+            cli_path="/opt/claude",
+            cwd="/tmp",
+            can_use_tool=None,
+            tools=["Read", "Write", "Edit", "Bash"],
+            allowed_tools=[],
+        )
+        self.assertEqual(options.tools, ["Read", "Write", "Edit", "Bash"])
+        self.assertEqual(options.allowed_tools, [])
+
     def test_full_flag_maps_to_bypass_permissions(self) -> None:
         self.assertEqual(
             SDK_PERMISSION_MODE_BY_FLAG.get("--dangerously-skip-permissions"),

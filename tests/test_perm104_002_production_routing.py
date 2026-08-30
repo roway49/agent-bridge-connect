@@ -198,6 +198,8 @@ class TemporaryFullSessionModeTests(unittest.TestCase):
                 {},
             )
             self.assertEqual(options.permission_mode, "default")
+            self.assertEqual(options.tools, executor.tools)
+            self.assertEqual(options.allowed_tools, [])
 
     def test_temporary_full_keeps_default_mode_and_session_scoped_flip(self) -> None:
         """The consumed grant run starts in default mode; the session-scoped

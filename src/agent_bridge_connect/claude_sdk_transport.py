@@ -902,6 +902,7 @@ def build_sdk_options(
     can_use_tool: Callable[[str, dict[str, Any], Any], Any],
     permission_mode: str = "default",
     session_id: str = "",
+    tools: list[str] | None = None,
     allowed_tools: list[str] | None = None,
     disallowed_tools: list[str] | None = None,
     model: str | None = None,
@@ -926,6 +927,7 @@ def build_sdk_options(
         "cwd": cwd,
         "permission_mode": permission_mode,
         "can_use_tool": can_use_tool,
+        "tools": list(tools or []),
         "allowed_tools": list(allowed_tools or []),
         "disallowed_tools": list(
             disallowed_tools or ["TaskCreate", "TaskUpdate", "TodoWrite"]
