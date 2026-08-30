@@ -108,5 +108,56 @@ class FrozenLiveProbeEvidenceTests(unittest.TestCase):
         )
 
 
+class Ggqn002RuntimeProbeEvidenceTests(unittest.TestCase):
+    """GGQN-002 runtime-closure live probe stays pinned on the frozen tuple.
+
+    The evidence is produced by the isolated probe of the exact pinned tuple
+    driving the PRODUCTION session driver (``_run_session_coroutine``) with
+    the session-scoped hook feed: the approved can_use_tool identity becomes
+    the verification anchor and a structured PostToolUse success bound to the
+    pre-allocated official session verifies through the hook log.
+    """
+
+    EVIDENCE = (
+        REPO
+        / "tests"
+        / "fixtures"
+        / "executor_runtime"
+        / "matrix"
+        / "claude"
+        / "live_probe_sdk_2026-08-29"
+        / "probe_evidence_ggqn002_runtime_2026-08-30.json"
+    )
+
+    def test_ggqn002_runtime_probe_records_pass_on_pinned_tuple(self) -> None:
+        import json
+
+        self.assertTrue(self.EVIDENCE.is_file(), "GGQN-002 runtime probe evidence missing")
+        data = json.loads(self.EVIDENCE.read_text(encoding="utf-8"))
+        self.assertEqual(data["verdict"], "pass")
+        self.assertEqual(data["sdk_version"], "0.2.142")
+        self.assertEqual(data["cli_version"], "2.1.233 (Claude Code)")
+        checks = data["checks"]
+        # Allow executed the exact original input; deny never executed.
+        self.assertTrue(checks["allow_file_created"])
+        self.assertEqual(checks["allow_file_content"], "probe-allow")
+        self.assertFalse(checks["deny_file_created"])
+        # The approved identity anchored the run and its structured
+        # PostToolUse success verified, bound to the pre-allocated session.
+        self.assertTrue(checks["approved_identity_anchored"])
+        self.assertTrue(checks["structured_post_tool_use_success_for_anchor"])
+        self.assertTrue(checks["anchor_post_session_bound"])
+        self.assertTrue(checks["hook_log_session_bound"])
+        self.assertTrue(checks["result_session_matches_probe_session"])
+        # Exactly two native requests with stable non-empty identities.
+        self.assertTrue(checks["two_can_use_tool_requests"])
+        can_use_events = [
+            event
+            for event in data["events"]
+            if event.get("event") == "can_use_tool" and event.get("tool_use_id")
+        ]
+        self.assertEqual(len(can_use_events), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
