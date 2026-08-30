@@ -56,6 +56,16 @@ SDK_PERMISSION_MODE_BY_FLAG = {
     "--dangerously-skip-permissions": "bypassPermissions",
 }
 
+# The official session-scoped PermissionUpdate applied by a trusted temporary
+# full run inside the same live SDK process/session (PERM-104-002): the mode
+# flip is an official ``setMode`` update with ``destination="session"``, so it
+# never outlives the session and never widens the persisted settings.
+SDK_SESSION_MODE_UPDATE: dict[str, str] = {
+    "type": "setMode",
+    "mode": "bypassPermissions",
+    "destination": "session",
+}
+
 # The transport marks worker threads so a second worker can be detected and
 # refused deterministically in tests and diagnostics.
 _WORKER_THREAD_PREFIX = "agentbc-claude-sdk-"
@@ -111,6 +121,8 @@ class ClaudeSDKControlTransport:
         self._pending_tool_use_ids: set[str] = set()
         self._pending_lock = threading.Lock()
         self._last_error: dict[str, Any] | None = None
+        # Live client context handle for driver-level exit handling.
+        self._client_context: Any = None
         # Every tool_use_id ever accepted on this transport: a duplicate
         # native identity can never create a second permission input.
         self._seen_tool_use_ids: set[str] = set()
@@ -439,7 +451,7 @@ class ClaudeSDKControlTransport:
         options: Any,
         prompt: str,
         timeout_s: float,
-        decision_callback: Callable[[str, dict[str, Any], Any], dict[str, Any]] | None = None,
+        runtime_verify_callback: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
         on_started: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         """Run one full SDK session to completion and capture structured facts.
@@ -452,22 +464,31 @@ class ClaudeSDKControlTransport:
         only the final structured result; pending approvals surface through
         the ControlPlane, not through poll races.
 
-        ``decision_callback`` (when supplied) is consulted after the frozen
-        ControlPlane decision so executor-level receipts stay authoritative;
-        the returned result carries redacted, structured facts only.
+        ``runtime_verify_callback`` (when supplied) is invoked with
+        ``(tool_use_id, captured_result)`` after the frozen ControlPlane
+        decision and the structured ``ResultMessage`` so the durable
+        ``agentbc.permission_runtime`` record can be verified for the exact
+        ``tool_use_id``.  Only the structured SDK result can prove execution;
+        PreToolUse records, callback prose, stderr, and exit status never
+        verify the runtime capability.  The returned result carries redacted,
+        structured facts only.
 
         Temporary-full lifecycle (PERM-104-002): when a consumed one-shot
         grant is attached via :meth:`attach_consumed_grant`, the run starts
-        in ``bypassPermissions`` through the SDK options and the grant is
-        revoked the moment this run reaches its terminal state — the extra
-        capability never outlives the single run that consumed it.
+        in the SDK default mode and the official session-scoped
+        ``PermissionUpdate(type="setMode", mode="bypassPermissions",
+        destination="session")`` is applied to the same live client before
+        the prompt is sent.  The grant is revoked the moment this run
+        reaches its terminal state — the extra capability never outlives
+        the single run that consumed it, and the mode flip itself dies with
+        the session.
         """
         try:
             return self._submit(
                 lambda: self._run_session_async(
                     options,
                     prompt,
-                    decision_callback,
+                    runtime_verify_callback,
                     on_started,
                 ),
                 timeout_s,
@@ -504,49 +525,129 @@ class ClaudeSDKControlTransport:
         except Exception:  # noqa: BLE001 - revocation is best-effort at this layer.
             pass
 
-    async def _run_session_async(
+    def _run_session_async(
         self,
         options: Any,
         prompt: str,
-        decision_callback: Callable[[str, dict[str, Any], Any], dict[str, Any]] | None,
+        runtime_verify_callback: Callable[[str, dict[str, Any]], dict[str, Any]] | None,
+        on_started: Callable[[], None] | None,
+    ) -> Any:
+        """Session driver coroutine: enter, drive, and exit the SDK client."""
+        return self._run_session_coroutine(
+            options, prompt, runtime_verify_callback, on_started
+        )
+
+    async def _run_session_coroutine(
+        self,
+        options: Any,
+        prompt: str,
+        runtime_verify_callback: Callable[[str, dict[str, Any]], dict[str, Any]] | None,
         on_started: Callable[[], None] | None,
     ) -> dict[str, Any]:
         from claude_agent_sdk import ClaudeSDKClient
 
-        async with ClaudeSDKClient(options) as client:
-            self.connect_client(client)
-            if on_started is not None:
-                try:
-                    on_started()
-                except Exception:  # noqa: BLE001 - heartbeat failures are fatal upstream.
-                    pass
-            await client.query(prompt)
-            stdout_parts: list[str] = []
-            session_ids: set[str] = set()
-            result_payload: dict[str, Any] = {}
-            async for message in client.receive_response():
-                kind = type(message).__name__
-                if kind == "ResultMessage":
-                    session_id = str(getattr(message, "session_id", "") or "")
-                    if session_id:
-                        session_ids.add(session_id)
-                    result_payload = {
-                        "is_error": bool(getattr(message, "is_error", False)),
-                        "num_turns": int(getattr(message, "num_turns", 0) or 0),
-                        "session_id": session_id,
-                        "result": str(getattr(message, "result", "") or ""),
-                    }
-                    text = getattr(message, "result", None)
-                    if isinstance(text, str):
-                        stdout_parts.append(text)
-            return {
-                "stdout": "\n".join(stdout_parts),
-                "stderr": "",
-                "returncode": 0 if not result_payload.get("is_error") else 1,
-                "init_verified": bool(session_ids),
-                "session_id": sorted(session_ids)[0] if session_ids else "",
-                "result": result_payload,
-            }
+        client = ClaudeSDKClient(options)
+        entered = client.__aenter__()
+        # ``connect`` is a plain coroutine on the official client; support
+        # both awaitable and await-returning __aenter__ implementations so
+        # the driver never depends on a private SDK shape.
+        client_obj = (
+            await entered if hasattr(entered, "__await__") else entered
+        )
+        self._client_context = client
+        try:
+            return await self._drive_session(
+                client_obj, prompt, runtime_verify_callback, on_started
+            )
+        finally:
+            try:
+                exit_result = client.__aexit__(None, None, None)
+                if hasattr(exit_result, "__await__"):
+                    await exit_result
+            except Exception:  # noqa: BLE001 - shutdown best-effort.
+                pass
+
+    async def _drive_session(
+        self,
+        client: Any,
+        prompt: str,
+        runtime_verify_callback: Callable[[str, dict[str, Any]], dict[str, Any]] | None,
+        on_started: Callable[[], None] | None,
+    ) -> dict[str, Any]:
+        self.connect_client(client)
+        if on_started is not None:
+            try:
+                on_started()
+            except Exception:  # noqa: BLE001 - heartbeat failures are fatal upstream.
+                pass
+        tool_use_id = await self._apply_session_mode_update(client)
+        await client.query(prompt)
+        stdout_parts: list[str] = []
+        session_ids: set[str] = set()
+        result_payload: dict[str, Any] = {}
+        async for message in client.receive_response():
+            kind = type(message).__name__
+            if kind == "ResultMessage":
+                session_id = str(getattr(message, "session_id", "") or "")
+                if session_id:
+                    session_ids.add(session_id)
+                result_payload = {
+                    "is_error": bool(getattr(message, "is_error", False)),
+                    "num_turns": int(getattr(message, "num_turns", 0) or 0),
+                    "session_id": session_id,
+                    "result": str(getattr(message, "result", "") or ""),
+                }
+                text = getattr(message, "result", None)
+                if isinstance(text, str):
+                    stdout_parts.append(text)
+        captured = {
+            "stdout": "\n".join(stdout_parts),
+            "stderr": "",
+            "returncode": 0 if not result_payload.get("is_error") else 1,
+            "init_verified": bool(session_ids),
+            "session_id": sorted(session_ids)[0] if session_ids else "",
+            "result": result_payload,
+        }
+        if runtime_verify_callback is not None:
+            try:
+                runtime_verify_callback(tool_use_id, captured)
+            except Exception:  # noqa: BLE001 - verification failures surface via receipts.
+                pass
+        return captured
+
+    async def _apply_session_mode_update(self, client: Any) -> str:
+        """Apply the official session-scoped temporary-full mode flip.
+
+        When a consumed one-shot grant backs this run, the frozen
+        :data:`SDK_SESSION_MODE_UPDATE` contract — the official
+        ``PermissionUpdate`` shape ``type="setMode"``,
+        ``mode="bypassPermissions"``, ``destination="session"`` — is applied
+        to the same live client (via the official ``set_permission_mode``
+        control request) BEFORE the prompt is sent, so every ask-path action
+        of this run executes inside the session-scoped bypass.  The update
+        is session-scoped: it never touches user/project/local settings and
+        dies with the session.  The consumed grant itself is revoked by
+        :meth:`run_controlled` on terminal/crash.
+
+        Returns the anchor ``tool_use_id`` for the runtime verification
+        callback (the in-flight approval identity, or the empty string when
+        no approval was ever requested — an unapproved run proves nothing
+        and never verifies).
+        """
+        if self._consumed_grant is None:
+            return str(self._active_request or "")
+        if (
+            SDK_SESSION_MODE_UPDATE["type"] != "setMode"
+            or SDK_SESSION_MODE_UPDATE["destination"] != "session"
+            or SDK_SESSION_MODE_UPDATE["mode"] != "bypassPermissions"
+        ):
+            raise ClaudeSDKTransportError(
+                "claude_sdk_session_mode_contract_invalid",
+                "The frozen session-scoped mode-update contract drifted from "
+                "the official PermissionUpdate shape.",
+            )
+        await client.set_permission_mode(SDK_SESSION_MODE_UPDATE["mode"])
+        return str(self._active_request or "")
 
 
 def build_sdk_options(
@@ -630,6 +731,7 @@ def monotonic_deadline(timeout_s: float) -> float:
 __all__ = [
     "ClaudeSDKControlTransport",
     "ClaudeSDKTransportError",
+    "SDK_SESSION_MODE_UPDATE",
     "build_sdk_options",
     "monotonic_deadline",
     "new_transport_run_id",
