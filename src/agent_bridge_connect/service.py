@@ -1017,6 +1017,73 @@ class TaskService:
             self.store.write_task(task_id, _without_none(current.to_dict()))
         return True
 
+    def revoke_permission_grant_for_target_run(
+        self,
+        task_id: str,
+        code: str,
+        *,
+        target_run_id: str,
+        expected_grant: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Durably revoke a consumed grant bound to one executor run.
+
+        GGQN-002: the transport-lifecycle revocation path.  Reloads the task
+        through the TaskService store, verifies the persisted grant is the
+        exact consumed grant backing ``target_run_id`` (same ``grant_id`` and
+        ``binding.target_run_id`` when ``expected_grant`` is supplied),
+        revokes it with a stable reason code, and writes the envelope back
+        durably.  Returns the revoked envelope on success, or ``None`` when
+        the persisted grant is missing, does not match the expected binding,
+        is not the run's consumed grant, or fails validation — callers must
+        treat ``None`` as a fail-closed revocation failure.  ``OSError`` from
+        the durable write propagates to the caller.
+        """
+        current = self.get_task(task_id)
+        extensions = dict(current.extensions or {})
+        persisted = extensions.get(PERMISSION_GRANT_EXTENSION_KEY)
+        if not isinstance(persisted, dict):
+            return None
+        if expected_grant is not None:
+            # The caller mirrors the exact grant envelope the Runner consumed
+            # for this run.  Both the grant id AND the target-run binding
+            # must match the persisted envelope, so a transport holding a
+            # grant bound to a different run can never revoke it (GGQN-002
+            # fail-closed wrong-identity rejection).
+            expected_id = str((expected_grant or {}).get("grant_id") or "")
+            if expected_id and str(persisted.get("grant_id") or "") != expected_id:
+                return None
+            expected_binding = (expected_grant or {}).get("binding")
+            expected_binding_map = (
+                expected_binding if isinstance(expected_binding, dict) else {}
+            )
+            expected_target = str(expected_binding_map.get("target_run_id") or "").strip()
+            persisted_binding = persisted.get("binding")
+            persisted_binding_map = (
+                persisted_binding if isinstance(persisted_binding, dict) else {}
+            )
+            persisted_target = str(persisted_binding_map.get("target_run_id") or "").strip()
+            if expected_target and persisted_target != expected_target:
+                return None
+        binding = persisted.get("binding")
+        binding_map = binding if isinstance(binding, dict) else {}
+        if (
+            str(binding_map.get("target_run_id") or "").strip()
+            != str(target_run_id or "").strip()
+        ):
+            return None
+        try:
+            revoked = revoke_grant_contract(
+                persisted,
+                _stable_revocation_code(code),
+            )
+        except ABCError:
+            return None
+        extensions[PERMISSION_GRANT_EXTENSION_KEY] = revoked
+        current.extensions = extensions
+        current.updated_at = _utc_now()
+        self.store.write_task(task_id, _without_none(current.to_dict()))
+        return revoked
+
     def revoke_permission_grant_for_recovery(self, task_id: str) -> None:
         """Fail-closed revocation used by explicit task recovery.
 

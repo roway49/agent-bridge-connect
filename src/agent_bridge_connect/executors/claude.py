@@ -690,6 +690,32 @@ class ClaudeExecutor(CLIExecutorBase):
         # task/runtime capability context, so the ControlPlane convergence
         # ledger records the exact blocking source for every SDK approval.
         control_context = self._claude_control_capability_context(task_packet)
+
+        # GGQN-002: durable temporary-full revocation.  The transport's
+        # terminal-state revocation lands through the TaskService store
+        # (reload + revoke + write); a failed durable write raises instead of
+        # being swallowed, so the run fails closed.
+        board_root = (
+            task_packet.get("task_board") or {}
+        ).get("root") or _workspace_root(task_packet)
+
+        def _durable_grant_revoker(grant: dict[str, Any], code: str) -> None:
+            from agent_bridge_connect.service import TaskService
+
+            service = TaskService(
+                board_root, config=getattr(self, "_config", None) or {}
+            )
+            task_id = str(task_packet.get("task_id") or "")
+            revoked_model = service.revoke_permission_grant_for_target_run(
+                task_id, code, target_run_id=run_id, expected_grant=grant
+            )
+            if not isinstance(revoked_model, dict):
+                raise ClaudeSDKTransportError(
+                    "claude_sdk_grant_revoke_failed",
+                    f"The consumed grant for task {task_id!r} could not be "
+                    "durably revoked through the task store.",
+                )
+
         transport = ClaudeSDKControlTransport(
             plane=plane,
             task_id=str(task_packet.get("task_id") or ""),
@@ -699,21 +725,30 @@ class ClaudeExecutor(CLIExecutorBase):
             approval_timeout_s=getattr(self, "approval_timeout_s", 300.0),
             escalation_domain=control_context["escalation_domain"],
             host_profile_digest=control_context["host_profile_digest"],
+            grant_revoke_callback=_durable_grant_revoker,
         )
         # PERM-104-002: a consumed one-shot grant backs exactly this run's
         # temporary full; the transport applies the official session-scoped
-        # setMode update inside the live SDK session and revokes the grant
-        # on terminal/crash/handoff/reassign.
+        # setMode update inside the live SDK session and durably revokes the
+        # grant on terminal/crash/handoff/reassign.
         if permission.get("temporary") is True:
             grant = permission_grant_from_extensions(
                 task_packet.get("extensions") if isinstance(task_packet.get("extensions"), dict) else {}
             )
             if isinstance(grant, dict):
                 transport.attach_consumed_grant(consume_permission_grant(grant, run_id))
+        elif self._full_is_declared_base(permission):
+            # GGQN-002: explicit full and inherited full run bypassPermissions
+            # — there is no can_use_tool request to anchor on.  The run
+            # verifies under the DECLARED authorization of the pre-authorized
+            # full base (never an invented approval).
+            transport.declare_run_authorization(mode="declared_run")
         transport.start()
         self._transport = transport
 
-        runtime_verifier = self._sdk_runtime_verifier(task_packet, run_id, execution_session)
+        runtime_verifier = self._sdk_runtime_verifier(
+            task_packet, run_id, execution_session, transport=transport
+        )
 
         captured: dict[str, Any] | None = None
         try:
@@ -850,6 +885,21 @@ class ClaudeExecutor(CLIExecutorBase):
         self._close_run_lease(run_id)
         return StartResult(ok=True, run_id=run_id, message=f"claude execution {status}")
 
+    def _full_is_declared_base(self, permission: dict[str, Any]) -> bool:
+        """Return whether this run's full base is explicit or inherited.
+
+        GGQN-002: only the two pre-authorized concrete ``full`` bases verify
+        under the declared-run anchor.  A safe/inherit base never declares a
+        full-run authorization, and a temporary full declares its anchor via
+        the consumed grant in :meth:`start_control` instead.
+        """
+        return (
+            str(permission.get("effective_mode") or "").strip().lower() == "full"
+            and str(permission.get("selection_source") or "").strip()
+            in ("explicit_task", "inherited_task")
+            and permission.get("temporary") is not True
+        )
+
     def _claude_control_capability_context(
         self,
         task_packet: dict[str, Any],
@@ -905,19 +955,24 @@ class ClaudeExecutor(CLIExecutorBase):
         task_packet: dict[str, Any],
         run_id: str,
         execution_session: dict[str, Any] | None,
+        transport: "ClaudeSDKControlTransport | None" = None,
     ) -> Callable[[str, dict[str, Any]], dict[str, Any]]:
         """Return the authoritative runtime verification callback.
 
-        PERM-104-002 (GGQN-001): the durable ``agentbc.permission_runtime``
-        record reaches ``verified`` ONLY through structured SDK evidence for
-        the exact approved ``tool_use_id``: the approved can_use_tool request
-        must exist, the structured PostToolUse success record must be present
-        for that ``tool_use_id`` in the task-scoped hook log, and the
-        structured ``ResultMessage`` must confirm the run.  PreToolUse
-        records, failure records, callback prose, stderr, and exit status can
-        never verify the runtime capability.  The verified record is
-        persisted through the TaskService store; a transport that dies
-        before structured success leaves the record unverified.
+        PERM-104-002 (GGQN-002): the durable ``agentbc.permission_runtime``
+        record reaches ``verified`` ONLY through the exact structured
+        PostToolUse success event selected by the transport itself
+        (``select_verification_event``) — the same official SDK session and
+        run that produced the approved ``can_use_tool`` identity (single
+        action) or the declared run/grant action identity (explicit full,
+        inherited full, temporary full).  PreToolUse records,
+        PostToolUseFailure records, callback prose, stderr, exit status, and
+        a bare ``ResultMessage`` never verify the runtime capability.  The
+        hook log is additionally bound to the official session before the
+        prompt (``bind_hook_log_session``), so a foreign or cross-run hook
+        log can never verify.  The verified record is persisted through the
+        TaskService store; any missing link leaves the record unverified and
+        a persistence failure is returned with a stable reason.
         """
         session_id = (
             str(execution_session["session_id"]) if execution_session is not None else ""
@@ -939,12 +994,28 @@ class ClaudeExecutor(CLIExecutorBase):
                 "tool_use_id": str(tool_use_id or ""),
             }
             if not str(tool_use_id or "").strip():
-                # No approval was ever requested: nothing was authorized, so
-                # there is no runtime capability to verify for this run.
+                # No approved request and no declared run authorization:
+                # nothing was authorized, so there is no runtime capability
+                # to verify for this run.
+                outcome["reason"] = "claude_sdk_verification_anchor_missing"
                 return outcome
             result_payload = captured.get("result") if isinstance(captured, dict) else {}
-            if not isinstance(result_payload, dict) or result_payload.get("is_error"):
+            if not isinstance(result_payload, dict) or not result_payload:
                 outcome["reason"] = "claude_run_result_not_structured_success"
+                return outcome
+            if result_payload.get("is_error"):
+                outcome["reason"] = "claude_run_result_not_structured_success"
+                return outcome
+            # A structured ResultMessage also binds the official session id:
+            # a run whose terminal result names a different session proves
+            # nothing about this session's capability (GGQN-002 cross-run).
+            result_session = str(result_payload.get("session_id") or "").strip()
+            if (
+                str(session_id or "").strip()
+                and result_session
+                and result_session != str(session_id or "").strip()
+            ):
+                outcome["reason"] = "claude_run_result_session_mismatch"
                 return outcome
             board_root = (
                 task_packet.get("task_board") or {}
@@ -953,11 +1024,23 @@ class ClaudeExecutor(CLIExecutorBase):
                 str(task_packet.get("task_id") or ""),
                 board_root=board_root,
             )
+            # The transport binds the hook log to the official session before
+            # the prompt; verification refuses an unbound or foreign log.
             if not has_structured_post_tool_use_success(
-                control_root, tool_use_id=str(tool_use_id)
+                control_root,
+                tool_use_id="",
+                session_id=str(session_id or "").strip(),
             ):
                 outcome["reason"] = "claude_sdk_post_tool_use_success_missing"
                 return outcome
+            if transport is not None:
+                structured_event = transport.select_verification_event(
+                    session_id=str(session_id or "").strip(),
+                )
+                if structured_event is None:
+                    outcome["reason"] = "claude_sdk_post_tool_use_event_rejected"
+                    return outcome
+                outcome["tool_use_id"] = str(structured_event.get("tool_use_id") or "")
             from agent_bridge_connect.service import TaskService
 
             service = TaskService(board_root, config=getattr(self, "_config", None) or {})
@@ -1005,7 +1088,7 @@ class ClaudeExecutor(CLIExecutorBase):
                         "task_id": current.id,
                         "executor_run_id": run_id,
                         "session_id": session_id,
-                        "tool_use_id": str(tool_use_id),
+                        "tool_use_id": str(outcome.get("tool_use_id") or ""),
                         "evidence": "structured_post_tool_use_success",
                         "created_at": _utc_now(),
                     },
@@ -1078,18 +1161,26 @@ class ClaudeExecutor(CLIExecutorBase):
         max_budget_usd = _claude_max_budget_usd(task_packet, self.max_budget_usd)
         hooks = None
         try:
-            from agent_bridge_connect.claude_sdk_hooks import build_sdk_hooks
+            from agent_bridge_connect.claude_sdk_hooks import (
+                bind_hook_log_session,
+                build_sdk_hooks,
+            )
             from agent_bridge_connect.session import control_root_for_task
 
             board_root = (
                 task_packet.get("task_board") or {}
             ).get("root") or _workspace_root(task_packet)
-            hooks = build_sdk_hooks(
-                control_root_for_task(
-                    str(task_packet.get("task_id") or ""),
-                    board_root=board_root,
-                )
+            control_root = control_root_for_task(
+                str(task_packet.get("task_id") or ""),
+                board_root=board_root,
             )
+            # GGQN-002: bind the hook log to the official session BEFORE the
+            # prompt so PostToolUse evidence is fail-closed to this exact
+            # session (an unbound log can never verify).  The same structured
+            # events are captured on the transport for duplicate/failure/
+            # cross-run rejection at verification time.
+            bind_hook_log_session(control_root, execution_session_id)
+            hooks = build_sdk_hooks(control_root, event_sink=self._transport)
         except Exception:  # noqa: BLE001 - hook feed is diagnostic-only.
             hooks = None
         return build_sdk_options(

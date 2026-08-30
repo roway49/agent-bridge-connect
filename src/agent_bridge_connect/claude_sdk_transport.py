@@ -29,6 +29,32 @@ Fail-closed guarantees (PERM-104-002):
   returned as ``allow``;
 * when the transport dies while a request is pending, the request is
   invalidated on the control plane and can never be reused after restart.
+
+GGQN-002 runtime-verification contract:
+
+* the durable ``agentbc.permission_runtime`` ``verified`` transition is
+  driven ONLY by an exact structured ``PostToolUse`` success event from the
+  same official SDK session and run: ``capture_tool_event`` records every
+  tool-lifecycle event and ``select_verification_event`` binds the single
+  eligible event to the run's verification anchor;
+* for a safe/native single-action approval the anchor is the exact approved
+  ``can_use_tool`` identity; its matching ``PostToolUse`` success verifies;
+* for explicit full and inherited full (bypassPermissions, therefore no
+  approval request) and for temporary full (consumed grant, session-scoped
+  ``setMode``), the anchor is the declared action identity — the durable
+  run/grant binding — and the successful target-tool event bound to it
+  verifies WITHOUT inventing an approval;
+* wrong, missing, duplicate, failed, unrelated, or cross-run tool events
+  fail closed and never verify; PreToolUse, ``PostToolUseFailure``,
+  callback prose, stderr, exit status, and a bare ``ResultMessage`` are
+  never success evidence on their own.
+
+GGQN-002 durable temporary-full revocation:
+
+* ``_revoke_consumed_grant`` lands through the bound durable callback (the
+  executor's TaskService store write) exactly once at terminal state;
+  persistence failures raise ``claude_sdk_grant_revoke_failed`` instead of
+  being swallowed as best-effort.
 """
 
 from __future__ import annotations
@@ -72,6 +98,13 @@ _WORKER_THREAD_PREFIX = "agentbc-claude-sdk-"
 
 TransportDeathCallback = Callable[[str], None]
 
+# Durable grant-revocation callback: invoked exactly once with
+# ``(grant, revocation_code)`` at the transport's terminal state.  Production
+# binds the executor's TaskService-backed store revocation here so consumed
+# temporary-full grants survive crash/recovery; the transport never mints or
+# widens grants.
+GrantRevokeCallback = Callable[[dict[str, Any], str], None]
+
 
 class ClaudeSDKTransportError(RuntimeError):
     """Transport-level failure carrying a stable AgentBC code."""
@@ -102,6 +135,7 @@ class ClaudeSDKControlTransport:
         approval_timeout_s: float = 300.0,
         escalation_domain: str = "",
         host_profile_digest: str = "",
+        grant_revoke_callback: GrantRevokeCallback | None = None,
     ) -> None:
         self.plane = plane
         self.task_id = str(task_id or "").strip()
@@ -111,6 +145,11 @@ class ClaudeSDKControlTransport:
         self.approval_timeout_s = max(float(approval_timeout_s), 0.1)
         self.escalation_domain = str(escalation_domain or "").strip()
         self.host_profile_digest = str(host_profile_digest or "").strip()
+        # PERM-104-002 (GGQN-002): the durable revocation path for consumed
+        # temporary-full grants.  Production binds the TaskService store
+        # callback; without it a consumed grant cannot be durably revoked and
+        # :meth:`_revoke_consumed_grant` fails closed with a stable error.
+        self._grant_revoke_callback = grant_revoke_callback
         self._loop: asyncio.AbstractEventLoop | None = None
         self._worker: threading.Thread | None = None
         self._worker_ready = threading.Event()
@@ -130,10 +169,27 @@ class ClaudeSDKControlTransport:
         # empty string): the concurrency gate and death-invalidation anchor.
         self._active_request = ""
         # PERM-104-002 temporary-full lifecycle: the grant envelope consumed
-        # for this run, revoked on terminal/crash/handoff/reassign (the
-        # Service layer owns durable revocation; the transport mirrors the
-        # same grant object it verified at start).
+        # for this run, revoked durably on terminal/crash/handoff/reassign.
         self._consumed_grant: dict[str, Any] | None = None
+        # PERM-104-002 (GGQN-002): structured PostToolUse success events
+        # captured on this exact SDK session/run.  Each entry carries the
+        # native tool_use_id, the official session id, the tool name, and the
+        # monotonic arrival order; verification is driven from these events,
+        # never from callback prose, stderr, exit status, or ResultMessage.
+        self._tool_events: list[dict[str, Any]] = []
+        self._tool_events_lock = threading.Lock()
+        self._tool_event_count = 0
+        # The single anchor identity this run may verify under and its mode:
+        # "approved_tool_use" (exact approved can_use_tool id for single
+        # actions) or "declared_run" (declared action identity for the
+        # pre-authorized full modes).  A PostToolUse event that does not
+        # satisfy the anchor contract fails closed.
+        self._verification_anchor = ""
+        self._anchor_mode = ""
+        # Set once the driver finished consuming the session stream: only
+        # PostToolUse events observed inside this exact run window are
+        # eligible (a replayed foreign event fails closed).
+        self._stream_consumed = threading.Event()
 
     # ── worker event-loop lifecycle ────────────────────────────────────────
 
@@ -401,7 +457,12 @@ class ClaudeSDKControlTransport:
             decision = str(response.get("decision") or "").strip().lower()
             if decision == "accept":
                 # Approve authorizes only the original action: the official
-                # allow MUST carry the untouched original input.
+                # allow MUST carry the untouched original input.  GGQN-002:
+                # the exact approved tool_use_id becomes this run's
+                # verification anchor — the only identity whose structured
+                # PostToolUse success may verify the runtime receipt.
+                with self._pending_lock:
+                    self._verification_anchor = tool_use_id
                 return self._allow_result(tool_input)
             return self._deny_result(
                 "The user denied this action through AgentBC."
@@ -443,6 +504,161 @@ class ClaudeSDKControlTransport:
             "approval_timeout_s": self.approval_timeout_s,
         }
 
+    # ── structured tool-event capture (verification evidence) ─────────────
+
+    def capture_tool_event(
+        self,
+        *,
+        event: str,
+        tool_use_id: str,
+        tool_name: str = "",
+        session_id: str = "",
+    ) -> dict[str, Any]:
+        """Record one structured SDK tool-lifecycle event for this run.
+
+        The SDK ``hooks`` feed (``build_sdk_hooks``) calls this for every
+        PreToolUse/PostToolUse/PostToolUseFailure observed on this exact
+        session.  Events are appended with a monotonic sequence so duplicate
+        or replayed identities are detectable.  A ``session_id`` that does
+        not match this transport's bound session is recorded with its own id
+        and can never satisfy :meth:`select_verification_event` (fail closed
+        against cross-run replays).  Events observed after the run's stream
+        window closed are marked out-of-window and never verify.
+        """
+        normalized_event = str(event or "").strip()
+        if normalized_event not in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
+            return {"accepted": False, "reason": "claude_sdk_tool_event_unknown"}
+        in_window = not self._stream_consumed.is_set()
+        with self._tool_events_lock:
+            self._tool_event_count += 1
+            record = {
+                "sequence": self._tool_event_count,
+                "event": normalized_event,
+                "tool_use_id": str(tool_use_id or "").strip(),
+                "tool_name": str(tool_name or "").strip(),
+                "session_id": str(session_id or "").strip() or self.session_id,
+                "transport_session_id": self.session_id,
+                "run_id": self.run_id,
+                "in_run_window": in_window,
+            }
+            self._tool_events.append(record)
+        return {"accepted": True, "sequence": record["sequence"]}
+
+    def declare_run_authorization(
+        self,
+        *,
+        mode: str,
+        identity: str = "",
+    ) -> None:
+        """Declare the run-level authorization this run may verify under.
+
+        GGQN-002: explicit full and inherited full run with
+        ``bypassPermissions`` and therefore never produce a ``can_use_tool``
+        approval request.  Their verification anchor is the DECLARED action
+        identity of the pre-authorized run (Runner dispatch
+        ``runner-dispatch-{run_id}`` on the frozen full base) — never an
+        invented approval.  Temporary full declares the consumed grant's
+        durable binding identity via :meth:`attach_consumed_grant`; safe
+        single-action runs take the exact approved ``can_use_tool`` identity
+        automatically on approve.
+        """
+        normalized = str(mode or "").strip()
+        if normalized not in ("declared_run", "approved_tool_use"):
+            raise ClaudeSDKTransportError(
+                "claude_sdk_verification_anchor_invalid",
+                "Unsupported verification anchor mode.",
+            )
+        with self._pending_lock:
+            self._anchor_mode = normalized
+            self._verification_anchor = str(identity or "").strip() or (
+                f"run:{self.run_id}" if normalized == "declared_run" else ""
+            )
+            if not self._verification_anchor:
+                raise ClaudeSDKTransportError(
+                    "claude_sdk_verification_anchor_invalid",
+                    "A single-action verification anchor requires the exact "
+                    "approved tool_use_id.",
+                )
+
+    def select_verification_event(
+        self,
+        *,
+        session_id: str = "",
+        tool_name: str = "",
+    ) -> dict[str, Any] | None:
+        """Select the exact PostToolUse success event backing verification.
+
+        GGQN-002 verification contract — the selected event must be, in the
+        same transport session and run window:
+
+        * a ``PostToolUse`` success (never ``PostToolUseFailure``, never
+          ``PreToolUse``);
+        * bound to this transport's verification anchor — the exact approved
+          ``can_use_tool`` tool_use_id for single-action approvals, or the
+          declared run/grant action identity for the pre-authorized full
+          modes (never an invented approval);
+        * observed exactly once in this run window (duplicate or cross-run
+          identities never verify) and never carrying a failure twin;
+        * carrying this transport's official session id when one is bound.
+
+        Returns ``None`` when no event satisfies the contract.
+        """
+        anchor = str(self._verification_anchor or "").strip()
+        if not anchor:
+            # No approved request and no declared run authorization: nothing
+            # was authorized, so nothing can verify.
+            return None
+        expected_session = str(session_id or self.session_id or "").strip()
+        expected_tool = str(tool_name or "").strip()
+        with self._tool_events_lock:
+            events = list(self._tool_events)
+        post_success = [
+            event
+            for event in events
+            if event.get("event") == "PostToolUse"
+            and event.get("in_run_window") is True
+            and (not expected_tool or event.get("tool_name") == expected_tool)
+        ]
+        if expected_session:
+            post_success = [
+                event
+                for event in post_success
+                if str(event.get("session_id") or "") == expected_session
+            ]
+        if self._anchor_mode == "approved_tool_use":
+            matches = [
+                event
+                for event in post_success
+                if str(event.get("tool_use_id") or "") == anchor
+            ]
+            if len(matches) != 1:
+                # Zero matches prove nothing; multiple matches are a
+                # duplicate or replayed identity and fail closed.
+                return None
+            return dict(matches[0])
+        # Declared-run mode (explicit full / inherited full / temporary
+        # full): the bypass run's tool_use_ids are not knowable before the
+        # run, so the binding is the earliest successful in-window target
+        # tool event whose identity is unique in this window and carries no
+        # failure twin — a wrong, duplicate, failed, or replayed event never
+        # becomes the verifying evidence.
+        counts: dict[str, int] = {}
+        for event in post_success:
+            identity = str(event.get("tool_use_id") or "")
+            counts[identity] = counts.get(identity, 0) + 1
+        failure_ids = {
+            str(event.get("tool_use_id") or "")
+            for event in events
+            if event.get("event") == "PostToolUseFailure"
+            and event.get("in_run_window") is True
+        }
+        for event in sorted(post_success, key=lambda item: int(item["sequence"])):
+            identity = str(event.get("tool_use_id") or "")
+            if not identity or counts.get(identity) != 1 or identity in failure_ids:
+                continue
+            return dict(event)
+        return None
+
     # ── blocking session driver (executor-facing) ──────────────────────────
 
     def run_controlled(
@@ -464,24 +680,24 @@ class ClaudeSDKControlTransport:
         only the final structured result; pending approvals surface through
         the ControlPlane, not through poll races.
 
-        ``runtime_verify_callback`` (when supplied) is invoked with
-        ``(tool_use_id, captured_result)`` after the frozen ControlPlane
-        decision and the structured ``ResultMessage`` so the durable
-        ``agentbc.permission_runtime`` record can be verified for the exact
-        ``tool_use_id``.  Only the structured SDK result can prove execution;
-        PreToolUse records, callback prose, stderr, and exit status never
-        verify the runtime capability.  The returned result carries redacted,
-        structured facts only.
+        ``runtime_verify_callback`` (when supplied) is invoked after the
+        frozen ControlPlane decision and the structured ``ResultMessage`` so
+        the durable ``agentbc.permission_runtime`` record can be verified for
+        the exact verification anchor.  Only the structured PostToolUse
+        success event selected by :meth:`select_verification_event` can prove
+        execution; PreToolUse records, failure records, callback prose,
+        stderr, and exit status never verify the runtime capability.  The
+        returned result carries redacted, structured facts only.
 
         Temporary-full lifecycle (PERM-104-002): when a consumed one-shot
         grant is attached via :meth:`attach_consumed_grant`, the run starts
         in the SDK default mode and the official session-scoped
         ``PermissionUpdate(type="setMode", mode="bypassPermissions",
         destination="session")`` is applied to the same live client before
-        the prompt is sent.  The grant is revoked the moment this run
-        reaches its terminal state — the extra capability never outlives
-        the single run that consumed it, and the mode flip itself dies with
-        the session.
+        the prompt is sent.  The grant is durably revoked the moment this run
+        reaches its terminal state — the extra capability never outlives the
+        single run that consumed it, and the mode flip itself dies with the
+        session.
         """
         try:
             return self._submit(
@@ -495,8 +711,9 @@ class ClaudeSDKControlTransport:
             )
         finally:
             # Terminal state (result returned OR timeout/crash): a consumed
-            # temporary-full grant is revoked exactly once.  Handoff and
-            # reassign run this same path when the old run is superseded.
+            # temporary-full grant is revoked durably and exactly once.
+            # Handoff and reassign run this same path when the old run is
+            # superseded.
             self._revoke_consumed_grant("claude_run_terminal")
 
     def attach_consumed_grant(self, grant: dict[str, Any]) -> None:
@@ -512,18 +729,34 @@ class ClaudeSDKControlTransport:
                 "Only a consumed one-shot grant may back a temporary full run.",
             )
         self._consumed_grant = dict(grant)
+        # GGQN-002: temporary full has no can_use_tool request (bypass
+        # permissions), so the run verifies under the declared-run anchor
+        # backed by the durable consumed-grant binding (grant + target run).
+        self.declare_run_authorization(mode="declared_run")
 
     def _revoke_consumed_grant(self, code: str) -> None:
+        """Durably revoke the consumed temporary-full grant exactly once.
+
+        GGQN-002: the in-memory envelope alone is never mutated as evidence.
+        Revocation lands through the bound durable callback (the executor's
+        TaskService store write) and the returned revoked envelope replaces
+        the mirrored copy.  Without a bound callback — or when the durable
+        write fails — the transport raises ``claude_sdk_grant_revoke_failed``
+        (fail closed): a consumed temporary-full grant that outlives its run
+        must surface as a hard error, never as best-effort silence.
+        """
         grant = self._consumed_grant
-        self._consumed_grant = None
         if grant is None:
             return
-        try:
-            from agent_bridge_connect.permission_grants import revoke_permission_grant
-
-            revoke_permission_grant(grant, code)
-        except Exception:  # noqa: BLE001 - revocation is best-effort at this layer.
-            pass
+        callback = self._grant_revoke_callback
+        if callback is None:
+            raise ClaudeSDKTransportError(
+                "claude_sdk_grant_revoke_failed",
+                "No durable grant-revocation callback is bound; the consumed "
+                "temporary-full grant cannot be revoked for this run.",
+            )
+        callback(grant, str(code or "").strip())
+        self._consumed_grant = None
 
     def _run_session_async(
         self,
@@ -580,7 +813,7 @@ class ClaudeSDKControlTransport:
                 on_started()
             except Exception:  # noqa: BLE001 - heartbeat failures are fatal upstream.
                 pass
-        tool_use_id = await self._apply_session_mode_update(client)
+        session_mode_applied = await self._apply_session_mode_update(client)
         await client.query(prompt)
         stdout_parts: list[str] = []
         session_ids: set[str] = set()
@@ -607,15 +840,19 @@ class ClaudeSDKControlTransport:
             "init_verified": bool(session_ids),
             "session_id": sorted(session_ids)[0] if session_ids else "",
             "result": result_payload,
+            "session_mode_applied": bool(session_mode_applied),
         }
+        # Only events observed inside this exact run window (before the
+        # ResultMessage closed the turn) are eligible for verification.
+        self._stream_consumed.set()
         if runtime_verify_callback is not None:
             try:
-                runtime_verify_callback(tool_use_id, captured)
+                runtime_verify_callback(self._verification_anchor, captured)
             except Exception:  # noqa: BLE001 - verification failures surface via receipts.
                 pass
         return captured
 
-    async def _apply_session_mode_update(self, client: Any) -> str:
+    async def _apply_session_mode_update(self, client: Any) -> bool:
         """Apply the official session-scoped temporary-full mode flip.
 
         When a consumed one-shot grant backs this run, the frozen
@@ -626,16 +863,13 @@ class ClaudeSDKControlTransport:
         control request) BEFORE the prompt is sent, so every ask-path action
         of this run executes inside the session-scoped bypass.  The update
         is session-scoped: it never touches user/project/local settings and
-        dies with the session.  The consumed grant itself is revoked by
-        :meth:`run_controlled` on terminal/crash.
+        dies with the session.  The consumed grant itself is durably revoked
+        by :meth:`run_controlled` on terminal/crash.
 
-        Returns the anchor ``tool_use_id`` for the runtime verification
-        callback (the in-flight approval identity, or the empty string when
-        no approval was ever requested — an unapproved run proves nothing
-        and never verifies).
+        Returns whether the session-scoped mode update was applied.
         """
         if self._consumed_grant is None:
-            return str(self._active_request or "")
+            return False
         if (
             SDK_SESSION_MODE_UPDATE["type"] != "setMode"
             or SDK_SESSION_MODE_UPDATE["destination"] != "session"
@@ -647,7 +881,7 @@ class ClaudeSDKControlTransport:
                 "the official PermissionUpdate shape.",
             )
         await client.set_permission_mode(SDK_SESSION_MODE_UPDATE["mode"])
-        return str(self._active_request or "")
+        return True
 
 
 def build_sdk_options(
