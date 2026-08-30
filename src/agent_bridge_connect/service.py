@@ -3965,7 +3965,24 @@ def _normalize_step(step: dict[str, Any], index: int) -> dict[str, Any]:
             "task_create_error",
             f"step {index} must define a non-empty description or action",
         )
-    normalized.setdefault("id", index)
+    # FLOW-104-001 / GGQN-001 schema correction: canonical new tasks carry
+    # integer step ids only.  A string id (e.g. ``"1"``) used to pass task
+    # creation and then fail the matching final callback with
+    # ``completion_marker_task_steps_invalid`` after the whole run had
+    # executed.  The mismatch now fails BEFORE dispatch with a stable
+    # ``task_create_error``; legacy tasks keep their stored ids (dual-read).
+    declared_id = normalized.get("id")
+    if declared_id is not None and (
+        isinstance(declared_id, bool) or not isinstance(declared_id, int)
+    ):
+        raise ABCError(
+            "task_create_error",
+            f"step {index} id must be an integer (got {type(declared_id).__name__}); "
+            "string step ids are rejected before dispatch so the final "
+            "callback can never diverge from the declared steps",
+        )
+    if declared_id is None:
+        normalized["id"] = index
     normalized["description"] = description
     normalized.setdefault("record", f"steps/{index:02d}.json")
     return normalized
