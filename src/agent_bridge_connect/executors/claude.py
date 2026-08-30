@@ -68,7 +68,11 @@ from agent_bridge_connect.path_model import (
 )
 from agent_bridge_connect.protocol import ABCError
 from agent_bridge_connect.prompt_contract import PromptPlatformExtras, build_prompt_contract
-from agent_bridge_connect.runner import RunnerClient, RunnerError
+from agent_bridge_connect.runner import (
+    CLAUDE_SDK_CONTROL_AUTHORIZATION,
+    RunnerClient,
+    RunnerError,
+)
 from agent_bridge_connect.session import SessionRecoveryRequired
 
 from .base import CLIExecutorBase
@@ -759,11 +763,18 @@ class ClaudeExecutor(CLIExecutorBase):
                     execution_session_id,
                     sdk_facts,
                 )
-                RunnerClient().authorize_command(
+                RunnerClient().authorize_transport(
                     "claude",
-                    [str(self.agent_bin)],
+                    CLAUDE_SDK_CONTROL_AUTHORIZATION,
                     execution_root,
                     task_packet,
+                    self._build_sdk_authorization_context(
+                        task_packet,
+                        execution_root,
+                        execution_session_id,
+                        sdk_facts,
+                        permission,
+                    ),
                     executor_run_id=run_id,
                 )
             else:
@@ -1195,6 +1206,47 @@ class ClaudeExecutor(CLIExecutorBase):
             add_dirs=add_dirs,
             hooks=hooks,
         )
+
+    def _build_sdk_authorization_context(
+        self,
+        task_packet: dict[str, Any],
+        execution_root: Path,
+        execution_session_id: str,
+        sdk_facts: dict[str, str],
+        permission: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Describe the exact SDK launch contract for Runner verification."""
+        capability = (
+            claude_ephemeral_path_capability(
+                task_packet,
+                execution_root=execution_root,
+            )
+            if _claude_session_is_ephemeral(task_packet)
+            else None
+        )
+        temporary = permission.get("temporary") is True
+        sdk_mode = (
+            "bypassPermissions"
+            if permission.get("effective_mode") == "full" and not temporary
+            else "default"
+        )
+        return {
+            "control_path": "sdk_control_transport",
+            "sdk_version": str(sdk_facts.get("sdk_version") or ""),
+            "platform": str(sdk_facts.get("platform") or ""),
+            "session_id": execution_session_id,
+            "max_budget_usd": float(
+                _claude_max_budget_usd(task_packet, self.max_budget_usd)
+            ),
+            "permission_mode": sdk_mode,
+            "session_mode_update": "bypassPermissions" if temporary else "",
+            "settings_json": (
+                "" if capability is None else str(capability["settings_json"])
+            ),
+            "additional_dirs": (
+                [] if capability is None else list(capability["additional_dirs"])
+            ),
+        }
 
     def _build_control_command(
         self,

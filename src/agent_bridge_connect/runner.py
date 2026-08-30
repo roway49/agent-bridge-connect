@@ -24,7 +24,10 @@ from .effective_permissions import (
     validate_temporary_permission_context,
 )
 from .control import ApprovalControlPlane, ControlPlaneError, normalize_decision
-from .claude_path_capability import assert_claude_path_capability_command
+from .claude_path_capability import (
+    assert_claude_path_capability_command,
+    claude_ephemeral_path_capability,
+)
 from .execution_policy import (
     RESOURCE_EXTENSION_KEY,
     SESSION_EXTENSION_KEY,
@@ -47,6 +50,12 @@ from .permission_grants import (
     permission_grant_from_extensions,
 )
 from .protocol import ABCError
+from .permission_transport import (
+    CONTROL_PATH_SDK_TRANSPORT,
+    assert_claude_sdk_environment,
+    parse_claude_version,
+    select_claude_control_path,
+)
 from .session import SessionRecoveryRequired, control_root_for_task
 
 
@@ -84,6 +93,7 @@ PHASE6_AUTHORIZATION_EXTENSION_KEYS = (
     PHASE6_LINEAGE_EXTENSION_KEY,
 )
 _EXECUTOR_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$")
+CLAUDE_SDK_CONTROL_AUTHORIZATION = "claude_sdk_control_v1"
 
 _EXECUTOR_COMMAND_RULES: dict[str, dict[str, Any]] = {
     "hermes": {
@@ -792,6 +802,29 @@ class RunnerClient:
             }
         )
 
+    def authorize_transport(
+        self,
+        executor: str,
+        transport: str,
+        cwd: str | Path,
+        task: dict[str, Any],
+        context: dict[str, Any],
+        *,
+        executor_run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Authorize a structured executor transport without fabricating CLI argv."""
+        return self._request(
+            {
+                "op": "authorize_transport",
+                "executor": executor,
+                "transport": transport,
+                "cwd": str(Path(cwd).expanduser()),
+                "task": task,
+                "context": context,
+                "executor_run_id": executor_run_id or "",
+            }
+        )
+
     def respond_approval(
         self,
         task_id: str,
@@ -1154,6 +1187,35 @@ class RunnerState:
         return {
             "ok": True,
             "executor": executor,
+            "executor_run_id": executor_run_id or "",
+            "authorized": True,
+            "effective_permission_mode": permission["effective_mode"],
+        }
+
+    def authorize_transport(
+        self,
+        executor: str,
+        transport: str,
+        cwd: str,
+        task: dict[str, Any] | None,
+        context: dict[str, Any] | None,
+        executor_run_id: str | None = None,
+    ) -> dict[str, Any]:
+        work_dir = Path(cwd).expanduser().resolve()
+        with self.lock:
+            permission = self._authorize_executor_run(
+                executor,
+                None,
+                work_dir,
+                task,
+                executor_run_id or "",
+                transport=transport,
+                transport_context=context,
+            )
+        return {
+            "ok": True,
+            "executor": executor,
+            "transport": transport,
             "executor_run_id": executor_run_id or "",
             "authorized": True,
             "effective_permission_mode": permission["effective_mode"],
@@ -2826,10 +2888,13 @@ class RunnerState:
     def _authorize_executor_run(
         self,
         executor: str,
-        command: list[str],
+        command: list[str] | None,
         cwd: Path,
         task: dict[str, Any] | None,
         executor_run_id: str,
+        *,
+        transport: str = "",
+        transport_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Authorize one run and atomically consume any temporary grant.
 
@@ -2954,6 +3019,19 @@ class RunnerState:
             except ABCError as exc:
                 raise RunnerError(f"{exc.code}: {exc}") from exc
 
+        if transport:
+            self._validate_transport_authorization(
+                executor,
+                transport,
+                cwd,
+                task,
+                persisted,
+                effective,
+                transport_context,
+            )
+            return effective
+        if command is None:
+            raise RunnerError("runner command authorization requires argv")
         self._validate_request(
             executor,
             command,
@@ -2979,6 +3057,147 @@ class RunnerState:
             )
             raise
         return effective
+
+    def _validate_transport_authorization(
+        self,
+        executor: str,
+        transport: str,
+        cwd: Path,
+        task: dict[str, Any] | None,
+        persisted_task: dict[str, Any],
+        permission: dict[str, Any],
+        context: dict[str, Any] | None,
+    ) -> None:
+        """Validate a non-CLI transport against Runner-reconstructed facts."""
+        if executor != "claude" or transport != CLAUDE_SDK_CONTROL_AUTHORIZATION:
+            raise RunnerError(
+                "permission_transport_unsupported: unsupported Runner transport"
+            )
+        if (
+            not isinstance(task, dict)
+            or task.get("runner_authorization_required") is not True
+        ):
+            raise RunnerError(
+                "permission_grant_runner_context_required: SDK transport requires "
+                "an explicit Runner-managed worker packet"
+            )
+        if not isinstance(context, dict):
+            raise RunnerError(
+                "permission_transport_invalid: SDK authorization context is required"
+            )
+        expected_keys = {
+            "control_path",
+            "sdk_version",
+            "platform",
+            "session_id",
+            "max_budget_usd",
+            "permission_mode",
+            "session_mode_update",
+            "settings_json",
+            "additional_dirs",
+        }
+        if set(context) != expected_keys:
+            raise RunnerError(
+                "permission_transport_invalid: SDK authorization context fields do not match"
+            )
+
+        expected_executable = self.allowed_executables.get("claude")
+        if expected_executable is None:
+            raise RunnerError("runner executable is not allowlisted")
+        allowed_roots = list(self.allowed_roots)
+        allowed_roots.extend(self._task_scoped_allowed_roots(persisted_task))
+        if not cwd.is_dir() or not any(
+            _is_within(cwd, root) for root in allowed_roots
+        ):
+            raise RunnerError(f"runner cwd is outside allowed roots: {cwd}")
+
+        try:
+            sdk_facts = assert_claude_sdk_environment(expected_executable)
+        except ABCError as exc:
+            raise RunnerError(f"{exc.code}: {exc}") from exc
+        try:
+            version_result = subprocess.run(
+                [str(expected_executable), "--version"],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RunnerError(
+                "permission_transport_unsupported: Claude version probe failed"
+            ) from exc
+        version = parse_claude_version(
+            f"{version_result.stdout}\n{version_result.stderr}"
+        )
+        try:
+            selected_path = select_claude_control_path(version, None)
+        except ABCError as exc:
+            raise RunnerError(f"{exc.code}: {exc}") from exc
+        if (
+            version_result.returncode != 0
+            or selected_path != CONTROL_PATH_SDK_TRANSPORT
+        ):
+            raise RunnerError(
+                "permission_transport_unsupported: configured Claude does not "
+                "support SDK control"
+            )
+
+        extensions = persisted_task.get("extensions")
+        extensions = extensions if isinstance(extensions, dict) else {}
+        session = extensions.get(SESSION_EXTENSION_KEY)
+        session_errors = validate_session_snapshot(session, executor="claude")
+        if session_errors:
+            raise RunnerError(
+                f"runner_session_argument_mismatch: {'; '.join(session_errors)}"
+            )
+        resources = extensions.get(RESOURCE_EXTENSION_KEY)
+        resource_errors = validate_resource_snapshot(resources, executor="claude")
+        if resource_errors:
+            raise RunnerError(
+                f"runner_resource_argument_mismatch: {'; '.join(resource_errors)}"
+            )
+        if cwd != Path(str(session.get("project_path") or "")).expanduser().resolve():
+            raise RunnerError(
+                "runner_session_argument_mismatch: SDK cwd must match the frozen project path"
+            )
+
+        try:
+            capability = claude_ephemeral_path_capability(
+                persisted_task,
+                execution_root=cwd,
+            )
+        except ABCError as exc:
+            raise RunnerError(f"{exc.code}: {exc}") from exc
+        expected_settings = (
+            "" if capability is None else str(capability["settings_json"])
+        )
+        expected_dirs = (
+            [] if capability is None else list(capability["additional_dirs"])
+        )
+        temporary = is_temporary_permission(permission)
+        expected_mode = (
+            "bypassPermissions"
+            if permission.get("effective_mode") == "full" and not temporary
+            else "default"
+        )
+        expected_update = "bypassPermissions" if temporary else ""
+        expected_context = {
+            "control_path": CONTROL_PATH_SDK_TRANSPORT,
+            "sdk_version": sdk_facts["sdk_version"],
+            "platform": sdk_facts["platform"],
+            "session_id": str(session.get("session_id") or ""),
+            "max_budget_usd": float(resources.get("current_limit")),
+            "permission_mode": expected_mode,
+            "session_mode_update": expected_update,
+            "settings_json": expected_settings,
+            "additional_dirs": expected_dirs,
+        }
+        if context != expected_context:
+            raise RunnerError(
+                "permission_transport_mismatch: SDK authorization context does not "
+                "match the frozen task capability"
+            )
 
     def _enforce_phase3_authorization(
         self,
@@ -3552,6 +3771,17 @@ def _dispatch_request(state: RunnerState, request: dict[str, Any]) -> dict[str, 
             request.get("command") or [],
             str(request.get("cwd") or ""),
             task if isinstance(task, dict) else None,
+            str(request.get("executor_run_id") or "") or None,
+        )
+    if operation == "authorize_transport":
+        task = request.get("task")
+        context = request.get("context")
+        return state.authorize_transport(
+            str(request.get("executor") or ""),
+            str(request.get("transport") or ""),
+            str(request.get("cwd") or ""),
+            task if isinstance(task, dict) else None,
+            context if isinstance(context, dict) else None,
             str(request.get("executor_run_id") or "") or None,
         )
     if operation == "respond_approval":
