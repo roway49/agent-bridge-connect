@@ -1488,6 +1488,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
             start = executor.start(
                 {
                     "task_id": claimed_task.id,
+                    "assignee": claimed_task.assignee,
                     "title": claimed_task.title,
                     "steps": claimed_task.steps,
                     "workspace": _task_workspace(claimed_task, service.board_root, service.config),
