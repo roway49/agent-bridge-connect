@@ -67,9 +67,11 @@ def _read_frame() -> dict[str, Any] | None:
 
 
 def _options(include_allow_once: bool) -> list[dict[str, str]]:
-    options = [{"optionId": "allow_once", "kind": "allow_once", "name": "Allow once"}]
+    # ``unsupported_options`` sends a truly EMPTY options list; a deny-only
+    # surface became valid in PERM-104-002 v2 (no allow_once requirement).
     if not include_allow_once:
-        options = []
+        return []
+    options = [{"optionId": "allow_once", "kind": "allow_once", "name": "Allow once"}]
     options.append({"optionId": "deny", "kind": "reject_once", "name": "Deny"})
     options.append({"optionId": "allow_session", "kind": "allow_always", "name": "Allow for session"})
     return options

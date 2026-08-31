@@ -1013,6 +1013,23 @@ class HermesExecutor(CLIExecutorBase):
             "scope": "single_action",
             "session_id": session_id,
         }
+        # PERM-104-002 v2: the offered native choices ride on the poll result
+        # so the CLI worker can persist them on the input request.  The
+        # choices come from the CONTROL PLANE's normalized pending request,
+        # because that is where the opaque handles are computed and bound.
+        pending_after = plane.status().get("pending_request")
+        if (
+            isinstance(pending_after, dict)
+            and str(pending_after.get("approval_version") or "") == "2"
+            and isinstance(pending_after.get("offered_choices"), list)
+        ):
+            approval["approval_version"] = 2
+            approval["authority"] = dict(pending_after.get("authority") or {})
+            approval["offered_choices"] = [
+                dict(choice)
+                for choice in pending_after.get("offered_choices") or []
+                if isinstance(choice, dict)
+            ]
         record["events"].append(
             {
                 "event_type": "approval_requested",
@@ -1053,7 +1070,13 @@ class HermesExecutor(CLIExecutorBase):
                 {"code": exc.code},
             ) from exc
         decision = str(response.get("decision") or "")
-        outcome = approval_outcome_for_decision(decision)
+        # PERM-104-002 v2: the response carries the exact selected native
+        # choice; its original ACP optionId is returned verbatim.  The v1
+        # fallback (allow_once/cancelled) only fires for decisions recorded
+        # without a choice payload.
+        outcome = approval_outcome_for_decision(
+            response.get("choice") if isinstance(response.get("choice"), dict) else decision
+        )
         self._resume_run(run_id)
         record["status"] = "running"
         record.setdefault("approval_history", []).append(

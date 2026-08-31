@@ -524,12 +524,18 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
             self.assertEqual(approval["type"], "permission")
             self.assertEqual(approval["scope"], "single_action")
             self.assertEqual(approval["session_id"], "thread-fake-1")
+            once_handle = next(
+                choice["handle"]
+                for choice in approval["offered_choices"]
+                if choice["kind"] == "once"
+            )
             self._plane(started.run_id).respond_approval(
                 self.task_id,
                 started.run_id,
                 "thread-fake-1",
                 approval["request_id"],
                 "accept",
+                choice_handle=once_handle,
             )
             status = self._wait_status(executor, started.run_id, {"completed", "needs_recovery", "failed"})
             result = executor.poll(started.run_id)
@@ -577,12 +583,18 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
                 "input_required",
             )
             approval = executor.poll(started.run_id).result["approval_request"]
+            deny_handle = next(
+                choice["handle"]
+                for choice in approval["offered_choices"]
+                if choice["kind"] == "deny"
+            )
             self._plane(started.run_id).respond_approval(
                 self.task_id,
                 started.run_id,
                 "thread-fake-1",
                 approval["request_id"],
                 "decline",
+                choice_handle=deny_handle,
             )
             status = self._wait_status(
                 executor,
@@ -652,12 +664,18 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
             status = self._wait_status(executor, started.run_id, {"input_required"})
             self.assertEqual(status, "input_required")
             approval = executor.poll(started.run_id).result["approval_request"]
+            deny_handle = next(
+                choice["handle"]
+                for choice in approval["offered_choices"]
+                if choice["kind"] == "deny"
+            )
             self._plane(started.run_id).respond_approval(
                 self.task_id,
                 started.run_id,
                 "thread-fake-1",
                 approval["request_id"],
                 "decline",
+                choice_handle=deny_handle,
             )
             status = self._wait_status(executor, started.run_id, {"completed", "needs_recovery", "failed"})
             executor.poll(started.run_id)
@@ -681,12 +699,18 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
             status = self._wait_status(executor, started.run_id, {"input_required"})
             self.assertEqual(status, "input_required")
             request = executor.poll(started.run_id).result["approval_request"]
+            deny_handle = next(
+                choice["handle"]
+                for choice in request["offered_choices"]
+                if choice["kind"] == "deny"
+            )
             self._plane(started.run_id).respond_approval(
                 self.task_id,
                 started.run_id,
                 "thread-fake-1",
                 request["request_id"],
                 "decline",
+                choice_handle=deny_handle,
             )
             status = self._wait_status(executor, started.run_id, {"completed", "needs_recovery", "failed"})
         self.assertEqual(status, "completed")

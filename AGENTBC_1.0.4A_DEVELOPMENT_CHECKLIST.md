@@ -441,6 +441,45 @@ Executor 拒绝必须在同 session、同 request Approve 后精确执行。
   仍需以真实 AgentBC task 验证 Desktop 弹窗到 CLI `--approve-tool Bash --scope session` 的
   端到端交互，方可关闭 P0。
 
+2026-08-31 PERM-104-002 9ZEV-001（native permission passthrough 与 legacy matcher 退役）：
+
+- `agentbc.approval` v2 choice broker 落地（`approval.py`）：receipt 绑定
+  authority（executor/protocol/protocol_version/method）、broker/provider request ID、
+  native item ID、fingerprint、每个 offered choice 的 opaque handle（`opt-*`，由
+  request id + offered digest 派生，仅对该 exact request 有效）、selection
+  （handle/native_option_id/kind/source/at）。v1 receipt 双读保持 valid；v2 拒绝
+  flattened `--approve`/`--deny`（`native_permission_choice_required`）。identical
+  replay 幂等、conflict/cross-identity/unknown handle 全部 fail closed。Raw payload
+  只存保护态任务控制；公共视图仅暴露 sanitized labels + opaque handles。
+- CLI 新增 `task respond --permission-option <handle>`（与 message/approve/deny 互斥）；
+  Runner `respond_task` 映射 handle → control plane v2 响应；同 worker/同 live
+  session 返回，不创建 grant/worker/continuation/mode change。`full` 保持 task-start-only，
+  永不出现在 choice popup。
+- Exact adapters：Codex 只返回 schema 支持的 `accept`/`acceptForSession`/`decline` 或
+  permissions turn/session 响应（原 ID；amendments/cancel 不可选）；Claude 只信任 SDK
+  `can_use_tool`：deny → `PermissionResultDeny`、once → `PermissionResultAllow`
+  （原始 input、无 updated_permissions）、session → 仅当 callback suggestions 是完整
+  destination=session bundle（无 persistent destination、无 setMode bypassPermissions）时
+  原样返回该 bundle，绝不生成规则；Hermes 保留 ACP request/session/tool-call/options 并
+  回传选中的原 optionId（order/label 无关），移除 allow_once-only 限制。
+- 动态弹窗（macOS/CLI 同一 Runner API）：一个绝对 deadline 覆盖 View Details / Deny /
+  Choose Permission / 原生选项选择 / 确认与 Back；无 allow default；close/timeout 恰好
+  发送一次 exact denial。详情使用 redacted native metadata 并说明 persistent choices
+  audit-only、不含 full。
+- Legacy matcher 退役：`session_tool_rules.py` 收缩为 tombstone
+  （`legacy_session_tool_rule_removed`），matcher 语法/rule API/lifecycle/Runner rule
+  routing/Claude synthesized rules/Hermes one-shot 常量/Codex session-decision 禁止全部移除；
+  `--approve-tool/--scope session` 隐藏为一次发布的 nonfunctional tombstone；
+  `legacy_permission_cutover_blocked` 扩展覆盖 active v1 waits、session rules、
+  approve-tool waits、grants、compatibility-full continuations（列 task IDs/reasons）；
+  terminal history 只读、v1/v2 双读、只写 v2。
+- 测试：新增 `tests/test_perm104_002_v2_broker.py` 29 项（v1/v2 读写与脱敏、handle
+  binding/replay/cross-identity 拒绝、Codex exact once/session/deny + amendment 拒绝、
+  Claude bundle mixed/persistent/bypass/unknown 拒绝、Hermes exact optionId、
+  migration gate 扩展、tombstone）；codex control/production 47 项更新为 v2 handle
+  响应语义；matcher probe 替换为 native-choice probe
+  （`scripts/live_probe_perm104_session_rule.py` 重写）。
+
 2026-08-31 `RAXT-001` 实施与证据边界（`agent/codex` 本地提交，未 push）：
 
 - 保留 `WDAB-001` 的关闭记录，不改写历史因果顺序：官方 session

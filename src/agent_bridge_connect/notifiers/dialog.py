@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from agent_bridge_connect.adapters import DeliveryResult
 from agent_bridge_connect.reports import redact_secrets
@@ -148,20 +149,25 @@ class DialogNotifier:
     ) -> DeliveryResult:
         """Show the minimal Approve/Deny permission dialog with optional detail.
 
-        The decision view shows only the Core short summary plus sanitized
-        bounded identity facts: Task ID, bounded task title, Executor, blocked
-        step, and permission scope (``single_action`` or the ``full`` fallback).
-        ``View Details`` is a non-decision interaction: it opens a bounded
-        read-only detail view whose ``Back`` button returns to the decision view
-        without responding, changing input state, issuing a grant, or resetting
-        the original absolute deadline.  Closing either view or reaching the
-        deadline auto-denies with an auditable ``decision_source``; the default
-        remains Deny and no text response or third decision is introduced.
+        PERM-104-002 v2: the decision view offers exactly the executor-native
+        choices recorded on the pending request (``native_options``), never an
+        inferred allow category and never ``full``.  ``Choose Permission``
+        opens a numbered native-choice picker; the selected handle is returned
+        for the exact request.  ``View Details`` is a non-decision interaction
+        opening a bounded read-only detail view whose ``Back`` button returns
+        to the decision view without responding.  Closing either view or
+        reaching the deadline auto-denies exactly once with an auditable
+        ``decision_source``; there is no allow default.
         """
         summary = str(clean.get("reason_summary") or clean.get("message") or "").strip()
         detail = str(clean.get("reason_detail") or "").strip()
         has_detail = bool(detail)
         deadline_at = str(clean.get("deadline_at") or "")
+        native_options = [
+            option
+            for option in clean.get("native_options", [])
+            if isinstance(option, dict) and str(option.get("label") or "").strip()
+        ] if isinstance(clean.get("native_options"), list) else []
         # Deterministic identity rendering: prefer the explicit sanitized bounded
         # fields on the payload; fall back safely to the task id / generic facts
         # so payloads carrying only identity context still show a readable view.
@@ -208,7 +214,11 @@ class DialogNotifier:
                     f"dialog:{_INPUT_EVENT}",
                     {"action": "deny", "decision_source": "timeout"},
                 )
-            decision_script = self._permission_decision_script(give_up_s, has_detail)
+            decision_script = self._permission_decision_script(
+                give_up_s,
+                has_detail,
+                has_options=bool(native_options),
+            )
             decision = self._run_script(
                 title,
                 decision_body,
@@ -250,6 +260,20 @@ class DialogNotifier:
                     f"dialog:{_INPUT_EVENT}",
                     {"action": "deny", "decision_source": decision_source},
                 )
+            if button == "Choose Permission" and native_options:
+                option_result = self._choose_permission_option(
+                    title,
+                    native_options,
+                    deadline_at,
+                    dialog_timeout_s,
+                )
+                if isinstance(option_result, DeliveryResult):
+                    return option_result
+                if option_result is None:
+                    # Back / close inside the picker returns to the decision
+                    # view without responding (close is handled as denial).
+                    continue
+                return option_result
             if not has_detail:
                 # Defensive: a View Details button without a bounded detail must
                 # not respond; return to the decision view.
@@ -299,6 +323,113 @@ class DialogNotifier:
                 {"action": "deny", "decision_source": "dialog_closed"},
             )
 
+    def _choose_permission_option(
+        self,
+        title: str,
+        native_options: list[dict[str, Any]],
+        deadline_at: str,
+        dialog_timeout_s: int,
+    ) -> DeliveryResult | None:
+        """Show the numbered native-choice picker (one absolute deadline).
+
+        Returns the selected choice DeliveryResult, ``None`` for Back/unknown
+        (returning to the decision view), or a denial DeliveryResult on
+        close/timeout.  Non-selectable choices are listed as informational
+        rows and can never be picked.
+        """
+        selectable = [
+            option for option in native_options if option.get("selectable", True) is not False
+        ]
+        if not selectable:
+            return None
+        lines = ["Choose one native permission option:", ""]
+        for index, option in enumerate(selectable, start=1):
+            label = str(option.get("label") or "").strip()
+            kind = str(option.get("kind") or "").strip()
+            suffix = f" ({kind})" if kind and kind != "other" else ""
+            lines.append(f"{index}. {label}{suffix}")
+        unsupported = [
+            option
+            for option in native_options
+            if option.get("selectable", True) is False
+        ]
+        if unsupported:
+            lines.append("")
+            lines.append(
+                "Persistent/always choices are audit-only in this release and "
+                "cannot be selected here."
+            )
+        body = "\n".join(lines)
+        while True:
+            give_up_s = self._permission_give_up_seconds(deadline_at, dialog_timeout_s)
+            if give_up_s <= 0:
+                return DeliveryResult(
+                    True,
+                    "permission dialog timed out; request denied",
+                    f"dialog:{_INPUT_EVENT}",
+                    {"action": "deny", "decision_source": "timeout"},
+                )
+            script = self._permission_choice_script(give_up_s, len(selectable))
+            result = self._run_script(title, body, script, give_up_s)
+            if result is None:
+                return DeliveryResult(
+                    True,
+                    "permission dialog closed; request denied",
+                    f"dialog:{_INPUT_EVENT}",
+                    {"action": "deny", "decision_source": "dialog_closed"},
+                )
+            if result == "timed_out":
+                return DeliveryResult(
+                    True,
+                    "permission dialog timed out; request denied",
+                    f"dialog:{_INPUT_EVENT}",
+                    {"action": "deny", "decision_source": "timeout"},
+                )
+            if isinstance(result, DeliveryResult):
+                return result
+            button = str(result).strip()
+            if button == "Back":
+                return None
+            if button.isdigit():
+                index = int(button)
+                if 1 <= index <= len(selectable):
+                    option = selectable[index - 1]
+                    return DeliveryResult(
+                        True,
+                        f"dialog shown; choice={index}; gave_up=false",
+                        f"dialog:{_INPUT_EVENT}",
+                        {
+                            "action": "permission_option",
+                            "decision_source": "user",
+                            "option_handle": str(option.get("handle") or ""),
+                            "option_kind": str(option.get("kind") or ""),
+                        },
+                    )
+            # Any other button is fail-closed: treat as denial once.
+            return DeliveryResult(
+                True,
+                "permission dialog closed; request denied",
+                f"dialog:{_INPUT_EVENT}",
+                {"action": "deny", "decision_source": "fail_closed"},
+            )
+
+    def _permission_choice_script(self, give_up_s: int, count: int) -> str:
+        """Build the numbered choice picker script (Back + numbered buttons)."""
+        buttons = ["Back"] + [str(index) for index in range(1, count + 1)]
+        button_list = ", ".join(f'"{button}"' for button in buttons)
+        dialog = (
+            f'buttons {{{button_list}}} default button "Back" '
+            f"giving up after {give_up_s} with icon caution"
+        )
+        return (
+            "on run argv\n"
+            "  set dialogResult to display dialog (item 2 of argv) "
+            f"with title (item 1 of argv) {dialog}\n"
+            '  return "button returned:" & (button returned of dialogResult) & linefeed & '
+            '"gave up:" & ((gave up of dialogResult) as text)\n'
+            "end run\n"
+        )
+
     def _run_script(
         self,
         title: str,
@@ -338,14 +469,17 @@ class DialogNotifier:
             return "timed_out"
         return button
 
-    def _permission_decision_script(self, give_up_s: int, has_detail: bool) -> str:
-        buttons = (
-            'buttons {"View Details", "Deny", "Approve"}'
-            if has_detail
-            else 'buttons {"Deny", "Approve"}'
-        )
+    def _permission_decision_script(
+        self, give_up_s: int, has_detail: bool, *, has_options: bool = False
+    ) -> str:
+        buttons: list[str] = ["Deny", "Approve"]
+        if has_options:
+            buttons = ["Deny", "Choose Permission", "Approve"]
+        if has_detail:
+            buttons = ["View Details", *buttons]
+        button_list = ", ".join(f'"{button}"' for button in buttons)
         dialog = (
-            f"{buttons} default button \"Deny\" "
+            f'buttons {{{button_list}}} default button "Deny" '
             f"giving up after {give_up_s} with icon caution"
         )
         return (
@@ -465,6 +599,8 @@ class DialogNotifier:
                 return "approve"
             if button == "View Details":
                 return "view_details"
+            if button == "Choose Permission":
+                return "choose_permission"
             return "deny"
         if gave_up or button in {"Later", "unknown"}:
             return "dismissed"

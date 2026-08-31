@@ -115,6 +115,9 @@ class LocalAlphaBundleTests(unittest.TestCase):
                     "AGENTBC_ALPHA_HOME": str(install_root),
                     "AGENTBC_BIN_DIR": str(bin_dir),
                     "AGENTBC_UNINSTALL_SKIP_RUNNER": "1",
+                    # Hermetic Hermes home: never sweep the host's real
+                    # ~/.hermes profiles.
+                    "HERMES_HOME": str(home / ".hermes"),
                 },
                 capture_output=True,
                 text=True,

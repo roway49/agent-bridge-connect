@@ -39,6 +39,15 @@ from agent_bridge_connect.service import TaskService
 RUN_ID = "claude-GGQN-001-run1"
 
 
+def _kind_handle(pending: dict, kind: str) -> str:
+    """Resolve the opaque handle of the first offered choice with this kind."""
+    return next(
+        choice["handle"]
+        for choice in pending.get("offered_choices") or []
+        if choice.get("kind") == kind
+    )
+
+
 def _plane(tmp: str, *, task_id: str = "SDKT-001", run_id: str = "claude-sdk-1",
            session_id: str = "") -> ApprovalControlPlane:
     return ApprovalControlPlane(
@@ -181,6 +190,7 @@ class ClaudeSdkTransportDecisionTests(unittest.TestCase):
                 self.session_id,
                 str(pending.get("request_id") or ""),
                 "accept",
+                choice_handle=_kind_handle(pending, "once"),
             )
 
         thread = threading.Thread(target=decide_later, daemon=True)
@@ -211,6 +221,7 @@ class ClaudeSdkTransportDecisionTests(unittest.TestCase):
                 self.session_id,
                 str(pending.get("request_id") or ""),
                 "decline",
+                choice_handle=_kind_handle(pending, "deny"),
             )
 
         thread = threading.Thread(target=decide_later, daemon=True)
@@ -241,6 +252,7 @@ class ClaudeSdkTransportDecisionTests(unittest.TestCase):
                 self.session_id,
                 str(pending.get("request_id") or ""),
                 "decline",
+                choice_handle=_kind_handle(pending, "deny"),
             )
 
         thread = threading.Thread(target=decide_deny, daemon=True)

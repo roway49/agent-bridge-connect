@@ -322,6 +322,15 @@ async def _drain_hook(hooks: dict, event: str, tool_use_id: str, tool_name: str 
             await hook(payload, tool_use_id, {"signal": None})
 
 
+def _kind_handle(pending: dict, kind: str) -> str:
+    """Resolve the opaque handle of the first offered choice with this kind."""
+    return next(
+        choice["handle"]
+        for choice in pending.get("offered_choices") or []
+        if choice.get("kind") == kind
+    )
+
+
 async def _respond_when_pending(
     transport: ClaudeSDKControlTransport,
     harness: _Harness,
@@ -333,6 +342,8 @@ async def _respond_when_pending(
     ``respond_approval`` therefore printed a traceback while unittest still
     reported success.  Running the blocking response through ``to_thread``
     and awaiting the task makes every control-plane failure fail the test.
+    PERM-104-002 v2: the response must select an explicit native choice
+    handle; flattened approve/deny is rejected.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + 5.0
@@ -340,6 +351,7 @@ async def _respond_when_pending(
     while loop.time() < deadline:
         pending = (plane.status() or {}).get("pending_request") or {}
         if pending.get("status") == "pending":
+            kind = "deny" if decision == "decline" else "once"
             return await asyncio.to_thread(
                 plane.respond_approval,
                 harness.task_id,
@@ -347,6 +359,7 @@ async def _respond_when_pending(
                 SESSION_ID,
                 str(pending.get("request_id") or ""),
                 decision,
+                choice_handle=_kind_handle(pending, kind),
             )
         await asyncio.sleep(0.02)
     raise AssertionError("ControlPlane approval request did not become pending")
@@ -514,6 +527,7 @@ class ProductionSessionWiringTests(unittest.TestCase):
                         SESSION_ID,
                         str(pending.get("request_id") or ""),
                         "accept",
+                        choice_handle=_kind_handle(pending, "once"),
                     )
             rollback_evidence = {
                 "response_exists": response_path.exists(),
@@ -532,6 +546,7 @@ class ProductionSessionWiringTests(unittest.TestCase):
                 SESSION_ID,
                 str(pending.get("request_id") or ""),
                 "decline",
+                choice_handle=_kind_handle(pending, "deny"),
             )
             await approval
             return rollback_evidence

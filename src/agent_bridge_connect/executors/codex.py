@@ -1309,6 +1309,38 @@ class CodexExecutor(CLIExecutorBase):
         self, record: dict[str, Any], message: dict[str, Any]
     ) -> None:
         plane: ApprovalControlPlane = record["plane"]
+        # PERM-104-002 v2: enrich the native App Server request with the
+        # exact schema-supported choice set before it reaches the control
+        # plane.  The captured fixtures prove session-scope decisions are
+        # schema-supported (acceptForSession on command/file_change;
+        # turn/session permissions responses); amendments stay non-selectable
+        # and never offered.
+        from agent_bridge_connect.control import codex_offered_choices
+
+        method = str(message.get("method") or "")
+        operation = {
+            "item/commandExecution/requestApproval": "command",
+            "item/fileChange/requestApproval": "file_change",
+            "item/permissions/requestApproval": "permissions",
+        }.get(method, "")
+        if operation:
+            message = {
+                **message,
+                "approval_version": 2,
+                "authority": {
+                    "executor": "codex",
+                    "protocol": "codex_app_server",
+                    "protocol_version": 2,
+                    "method": method,
+                },
+                "offered_choices": [
+                    dict(choice)
+                    for choice in codex_offered_choices(
+                        operation,
+                        session_decisions_supported=True,
+                    )
+                ],
+            }
         event = plane.request_approval(message)
         request_id = str(event.get("request_id") or "")
         record["events"].append(
@@ -1319,7 +1351,7 @@ class CodexExecutor(CLIExecutorBase):
                 "payload": event,
             }
         )
-        approval = {
+        approval: dict[str, Any] = {
             "type": "permission",
             "request_id": request_id,
             "request_fingerprint": str(event.get("request_fingerprint") or ""),
@@ -1329,6 +1361,23 @@ class CodexExecutor(CLIExecutorBase):
             "scope": "single_action",
             "session_id": str(event.get("session_id") or ""),
         }
+        # PERM-104-002 v2: the offered native choices ride on the poll result
+        # so the CLI worker can persist them on the input request.  The
+        # choices come from the CONTROL PLANE's normalized pending request,
+        # because that is where the opaque handles are computed and bound.
+        pending_after = plane.status().get("pending_request")
+        if (
+            isinstance(pending_after, dict)
+            and str(pending_after.get("approval_version") or "") == "2"
+            and isinstance(pending_after.get("offered_choices"), list)
+        ):
+            approval["approval_version"] = 2
+            approval["authority"] = dict(pending_after.get("authority") or {})
+            approval["offered_choices"] = [
+                dict(choice)
+                for choice in pending_after.get("offered_choices") or []
+                if isinstance(choice, dict)
+            ]
         record["status"] = "input_required"
         record["result"] = {
             "events": list(record["events"]),
@@ -1377,6 +1426,10 @@ class CodexExecutor(CLIExecutorBase):
                 response_payload = approval_response_payload(
                     pending, response.get("decision")
                 )
+            # PERM-104-002 v2: the exact selected native choice decides the
+            # response shape (accept / acceptForSession / decline on the
+            # original id; permissions turn/session responses).  Amendments
+            # are never selectable and never returned.
             self._resume_run(record["run_id"])
             record["status"] = "running"
             record.setdefault("approval_history", []).append(

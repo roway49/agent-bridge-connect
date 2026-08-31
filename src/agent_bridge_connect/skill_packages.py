@@ -81,6 +81,42 @@ MANAGED_SKILL_FINGERPRINTS: dict[str, dict[str, dict[str, Any]]] = {
             },
         },
     },
+    # 1.0.3a2 (current, PERM-104-002 9ZEV-001): the controller contract gains
+    # the executor-native choice broker section; SKILL.md and the steps YAML
+    # reference are byte-identical to 1.0.2a1.
+    "1.0.3a2": {
+        "codex": {
+            "protocol_version": "1.0",
+            "completion_version": 1,
+            "template_sha256": "297289f1e1016b64238d1b79ef936a40374ddf02497373b7e74d0e83250e6207",
+            "files": {
+                "SKILL.md": "a4793a20c5a9e079a3a26c31bdccca366be59f97b225f137bc90645d6f649ec0",
+                "agents/openai.yaml": "8f6cf84d2091c1ea1e895ec06f9d2321daceee34e5707cd9df3fc8a9142ca21a",
+                "references/agentbc-steps-yaml.md": "ec2d398a422e7ae4787b7321a66a29aa77e6442ad1ed27f5b835007bdf8880dc",
+                "references/controller-contract.md": "7a7ba3c68dc868e9475d6b97b537cf94bd6ac82674a93ace7b9c04e512512c2e",
+            },
+        },
+        "claude": {
+            "protocol_version": "1.0",
+            "completion_version": 1,
+            "template_sha256": "b08617366f6a9cf46e9e4e3adec7418e6cc9b64e7ac7b90ed2e5d7bdfb0baf44",
+            "files": {
+                "SKILL.md": "793e1c2c2ff04785f917f97d39decef3789a14a27d679f4ddf2789e598baf1db",
+                "references/agentbc-steps-yaml.md": "ec2d398a422e7ae4787b7321a66a29aa77e6442ad1ed27f5b835007bdf8880dc",
+                "references/controller-contract.md": "7a7ba3c68dc868e9475d6b97b537cf94bd6ac82674a93ace7b9c04e512512c2e",
+            },
+        },
+        "hermes": {
+            "protocol_version": "1.0",
+            "completion_version": 1,
+            "template_sha256": "3cee6c268f7faaf6db4ea436b0509066eebcaf2b1a475f93e2667f7b278bb096",
+            "files": {
+                "SKILL.md": "108723eb662cd22e78a475e48512dc2beae21fb079378be92fc3a26388521654",
+                "references/agentbc-steps-yaml.md": "ec2d398a422e7ae4787b7321a66a29aa77e6442ad1ed27f5b835007bdf8880dc",
+                "references/controller-contract.md": "7a7ba3c68dc868e9475d6b97b537cf94bd6ac82674a93ace7b9c04e512512c2e",
+            },
+        },
+    },
 }
 
 

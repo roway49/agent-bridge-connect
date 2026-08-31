@@ -949,8 +949,6 @@ class RunnerClient:
         board_root: str | Path,
         config_path: str | Path | None,
         interval_s: float = 2.0,
-        tool_matcher: str = "",
-        session_scope: bool = False,
     ) -> dict[str, Any]:
         return self._request(
             {
@@ -962,8 +960,6 @@ class RunnerClient:
                 "board_root": str(Path(board_root).expanduser()),
                 "config_path": str(Path(config_path).expanduser()) if config_path else "",
                 "interval_s": interval_s,
-                "tool_matcher": str(tool_matcher or ""),
-                "session_scope": bool(session_scope),
             }
         )
 
@@ -1286,47 +1282,11 @@ class RunnerState:
                 str(request.get("session_id") or ""),
                 str(request.get("request_id") or ""),
                 str(request.get("decision") or ""),
-                session_rule=(
-                    request.get("session_rule")
-                    if isinstance(request.get("session_rule"), dict)
-                    else None
-                ),
+                choice_handle=str(request.get("choice_handle") or ""),
             )
         except (ControlPlaneError, SessionRecoveryRequired) as exc:
             raise RunnerError(f"{getattr(exc, 'code', 'approval_control_error')}: {exc}") from exc
         return response
-
-    def respond_session_rule(self, request: dict[str, Any]) -> dict[str, Any]:
-        """Issue the CLI-authorized session rule for one answered native input.
-
-        PERM-104-002: validates the answered ``agentbc.input`` against the
-        full fail-closed authority contract, records the task-scoped session
-        rule receipt on the task, and (when the executor's live transport is
-        reachable) applies the official SDK session-scoped ``addRules``
-        PermissionUpdate on the same live SDK session.  No second worker and
-        no second Claude process is ever started here.
-        """
-        from .config import load_config
-
-        board = self._atomic_board(str(request.get("board_root") or ""))
-        task_id = str(request.get("task_id") or "")
-        input_id = str(request.get("input_id") or "")
-        matcher_value = str(request.get("tool_matcher") or "")
-        if not task_id or not input_id:
-            raise RunnerError("session_rule_invalid: task and input IDs are required")
-        with self.lock:
-            from .service import TaskService
-
-            config = self._atomic_config(str(request.get("config_path") or ""))
-            service = TaskService(board, config=load_config(config))
-            try:
-                return service.issue_session_tool_rule(
-                    task_id,
-                    input_id,
-                    tool_matcher=matcher_value,
-                )
-            except ABCError as exc:
-                raise RunnerError(f"{exc.code}: {exc}") from exc
 
     def control_status(self, request: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -2120,15 +2080,29 @@ class RunnerState:
                 and bool(str(waiting_input.get("request_id") or "").strip())
                 else None
             )
-            tool_matcher = str(request.get("tool_matcher") or "").strip()
-            session_scope = bool(request.get("session_scope"))
-            try:
-                result = service.respond_to_input(
-                    task_id,
-                    str(request.get("input_id") or ""),
-                    response_type=str(request.get("response_type") or ""),
-                    message=str(request.get("message") or ""),
+            # PERM-104-002 v2: the CLI may answer with an executor-native
+            # choice handle instead of the flattened --approve/--deny.
+            permission_option = str(request.get("permission_option") or "").strip()
+            if permission_option and native_approval is None:
+                raise RunnerError(
+                    "permission_option_invalid: --permission-option applies "
+                    "only to native single-action permission requests"
                 )
+            try:
+                if permission_option:
+                    result = service.respond_to_input(
+                        task_id,
+                        str(request.get("input_id") or ""),
+                        response_type="permission_option",
+                        message=permission_option,
+                    )
+                else:
+                    result = service.respond_to_input(
+                        task_id,
+                        str(request.get("input_id") or ""),
+                        response_type=str(request.get("response_type") or ""),
+                        message=str(request.get("message") or ""),
+                    )
             except ABCError as exc:
                 raise RunnerError(f"{exc.code}: {exc}") from exc
             if native_approval is not None:
@@ -2147,50 +2121,29 @@ class RunnerState:
                 executor_run_id = str(
                     native_approval.get("executor_run_id") or ""
                 )
-                decision = (
-                    "accept"
-                    if str(result.get("approval_decision") or "") == "approve"
-                    else "decline"
-                )
-                rule_result: dict[str, Any] | None = None
-                if tool_matcher and session_scope:
-                    # The durable rule must be validated and issued BEFORE
-                    # the control-plane response file wakes the live SDK
-                    # callback. The validated rule is then carried inside
-                    # that exact response; no global transport lookup, second
-                    # worker or timing race is involved.
-                    try:
-                        rule_result = self.respond_session_rule(
-                            {
-                                "task_id": task_id,
-                                "input_id": str(result.get("input_id") or ""),
-                                "tool_matcher": tool_matcher,
-                                "board_root": str(board),
-                            }
+                choice = None
+                if permission_option:
+                    # The recorded v2 response carries the exact selected
+                    # choice; map it to the native decision and payload.
+                    choice = service.permission_choice_for_response(
+                        task_id,
+                        str(result.get("input_id") or ""),
+                    )
+                    if choice is None:
+                        raise RunnerError(
+                            "approval_choice_missing: the answered input has "
+                            "no recorded permission choice"
                         )
-                    except RunnerError as exc:
-                        service.mark_task_needs_recovery(
-                            task_id,
-                            "session_rule_issue_failed",
-                            str(exc),
-                            {
-                                "input_id": result.get("input_id", ""),
-                                "request_id": native_approval.get("request_id", ""),
-                                "executor": resumed_task.assignee,
-                                "phase": "session_rule_issue",
-                            },
-                            executor_run_id=executor_run_id,
-                        )
-                        write_report_files(task_id, board)
-                        notify_terminal(
-                            service,
-                            task_id,
-                            "task.recovery_required",
-                            "warning",
-                            f"Session tool rule could not be issued: {exc}",
-                        )
-                        self._refresh_task_list_dashboard(board)
-                        raise
+                    if str(choice.get("kind") or "") == "deny":
+                        decision = "decline"
+                    else:
+                        decision = "accept"
+                else:
+                    decision = (
+                        "accept"
+                        if str(result.get("approval_decision") or "") == "approve"
+                        else "decline"
+                    )
                 try:
                     native_response = self.respond_approval(
                         {
@@ -2203,18 +2156,12 @@ class RunnerState:
                             ),
                             "decision": decision,
                             "board_root": str(board),
-                            "session_rule": (
-                                rule_result.get("session_tool_rule")
-                                if isinstance(rule_result, dict)
-                                else None
+                            "choice_handle": (
+                                str(choice.get("handle") or "") if choice else ""
                             ),
                         }
                     )
                 except RunnerError as exc:
-                    if rule_result is not None:
-                        service.revoke_session_tool_rule(
-                            task_id, "session_rule_control_response_failed"
-                        )
                     service.mark_task_needs_recovery(
                         task_id,
                         "approval_control_response_failed",
@@ -2238,7 +2185,7 @@ class RunnerState:
                     self._refresh_task_list_dashboard(board)
                     raise
                 self._ensure_task_list_dashboard(board, task_id=task_id)
-                if rule_result is not None:
+                if choice is not None:
                     return {
                         **result,
                         "task_id": task_id,
@@ -2246,7 +2193,13 @@ class RunnerState:
                         "same_task": True,
                         "same_session": True,
                         "dispatch_required": False,
-                        "session_tool_rule": rule_result.get("session_tool_rule"),
+                        "permission_choice": {
+                            "handle": str(choice.get("handle") or ""),
+                            "kind": str(choice.get("kind") or ""),
+                            "native_option_id": str(
+                                choice.get("native_option_id") or ""
+                            ),
+                        },
                         "native_response": {
                             "request_id": str(native_response.get("request_id") or ""),
                             "decision": str(native_response.get("decision") or decision),
@@ -4126,8 +4079,6 @@ def _dispatch_request(state: RunnerState, request: dict[str, Any]) -> dict[str, 
         return state.dispatch_task(request)
     if operation == "respond_task":
         return state.respond_and_dispatch(request)
-    if operation == "respond_session_rule":
-        return state.respond_session_rule(request)
     if operation == "create_and_dispatch":
         return state.create_and_dispatch(request)
     if operation == "handoff_and_dispatch":

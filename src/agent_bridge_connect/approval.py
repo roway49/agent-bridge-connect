@@ -28,6 +28,10 @@ from .protocol import ABCError
 
 APPROVAL_EXTENSION_KEY = "agentbc.approval"
 APPROVAL_VERSION = 1
+# PERM-104-002: the v2 envelope adds the executor-native choice broker.  v1
+# receipts remain valid and are dual-read; new native permission requests are
+# always persisted as v2.
+APPROVAL_V2_VERSION = 2
 APPROVAL_SCOPE = "single_action"
 APPROVAL_KIND = "permission"
 APPROVAL_STATES = frozenset({"pending", "answered"})
@@ -35,6 +39,14 @@ APPROVAL_DECISION_TYPES = frozenset({"approve", "deny"})
 APPROVAL_DECISION_SOURCES = frozenset(
     {"user", "timeout", "dialog_closed", "close", "stale", "crash", "fail_closed"}
 )
+# v2 choice kinds.  ``other`` covers native options AgentBC may echo back but
+# never synthesize (audit-only in 1.04A; persistent/always choices).
+APPROVAL_V2_CHOICE_KINDS = frozenset({"once", "session", "deny", "other"})
+APPROVAL_V2_BROKER_AUTHORITY_EXECUTORS = frozenset({"codex", "claude", "hermes"})
+APPROVAL_V2_MAX_CHOICES = 12
+APPROVAL_V2_LABEL_LIMIT = 120
+APPROVAL_V2_HANDLE_PREFIX = "opt-"
+APPROVAL_V2_ERROR_MISSING_HANDLE = "native_permission_choice_required"
 APPROVAL_SUMMARY_LIMIT = 120
 APPROVAL_REASON_SUMMARY_LIMIT = 120
 APPROVAL_REASON_DETAIL_LIMIT = 2000
@@ -285,10 +297,15 @@ def validate_approval_receipt(
         _invalid("approval_invalid", "Approval receipt must be an object")
     receipt = copy.deepcopy(value)
     version = receipt.get("version")
-    if isinstance(version, bool) or version != APPROVAL_VERSION:
+    if isinstance(version, bool) or version not in {APPROVAL_VERSION, APPROVAL_V2_VERSION}:
         _invalid(
             "approval_version_unsupported",
             f"Unsupported approval receipt version: {version}",
+        )
+    if version == APPROVAL_V2_VERSION and not isinstance(receipt.get("choices"), list):
+        _invalid(
+            "approval_version_unsupported",
+            "A v2 approval receipt requires the offered choice list",
         )
     _reject_sensitive_additions(receipt)
 
@@ -643,7 +660,549 @@ def sanitize_reason_detail(value: Any) -> str:
 
 def approval_receipt_pending(value: Any) -> bool:
     """Return whether the receipt is waiting for a user decision."""
-    return validate_approval_receipt(value)["state"]["status"] == "pending"
+    receipt = validate_approval_receipt_any_version(value)
+    return receipt["state"]["status"] == "pending"
+
+
+# ---------------------------------------------------------------------------
+# agentbc.approval v2: executor-native choice broker (PERM-104-002)
+# ---------------------------------------------------------------------------
+#
+# v2 replaces inferred permission categories (approve/deny flattened over an
+# executor's native surface) with the exact choices the executor itself
+# offered.  Core never invents a choice: every offered choice carries the
+# executor's native option identity plus a Core-computed digest of the exact
+# offered shape, and the user selects one opaque handle bound to this exact
+# request.
+
+
+def build_choice_handle(request_id: str, index: int, offered_digest: str) -> str:
+    """Return one opaque choice handle bound to this exact request+choice."""
+    payload = json_module_dumps(
+        {
+            "request_id": str(request_id or ""),
+            "index": int(index),
+            "offered_digest": str(offered_digest or ""),
+        }
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return f"{APPROVAL_V2_HANDLE_PREFIX}{digest[:16]}"
+
+
+def compute_offered_choice_digest(choice: dict[str, Any]) -> str:
+    """Digest the exact offered native choice shape (labels + native ids)."""
+    payload = json_module_dumps(
+        {
+            "native_option_id": str(choice.get("native_option_id") or ""),
+            "kind": str(choice.get("kind") or ""),
+            "label": str(choice.get("label") or ""),
+            "selectable": bool(choice.get("selectable", True)),
+        }
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def build_offered_choices(
+    raw_choices: list[dict[str, Any]],
+    *,
+    request_id: str,
+) -> list[dict[str, Any]]:
+    """Normalize the executor's offered choices into v2 receipt entries.
+
+    Every entry carries: handle (opaque), native_option_id (exact), kind
+    (once/session/deny/other), label (redacted, bounded), selectable flag and
+    the digest of the exact offered shape.  Handles are derived from the
+    request id + choice digest so a handle is only ever valid for the exact
+    request and choice it was offered with.
+    """
+    if not isinstance(raw_choices, list) or not raw_choices:
+        _invalid(
+            "approval_choices_missing",
+            "A v2 approval receipt requires at least one offered native choice",
+        )
+    if len(raw_choices) > APPROVAL_V2_MAX_CHOICES:
+        _invalid(
+            "approval_choices_invalid",
+            f"A v2 approval receipt carries at most {APPROVAL_V2_MAX_CHOICES} choices",
+        )
+    from .reports import redact_secrets
+
+    normalized: list[dict[str, Any]] = []
+    seen_handles: set[str] = set()
+    for index, raw in enumerate(raw_choices):
+        if not isinstance(raw, dict):
+            _invalid(
+                "approval_choices_invalid",
+                "Each offered choice must be an object",
+            )
+        native_option_id = str(raw.get("native_option_id") or "").strip()
+        if not native_option_id or not _IDENTIFIER_RE.fullmatch(native_option_id):
+            _invalid(
+                "approval_choices_invalid",
+                "Each offered choice requires a native option identifier",
+            )
+        kind = str(raw.get("kind") or "").strip().lower()
+        if kind not in APPROVAL_V2_CHOICE_KINDS:
+            _invalid(
+                "approval_choices_invalid",
+                f"Offered choice kind is unsupported: {kind}",
+            )
+        label_raw = str(raw.get("label") or "").strip()
+        label = " ".join(str(redact_secrets(label_raw) or "").split())
+        if any(ord(char) < 32 or ord(char) == 127 for char in label):
+            _invalid(
+                "approval_choices_invalid",
+                "Offered choice labels must not contain control characters",
+            )
+        label, _ = _bounded_text_with_truncation(label, APPROVAL_V2_LABEL_LIMIT)
+        selectable = raw.get("selectable", True)
+        if not isinstance(selectable, bool):
+            _invalid(
+                "approval_choices_invalid",
+                "Offered choice selectable must be a boolean",
+            )
+        entry: dict[str, Any] = {
+            "handle": "",
+            "native_option_id": native_option_id,
+            "kind": kind,
+            "label": label,
+            "selectable": selectable,
+        }
+        entry["offered_digest"] = compute_offered_choice_digest(entry)
+        entry["handle"] = build_choice_handle(request_id, index, entry["offered_digest"])
+        if entry["handle"] in seen_handles:
+            _invalid(
+                "approval_choices_invalid",
+                "Offered choices produced duplicate handles",
+            )
+        seen_handles.add(entry["handle"])
+        normalized.append(entry)
+    return normalized
+
+
+def build_approval_receipt_v2(
+    *,
+    task_id: str,
+    executor_run_id: str,
+    executor: str,
+    session_id: str,
+    request_id: str,
+    request_fingerprint: str,
+    operation: str,
+    summary: str = "",
+    reason_summary: str = "",
+    reason_detail: str = "",
+    authority_protocol: str,
+    authority_protocol_version: int,
+    authority_method: str,
+    broker_request_id: str,
+    provider_request_id: str = "",
+    native_item_id: str = "",
+    offered_choices: list[dict[str, Any]],
+    created_at: str | None = None,
+) -> dict[str, Any]:
+    """Build one pending v2 receipt binding the executor-native choice set."""
+    clean_executor = str(executor or "").strip().lower()
+    if clean_executor not in APPROVAL_V2_BROKER_AUTHORITY_EXECUTORS:
+        _invalid(
+            "approval_executor_invalid",
+            f"v2 approval receipts require a broker-capable executor: {clean_executor}",
+        )
+    choices = build_offered_choices(
+        list(offered_choices or []),
+        request_id=str(request_id or ""),
+    )
+    envelope: dict[str, Any] = {
+        "version": APPROVAL_V2_VERSION,
+        "task_id": task_id,
+        "executor_run_id": executor_run_id,
+        "executor": clean_executor,
+        "session_id": session_id,
+        "request_id": request_id,
+        "request_fingerprint": request_fingerprint,
+        "kind": APPROVAL_KIND,
+        "operation": operation,
+        "summary": "",
+        "scope": APPROVAL_SCOPE,
+        "authority": {
+            "executor": clean_executor,
+            "protocol": str(authority_protocol or "").strip(),
+            "protocol_version": authority_protocol_version,
+            "method": str(authority_method or "").strip(),
+        },
+        "broker_request_id": str(broker_request_id or "").strip(),
+        "choices": choices,
+        "selection": {},
+        "created_at": created_at or _utc_now(),
+        "state": {"status": "pending"},
+        "decision": {"type": "", "source": "", "decided_at": ""},
+    }
+    if str(provider_request_id or "").strip():
+        envelope["provider_request_id"] = str(provider_request_id).strip()
+    if str(native_item_id or "").strip():
+        envelope["native_item_id"] = str(native_item_id).strip()
+    clean_summary, summary_was_truncated = _bounded_text_with_truncation(
+        summary,
+        APPROVAL_SUMMARY_LIMIT,
+    )
+    if not clean_summary:
+        clean_summary, summary_was_truncated = core_bounded_summary_details(
+            executor=clean_executor,
+            operation=operation,
+        )
+    envelope["summary"] = clean_summary
+    clean_reason_summary, reason_summary_was_truncated = normalize_reason_summary_details(
+        reason_summary,
+        executor=clean_executor,
+        operation=operation,
+    )
+    clean_reason_detail = sanitize_reason_detail(reason_detail)
+    envelope["summary_truncated"] = bool(
+        summary_was_truncated or reason_summary_was_truncated
+    )
+    if clean_reason_summary:
+        envelope["reason_summary"] = clean_reason_summary
+    if clean_reason_detail:
+        envelope["reason_detail"] = clean_reason_detail
+    return validate_approval_receipt_v2(envelope)
+
+
+def _validate_v2_shared(value: dict[str, Any]) -> None:
+    """Validate the v2-specific fields (authority, choices, selection)."""
+    authority_value = value.get("authority")
+    if not isinstance(authority_value, dict):
+        _invalid("approval_authority_invalid", "v2 receipts require an authority object")
+    assert isinstance(authority_value, dict)
+    authority_dict: dict[str, Any] = {
+        str(key): item for key, item in authority_value.items()
+    }
+    if str(authority_dict.get("executor") or "").strip().lower() != str(
+        value.get("executor") or ""
+    ).strip().lower():
+        _invalid(
+            "approval_authority_invalid",
+            "authority.executor must match the receipt executor",
+        )
+    protocol = str(authority_dict.get("protocol") or "").strip()
+    if not protocol or not _IDENTIFIER_RE.fullmatch(protocol):
+        _invalid("approval_authority_invalid", "authority.protocol is required")
+    method = str(authority_dict.get("method") or "").strip()
+    if not method or not _OPERATION_RE.fullmatch(method):
+        _invalid("approval_authority_invalid", "authority.method is required")
+    version_value = authority_dict.get("protocol_version")
+    if isinstance(version_value, bool) or not isinstance(version_value, int):
+        _invalid(
+            "approval_authority_invalid",
+            "authority.protocol_version must be an integer",
+        )
+    broker_request_id = str(value.get("broker_request_id") or "").strip()
+    if not broker_request_id or not _IDENTIFIER_RE.fullmatch(broker_request_id):
+        _invalid("approval_invalid", "v2 receipts require a broker_request_id")
+    provider_request_id = str(value.get("provider_request_id") or "").strip()
+    if provider_request_id and not _IDENTIFIER_RE.fullmatch(provider_request_id):
+        _invalid("approval_invalid", "provider_request_id must be an opaque identifier")
+    native_item_id = str(value.get("native_item_id") or "").strip()
+    if native_item_id and not _IDENTIFIER_RE.fullmatch(native_item_id):
+        _invalid("approval_invalid", "native_item_id must be an opaque identifier")
+    offered = value.get("choices")
+    raw_choices = [choice for choice in offered if isinstance(choice, dict)] if isinstance(offered, list) else []
+    choices = build_offered_choices(
+        [
+            {
+                "native_option_id": choice.get("native_option_id"),
+                "kind": choice.get("kind"),
+                "label": choice.get("label"),
+                "selectable": choice.get("selectable", True),
+            }
+            for choice in raw_choices
+        ],
+        request_id=str(value.get("request_id") or ""),
+    )
+    if not isinstance(offered, list) or len(offered) != len(choices):
+        _invalid("approval_choices_invalid", "Offered choices are missing or malformed")
+    for index, (stored, expected) in enumerate(zip(offered, choices)):
+        if not isinstance(stored, dict):
+            _invalid("approval_choices_invalid", "Each offered choice must be an object")
+        if str(stored.get("handle") or "") != expected["handle"]:
+            _invalid(
+                "approval_choices_invalid",
+                f"Offered choice handle at index {index} is not bound to this request",
+            )
+        if str(stored.get("offered_digest") or "") != expected["offered_digest"]:
+            _invalid(
+                "approval_choices_invalid",
+                f"Offered choice digest at index {index} does not match its shape",
+            )
+        if str(stored.get("native_option_id") or "") != expected["native_option_id"]:
+            _invalid(
+                "approval_choices_invalid",
+                f"Offered choice native id at index {index} is malformed",
+            )
+        if str(stored.get("kind") or "") != expected["kind"]:
+            _invalid(
+                "approval_choices_invalid",
+                f"Offered choice kind at index {index} is unsupported",
+            )
+        if str(stored.get("label") or "") != expected["label"]:
+            _invalid(
+                "approval_choices_invalid",
+                f"Offered choice label at index {index} is malformed",
+            )
+        if stored.get("selectable", True) is not expected["selectable"]:
+            _invalid(
+                "approval_choices_invalid",
+                f"Offered choice selectable at index {index} is malformed",
+            )
+    selection = value.get("selection")
+    if not isinstance(selection, dict):
+        _invalid("approval_selection_invalid", "v2 receipts require a selection object")
+    state = value.get("state")
+    status = str(state.get("status") or "") if isinstance(state, dict) else ""
+    selection_handle = str(selection.get("handle") or "").strip()
+    selection_source = str(selection.get("source") or "").strip()
+    selection_at = str(selection.get("at") or "").strip()
+    if status == "pending":
+        if selection_handle or selection_source or selection_at:
+            _invalid(
+                "approval_selection_invalid",
+                "A pending v2 receipt must not carry a selection",
+            )
+        return
+    if not selection_handle or not selection_source or not selection_at:
+        _invalid(
+            "approval_selection_invalid",
+            "An answered v2 receipt requires the selection handle, source and time",
+        )
+    matched = [c for c in choices if str(c.get("handle")) == selection_handle]
+    if not matched:
+        _invalid(
+            "approval_handle_mismatch",
+            "The recorded selection handle was not offered by this request",
+        )
+    choice = matched[0]
+    if not choice.get("selectable", True):
+        _invalid(
+            "approval_choice_not_selectable",
+            "The selected choice was offered as non-selectable",
+        )
+    if str(selection.get("native_option_id") or "") != str(choice.get("native_option_id")):
+        _invalid(
+            "approval_handle_mismatch",
+            "The recorded selection native option does not match the handle",
+        )
+    if str(selection.get("kind") or "") != str(choice.get("kind")):
+        _invalid(
+            "approval_handle_mismatch",
+            "The recorded selection kind does not match the handle",
+        )
+    if str(selection.get("offered_digest") or "") != str(choice.get("offered_digest")):
+        _invalid(
+            "approval_handle_mismatch",
+            "The recorded selection digest does not match the offered choice",
+        )
+    if selection_source not in APPROVAL_DECISION_SOURCES:
+        _invalid(
+            "approval_decision_invalid",
+            f"Invalid approval decision source: {selection_source}",
+        )
+    _require_timestamp(selection_at, "selection.at")
+
+
+def validate_approval_receipt_v2(value: Any) -> dict[str, Any]:
+    """Validate the strict v2 schema fail closed and return a defensive copy."""
+    receipt = validate_approval_receipt(value)
+    if receipt.get("version") != APPROVAL_V2_VERSION:
+        _invalid(
+            "approval_version_unsupported",
+            f"Expected a v2 approval receipt, got version {receipt.get('version')}",
+        )
+    _validate_v2_shared(receipt)
+    # Validate the decision block exactly like v1 answered receipts.
+    state = receipt["state"]
+    decision = receipt["decision"]
+    decided_type = str(decision.get("type") or "").strip()
+    decided_source = str(decision.get("source") or "").strip()
+    decided_at = str(decision.get("decided_at") or "").strip()
+    if state["status"] == "answered":
+        if decided_type not in APPROVAL_DECISION_TYPES:
+            _invalid(
+                "approval_decision_invalid",
+                f"Invalid approval decision: {decided_type}",
+            )
+        if decided_source not in APPROVAL_DECISION_SOURCES:
+            _invalid(
+                "approval_decision_invalid",
+                f"Invalid approval decision source: {decided_source}",
+            )
+        decided_timestamp = _require_timestamp(
+            decision.get("decided_at"), "decision.decided_at"
+        )
+        created_at = _require_timestamp(receipt.get("created_at"), "created_at")
+        if decided_timestamp < created_at:
+            _invalid(
+                "approval_decision_invalid",
+                "Approval decision predates receipt creation",
+            )
+        selection_at = _require_timestamp(
+            receipt["selection"].get("at"), "selection.at"
+        )
+        if selection_at < created_at:
+            _invalid(
+                "approval_selection_invalid",
+                "Selection predates receipt creation",
+            )
+    else:
+        if decided_type or decided_source or decided_at:
+            _invalid(
+                "approval_decision_invalid",
+                "Pending approval receipt must not carry a decision",
+            )
+    return receipt
+
+
+def validate_approval_receipt_any_version(value: Any) -> dict[str, Any]:
+    """Dual-read: validate v1 or v2 receipts (fail closed on other versions)."""
+    if isinstance(value, dict) and value.get("version") == APPROVAL_V2_VERSION:
+        return validate_approval_receipt_v2(value)
+    return validate_approval_receipt(value)
+
+
+def record_approval_selection(
+    value: Any,
+    handle: str,
+    *,
+    source: str,
+    selected_at: str | None = None,
+    decided_type: str,
+    decided_source: str | None = None,
+    decided_at: str | None = None,
+) -> dict[str, Any]:
+    """Record one native choice selection on a v2 receipt (idempotent replay).
+
+    Re-recording the exact same handle and source returns the receipt
+    unchanged; a different handle or a different decision is a conflicting
+    replay and is rejected fail closed.
+    """
+    receipt = validate_approval_receipt_v2(value)
+    clean_handle = str(handle or "").strip()
+    clean_source = str(source or "").strip().lower()
+    if clean_source not in APPROVAL_DECISION_SOURCES:
+        _invalid(
+            "approval_decision_invalid",
+            f"Invalid approval decision source: {source}",
+        )
+    state = receipt["state"]
+    selection = receipt["selection"]
+    if state["status"] == "answered":
+        existing_type = str(receipt["decision"].get("type") or "")
+        if (
+            str(selection.get("handle") or "") == clean_handle
+            and str(selection.get("source") or "") == clean_source
+            and existing_type == str(decided_type or "").strip().lower()
+        ):
+            return receipt
+        _invalid(
+            "approval_replay",
+            "Approval receipt was already answered with a different choice",
+        )
+    matched = [c for c in receipt["choices"] if str(c.get("handle")) == clean_handle]
+    if not matched:
+        _invalid(
+            "approval_handle_mismatch",
+            "The selection handle was not offered by this request",
+        )
+    choice = matched[0]
+    if not choice.get("selectable", True):
+        _invalid(
+            "approval_choice_not_selectable",
+            "The selected choice was offered as non-selectable",
+        )
+    stamp = selected_at or _utc_now()
+    receipt["selection"] = {
+        "handle": clean_handle,
+        "native_option_id": str(choice.get("native_option_id") or ""),
+        "kind": str(choice.get("kind") or ""),
+        "offered_digest": str(choice.get("offered_digest") or ""),
+        "source": clean_source,
+        "at": stamp,
+    }
+    receipt["state"]["status"] = "answered"
+    clean_type = str(decided_type or "").strip().lower()
+    if clean_type not in APPROVAL_DECISION_TYPES:
+        _invalid(
+            "approval_decision_invalid",
+            f"Invalid approval decision: {decided_type}",
+        )
+    receipt["decision"]["type"] = clean_type
+    receipt["decision"]["source"] = str(decided_source or clean_source)
+    receipt["decision"]["decided_at"] = decided_at or stamp
+    return validate_approval_receipt_v2(receipt)
+
+
+def approval_choice_for_handle(value: Any, handle: str) -> dict[str, Any] | None:
+    """Return the offered choice bound to ``handle`` on this exact receipt."""
+    receipt = validate_approval_receipt_any_version(value)
+    if receipt.get("version") != APPROVAL_V2_VERSION:
+        return None
+    clean = str(handle or "").strip()
+    for choice in receipt.get("choices", []):
+        if str(choice.get("handle") or "") == clean:
+            return dict(choice)
+    return None
+
+
+def approval_public_projection_v2(value: Any) -> dict[str, Any]:
+    """Public sanitized v2 view: labels/handles only, never raw payloads."""
+    receipt = validate_approval_receipt_any_version(value)
+    if receipt.get("version") != APPROVAL_V2_VERSION:
+        return approval_public_projection(receipt)
+    decision = receipt["decision"]
+    state = receipt["state"]
+    projection: dict[str, Any] = {
+        "version": APPROVAL_V2_VERSION,
+        "scope": APPROVAL_SCOPE,
+        "kind": receipt["kind"],
+        "executor": receipt["executor"],
+        "operation": receipt["operation"],
+        "summary": receipt["summary"],
+        "summary_truncated": bool(receipt.get("summary_truncated", False)),
+        "state": state["status"],
+        "created_at": receipt["created_at"],
+        "authority": {
+            "protocol": str(receipt["authority"].get("protocol") or ""),
+            "protocol_version": receipt["authority"].get("protocol_version"),
+            "method": str(receipt["authority"].get("method") or ""),
+        },
+        "choices": [
+            {
+                "handle": choice.get("handle"),
+                "kind": choice.get("kind"),
+                "label": choice.get("label"),
+                "selectable": choice.get("selectable", True),
+            }
+            for choice in receipt.get("choices", [])
+        ],
+    }
+    if receipt.get("reason_summary"):
+        projection["reason_summary"] = receipt["reason_summary"]
+    if state["status"] == "answered":
+        selection = receipt.get("selection") or {}
+        projection["decision"] = decision["type"]
+        projection["decision_source"] = decision["source"]
+        projection["decided_at"] = decision["decided_at"]
+        projection["selection"] = {
+            "handle": str(selection.get("handle") or ""),
+            "kind": str(selection.get("kind") or ""),
+            "source": str(selection.get("source") or ""),
+            "at": str(selection.get("at") or ""),
+        }
+    return projection
+
+
+def json_module_dumps(value: Any) -> str:
+    import json
+
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def pending_approval_request(

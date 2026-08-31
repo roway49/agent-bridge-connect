@@ -12,7 +12,7 @@ from typing import Any
 from .approval import (
     APPROVAL_EXTENSION_KEY,
     APPROVAL_SCOPE,
-    approval_public_projection,
+    approval_public_projection_v2,
     build_approval_receipt,
     normalize_reason_summary,
     record_approval_decision,
@@ -957,7 +957,6 @@ class TaskService:
         }
         task.extensions = _merge_execution(task.extensions, {"internal_status": final_state})
         self.revoke_permission_grant(task.id, "task_terminal", model=task)
-        self.revoke_session_tool_rule(task.id, "session_rule_task_terminal", model=task)
         self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)
@@ -1135,30 +1134,17 @@ class TaskService:
         current.updated_at = _utc_now()
         self.store.write_task(task_id, _without_none(current.to_dict()))
 
-    def issue_session_tool_rule(
+    def permission_choice_for_response(
         self,
         task_id: str,
         input_id: str,
-        *,
-        tool_matcher: str,
-    ) -> dict[str, Any]:
-        """Issue the CLI-authorized session rule for one answered native input.
+    ) -> dict[str, Any] | None:
+        """Return the exact recorded permission choice for one answered input.
 
-        PERM-104-002: the input must be the exact answered native
-        ``claude_sdk_can_use_tool`` permission request whose response was a
-        recorded ``approve``.  All identity fields are validated fail closed
-        by :mod:`agent_bridge_connect.session_tool_rules`.  The durable
-        task-scoped receipt is idempotent: replaying the same response never
-        creates a second rule.
+        PERM-104-002 v2: the Runner maps this choice to the executor-native
+        response payload.  ``None`` when the input was answered without a
+        native choice (v1 dual-read) or does not exist.
         """
-        from .session_tool_rules import (
-            SESSION_RULE_RECEIPT_EXTENSION_KEY,
-            SESSION_RULE_INPUT_MISSING,
-            SessionRuleError,
-            issue_session_rule_receipt,
-            validate_session_rule_request,
-        )
-
         task = self.get_task(task_id)
         extensions = dict(task.extensions or {})
         current_input = extensions.get("agentbc.input")
@@ -1176,88 +1162,32 @@ class TaskService:
             None,
         )
         if answered is None:
-            raise ABCError(
-                SESSION_RULE_INPUT_MISSING,
-                f"Input {input_id} does not exist for task {task.id}",
-            )
-        session = extensions.get(SESSION_EXTENSION_KEY)
-        session_id = (
-            str(session.get("session_id") or "") if isinstance(session, dict) else ""
+            return None
+        response = answered.get("response")
+        if not isinstance(response, dict):
+            return None
+        choice = response.get("permission_choice")
+        if isinstance(choice, dict) and str(choice.get("handle") or "").strip():
+            return dict(choice)
+        return None
+
+    def issue_session_tool_rule(
+        self,
+        task_id: str,
+        input_id: str,
+        *,
+        tool_matcher: str,
+    ) -> dict[str, Any]:
+        """Retired tombstone (PERM-104-002 1.04A).
+
+        The legacy matcher-grammar session rules were removed.  Historical
+        receipts stay audit-only readable; no new rule can ever be issued.
+        """
+        raise ABCError(
+            "legacy_session_tool_rule_removed",
+            "Session tool rules were removed; respond with "
+            "--permission-option <handle> instead",
         )
-        response_value = answered.get("response")
-        response: dict[str, Any] = dict(response_value) if isinstance(response_value, dict) else {}
-        if str(response.get("type") or "") != "approve":
-            raise ABCError(
-                "session_rule_decision_invalid",
-                "A session tool rule can only follow a recorded approve "
-                "decision for the same input.",
-                {"decision": str(response.get("type") or "")},
-            )
-        try:
-            binding = validate_session_rule_request(
-                task.id,
-                answered,
-                executor=task.assignee,
-                executor_run_id=str(answered.get("executor_run_id") or ""),
-                session_id=session_id,
-                matcher_value=tool_matcher,
-            )
-        except SessionRuleError as exc:
-            raise ABCError(exc.code, str(exc), exc.details) from exc
-        now = _utc_now()
-        try:
-            receipt = issue_session_rule_receipt(
-                extensions,
-                binding,
-                input_id=str(input_id),
-                created_at=now,
-            )
-        except SessionRuleError as exc:
-            raise ABCError(exc.code, str(exc), exc.details) from exc
-        replay = SESSION_RULE_RECEIPT_EXTENSION_KEY in extensions and (
-            extensions[SESSION_RULE_RECEIPT_EXTENSION_KEY] is receipt
-        )
-        extensions[SESSION_RULE_RECEIPT_EXTENSION_KEY] = receipt
-        task.extensions = extensions
-        task.updated_at = now
-        self.store.write_task(task.id, _without_none(task.to_dict()))
-        if not replay:
-            self.store.append_event(
-                task.id,
-                {
-                    "event_type": "task.session_tool_rule_issued",
-                    "task_id": task.id,
-                    "created_at": now,
-                    "input_id": str(input_id),
-                    "request_id": str(binding.get("request_id") or ""),
-                    "tool_use_id": str(binding.get("tool_use_id") or ""),
-                    "matcher": str(binding.get("matcher") or ""),
-                    "scope": "session",
-                    "selection_source": "cli_native_approval",
-                },
-            )
-        return {
-            "ok": True,
-            "task_id": task.id,
-            "input_id": str(input_id),
-            "session_tool_rule": {
-                "matcher": str(binding.get("matcher") or ""),
-                "tool_name": str(binding.get("tool_name") or ""),
-                "rule_content": binding.get("rule_content"),
-                "matcher_kind": str(binding.get("matcher_kind") or ""),
-                "scope": "session",
-                "state": str((receipt.get("state") or {}).get("status") or ""),
-                "session_rule_applied": False,
-                "task_id": task.id,
-                "executor_run_id": str(binding.get("executor_run_id") or ""),
-                "session_id": str(binding.get("session_id") or ""),
-                "request_id": str(binding.get("request_id") or ""),
-                "tool_use_id": str(binding.get("tool_use_id") or ""),
-                "binding_digest": str(
-                    ((receipt.get("binding") or {}).get("binding_digest") or "")
-                ),
-            },
-        }
 
     def mark_session_tool_rule_applied(
         self,
@@ -1267,85 +1197,19 @@ class TaskService:
         applied: bool,
         error_code: str = "",
     ) -> bool:
-        """Record whether the live transport accepted the session rule.
-
-        Called by the executor after the official ``addRules`` control round
-        trip.  A failed application with no prior active rule leaves the
-        receipt revoked (nothing was granted); a successful application keeps
-        the receipt active for the exact session only.
-        """
-        from .session_tool_rules import (
-            SESSION_RULE_RECEIPT_EXTENSION_KEY,
-            SessionRuleError,
-            revoke_session_rule_receipt,
-            session_rule_receipt_for_session,
+        """Retired tombstone (PERM-104-002 1.04A)."""
+        raise ABCError(
+            "legacy_session_tool_rule_removed",
+            "Session tool rules were removed; nothing can be applied",
         )
-
-        current = self.get_task(task_id)
-        extensions = dict(current.extensions or {})
-        receipt = extensions.get(SESSION_RULE_RECEIPT_EXTENSION_KEY)
-        if receipt is None:
-            return False
-        if not session_rule_receipt_for_session(receipt, session_id):
-            raise ABCError(
-                "session_rule_session_mismatch",
-                "The session rule receipt is not bound to this session.",
-            )
-        if applied:
-            return True
-        from .session_tool_rules import SESSION_RULE_REVOKED
-
-        try:
-            revoked = revoke_session_rule_receipt(
-                receipt,
-                error_code or SESSION_RULE_REVOKED,
-                revoked_at=_utc_now(),
-            )
-        except SessionRuleError as exc:
-            raise ABCError(exc.code, str(exc), exc.details) from exc
-        if revoked is not None:
-            extensions[SESSION_RULE_RECEIPT_EXTENSION_KEY] = revoked
-            current.extensions = extensions
-            current.updated_at = _utc_now()
-            self.store.write_task(current.id, _without_none(current.to_dict()))
-        return False
 
     def revoke_session_tool_rule(self, task_id: str, code: str, *, model: TaskModel | None = None) -> bool:
-        """Revoke the task's session rule receipt (lifecycle terminal paths).
+        """Retired tombstone (PERM-104-002 1.04A).
 
-        Idempotent: tasks without a receipt, or receipts already revoked, are
-        untouched.  Claude configuration files are never edited — the
-        in-memory rule dies with the same terminal signal that revokes the
-        receipt here.
+        Historical receipts are preserved verbatim (read-only audit) and are
+        never rewritten, revoked, or re-derived.
         """
-        from .session_tool_rules import (
-            SESSION_RULE_RECEIPT_EXTENSION_KEY,
-            SessionRuleError,
-            revoke_session_rule_receipt,
-            session_rule_receipt_active,
-        )
-
-        current = model if model is not None else self.get_task(task_id)
-        extensions = dict(current.extensions or {})
-        if SESSION_RULE_RECEIPT_EXTENSION_KEY not in extensions:
-            return False
-        if not session_rule_receipt_active(extensions[SESSION_RULE_RECEIPT_EXTENSION_KEY]):
-            return False
-        try:
-            revoked = revoke_session_rule_receipt(
-                extensions[SESSION_RULE_RECEIPT_EXTENSION_KEY],
-                code,
-                revoked_at=_utc_now(),
-            )
-        except SessionRuleError as exc:
-            raise ABCError(exc.code, str(exc), exc.details) from exc
-        if revoked is not None:
-            extensions[SESSION_RULE_RECEIPT_EXTENSION_KEY] = revoked
-            current.extensions = extensions
-            if model is None:
-                current.updated_at = _utc_now()
-                self.store.write_task(task_id, _without_none(current.to_dict()))
-        return True
+        return False
 
     def block_permission_runtime_after_failure(
         self,
@@ -2178,6 +2042,8 @@ class TaskService:
         profile_digest: str = "",
         control_path: str = "",
         native_event: str = "",
+        offered_choices: list[dict[str, Any]] | None = None,
+        authority: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Block the first incomplete step for one structured native approval request.
 
@@ -2327,6 +2193,15 @@ class TaskService:
         for key, value in native_binding.items():
             if value:
                 request[key] = value[:512]
+        # PERM-104-002 v2: persist the executor-native choice set verbatim on
+        # the input request so the dialog and CLI can offer exactly what the
+        # executor offered, bound to this exact request.  Handles were
+        # computed by the adapter against the native request id; the v2
+        # request rejects flattened approve/deny.
+        if offered_choices:
+            request["approval_version"] = 2
+            request["authority"] = dict(authority or {})
+            request["choices"] = [dict(choice) for choice in offered_choices]
 
         extensions = dict(task.extensions or {})
         previous = extensions.get("agentbc.input")
@@ -2503,18 +2378,68 @@ class TaskService:
                 {"task_id": task.id, "run_id": lease.run_id, "run_lease_state": lease.state},
             )
         response_type = str(response_type or "").strip()
-        if response_type not in {"message", "approve", "deny"}:
+        if response_type not in {"message", "approve", "deny", "permission_option"}:
             raise ABCError("invalid_input_response", f"Unsupported response type: {response_type}")
         clean_message = str(redact_secrets(message)).strip() if response_type == "message" else response_type
         if response_type == "message" and not clean_message:
             raise ABCError("invalid_input_response", "--message requires non-empty text")
 
         is_permission_request = request.get("type") == "permission"
-        if is_permission_request and response_type not in {"approve", "deny"}:
+        is_v2_permission = (
+            is_permission_request
+            and int(request.get("approval_version") or 1) == 2
+            and isinstance(request.get("choices"), list)
+            and bool(request.get("choices"))
+        )
+        if is_permission_request and response_type == "permission_option":
+            if not is_v2_permission:
+                raise ABCError(
+                    "native_permission_choice_required",
+                    "Only a v2 native permission request accepts an explicit "
+                    "choice handle",
+                )
+            if not str(message or "").strip():
+                raise ABCError(
+                    "invalid_input_response",
+                    "--permission-option requires the exact offered handle",
+                )
+        elif is_permission_request and response_type not in {"approve", "deny"}:
             raise ABCError(
                 "invalid_input_response",
                 "Permission requests only accept approve or deny",
             )
+        if is_v2_permission and response_type in {"approve", "deny"}:
+            raise ABCError(
+                "native_permission_choice_required",
+                "A v2 native permission request requires an explicit choice "
+                "handle (--permission-option), not a flattened approve/deny",
+            )
+        # PERM-104-002 v2: resolve and validate the selected choice against
+        # the exact offered set before anything is recorded.  An identical
+        # replay is idempotent; a conflicting handle is rejected.
+        selected_choice: dict[str, Any] | None = None
+        if response_type == "permission_option":
+            handle = str(message or "").strip()
+            offered_choices = [
+                choice
+                for choice in request.get("choices", [])
+                if isinstance(choice, dict)
+            ]
+            matched = [
+                choice for choice in offered_choices if str(choice.get("handle") or "") == handle
+            ]
+            if not matched:
+                raise ABCError(
+                    "approval_handle_mismatch",
+                    "The choice handle was not offered by this exact request",
+                    {"input_id": str(request.get("input_id") or "")},
+                )
+            selected_choice = dict(matched[0])
+            if selected_choice.get("selectable", True) is False:
+                raise ABCError(
+                    "approval_choice_not_selectable",
+                    "The selected native choice was offered as non-selectable",
+                )
 
         is_resource_decision = is_resource_decision_request(request)
         updated_resources: dict[str, Any] | None = None
@@ -2549,7 +2474,7 @@ class TaskService:
             and message == PERMISSION_DIALOG_CLOSED_RESPONSE
             else "user"
         )
-        answered["response"] = {
+        response_payload: Any = {
             "type": response_type,
             "summary": clean_message,
             **(
@@ -2558,6 +2483,15 @@ class TaskService:
                 else {}
             ),
         }
+        if response_type == "permission_option" and selected_choice is not None:
+            # The exact selected native choice is recorded on the answered
+            # request so the Runner maps it to the native payload.
+            response_payload["permission_choice"] = {
+                "handle": str(selected_choice.get("handle") or ""),
+                "native_option_id": str(selected_choice.get("native_option_id") or ""),
+                "kind": str(selected_choice.get("kind") or ""),
+            }
+        answered["response"] = response_payload
         extensions = dict(task.extensions or {})
         extensions["agentbc.input"] = answered
         if updated_resources is not None:
@@ -2575,19 +2509,35 @@ class TaskService:
                 request,
                 current_input_id,
             )
-            approval_source = permission_denial_source if response_type == "deny" else "user"
-            updated_receipt = record_approval_decision(
-                receipt,
-                response_type,
-                source=approval_source,
-                decided_at=now,
-                executor=task.assignee,
-                task_id=task.id,
-                session_id=str(
-                    (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
-                ),
-                request_id=str(request.get("request_id") or ""),
-            )
+            if response_type == "permission_option" and selected_choice is not None:
+                from .approval import record_approval_selection
+
+                approval_source = permission_denial_source if str(
+                    selected_choice.get("kind") or ""
+                ) == "deny" and permission_denial_source != "user" else "user"
+                decided_type = (
+                    "deny" if str(selected_choice.get("kind") or "") == "deny" else "approve"
+                )
+                updated_receipt = record_approval_selection(
+                    receipt,
+                    str(selected_choice.get("handle") or ""),
+                    source=approval_source,
+                    decided_type=decided_type,
+                )
+            else:
+                approval_source = permission_denial_source if response_type == "deny" else "user"
+                updated_receipt = record_approval_decision(
+                    receipt,
+                    response_type,
+                    source=approval_source,
+                    decided_at=now,
+                    executor=task.assignee,
+                    task_id=task.id,
+                    session_id=str(
+                        (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
+                    ),
+                    request_id=str(request.get("request_id") or ""),
+                )
             extensions[APPROVAL_EXTENSION_KEY] = updated_receipt
             blocked_step_id = request.get("blocked_step_id")
             if not any(
@@ -3104,7 +3054,6 @@ class TaskService:
         task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
         task.extensions = _merge_execution(task.extensions, execution_updates)
         self.revoke_permission_grant(task.id, code, model=task)
-        self.revoke_session_tool_rule(task.id, "session_rule_task_failed", model=task)
         self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)
@@ -3191,7 +3140,6 @@ class TaskService:
         task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
         task.extensions = _merge_execution(task.extensions, execution_updates)
         self.revoke_permission_grant(task.id, code, model=task)
-        self.revoke_session_tool_rule(task.id, "session_rule_task_recovery", model=task)
         self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)
@@ -3239,7 +3187,6 @@ class TaskService:
             {"internal_status": "pending", "requeued_at": now},
         )
         self.revoke_permission_grant(task.id, "task_retry", model=task)
-        self.revoke_session_tool_rule(task.id, "session_rule_task_retry", model=task)
         if not bool((task.workspace or {}).get("customer_dir")):
             Path(str(task.workspace["artifact_root"])).expanduser().mkdir(parents=True, exist_ok=True)
         Path(task.workspace["task_file"]).parent.mkdir(parents=True, exist_ok=True)
@@ -3620,7 +3567,6 @@ class TaskService:
         task.steps = [_retry_step(step, step_id) for step in task.steps]
         task.updated_at = _utc_now()
         self.revoke_permission_grant(task.id, "task_retry", model=task)
-        self.revoke_session_tool_rule(task.id, "session_rule_task_retry", model=task)
         self.store.write_task(task_id, _without_none(task.to_dict()))
         self.store.append_event(task_id, {"event_type": "step_retry", "task_id": task_id, "step_id": step_id, "created_at": task.updated_at})
         self._append_intervention(task_id, "retry", task.updated_at, step_id=step_id)
@@ -3653,7 +3599,6 @@ class TaskService:
         )
         after_policy = execution_policy_view(task.extensions)
         self.revoke_permission_grant(task.id, "task_reassign", model=task)
-        self.revoke_session_tool_rule(task.id, "session_rule_task_reassign", model=task)
         self._release_lease(task_id)
         task.assignee = new_executor
         task.status = "pending"
@@ -3795,7 +3740,6 @@ class TaskService:
         # PERM-104-002: a handoff supersedes the source run — the source
         # task's session-scoped rule must not be inherited by the new
         # iteration (the new iteration runs in its own official session).
-        self.revoke_session_tool_rule(source.id, "session_rule_task_handoff")
         self.store.append_event(
             source.id,
             {
@@ -4400,14 +4344,15 @@ def task_to_status(task: TaskModel) -> dict[str, Any]:
     approval_value = extensions.get(APPROVAL_EXTENSION_KEY)
     if approval_value is not None:
         try:
-            extensions[APPROVAL_EXTENSION_KEY] = approval_public_projection(
+            extensions[APPROVAL_EXTENSION_KEY] = approval_public_projection_v2(
                 approval_value
             )
         except ABCError:
             extensions.pop(APPROVAL_EXTENSION_KEY, None)
-    # PERM-104-002: the session tool rule is projected through its sanitized
-    # public view only (matcher, scope, source, digests, state); the durable
-    # binding identifiers never reach status.
+    # PERM-104-002 1.04A: the session tool rule surface is retired; historical
+    # receipts are projected through the audit-only public view (matcher,
+    # digests, state) so terminal tasks stay readable without rewriting
+    # history.  No new receipt can ever be issued.
     session_rule_value = extensions.get(SESSION_RULE_RECEIPT_EXTENSION_KEY)
     if session_rule_value is not None:
         projected_rule = session_rule_public_projection(session_rule_value)

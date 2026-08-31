@@ -265,17 +265,25 @@ def build_parser() -> argparse.ArgumentParser:
     response.add_argument("--approve", action="store_true")
     response.add_argument("--deny", action="store_true")
     response.add_argument(
+        "--permission-option",
+        dest="permission_option",
+        help=(
+            "Select one executor-native permission choice by its opaque "
+            "handle, exactly as offered on the pending request."
+        ),
+    )
+    # PERM-104-002 1.04A tombstone: session tool rules were removed.  The
+    # flags parse for one release and always fail with
+    # legacy_session_tool_rule_removed so old scripts fail loudly instead of
+    # silently changing behavior.
+    task_respond.add_argument(
         "--approve-tool",
         dest="approve_tool",
-        help="Approve the pending native permission request and issue one "
-        "session-scoped tool rule, such as Bash(echo probe*). Requires "
-        "--scope session.",
+        help=argparse.SUPPRESS,
     )
     task_respond.add_argument(
         "--scope",
-        choices=["session"],
-        help="Scope of the --approve-tool decision; only 'session' is "
-        "supported and the rule dies with the session.",
+        help=argparse.SUPPRESS,
     )
     task_respond.add_argument("--config", type=Path)
     task_respond.add_argument("--interval", type=float, default=2)
@@ -867,34 +875,25 @@ def command_task_respond(args: argparse.Namespace) -> int:
 
     approve_tool = str(getattr(args, "approve_tool", "") or "").strip()
     scope = str(getattr(args, "scope", "") or "").strip()
-    if bool(approve_tool) != (scope == "session"):
+    if approve_tool or scope:
+        # PERM-104-002 1.04A tombstone: the legacy session tool rule grammar
+        # was removed.  The flags parse for one release and always fail so
+        # existing automation never silently changes behavior.
         print(
-            "respond_error: --approve-tool requires exactly --scope session "
-            "and --scope session requires --approve-tool"
+            "respond_error: legacy_session_tool_rule_removed: "
+            "--approve-tool/--scope session were removed; respond with "
+            "--permission-option <handle> (or --approve/--deny) instead."
         )
         return 1
-    if approve_tool:
-        from .session_tool_rules import (
-            SessionRuleError,
-            normalize_tool_matcher,
-        )
-
-        try:
-            normalize_tool_matcher(approve_tool)
-        except SessionRuleError as exc:
-            print(f"respond_error: {exc.code}: {exc}")
-            return 1
-        response_type, message = "approve", ""
-        tool_matcher, session_scope = approve_tool, True
+    permission_option = str(getattr(args, "permission_option", "") or "").strip()
+    if permission_option:
+        response_type, message = "permission_option", permission_option
     elif args.message is not None:
         response_type, message = "message", str(args.message)
-        tool_matcher, session_scope = "", False
     elif args.approve:
         response_type, message = "approve", ""
-        tool_matcher, session_scope = "", False
     else:
         response_type, message = "deny", ""
-        tool_matcher, session_scope = "", False
     try:
         result = RunnerClient().respond_task(
             args.id,
@@ -904,8 +903,6 @@ def command_task_respond(args: argparse.Namespace) -> int:
             args.root,
             _optional_path_arg(getattr(args, "config", None)),
             getattr(args, "interval", 2),
-            tool_matcher=tool_matcher,
-            session_scope=session_scope,
         )
     except (ABCError, RunnerError) as exc:
         print(f"respond_error: {exc}")
@@ -913,11 +910,6 @@ def command_task_respond(args: argparse.Namespace) -> int:
     print(f"response: {result.get('status', '')}")
     print(f"task_id: {result.get('task_id', args.id)}")
     print(f"input_id: {result.get('input_id', args.input_id)}")
-    session_rule = result.get("session_tool_rule")
-    if isinstance(session_rule, dict):
-        print(f"session_tool_rule: {session_rule.get('matcher', '')}")
-        print(f"session_tool_rule_scope: {session_rule.get('scope', '')}")
-        print(f"session_tool_rule_state: {session_rule.get('state', '')}")
     if result.get("dispatch_required"):
         print(f"worker_run_id: {result.get('run_id', '')}")
         print(f"same_task: {'yes' if result.get('same_task') else 'no'}")
@@ -1670,6 +1662,23 @@ def command_worker_run(args: argparse.Namespace) -> int:
                                 native_event=str(
                                     approval_request.get("native_event")
                                     or "claude_sdk_can_use_tool"
+                                ),
+                                offered_choices=(
+                                    [
+                                        dict(choice)
+                                        for choice in approval_request.get(
+                                            "offered_choices", []
+                                        )
+                                        if isinstance(choice, dict)
+                                    ]
+                                    if isinstance(approval_request.get("offered_choices"), list)
+                                    and approval_request.get("offered_choices")
+                                    else None
+                                ),
+                                authority=(
+                                    dict(approval_request.get("authority") or {})
+                                    if isinstance(approval_request.get("authority"), dict)
+                                    else None
                                 ),
                             )
                         except ABCError as exc:

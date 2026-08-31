@@ -92,23 +92,83 @@ SDK_SESSION_MODE_UPDATE: dict[str, str] = {
     "destination": "session",
 }
 
-# PERM-104-002: the official session-scoped PermissionUpdate shape applied
-# when a trusted CLI decision (--approve-tool --scope session) translates one
-# approved native request into a narrow allow rule on the SAME live session.
-# The live-compatible probe (scripts/live_probe_perm104_session_rule.py,
-# evidence tests/fixtures/executor_runtime/matrix/claude/
-# live_probe_sdk_session_rule_2026-08-31) proved the installed
-# claude-agent-sdk 0.2.142 + Claude CLI 2.1.247 tuple accepts exactly this
-# shape via PermissionResultAllow.updated_permissions.
-SDK_SESSION_RULE_UPDATE_TYPE = "addRules"
-SDK_SESSION_RULE_DESTINATION = "session"
-SDK_SESSION_RULE_BEHAVIOR = "allow"
+# PERM-104-002 v2: exact native choice kinds the SDK can_use_tool callback
+# supports.  Deny -> PermissionResultDeny; once -> PermissionResultAllow with
+# the original input and NO updated_permissions; session -> PermissionResultAllow
+# whose updated_permissions is EXACTLY the callback's own suggestion bundle,
+# accepted only when every suggestion is a fully valid destination="session"
+# rule update (no persistent destination, no setMode bypassPermissions).
+# The retired matcher-grammar constants are gone; historical receipts stay
+# audit-only readable via the service projection.
+SDK_V2_SESSION_DESTINATION = "session"
+SDK_V2_BYPASS_MODE = "bypassPermissions"
+SDK_V2_RULE_UPDATE_TYPES = frozenset({"addRules", "replaceRules"})
 
 # The transport marks worker threads so a second worker can be detected and
 # refused deterministically in tests and diagnostics.
 _WORKER_THREAD_PREFIX = "agentbc-claude-sdk-"
 
 TransportDeathCallback = Callable[[str], None]
+
+
+def _permission_update_to_dict(update: Any) -> dict[str, Any] | None:
+    """Convert one SDK PermissionUpdate dataclass to its exact dict shape."""
+    if update is None:
+        return None
+    if isinstance(update, dict):
+        return dict(update)
+    data = getattr(update, "__dict__", None)
+    if isinstance(data, dict):
+        return {
+            key: value
+            for key, value in data.items()
+            if value is not None and not str(key).startswith("_")
+        }
+    return None
+
+
+def _permission_rule_to_dict(rule: Any) -> dict[str, Any] | None:
+    """Convert one SDK PermissionRuleValue to its exact dict shape."""
+    if rule is None:
+        return None
+    if isinstance(rule, dict):
+        return dict(rule)
+    data = getattr(rule, "__dict__", None)
+    if isinstance(data, dict):
+        return {
+            key: value
+            for key, value in data.items()
+            if value is not None and not str(key).startswith("_")
+        }
+    return None
+
+
+def _permission_update_from_dict(value: dict[str, Any]) -> Any:
+    """Rebuild one exact SDK PermissionUpdate from its captured dict shape."""
+    from claude_agent_sdk import PermissionUpdate
+    from claude_agent_sdk.types import PermissionRuleValue
+
+    rules = value.get("rules")
+    rule_values: list[Any] = []
+    if isinstance(rules, (list, tuple)):
+        for rule in rules:
+            rule_dict = _permission_rule_to_dict(rule)
+            if rule_dict is None:
+                continue
+            rule_values.append(
+                PermissionRuleValue(
+                    tool_name=str(rule_dict.get("tool_name") or ""),
+                    rule_content=rule_dict.get("rule_content"),
+                )
+            )
+    return PermissionUpdate(
+        type=str(value.get("type") or ""),
+        rules=rule_values or None,
+        behavior=value.get("behavior"),
+        mode=value.get("mode"),
+        directories=value.get("directories"),
+        destination=value.get("destination"),
+    )
 
 # Durable grant-revocation callback: invoked exactly once with
 # ``(grant, revocation_code)`` at the transport's terminal state.  Production
@@ -187,6 +247,10 @@ class ClaudeSDKControlTransport:
         # Every tool_use_id ever accepted on this transport: a duplicate
         # native identity can never create a second permission input.
         self._seen_tool_use_ids: set[str] = set()
+        # PERM-104-002 v2: the callback's own permission suggestions for the
+        # in-flight request, captured verbatim so a session choice can return
+        # EXACTLY the offered bundle.  Keyed by AgentBC request id.
+        self._pending_session_suggestions: dict[str, Any] = {}
         # The tool_use_id of the one in-flight single-action approval (or the
         # empty string): the concurrency gate and death-invalidation anchor.
         self._active_request = ""
@@ -223,10 +287,6 @@ class ClaudeSDKControlTransport:
         # PostToolUse events observed inside this exact run window are
         # eligible (a replayed foreign event fails closed).
         self._stream_consumed = threading.Event()
-        # PERM-104-002: the CLI-issued session rule attached to this live
-        # transport (in-memory only; never persisted, dies with the
-        # transport/session).
-        self._session_rule: dict[str, Any] | None = None
 
     # ── worker event-loop lifecycle ────────────────────────────────────────
 
@@ -295,10 +355,6 @@ class ClaudeSDKControlTransport:
         if self._closed:
             return
         self._closed = True
-        # PERM-104-002: transport death is a rule-revocation signal — the
-        # in-memory session rule dies here and can never be re-derived.
-        with self._pending_lock:
-            self._session_rule = None
         client = self._client
         if client is not None and self._loop is not None and self._loop.is_running():
             try:
@@ -404,7 +460,11 @@ class ClaudeSDKControlTransport:
             # loop stays responsive and the SDK client keeps streaming while
             # the human decision is pending on the same process/session.
             return await self._request_and_wait(
-                CONTROL_PATH_SDK_TRANSPORT, tool, tool_use_id, dict(input_data or {})
+                CONTROL_PATH_SDK_TRANSPORT,
+                tool,
+                tool_use_id,
+                dict(input_data or {}),
+                context,
             )
         finally:
             with self._pending_lock:
@@ -412,6 +472,7 @@ class ClaudeSDKControlTransport:
                 if self._active_request == tool_use_id:
                     self._active_request = ""
                     self._active_request_id = ""
+                self._pending_session_suggestions.pop(self._active_request_id, None)
 
     def _deny_result(self, message: str) -> Any:
         from claude_agent_sdk import PermissionResultDeny
@@ -423,57 +484,84 @@ class ClaudeSDKControlTransport:
 
         return PermissionResultAllow(updated_input=dict(original_input or {}))
 
-    def _session_rule_allow_result(
+    def validate_session_bundle(
+        self, suggestions: Any
+    ) -> list[dict[str, Any]] | None:
+        """Return the suggestion bundle only when it is fully session-valid.
+
+        PERM-104-002 v2: the session choice exists ONLY when the callback's
+        current suggestions are a fully valid destination=session bundle:
+        every suggestion is an addRules/replaceRules allow update bound to
+        ``destination="session"``; no persistent destination
+        (userSettings/projectSettings/localSettings), no setMode (and
+        therefore never bypassPermissions), no add/removeDirectories.  Any
+        unknown or mixed shape returns ``None`` so the session choice is not
+        offered and the exact bundle is never regenerated by AgentBC.
+        """
+        if not isinstance(suggestions, (list, tuple)) or not suggestions:
+            return None
+        bundle: list[dict[str, Any]] = []
+        for suggestion in suggestions:
+            update = (
+                suggestion
+                if isinstance(suggestion, dict)
+                else _permission_update_to_dict(suggestion)
+            )
+            if not isinstance(update, dict):
+                return None
+            update_type = str(update.get("type") or "")
+            if update_type not in SDK_V2_RULE_UPDATE_TYPES:
+                return None
+            behavior = str(update.get("behavior") or "")
+            if behavior != "allow":
+                return None
+            destination = update.get("destination")
+            if destination is None:
+                # The SDK dataclass serializes destination=None for updates
+                # built without one; the official session bundle always names
+                # the destination explicitly.  Treat an absent destination as
+                # a persistent-update risk and fail closed.
+                return None
+            if str(destination) != SDK_V2_SESSION_DESTINATION:
+                return None
+            rules = update.get("rules")
+            if not isinstance(rules, (list, tuple)) or not rules:
+                return None
+            for rule in rules:
+                rule_dict = (
+                    rule
+                    if isinstance(rule, dict)
+                    else _permission_rule_to_dict(rule)
+                )
+                if not isinstance(rule_dict, dict):
+                    return None
+                if not str(rule_dict.get("tool_name") or "").strip():
+                    return None
+            bundle.append(update)
+        return bundle
+
+    def _session_bundle_allow_result(
         self,
         original_input: dict[str, Any],
-        *,
-        tool_name: str,
-        rule_content: str,
+        bundle: list[dict[str, Any]],
     ) -> Any:
-        """Build the allow result carrying the official session-scoped rule.
+        """Allow carrying EXACTLY the callback's own session bundle.
 
-        PERM-104-002: one trusted CLI decision translates into exactly one
-        official ``PermissionUpdate(type="addRules", ..., destination=
-        "session")`` carried on the allow result for the approved request.
-        The CLI applies it to the SAME live session before the next tool
-        evaluation; no settings file is touched and the rule dies with the
-        session.  Contract drift from the live-proven shape fails closed.
+        The bundle validated by :meth:`validate_session_bundle` is returned
+        verbatim as ``updated_permissions``; AgentBC never generates rules of
+        its own.
         """
-        from claude_agent_sdk import PermissionResultAllow, PermissionUpdate
-        from claude_agent_sdk.types import PermissionRuleValue
+        from claude_agent_sdk import PermissionResultAllow
 
-        if (
-            SDK_SESSION_RULE_UPDATE_TYPE != "addRules"
-            or SDK_SESSION_RULE_DESTINATION != "session"
-            or SDK_SESSION_RULE_BEHAVIOR != "allow"
-        ):
-            raise ClaudeSDKTransportError(
-                "claude_sdk_session_rule_contract_invalid",
-                "The frozen session-scoped rule-update contract drifted from "
-                "the official PermissionUpdate shape proven by the live "
-                "probe.",
-            )
-        normalized_tool = str(tool_name or "").strip()
-        normalized_content = str(rule_content or "").strip()
-        if not normalized_tool or not normalized_content:
-            raise ClaudeSDKTransportError(
-                "claude_sdk_session_rule_invalid",
-                "The SDK session rule requires a tool and rule content.",
-            )
-        update = PermissionUpdate(
-            type=SDK_SESSION_RULE_UPDATE_TYPE,
-            rules=[
-                PermissionRuleValue(
-                    tool_name=normalized_tool,
-                    rule_content=normalized_content,
-                )
-            ],
-            behavior=SDK_SESSION_RULE_BEHAVIOR,
-            destination=SDK_SESSION_RULE_DESTINATION,
-        )
+        updates: list[Any] = []
+        for update in bundle:
+            if isinstance(update, dict):
+                updates.append(_permission_update_from_dict(update))
+            else:
+                updates.append(update)
         return PermissionResultAllow(
             updated_input=dict(original_input or {}),
-            updated_permissions=[update],
+            updated_permissions=updates,
         )
 
     async def _request_and_wait(
@@ -482,6 +570,7 @@ class ClaudeSDKControlTransport:
         tool: str,
         tool_use_id: str,
         tool_input: dict[str, Any],
+        context: Any = None,
     ) -> Any:
         """Bridge one SDK permission request into the frozen ControlPlane.
 
@@ -491,11 +580,21 @@ class ClaudeSDKControlTransport:
         request is never returned as ``allow``.
         """
         from agent_bridge_connect.approval import compute_request_fingerprint
+        from agent_bridge_connect.control import claude_offered_choices
 
         request_id = new_request_id()
         with self._pending_lock:
             if self._active_request == tool_use_id:
                 self._active_request_id = request_id
+        # PERM-104-002 v2: capture the callback's own suggestions verbatim.
+        # The session choice is offered ONLY when the current suggestions are
+        # a fully valid destination=session bundle; persistent/unknown shapes
+        # never widen the offered choice set.
+        raw_suggestions = getattr(context, "suggestions", None)
+        session_bundle = self.validate_session_bundle(raw_suggestions)
+        with self._pending_lock:
+            if session_bundle is not None:
+                self._pending_session_suggestions[request_id] = raw_suggestions
         fingerprint = compute_request_fingerprint(
             executor=self.executor,
             session_id=self.session_id,
@@ -514,6 +613,7 @@ class ClaudeSDKControlTransport:
             tool_input=tool_input,
         )
         summary = core_bounded_summary(executor=self.executor, operation=tool)
+        offered = claude_offered_choices(session_bundle_supported=session_bundle is not None)
         message = {
             "jsonrpc": "2.0",
             "id": request_id,
@@ -541,6 +641,16 @@ class ClaudeSDKControlTransport:
             },
             "escalation_domain": self.escalation_domain,
             "host_profile_digest": self.host_profile_digest,
+            # PERM-104-002 v2: the executor-native choice set.  Core offers
+            # exactly these choices; no permission category is inferred.
+            "approval_version": 2,
+            "authority": {
+                "executor": self.executor,
+                "protocol": "claude_agent_sdk",
+                "protocol_version": 1,
+                "method": "sdk.can_use_tool",
+            },
+            "offered_choices": [dict(choice) for choice in offered],
         }
         try:
             event = await asyncio.to_thread(self.plane.request_approval, message)
@@ -577,35 +687,30 @@ class ClaudeSDKControlTransport:
                     self._anchor_action_fingerprint = action_fingerprint_value
                     self._anchor_escalation_domain = self.escalation_domain
                     self._anchor_profile_digest = self.host_profile_digest
-                # PERM-104-002: a trusted CLI --approve-tool --scope session
-                # decision widens ONLY this exact action's tool into the
-                # official session-scoped addRules update on the same live
-                # session.  The durable receipt binding (task/run/session/
-                # request/tool_use_id/fingerprints) was validated by the
-                # Runner-issued receipt; the transport re-checks the cheap
-                # invariants before attaching the rule.
-                response_rule = response.get("session_rule")
-                attached_rule = self._session_rule_from_receipt()
-                rule = (
-                    response_rule
-                    if isinstance(response_rule, dict)
-                    and self._response_rule_matches(
-                        response_rule,
-                        tool=tool,
-                        tool_use_id=tool_use_id,
-                        request_id=decision_request_id,
-                    )
-                    else attached_rule
-                    if isinstance(attached_rule, dict)
-                    and str(attached_rule.get("tool_name") or "") == tool
-                    else None
+                # PERM-104-002 v2: the exact selected native choice decides
+                # the response shape.  once -> original input, no
+                # updated_permissions; session -> EXACTLY the callback's own
+                # validated destination=session bundle.  The retired
+                # --approve-tool matcher rules are never consulted.
+                choice = response.get("choice")
+                choice_kind = (
+                    str(choice.get("kind") or "")
+                    if isinstance(choice, dict)
+                    else ""
                 )
-                if isinstance(rule, dict):
-                    return self._session_rule_allow_result(
-                        tool_input,
-                        tool_name=str(rule.get("tool_name") or ""),
-                        rule_content=rule.get("rule_content"),
+                if choice_kind == "session":
+                    bundle = self.validate_session_bundle(
+                        self._pending_session_suggestions.get(decision_request_id)
                     )
+                    if bundle is None:
+                        raise ClaudeSDKTransportError(
+                            "claude_sdk_session_bundle_invalid",
+                            "The session choice was selected but the callback's "
+                            "suggestions are not a fully valid destination="
+                            "session bundle.",
+                            {"request_id": decision_request_id, "tool_use_id": tool_use_id},
+                        )
+                    return self._session_bundle_allow_result(tool_input, bundle)
                 return self._allow_result(tool_input)
             return self._deny_result(
                 "The user denied this action through AgentBC."
@@ -659,45 +764,19 @@ class ClaudeSDKControlTransport:
     # ── structured tool-event capture (verification evidence) ─────────────
 
     def attach_session_rule(self, rule: dict[str, Any]) -> None:
-        """Attach the CLI-issued session rule this transport may apply.
+        """Retired tombstone (PERM-104-002 1.04A).
 
-        ``rule`` carries the validated matcher facts (``tool_name``,
-        ``rule_content``) plus the durable receipt binding.  The transport
-        applies the official session-scoped ``addRules`` update only when the
-        approved native request's tool matches the rule's tool name, and only
-        inside :meth:`can_use_tool` on the SAME live session.  The in-memory
-        rule dies with this transport; it is never persisted or re-derived.
+        The legacy CLI matcher rules were removed.  Any caller still trying
+        to attach one fails closed instead of applying a rule.
         """
-        tool_name = str((rule or {}).get("tool_name") or "").strip()
-        rule_content_value = (rule or {}).get("rule_content")
-        rule_content = (
-            None
-            if rule_content_value is None
-            else str(rule_content_value).strip()
+        raise ClaudeSDKTransportError(
+            "legacy_session_tool_rule_removed",
+            "Session tool rules were removed; permissions are granted only "
+            "through the executor-native choice broker.",
         )
-        matcher_kind = str((rule or {}).get("matcher_kind") or "").strip()
-        if not tool_name or not rule_content:
-            raise ClaudeSDKTransportError(
-                "claude_sdk_session_rule_invalid",
-                "A session rule requires a tool name and an official SDK "
-                "rule specifier.",
-            )
-        if matcher_kind == "tool_type" and rule_content != "*":
-            raise ClaudeSDKTransportError(
-                "claude_sdk_session_rule_invalid",
-                "A tool-type session rule requires the official '*' specifier.",
-            )
-        self._session_rule = {
-            "tool_name": tool_name,
-            "rule_content": rule_content,
-            "matcher_kind": matcher_kind or "command_pattern",
-            "session_id": self.session_id,
-            "run_id": self.run_id,
-        }
 
     def session_rule_attached(self) -> bool:
-        with self._pending_lock:
-            return self._session_rule is not None
+        return False
 
     def approved_action_binding(self) -> dict[str, Any]:
         """Return the approved anchor's structured escalation binding.
@@ -716,42 +795,8 @@ class ClaudeSDKControlTransport:
             }
 
     def _session_rule_from_receipt(self) -> dict[str, Any] | None:
-        """Return the attached session rule if it is live for this session."""
-        with self._pending_lock:
-            rule = self._session_rule
-        if not isinstance(rule, dict):
-            return None
-        if str(rule.get("session_id") or "") != self.session_id:
-            # A rule bound to another session can never be applied here.
-            return None
-        return dict(rule)
-
-    def _response_rule_matches(
-        self,
-        rule: dict[str, Any],
-        *,
-        tool: str,
-        tool_use_id: str,
-        request_id: str,
-    ) -> bool:
-        """Recheck the response-carried rule against this live callback."""
-        expected = {
-            "task_id": self.task_id,
-            "executor_run_id": self.run_id,
-            "session_id": self.session_id,
-            "request_id": str(request_id),
-            "tool_use_id": str(tool_use_id),
-            "tool_name": str(tool),
-        }
-        if any(str(rule.get(key) or "") != value for key, value in expected.items()):
-            return False
-        kind = str(rule.get("matcher_kind") or "")
-        content = rule.get("rule_content")
-        if kind == "tool_type":
-            return content == "*" and str(rule.get("matcher") or "") == tool
-        if kind == "command_pattern":
-            return bool(str(content or "").strip())
-        return False
+        """Retired: always ``None`` (audit-only; no rule is ever attached)."""
+        return None
 
     def capture_tool_event(
         self,
@@ -1215,9 +1260,9 @@ __all__ = [
     "ClaudeSDKControlTransport",
     "ClaudeSDKTransportError",
     "SDK_SESSION_MODE_UPDATE",
-    "SDK_SESSION_RULE_BEHAVIOR",
-    "SDK_SESSION_RULE_DESTINATION",
-    "SDK_SESSION_RULE_UPDATE_TYPE",
+    "SDK_V2_BYPASS_MODE",
+    "SDK_V2_RULE_UPDATE_TYPES",
+    "SDK_V2_SESSION_DESTINATION",
     "build_sdk_options",
     "monotonic_deadline",
     "new_transport_run_id",

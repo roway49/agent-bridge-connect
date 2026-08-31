@@ -503,6 +503,10 @@ class SetupModeTests(unittest.TestCase):
             "AGENTBC_ALPHA_HOME": str(install_root),
             "AGENTBC_BIN_DIR": str(self.home / ".local" / "bin"),
             "AGENTBC_UNINSTALL_SKIP_RUNNER": "1",
+            # Pin the Hermes home to the sandbox: with clear=False the real
+            # HERMES_HOME / ~/.hermes leaked in and the uninstall sweep
+            # resolved against the host's live profile tree.
+            "HERMES_HOME": str(self.home / ".hermes"),
         }
         with mock.patch.dict(os.environ, env, clear=False):
             with mock.patch("builtins.input", side_effect=["y", "n"]):

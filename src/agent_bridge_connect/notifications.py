@@ -105,25 +105,37 @@ def notify_input_required(
     )
     response_result: dict[str, Any] = {}
     response_error = ""
-    if responder is not None and action in {"message", "approve", "deny"}:
+    option_handle = str(dialog_result.details.get("option_handle") or "")
+    if (
+        responder is not None
+        and action in {"message", "approve", "deny"}
+        or (responder is not None and action == "permission_option" and option_handle)
+    ):
         try:
-            response_result = responder(
-                str(payload["input_id"]),
-                action,
-                (
-                    PERMISSION_DIALOG_TIMEOUT_RESPONSE
-                    if payload.get("input_type") == "permission"
-                    and action == "deny"
-                    and decision_source == "timeout"
-                    else PERMISSION_DIALOG_CLOSED_RESPONSE
-                    if payload.get("input_type") == "permission"
-                    and action == "deny"
-                    and decision_source == "dialog_closed"
-                    else ""
-                    if payload.get("input_type") == "permission"
-                    else str(dialog_result.details.get("message") or "")
-                ),
-            )
+            if action == "permission_option":
+                response_result = responder(
+                    str(payload["input_id"]),
+                    "permission_option",
+                    option_handle,
+                )
+            else:
+                response_result = responder(
+                    str(payload["input_id"]),
+                    action,
+                    (
+                        PERMISSION_DIALOG_TIMEOUT_RESPONSE
+                        if payload.get("input_type") == "permission"
+                        and action == "deny"
+                        and decision_source == "timeout"
+                        else PERMISSION_DIALOG_CLOSED_RESPONSE
+                        if payload.get("input_type") == "permission"
+                        and action == "deny"
+                        and decision_source == "dialog_closed"
+                        else ""
+                        if payload.get("input_type") == "permission"
+                        else str(dialog_result.details.get("message") or "")
+                    ),
+                )
         except Exception as exc:
             response_error = compact_notification_text(str(redact_secrets(str(exc))), 240)
             DialogNotifier().send(
@@ -412,6 +424,24 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         "identity_executor": executor_label,
         "identity_blocked_step": identity_blocked_step,
         "identity_scope": identity_scope,
+        # PERM-104-002 v2: the executor-native choices (sanitized labels plus
+        # opaque handles) rendered by the Choose Permission picker.  Raw
+        # native payloads never travel on the public payload; ``full`` is
+        # never offered here.
+        "native_options": (
+            [
+                {
+                    "handle": str(choice.get("handle") or ""),
+                    "kind": str(choice.get("kind") or ""),
+                    "label": str(choice.get("label") or ""),
+                    "selectable": choice.get("selectable", True) is not False,
+                }
+                for choice in request.get("choices") or []
+                if isinstance(choice, dict) and str(choice.get("handle") or "")
+            ]
+            if is_single_action_approval and int(request.get("approval_version") or 1) == 2
+            else []
+        ),
     }
 
 

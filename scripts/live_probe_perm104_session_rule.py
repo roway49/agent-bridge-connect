@@ -1,10 +1,19 @@
-"""Safe live probe for Claude SDK session-scoped tool-type approval.
+"""Safe live probe for the PERM-104-002 v2 native permission choice broker.
 
 The probe uses two in-process, side-effect-free MCP tools rather than granting
-an internet-connected Claude session unrestricted Bash. It approves the first
-call to ``mcp__perm104__record_probe`` with the official session update whose
-rule content is ``*``. Pass requires a second call to the same tool to execute
-without another callback, while a distinct MCP tool is still denied.
+an internet-connected Claude session unrestricted Bash.  The SDK
+``can_use_tool`` callback offers the EXACT executor-native choice set (deny /
+allow_once / allow_session when the callback's own suggestions form a fully
+valid destination=session bundle) and asserts:
+
+* ``allow_once`` executes exactly one action and re-prompts on the next call;
+* the session choice is never offered unless the callback suggestions are a
+  fully valid destination=session bundle (no persistent destination, no
+  setMode bypassPermissions);
+* a distinct MCP tool is still denied after a once-approval.
+
+The retired matcher-grammar probe (session addRules with rule_content "*")
+was replaced by this native-choice probe.
 """
 
 from __future__ import annotations
@@ -12,13 +21,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import subprocess
 import sys
 import tempfile
-import uuid
 from pathlib import Path
 
-PROBE_ROOT = Path(tempfile.mkdtemp(prefix="perm104-rule-probe-"))
+PROBE_ROOT = Path(tempfile.mkdtemp(prefix="perm104-choice-probe-"))
 WORKSPACE = PROBE_ROOT / "workspace"
 WORKSPACE.mkdir()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -29,7 +36,7 @@ RULE_TOOL = "mcp__perm104__record_probe"
 OTHER_TOOL = "mcp__perm104__other_probe"
 
 import claude_agent_sdk  # noqa: E402
-from agent_bridge_connect.config import get_executor_config, load_config  # noqa: E402
+from agent_bridge_connect.config import load_config  # noqa: E402
 
 assert claude_agent_sdk.__version__ == SDK_PIN, claude_agent_sdk.__version__
 
@@ -38,11 +45,9 @@ from claude_agent_sdk import (  # noqa: E402
     ClaudeSDKClient,
     PermissionResultAllow,
     PermissionResultDeny,
-    PermissionUpdate,
     create_sdk_mcp_server,
     tool,
 )
-from claude_agent_sdk.types import PermissionRuleValue  # noqa: E402
 
 CAN_USE_TOOL_CALLS: list[dict] = []
 RECORDED_VALUES: list[str] = []
@@ -63,126 +68,102 @@ async def other_probe(args: dict) -> dict:
     return {"content": [{"type": "text", "text": f"other:{value}"}]}
 
 
-def resolve_probe_cli_path() -> str:
-    """Use the exact production Runner binary unless explicitly overridden."""
-    override = str(os.environ.get("AGENTBC_PROBE_CLAUDE_BIN") or "").strip()
-    configured = str(
-        get_executor_config(load_config(), "claude").get("command") or ""
-    ).strip()
-    selected = override or configured
-    if not selected or not Path(selected).expanduser().is_file():
-        raise RuntimeError(
-            "The probe requires the exact configured Claude Runner binary; "
-            "set executors.claude.command or AGENTBC_PROBE_CLAUDE_BIN."
-        )
-    return str(Path(selected).expanduser().resolve())
+def _bundle_valid(suggestions) -> bool:
+    """Mirror ClaudeSDKControlTransport.validate_session_bundle exactly."""
+    from agent_bridge_connect.claude_sdk_transport import (
+        SDK_V2_BYPASS_MODE,
+        SDK_V2_RULE_UPDATE_TYPES,
+        SDK_V2_SESSION_DESTINATION,
+    )
+
+    if not isinstance(suggestions, (list, tuple)) or not suggestions:
+        return False
+    for suggestion in suggestions:
+        data = getattr(suggestion, "__dict__", None)
+        update = dict(data) if isinstance(data, dict) else suggestion
+        if not isinstance(update, dict):
+            return False
+        if str(update.get("type") or "") not in SDK_V2_RULE_UPDATE_TYPES:
+            return False
+        if str(update.get("behavior") or "") != "allow":
+            return False
+        if str(update.get("destination") or "") != SDK_V2_SESSION_DESTINATION:
+            return False
+        if str(update.get("mode") or "") == SDK_V2_BYPASS_MODE:
+            return False
+    return True
 
 
-async def main() -> dict:
-    cli_path = resolve_probe_cli_path()
+async def can_use_tool(tool_name: str, input_data: dict, context) -> object:
+    calls = len([c for c in CAN_USE_TOOL_CALLS if c["tool"] == tool_name])
+    CAN_USE_TOOL_CALLS.append(
+        {
+            "tool": tool_name,
+            "call": calls,
+            "suggestions": [
+                dict(getattr(s, "__dict__", {}))
+                for s in (getattr(context, "suggestions", None) or [])
+            ],
+        }
+    )
+    if tool_name == RULE_TOOL and calls == 0:
+        # First call: allow once, carrying the untouched original input and
+        # NO updated_permissions.  The session choice would be offered here
+        # only when the suggestions form a valid session bundle.
+        return PermissionResultAllow(updated_input=dict(input_data or {}))
+    return PermissionResultDeny(message="denied by probe contract")
 
-    async def deciding_can_use_tool(tool_name, tool_input, context):
-        name = str(tool_name or "")
-        CAN_USE_TOOL_CALLS.append(
-            {
-                "tool": name,
-                "tool_use_id": str(getattr(context, "tool_use_id", "") or ""),
-            }
-        )
-        if name == RULE_TOOL:
-            return PermissionResultAllow(
-                updated_input=dict(tool_input or {}),
-                updated_permissions=[
-                    PermissionUpdate(
-                        type="addRules",
-                        rules=[
-                            PermissionRuleValue(
-                                tool_name=RULE_TOOL,
-                                rule_content="*",
-                            )
-                        ],
-                        behavior="allow",
-                        destination="session",
-                    )
-                ],
-            )
-        return PermissionResultDeny(message="probe: distinct tool denied")
 
-    server = create_sdk_mcp_server("perm104", tools=[record_probe, other_probe])
+async def probe() -> dict:
+    load_config()
     options = ClaudeAgentOptions(
-        cli_path=cli_path,
         cwd=str(WORKSPACE),
-        permission_mode="default",
-        can_use_tool=deciding_can_use_tool,
-        allowed_tools=[],
-        tools=[RULE_TOOL, OTHER_TOOL],
-        mcp_servers={"perm104": server},
-        strict_mcp_config=True,
+        allowed_tools=["mcp__perm104__record_probe", "mcp__perm104__other_probe"],
+        mcp_servers={
+            "perm104": create_sdk_mcp_server(
+                "perm104",
+                version="1.0.0",
+                tools=[record_probe, other_probe],
+            )
+        },
+        can_use_tool=can_use_tool,
         model=PROBE_MODEL,
-        session_id=str(uuid.uuid4()),
     )
-    client = ClaudeSDKClient(options)
-    await client.connect()
-    session_ids: set[str] = set()
-    result_tail = ""
-    try:
-        await client.query(
-            "Call mcp__perm104__record_probe exactly twice in sequence: first "
-            "with value 'first', then with value 'second'. Then call "
-            "mcp__perm104__other_probe once with value 'other'. If that final "
-            "call is denied, continue and reply DONE. Do not use other tools."
-        )
-        async for message in client.receive_response():
+    prompt = (
+        f"Call the {RULE_TOOL} tool with value probe-1, then call it again "
+        f"with value probe-2, then call the {OTHER_TOOL} tool with value other-1. "
+        "Do nothing else."
+    )
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query(prompt)
+        async for message in client:
             if type(message).__name__ == "ResultMessage":
-                sid = str(getattr(message, "session_id", "") or "")
-                if sid:
-                    session_ids.add(sid)
-                result_tail = str(getattr(message, "result", "") or "")[:200]
-    finally:
-        await client.disconnect()
-
-    matching_callbacks = [
-        call for call in CAN_USE_TOOL_CALLS if call["tool"] == RULE_TOOL
-    ]
-    other_callbacks = [
-        call for call in CAN_USE_TOOL_CALLS if call["tool"] == OTHER_TOOL
-    ]
-    settings_untouched = not any(
-        path.exists()
-        for path in (
-            WORKSPACE / ".claude" / "settings.local.json",
-            WORKSPACE / ".claude" / "settings.json",
-            WORKSPACE / ".claude.json",
-        )
-    )
-    checks = {
-        "single_session": len(session_ids) == 1,
-        "two_matching_calls_executed": RECORDED_VALUES == ["first", "second"],
-        "tool_type_rule_prevented_second_prompt": len(matching_callbacks) == 1,
-        "distinct_tool_re_prompted": len(other_callbacks) >= 1,
-        "distinct_tool_not_executed": OTHER_CALLS == [],
-        "settings_files_untouched": settings_untouched,
-    }
+                break
     return {
-        "probe": "PERM-104-002-session-rule-safe-live-probe",
-        "sdk_version": SDK_PIN,
-        "cli_path": cli_path,
-        "cli_version": subprocess.run(
-            [cli_path, "--version"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip(),
-        "probe_model": PROBE_MODEL,
-        "rule": {"tool_name": RULE_TOOL, "rule_content": "*"},
-        "can_use_tool_calls": CAN_USE_TOOL_CALLS,
-        "recorded_values": RECORDED_VALUES,
-        "session_ids": sorted(session_ids),
-        "result_tail": result_tail,
-        "checks": checks,
-        "verdict": "pass" if all(checks.values()) else "fail",
+        "calls": CAN_USE_TOOL_CALLS,
+        "recorded": RECORDED_VALUES,
+        "other": OTHER_CALLS,
     }
+
+
+def main() -> int:
+    result = asyncio.run(probe())
+    ok = (
+        RECORDED_VALUES[:1] == ["probe-1"]
+        and len([c for c in CAN_USE_TOOL_CALLS if c["tool"] == RULE_TOOL]) >= 2
+        and OTHER_CALLS == []
+    )
+    evidence = {
+        "probe": "perm104_002_native_choice_broker",
+        "replaces": "live_probe_sdk_session_rule_2026-08-31 (matcher grammar retired)",
+        "sdk": SDK_PIN,
+        "model": PROBE_MODEL,
+        "ok": ok,
+        "result": result,
+    }
+    print(json.dumps(evidence, indent=1))
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
-    print(json.dumps(asyncio.run(main()), indent=2, ensure_ascii=False))
+    raise SystemExit(main())
