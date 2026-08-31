@@ -1645,6 +1645,9 @@ def command_worker_run(args: argparse.Namespace) -> int:
                                 reason=str(approval_request.get("summary") or ""),
                                 reason_detail=str(approval_request.get("summary") or ""),
                                 execution_session=execution_session,
+                                tool_name=str(
+                                    approval_request.get("tool_name") or ""
+                                ),
                                 tool_use_id=str(
                                     approval_request.get("tool_use_id")
                                     or approval_request.get("item_id")

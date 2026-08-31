@@ -135,6 +135,7 @@ class ApprovalRequest:
     turn_id: str = ""
     item_id: str = ""
     requested_permissions: dict[str, Any] = field(default_factory=dict)
+    tool_name: str = ""
     tool_use_id: str = ""
     action_fingerprint: str = ""
     escalation_domain: str = ""
@@ -159,6 +160,7 @@ class ApprovalRequest:
         if self.operation == "permissions":
             value["requested_permissions"] = _bounded_json(self.requested_permissions)
         for key, item in (
+            ("tool_name", self.tool_name),
             ("tool_use_id", self.tool_use_id),
             ("action_fingerprint", self.action_fingerprint),
             ("escalation_domain", self.escalation_domain),
@@ -214,6 +216,7 @@ def normalize_approval_request(
     native_request_fingerprint = _bounded_text(
         agentbc.get("request_fingerprint"), 160
     )
+    native_tool_name = _bounded_text(agentbc.get("tool_name"), 120)
     native_tool_use_id = _bounded_text(agentbc.get("tool_use_id"), 512)
     native_action_fingerprint = _bounded_text(
         agentbc.get("action_fingerprint"), 160
@@ -245,6 +248,7 @@ def normalize_approval_request(
         turn_id=turn_id,
         item_id=item_id,
         requested_permissions=_bounded_json(requested),
+        tool_name=native_tool_name,
         tool_use_id=native_tool_use_id,
         action_fingerprint=native_action_fingerprint,
         escalation_domain=native_domain,
@@ -278,6 +282,78 @@ def approval_response_payload(request: ApprovalRequest | dict[str, Any], decisio
             "strictAutoReview": False,
         }
     raise ControlPlaneError("approval_operation_invalid", "Approval operation is not supported.")
+
+
+def _session_rule_response_payload(
+    pending: dict[str, Any], value: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Validate the trusted Runner-issued rule carried to one SDK callback."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ControlPlaneError(
+            "session_rule_response_invalid",
+            "The session tool rule response is not an object.",
+        )
+    tool_name = _bounded_text(value.get("tool_name"), 120)
+    matcher = _bounded_text(value.get("matcher"), 240)
+    matcher_kind = _bounded_text(value.get("matcher_kind"), 40)
+    rule_content_value = value.get("rule_content")
+    rule_content = (
+        None
+        if rule_content_value is None
+        else _bounded_text(rule_content_value, 240)
+    )
+    expected = {
+        "task_id": str(pending.get("task_id") or ""),
+        "executor_run_id": str(pending.get("executor_run_id") or ""),
+        "session_id": str(pending.get("session_id") or ""),
+        "request_id": str(pending.get("request_id") or ""),
+        "tool_use_id": str(pending.get("tool_use_id") or ""),
+    }
+    actual = {key: str(value.get(key) or "") for key in expected}
+    if actual != expected or tool_name != str(pending.get("tool_name") or ""):
+        raise ControlPlaneError(
+            "session_rule_response_identity_mismatch",
+            "The session rule response does not match the pending native request.",
+            {"expected": expected, "actual": actual},
+        )
+    if matcher_kind == "tool_type":
+        if matcher != tool_name or rule_content != "*":
+            raise ControlPlaneError(
+                "session_rule_response_invalid",
+                "A tool-type rule must contain the exact blocked tool name "
+                "and the official all-uses specifier.",
+            )
+    elif matcher_kind == "command_pattern":
+        if not rule_content or not matcher.startswith(f"{tool_name}("):
+            raise ControlPlaneError(
+                "session_rule_response_invalid",
+                "A command-pattern rule requires bounded rule content.",
+            )
+    else:
+        raise ControlPlaneError(
+            "session_rule_response_invalid",
+            "The session tool rule matcher kind is unsupported.",
+        )
+    binding_digest = _bounded_text(value.get("binding_digest"), 96)
+    if not (
+        binding_digest.startswith("sha256:")
+        and len(binding_digest) == len("sha256:") + 64
+        and all(character in "0123456789abcdef" for character in binding_digest[7:])
+    ):
+        raise ControlPlaneError(
+            "session_rule_response_invalid",
+            "The session tool rule has no trusted binding digest.",
+        )
+    return {
+        **expected,
+        "tool_name": tool_name,
+        "matcher": matcher,
+        "matcher_kind": matcher_kind,
+        "rule_content": rule_content,
+        "binding_digest": binding_digest,
+    }
 
 
 class _ControlFileLock:
@@ -503,6 +579,7 @@ class ApprovalControlPlane:
                     "session_id": exact_session,
                     "request_id": request.request_id,
                     "tool_use_id": request.item_id,
+                    "tool_name": request.tool_name,
                     "control_path": "sdk_control_transport",
                 }
                 actual_identity = {
@@ -513,6 +590,7 @@ class ApprovalControlPlane:
                     "session_id": request.thread_id,
                     "request_id": str(identity.get("request_id") or "").strip(),
                     "tool_use_id": str(identity.get("tool_use_id") or "").strip(),
+                    "tool_name": str(identity.get("tool_name") or "").strip(),
                     "control_path": str(
                         identity.get("control_path") or ""
                     ).strip(),
@@ -544,6 +622,8 @@ class ApprovalControlPlane:
                     binding_errors.append("request_fingerprint_missing")
                 if not action_fingerprint_value.startswith("fp-"):
                     binding_errors.append("action_fingerprint")
+                if not actual_identity["tool_name"]:
+                    binding_errors.append("tool_name")
                 if domain not in PERMISSION_RUNTIME_DOMAINS:
                     binding_errors.append("escalation_domain")
                 if top_level_domain != domain:
@@ -576,6 +656,7 @@ class ApprovalControlPlane:
                     )
                 request = replace(
                     request,
+                    tool_name=actual_identity["tool_name"],
                     tool_use_id=actual_identity["tool_use_id"],
                     action_fingerprint=action_fingerprint_value,
                     escalation_domain=domain,
@@ -760,6 +841,7 @@ class ApprovalControlPlane:
         session_id: str,
         request_id: str,
         decision: str,
+        session_rule: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         selected = normalize_decision(decision)
         with self._locked():
@@ -826,6 +908,12 @@ class ApprovalControlPlane:
                 self._stale(state, "approval_response_duplicate", "Approval response was already recorded.")
                 raise ControlPlaneError("approval_response_duplicate", "Approval response was already recorded.")
             response_payload = approval_response_payload(pending, selected)
+            rule_payload = _session_rule_response_payload(pending, session_rule)
+            if rule_payload is not None and selected != "accept":
+                raise ControlPlaneError(
+                    "session_rule_response_invalid",
+                    "A session tool rule can accompany only an accept decision.",
+                )
             response = {
                 "version": CONTROL_VERSION,
                 "task_id": self.task_id,
@@ -836,6 +924,8 @@ class ApprovalControlPlane:
                 "response_payload": response_payload,
                 "responded_at": utc_now(),
             }
+            if rule_payload is not None:
+                response["session_rule"] = rule_payload
             # Commit the decision as one fail-closed control-plane
             # transaction.  The response file is the worker-visible commit
             # marker and is therefore written LAST: if ledger or state

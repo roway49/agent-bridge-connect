@@ -1286,6 +1286,11 @@ class RunnerState:
                 str(request.get("session_id") or ""),
                 str(request.get("request_id") or ""),
                 str(request.get("decision") or ""),
+                session_rule=(
+                    request.get("session_rule")
+                    if isinstance(request.get("session_rule"), dict)
+                    else None
+                ),
             )
         except (ControlPlaneError, SessionRecoveryRequired) as exc:
             raise RunnerError(f"{getattr(exc, 'code', 'approval_control_error')}: {exc}") from exc
@@ -2147,52 +2152,13 @@ class RunnerState:
                     if str(result.get("approval_decision") or "") == "approve"
                     else "decline"
                 )
-                try:
-                    native_response = self.respond_approval(
-                        {
-                            "task_id": task_id,
-                            "executor": resumed_task.assignee,
-                            "executor_run_id": executor_run_id,
-                            "session_id": session_id,
-                            "request_id": str(
-                                native_approval.get("request_id") or ""
-                            ),
-                            "decision": decision,
-                            "board_root": str(board),
-                        }
-                    )
-                except RunnerError as exc:
-                    service.mark_task_needs_recovery(
-                        task_id,
-                        "approval_control_response_failed",
-                        str(exc),
-                        {
-                            "input_id": result.get("input_id", ""),
-                            "request_id": native_approval.get("request_id", ""),
-                            "executor": resumed_task.assignee,
-                            "phase": "same_process_response",
-                        },
-                        executor_run_id=executor_run_id,
-                    )
-                    write_report_files(task_id, board)
-                    notify_terminal(
-                        service,
-                        task_id,
-                        "task.recovery_required",
-                        "warning",
-                        f"Native approval response failed: {exc}",
-                    )
-                    self._refresh_task_list_dashboard(board)
-                    raise
-                self._ensure_task_list_dashboard(board, task_id=task_id)
+                rule_result: dict[str, Any] | None = None
                 if tool_matcher and session_scope:
-                    # PERM-104-002: the explicit CLI session-rule decision is
-                    # issued only for the exact native request that was just
-                    # approved through the control plane.  ``tool_matcher``
-                    # without ``session_scope`` is unreachable here because
-                    # the CLI parser makes them mutually exclusive with
-                    # --approve/--deny, but a malformed Runner request still
-                    # fails closed below via respond_session_rule.
+                    # The durable rule must be validated and issued BEFORE
+                    # the control-plane response file wakes the live SDK
+                    # callback. The validated rule is then carried inside
+                    # that exact response; no global transport lookup, second
+                    # worker or timing race is involved.
                     try:
                         rule_result = self.respond_session_rule(
                             {
@@ -2225,6 +2191,54 @@ class RunnerState:
                         )
                         self._refresh_task_list_dashboard(board)
                         raise
+                try:
+                    native_response = self.respond_approval(
+                        {
+                            "task_id": task_id,
+                            "executor": resumed_task.assignee,
+                            "executor_run_id": executor_run_id,
+                            "session_id": session_id,
+                            "request_id": str(
+                                native_approval.get("request_id") or ""
+                            ),
+                            "decision": decision,
+                            "board_root": str(board),
+                            "session_rule": (
+                                rule_result.get("session_tool_rule")
+                                if isinstance(rule_result, dict)
+                                else None
+                            ),
+                        }
+                    )
+                except RunnerError as exc:
+                    if rule_result is not None:
+                        service.revoke_session_tool_rule(
+                            task_id, "session_rule_control_response_failed"
+                        )
+                    service.mark_task_needs_recovery(
+                        task_id,
+                        "approval_control_response_failed",
+                        str(exc),
+                        {
+                            "input_id": result.get("input_id", ""),
+                            "request_id": native_approval.get("request_id", ""),
+                            "executor": resumed_task.assignee,
+                            "phase": "same_process_response",
+                        },
+                        executor_run_id=executor_run_id,
+                    )
+                    write_report_files(task_id, board)
+                    notify_terminal(
+                        service,
+                        task_id,
+                        "task.recovery_required",
+                        "warning",
+                        f"Native approval response failed: {exc}",
+                    )
+                    self._refresh_task_list_dashboard(board)
+                    raise
+                self._ensure_task_list_dashboard(board, task_id=task_id)
+                if rule_result is not None:
                     return {
                         **result,
                         "task_id": task_id,

@@ -417,6 +417,30 @@ Executor 拒绝必须在同 session、同 request Approve 后精确执行。
   duplicate/replay 幂等、终态撤销矩阵、Runner reload 幂等、PostToolUse 对账收敛消失）；
   live probe verdict=pass（6/6 checks）。
 
+2026-08-31 controller 收尾修订（`F8MJ-001` correction `I-001`）：
+
+- `--approve-tool Bash --scope session` 明确定义为当前可信 native Bash 阻塞所授权的
+  session-scoped 工具类型规则；CLI 的裸工具名与全局 matcher `*` 不同。CLI 输入 `*`、
+  `Tool(*)`、跨工具 matcher 继续 fail closed；仅在已绑定当前阻塞工具后，Adapter 按 Claude
+  官方等价语义把裸 `Tool` 编码为 SDK `PermissionRuleValue(tool_name=Tool,
+  rule_content="*")`。receipt 新增 `matcher_kind=tool_type|command_pattern`，仍绑定
+  task/run/官方 session/request/tool_use/fingerprint/profile，并在终态撤销。
+- 修复生产接线竞态：旧实现先写单动作 accept 唤醒 SDK，再签发 receipt，且
+  `attach_session_rule()` 只在测试中调用，真实 live transport 无法取得 rule。修订后 Runner
+  先验证并签发 receipt，再把完整绑定的 rule 原子写入同一 control response；SDK callback
+  对 task/run/session/request/tool_use/tool-name 全量复核后，才返回携带官方
+  `PermissionUpdate(addRules, destination=session)` 的 allow。
+- live probe 不再硬编码 Claude `2.1.247`，默认解析 Runner 配置中的
+  `executors.claude.command`，只允许以 `AGENTBC_PROBE_CLAUDE_BIN` 显式覆盖；证据必须记录
+  精确绝对路径和 `--version`。controller 先证明 `rule_content=null` 在生产 Runner
+  `2.1.233` 中不会抑制第二次同类回调，随后依据官方 `Tool` 等价于 `Tool(*)` 的规则语义改为
+  `rule_content="*"`。为避免给联网 probe 放行全部 Bash，最终实机证据使用两个无副作用的
+  in-process MCP 工具：同一官方 session 中 matching 工具连续执行两次但只有第一次进入
+  `can_use_tool`，distinct 工具重新进入 callback 且 deny 零执行，settings 零写入，6/6
+  checks pass；证据冻结于 `probe_evidence_tool_type_2.1.233_2026-08-31.json`。重新封包部署后
+  仍需以真实 AgentBC task 验证 Desktop 弹窗到 CLI `--approve-tool Bash --scope session` 的
+  端到端交互，方可关闭 P0。
+
 2026-08-31 `RAXT-001` 实施与证据边界（`agent/codex` 本地提交，未 push）：
 
 - 保留 `WDAB-001` 的关闭记录，不改写历史因果顺序：官方 session

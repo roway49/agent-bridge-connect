@@ -453,12 +453,19 @@ class ClaudeSDKControlTransport:
                 "the official PermissionUpdate shape proven by the live "
                 "probe.",
             )
+        normalized_tool = str(tool_name or "").strip()
+        normalized_content = str(rule_content or "").strip()
+        if not normalized_tool or not normalized_content:
+            raise ClaudeSDKTransportError(
+                "claude_sdk_session_rule_invalid",
+                "The SDK session rule requires a tool and rule content.",
+            )
         update = PermissionUpdate(
             type=SDK_SESSION_RULE_UPDATE_TYPE,
             rules=[
                 PermissionRuleValue(
-                    tool_name=str(tool_name or ""),
-                    rule_content=str(rule_content or ""),
+                    tool_name=normalized_tool,
+                    rule_content=normalized_content,
                 )
             ],
             behavior=SDK_SESSION_RULE_BEHAVIOR,
@@ -577,12 +584,27 @@ class ClaudeSDKControlTransport:
                 # request/tool_use_id/fingerprints) was validated by the
                 # Runner-issued receipt; the transport re-checks the cheap
                 # invariants before attaching the rule.
-                rule = self._session_rule_from_receipt()
-                if rule is not None and str(rule.get("tool_name") or "") == tool:
+                response_rule = response.get("session_rule")
+                attached_rule = self._session_rule_from_receipt()
+                rule = (
+                    response_rule
+                    if isinstance(response_rule, dict)
+                    and self._response_rule_matches(
+                        response_rule,
+                        tool=tool,
+                        tool_use_id=tool_use_id,
+                        request_id=decision_request_id,
+                    )
+                    else attached_rule
+                    if isinstance(attached_rule, dict)
+                    and str(attached_rule.get("tool_name") or "") == tool
+                    else None
+                )
+                if isinstance(rule, dict):
                     return self._session_rule_allow_result(
                         tool_input,
                         tool_name=str(rule.get("tool_name") or ""),
-                        rule_content=str(rule.get("rule_content") or ""),
+                        rule_content=rule.get("rule_content"),
                     )
                 return self._allow_result(tool_input)
             return self._deny_result(
@@ -647,16 +669,28 @@ class ClaudeSDKControlTransport:
         rule dies with this transport; it is never persisted or re-derived.
         """
         tool_name = str((rule or {}).get("tool_name") or "").strip()
-        rule_content = str((rule or {}).get("rule_content") or "").strip()
+        rule_content_value = (rule or {}).get("rule_content")
+        rule_content = (
+            None
+            if rule_content_value is None
+            else str(rule_content_value).strip()
+        )
+        matcher_kind = str((rule or {}).get("matcher_kind") or "").strip()
         if not tool_name or not rule_content:
             raise ClaudeSDKTransportError(
                 "claude_sdk_session_rule_invalid",
-                "A session rule requires the exact tool name and rule "
-                "content from the validated receipt.",
+                "A session rule requires a tool name and an official SDK "
+                "rule specifier.",
+            )
+        if matcher_kind == "tool_type" and rule_content != "*":
+            raise ClaudeSDKTransportError(
+                "claude_sdk_session_rule_invalid",
+                "A tool-type session rule requires the official '*' specifier.",
             )
         self._session_rule = {
             "tool_name": tool_name,
             "rule_content": rule_content,
+            "matcher_kind": matcher_kind or "command_pattern",
             "session_id": self.session_id,
             "run_id": self.run_id,
         }
@@ -691,6 +725,33 @@ class ClaudeSDKControlTransport:
             # A rule bound to another session can never be applied here.
             return None
         return dict(rule)
+
+    def _response_rule_matches(
+        self,
+        rule: dict[str, Any],
+        *,
+        tool: str,
+        tool_use_id: str,
+        request_id: str,
+    ) -> bool:
+        """Recheck the response-carried rule against this live callback."""
+        expected = {
+            "task_id": self.task_id,
+            "executor_run_id": self.run_id,
+            "session_id": self.session_id,
+            "request_id": str(request_id),
+            "tool_use_id": str(tool_use_id),
+            "tool_name": str(tool),
+        }
+        if any(str(rule.get(key) or "") != value for key, value in expected.items()):
+            return False
+        kind = str(rule.get("matcher_kind") or "")
+        content = rule.get("rule_content")
+        if kind == "tool_type":
+            return content == "*" and str(rule.get("matcher") or "") == tool
+        if kind == "command_pattern":
+            return bool(str(content or "").strip())
+        return False
 
     def capture_tool_event(
         self,

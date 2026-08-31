@@ -41,6 +41,7 @@ SESSION_RULE_INPUT_ANSWERED = "session_rule_input_answered"
 SESSION_RULE_IDENTITY_MISMATCH = "session_rule_identity_mismatch"
 SESSION_RULE_MATCHER_INVALID = "session_rule_matcher_invalid"
 SESSION_RULE_MATCHER_WILDCARD = "session_rule_matcher_wildcard"
+SESSION_RULE_TOOL_MISMATCH = "session_rule_tool_mismatch"
 SESSION_RULE_EXECUTOR_UNSUPPORTED = "session_rule_executor_unsupported"
 SESSION_RULE_ALREADY_ACTIVE = "session_rule_already_active"
 SESSION_RULE_REPLAY_CONFLICT = "session_rule_replay_conflict"
@@ -56,9 +57,8 @@ SUPPORTED_SESSION_RULE_NATIVE_EVENTS = frozenset({"claude_sdk_can_use_tool"})
 
 _TOOL_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 # command() rule content: printable ASCII, no control characters, no
-# unclosed wildcard-all.  ``Bash`` alone (no parens) allows every Bash
-# invocation and is therefore rejected; only bounded tool matchers or
-# ``Tool(command prefix)`` matchers are accepted.
+# unclosed wildcard-all. A bare tool name is an explicit tool-type rule;
+# global ``*`` and ``Tool(*)`` remain invalid.
 _COMMAND_RULE_RE = re.compile(
     r"^[A-Za-z][A-Za-z0-9_-]{0,63}\([^()]{1,240}\)$"
 )
@@ -85,18 +85,21 @@ class SessionRuleError(Exception):
 # ---------------------------------------------------------------------------
 
 
-def normalize_tool_matcher(value: Any) -> dict[str, str]:
+def normalize_tool_matcher(value: Any) -> dict[str, Any]:
     """Validate and normalize one ``--approve-tool`` matcher.
 
     Accepted shapes (the narrowest supported allow rules):
 
+    * ``Bash`` — explicit tool-type rule for the current blocked tool,
+      encoded for the SDK as the official equivalent ``Bash(*)``;
     * ``Bash(command prefix*)`` — official command-prefix rule for one tool;
     * ``WebFetch(domain:example.com)`` — any official content rule whose
       bound tool name matches the wrapper.
 
-    Rejected: bare tool names (an allow-all for that tool), ``*`` wildcards,
-    empty or control-character content, ``*``/empty command bodies, and any
-    matcher longer than the bounded grammar above.
+    A bare name is distinct from the global ``*`` wildcard: it is an
+    explicit, audited allow for one tool type in this SDK session. Global
+    ``*``, ``Tool(*)``, empty/control-character content and malformed
+    matchers remain fail-closed.
     """
     text = str(value or "").strip()
     if not text:
@@ -105,13 +108,23 @@ def normalize_tool_matcher(value: Any) -> dict[str, str]:
             "A session tool rule requires an explicit tool matcher, such as "
             "Bash(echo probe*).",
         )
-    if text == "*" or _TOOL_NAME_RE.fullmatch(text):
+    if text == "*":
         raise SessionRuleError(
             SESSION_RULE_MATCHER_WILDCARD,
-            "A session tool rule must be bounded: bare tool names and '*' "
-            "wildcards are rejected. Use Tool(command prefix*) instead.",
+            "A session tool rule cannot use the global '*' wildcard.",
             {"matcher": text[:120]},
         )
+    if _TOOL_NAME_RE.fullmatch(text):
+        return {
+            "tool_name": text,
+            # Claude permission syntax defines bare ``Tool`` and ``Tool(*)``
+            # as equivalent.  PermissionRuleValue is the decomposed SDK wire
+            # shape, so the all-uses specifier must be carried explicitly.
+            # ``None`` serializes, but Claude Code 2.1.233 ignores it.
+            "rule_content": "*",
+            "matcher": text,
+            "matcher_kind": "tool_type",
+        }
     match = _COMMAND_RULE_RE.fullmatch(text)
     if match is None:
         raise SessionRuleError(
@@ -141,7 +154,12 @@ def normalize_tool_matcher(value: Any) -> dict[str, str]:
             "The tool matcher content contains control characters.",
             {"matcher": text[:120]},
         )
-    return {"tool_name": tool_name, "rule_content": content, "matcher": text}
+    return {
+        "tool_name": tool_name,
+        "rule_content": content,
+        "matcher": text,
+        "matcher_kind": "command_pattern",
+    }
 
 
 def session_rule_binding_digest(request: dict[str, Any]) -> str:
@@ -222,6 +240,21 @@ def validate_session_rule_request(
             {"executor": normalized_executor},
         )
     matcher = normalize_tool_matcher(matcher_value)
+    blocked_tool_name = str(request.get("tool_name") or "").strip()
+    if not blocked_tool_name:
+        raise SessionRuleError(
+            SESSION_RULE_IDENTITY_MISMATCH,
+            "The native permission input is missing its blocked tool name.",
+        )
+    if matcher["tool_name"] != blocked_tool_name:
+        raise SessionRuleError(
+            SESSION_RULE_TOOL_MISMATCH,
+            "The requested session rule does not match the currently blocked tool.",
+            {
+                "blocked_tool": blocked_tool_name,
+                "requested_tool": matcher["tool_name"],
+            },
+        )
     expected = {
         "task_id": str(task_id or "").strip(),
         "executor_run_id": str(executor_run_id or "").strip(),
@@ -266,6 +299,7 @@ def validate_session_rule_request(
     binding["matcher"] = matcher["matcher"]
     binding["tool_name"] = matcher["tool_name"]
     binding["rule_content"] = matcher["rule_content"]
+    binding["matcher_kind"] = matcher["matcher_kind"]
     binding["escalation_domain"] = str(request.get("escalation_domain") or "").strip()
     binding["profile_digest"] = str(request.get("profile_digest") or "").strip()
     return binding
@@ -300,8 +334,9 @@ def build_session_rule_receipt(
         },
         "matcher": {
             "tool_name": str(binding.get("tool_name") or ""),
-            "rule_content": str(binding.get("rule_content") or ""),
+            "rule_content": binding.get("rule_content"),
             "display": str(binding.get("matcher") or ""),
+            "kind": str(binding.get("matcher_kind") or ""),
         },
         "binding": {
             "input_id": str(input_id),
@@ -447,6 +482,7 @@ def session_rule_receipt_public_projection(value: Any) -> dict[str, Any] | None:
         "revoked": state.get("revoked") is True,
         "revocation_code": str(state.get("revocation_code") or ""),
         "matcher": str(matcher.get("display") or ""),
+        "matcher_kind": str(matcher.get("kind") or ""),
         "binding_digest": _short_digest(binding.get("binding_digest")),
         "profile_digest": _short_digest(binding.get("profile_digest")),
         "created_at": str(audit.get("created_at") or ""),
@@ -471,6 +507,7 @@ __all__ = [
     "SESSION_RULE_INPUT_STALE",
     "SESSION_RULE_MATCHER_INVALID",
     "SESSION_RULE_MATCHER_WILDCARD",
+    "SESSION_RULE_TOOL_MISMATCH",
     "SESSION_RULE_RECEIPT_EXTENSION_KEY",
     "SESSION_RULE_RECEIPT_VERSION",
     "SESSION_RULE_REPLAY_CONFLICT",

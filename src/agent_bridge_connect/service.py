@@ -1243,10 +1243,19 @@ class TaskService:
             "session_tool_rule": {
                 "matcher": str(binding.get("matcher") or ""),
                 "tool_name": str(binding.get("tool_name") or ""),
-                "rule_content": str(binding.get("rule_content") or ""),
+                "rule_content": binding.get("rule_content"),
+                "matcher_kind": str(binding.get("matcher_kind") or ""),
                 "scope": "session",
                 "state": str((receipt.get("state") or {}).get("status") or ""),
                 "session_rule_applied": False,
+                "task_id": task.id,
+                "executor_run_id": str(binding.get("executor_run_id") or ""),
+                "session_id": str(binding.get("session_id") or ""),
+                "request_id": str(binding.get("request_id") or ""),
+                "tool_use_id": str(binding.get("tool_use_id") or ""),
+                "binding_digest": str(
+                    ((receipt.get("binding") or {}).get("binding_digest") or "")
+                ),
             },
         }
 
@@ -2162,6 +2171,7 @@ class TaskService:
         reason_detail: str = "",
         blocked_step_id: int | None = None,
         execution_session: dict[str, Any] | None = None,
+        tool_name: str = "",
         tool_use_id: str = "",
         action_fingerprint: str = "",
         escalation_domain: str = "",
@@ -2306,6 +2316,7 @@ class TaskService:
             "status": "waiting",
         }
         native_binding = {
+            "tool_name": str(tool_name or "").strip(),
             "tool_use_id": str(tool_use_id or "").strip(),
             "action_fingerprint": str(action_fingerprint or "").strip(),
             "escalation_domain": str(escalation_domain or "").strip().lower(),

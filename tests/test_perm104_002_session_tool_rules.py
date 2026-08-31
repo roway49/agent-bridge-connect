@@ -11,8 +11,9 @@ operation ``agentbc task respond <task-id> --input <input-id> --approve-tool
   missing, stale, answered, non-permission, compatibility/full-fallback,
   cross-task, cross-session and cross-run requests are all rejected with
   stable codes;
-* tool and command matcher validation: bare tools, ``*`` and ``Tool(*)``
-  wildcards, control characters and malformed grammar fail closed;
+* tool and command matcher validation: explicit bare tool types and bounded
+  command patterns pass; global ``*``, ``Tool(*)``, control characters and
+  malformed grammar fail closed;
 * the official SDK ``PermissionUpdate`` serialization matches the shape
   proven by the live-compatible probe (addRules / allow / session);
 * one-session reuse: the transport applies the rule on the approved allow
@@ -60,6 +61,7 @@ from agent_bridge_connect.session_tool_rules import (
     SESSION_RULE_INPUT_STALE,
     SESSION_RULE_MATCHER_INVALID,
     SESSION_RULE_MATCHER_WILDCARD,
+    SESSION_RULE_TOOL_MISMATCH,
     SESSION_RULE_RECEIPT_EXTENSION_KEY,
     SESSION_RULE_REPLAY_CONFLICT,
     SESSION_RULE_SCOPE,
@@ -93,6 +95,7 @@ def _native_request(**overrides) -> dict:
         "request_fingerprint": "fp-" + "a" * 40,
         "action_fingerprint": "fp-" + "b" * 40,
         "operation": "command",
+        "tool_name": "Bash",
         "summary": "Command execution approval requested",
         "status": "answered",
         "tool_use_id": f"call_{uuid.uuid4().hex[:24]}",
@@ -167,10 +170,11 @@ class MatcherValidationTests(unittest.TestCase):
         matcher = normalize_tool_matcher("WebFetch(domain:example.com)")
         self.assertEqual(matcher["tool_name"], "WebFetch")
 
-    def test_bare_tool_name_is_wildcard_rejected(self) -> None:
-        with self.assertRaises(SessionRuleError) as raised:
-            normalize_tool_matcher("Bash")
-        self.assertEqual(raised.exception.code, SESSION_RULE_MATCHER_WILDCARD)
+    def test_bare_tool_name_is_explicit_tool_type(self) -> None:
+        matcher = normalize_tool_matcher("Bash")
+        self.assertEqual(matcher["tool_name"], "Bash")
+        self.assertEqual(matcher["rule_content"], "*")
+        self.assertEqual(matcher["matcher_kind"], "tool_type")
 
     def test_global_star_is_wildcard_rejected(self) -> None:
         with self.assertRaises(SessionRuleError) as raised:
@@ -220,6 +224,11 @@ class PendingInputAuthorityTests(unittest.TestCase):
         binding = self._validate(_native_request(status="answered"))
         self.assertEqual(binding["tool_name"], "Bash")
         self.assertEqual(binding["session_id"], SESSION_ID)
+
+    def test_rule_must_match_current_blocked_tool(self) -> None:
+        with self.assertRaises(SessionRuleError) as raised:
+            self._validate(_native_request(tool_name="Read"), matcher="Bash")
+        self.assertEqual(raised.exception.code, SESSION_RULE_TOOL_MISMATCH)
 
     def test_missing_request_fails_closed(self) -> None:
         with self.assertRaises(SessionRuleError) as raised:
@@ -471,6 +480,21 @@ class SdkSerializationTests(unittest.TestCase):
             )
             self.assertEqual(update.to_dict()["destination"], "session")
 
+    def test_tool_type_rule_serializes_official_all_uses_specifier(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            transport = self._transport(tmp)
+            self.addCleanup(transport.stop)
+            result = transport._session_rule_allow_result(
+                {"command": "git status"},
+                tool_name="Bash",
+                rule_content="*",
+            )
+            (update,) = result.updated_permissions
+            self.assertEqual(
+                update.to_dict()["rules"],
+                [{"toolName": "Bash", "ruleContent": "*"}],
+            )
+
     def test_session_rule_contract_drift_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             transport = self._transport(tmp)
@@ -555,7 +579,9 @@ class OneSessionReuseTests(unittest.TestCase):
         self.addCleanup(transport.stop)
         return transport
 
-    def _respond_accept_later(self, transport: _Run) -> threading.Thread:
+    def _respond_accept_later(
+        self, transport: _Run, *, carry_tool_type_rule: bool = False
+    ) -> threading.Thread:
         def decide() -> None:
             deadline = __import__("time").time() + 5
             pending: dict = {}
@@ -564,17 +590,50 @@ class OneSessionReuseTests(unittest.TestCase):
                 if pending.get("status") == "pending":
                     break
                 threading.Event().wait(0.02)
+            session_rule = None
+            if carry_tool_type_rule:
+                session_rule = {
+                    "task_id": TASK_ID,
+                    "executor_run_id": RUN_ID,
+                    "session_id": self.session_id,
+                    "request_id": str(pending.get("request_id") or ""),
+                    "tool_use_id": str(pending.get("tool_use_id") or ""),
+                    "tool_name": "Bash",
+                    "matcher": "Bash",
+                    "matcher_kind": "tool_type",
+                    "rule_content": "*",
+                    "binding_digest": "sha256:" + "1" * 64,
+                }
             self.plane.respond_approval(
                 TASK_ID,
                 RUN_ID,
                 self.session_id,
                 str(pending.get("request_id") or ""),
                 "accept",
+                session_rule=session_rule,
             )
 
         thread = threading.Thread(target=decide, daemon=True)
         thread.start()
         return thread
+
+    def test_response_carried_tool_type_rule_reaches_same_sdk_callback(self) -> None:
+        transport = self._transport()
+        thread = self._respond_accept_later(
+            transport, carry_tool_type_rule=True
+        )
+        result = asyncio.run(
+            transport.can_use_tool(
+                "Bash", {"command": "git status"}, _FakeContext("call_type_1")
+            )
+        )
+        thread.join(timeout=5)
+        self.assertEqual(result.behavior, "allow")
+        (update,) = result.updated_permissions
+        self.assertEqual(
+            update.to_dict()["rules"],
+            [{"toolName": "Bash", "ruleContent": "*"}],
+        )
 
     def test_rule_is_applied_only_to_matching_tool(self) -> None:
         transport = self._transport()
@@ -623,6 +682,134 @@ class OneSessionReuseTests(unittest.TestCase):
         )
         transport.stop()
         self.assertFalse(transport.session_rule_attached())
+
+
+class RunnerControlResponseWiringTests(unittest.TestCase):
+    def test_runner_issues_rule_before_waking_live_control_response(self) -> None:
+        from agent_bridge_connect.runner import RunnerState
+        from agent_bridge_connect.session import control_root_for_task
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            board = root / "record"
+            project = root / "project"
+            project.mkdir()
+            service = TaskService(board, config={"workspace_root": str(root / "ws")})
+            task = service.create_task(
+                "runner session rule",
+                "claude",
+                [{"id": 1, "description": "finish"}],
+                customer_dir=True,
+                customer_path=project,
+                permission_mode="safe",
+            )
+            service.start_task_run(task.id, "claude")
+            service.record_executor_run_started(task.id, RUN_ID)
+            model = service.get_task(task.id)
+            extensions = dict(model.extensions or {})
+            session = dict(extensions.get("agentbc.session") or {})
+            session.update(
+                {
+                    "session_id": SESSION_ID,
+                    "session_state": "active",
+                    "run_ids": [RUN_ID],
+                }
+            )
+            extensions["agentbc.session"] = session
+            model.extensions = extensions
+            service.store.write_task(model.id, model.to_dict())
+
+            plane = ApprovalControlPlane(
+                control_root_for_task(task.id, board_root=board),
+                task_id=task.id,
+                executor_run_id=RUN_ID,
+                session_id=SESSION_ID,
+                executor="claude",
+            )
+            plane.record_session_started(
+                {
+                    "version": 1,
+                    "executor": "claude",
+                    "session_id": SESSION_ID,
+                    "resumed": False,
+                    "persistence": "persistent",
+                    "source": "preallocated",
+                }
+            )
+            request_id = "approval-runner-session-rule"
+            tool_use_id = "call_runner_session_rule"
+            request_fingerprint = "fp-" + "a" * 40
+            action_fingerprint = "fp-" + "b" * 40
+            profile_digest = "sha256:" + "1" * 64
+            event = plane.request_approval(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "item/commandExecution/requestApproval",
+                    "params": {
+                        "threadId": SESSION_ID,
+                        "turnId": "",
+                        "itemId": tool_use_id,
+                    },
+                    "_agentbc": {
+                        "task_id": task.id,
+                        "executor_run_id": RUN_ID,
+                        "request_id": request_id,
+                        "tool_use_id": tool_use_id,
+                        "tool_name": "Bash",
+                        "request_fingerprint": request_fingerprint,
+                        "action_fingerprint": action_fingerprint,
+                        "control_path": "sdk_control_transport",
+                        "escalation_domain": "executor_policy",
+                        "host_profile_digest": profile_digest,
+                    },
+                    "escalation_domain": "executor_policy",
+                    "host_profile_digest": profile_digest,
+                }
+            )
+            blocked = service.block_task_for_approval(
+                task.id,
+                executor_run_id=RUN_ID,
+                session_id=SESSION_ID,
+                request_id=request_id,
+                request_fingerprint=request_fingerprint,
+                executor="claude",
+                operation="command",
+                tool_name="Bash",
+                tool_use_id=tool_use_id,
+                action_fingerprint=action_fingerprint,
+                escalation_domain="executor_policy",
+                profile_digest=profile_digest,
+                control_path="sdk_control_transport",
+                native_event="claude_sdk_can_use_tool",
+            )
+            state = RunnerState(
+                root / "runner-state",
+                [root],
+                {"claude": Path("/bin/echo")},
+            )
+            result = state.respond_and_dispatch(
+                {
+                    "task_id": task.id,
+                    "input_id": blocked["input_id"],
+                    "response_type": "approve",
+                    "message": "",
+                    "board_root": str(board),
+                    "config_path": "",
+                    "tool_matcher": "Bash",
+                    "session_scope": True,
+                }
+            )
+            self.assertEqual(result["status"], "running")
+            response = plane.wait_for_decision(str(event["request_id"]), 0.1)
+            rule = response["session_rule"]
+            self.assertEqual(rule["tool_name"], "Bash")
+            self.assertEqual(rule["matcher_kind"], "tool_type")
+            self.assertEqual(rule["rule_content"], "*")
+            receipt = (
+                service.get_task(task.id).extensions or {}
+            )[SESSION_RULE_RECEIPT_EXTENSION_KEY]
+            self.assertEqual(receipt["matcher"]["kind"], "tool_type")
 
 
 class ReceiptLifecycleTests(unittest.TestCase):
@@ -1017,11 +1204,24 @@ class CliParsingTests(unittest.TestCase):
         )
         self.assertEqual(command_task_respond(args), 1)
 
-    def test_wildcard_matcher_is_rejected_before_dispatch(self) -> None:
+    def test_bare_tool_type_is_dispatched(self) -> None:
         from agent_bridge_connect.cli import command_task_respond
 
         args = self._parse(
             ["T1-001", "--input", "input-1", "--approve-tool", "Bash", "--scope", "session"]
+        )
+        with mock.patch(
+            "agent_bridge_connect.runner.RunnerClient.respond_task",
+            return_value={"status": "running", "task_id": "T1-001"},
+        ) as respond:
+            self.assertEqual(command_task_respond(args), 0)
+        self.assertEqual(respond.call_args.kwargs["tool_matcher"], "Bash")
+
+    def test_global_wildcard_matcher_is_rejected_before_dispatch(self) -> None:
+        from agent_bridge_connect.cli import command_task_respond
+
+        args = self._parse(
+            ["T1-001", "--input", "input-1", "--approve-tool", "*", "--scope", "session"]
         )
         self.assertEqual(command_task_respond(args), 1)
 
@@ -1057,6 +1257,33 @@ class CliParsingTests(unittest.TestCase):
         self.assertTrue(args.deny)
         args = self._parse(["T1-001", "--input", "input-1", "--message", "hello"])
         self.assertEqual(args.message, "hello")
+
+
+class LiveProbeBinaryResolutionTests(unittest.TestCase):
+    def test_probe_uses_exact_runner_configured_binary(self) -> None:
+        from scripts import live_probe_perm104_session_rule as probe
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            binary = root / "claude-2.1.233"
+            binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            binary.chmod(0o755)
+            config = root / "config.toml"
+            config.write_text(
+                f'[executors.claude]\ncommand = "{binary}"\n',
+                encoding="utf-8",
+            )
+            with mock.patch.dict(
+                "os.environ",
+                {"AGENTBC_CONFIG_PATH": str(config)},
+                clear=False,
+            ):
+                with mock.patch.dict(
+                    "os.environ", {"AGENTBC_PROBE_CLAUDE_BIN": ""}, clear=False
+                ):
+                    self.assertEqual(
+                        probe.resolve_probe_cli_path(), str(binary.resolve())
+                    )
 
 
 if __name__ == "__main__":
