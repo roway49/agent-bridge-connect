@@ -1393,7 +1393,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 )
                 if recovery_marked:
                     _write_terminal_report(task_id, service.board_root)
-                _request_task_list_refresh(service.board_root)
+                _request_task_list_refresh_for_service(service)
             except ABCError:
                 pass
             print(f"worker_error: async dispatch failed: {exc}")
@@ -1405,6 +1405,11 @@ def command_worker_run(args: argparse.Namespace) -> int:
         return 0
 
     config = load_config(args.config)
+    # Runner-authorized workers run inside the task-scoped Seatbelt profile.
+    # Keep their TaskService writes task-local; the Runner refreshes global
+    # indexes after the process exits.
+    if getattr(args, "runner_authorize", False) is True:
+        config = {**config, "_runner_worker": True}
     service = TaskService(args.root, config=config)
     try:
         executor = get_executor(
@@ -1430,7 +1435,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                         {"executor": args.executor, "probe": probe.details},
                     )
                     if recovery_marked:
-                        _write_terminal_report(requested.id, service.board_root)
+                        _write_worker_terminal_report(service, requested.id)
                         _notify_terminal(
                             service,
                             requested.id,
@@ -1438,7 +1443,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                             "warning",
                             probe.message,
                         )
-                    _request_task_list_refresh(service.board_root)
+                    _request_task_list_refresh_for_service(service)
             except ABCError:
                 pass
         print(f"worker_error: executor probe failed: {probe.message}")
@@ -1447,7 +1452,11 @@ def command_worker_run(args: argparse.Namespace) -> int:
     while True:
         for active_status in ("running", "assigned", "working"):
             for active_task in service.list_tasks(status=active_status, assignee=args.executor):
-                reconcile_task(active_task.id, service.board_root)
+                reconcile_task(
+                    active_task.id,
+                    service.board_root,
+                    refresh_index=not bool(getattr(service, "_runner_worker", False)),
+                )
         raw_task_id = getattr(args, "task_id", None)
         requested_task_id = raw_task_id if isinstance(raw_task_id, str) and raw_task_id else None
         if requested_task_id:
@@ -1505,9 +1514,9 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     },
                 )
                 if recovery_marked:
-                    _write_terminal_report(task.id, service.board_root)
+                    _write_worker_terminal_report(service, task.id)
                     _notify_terminal(service, task.id, "task.recovery_required", "warning", start.message)
-                _request_task_list_refresh(service.board_root)
+                _request_task_list_refresh_for_service(service)
                 print(f"worker_error: executor start failed for {task.id}: {start.message}")
                 return 1
             manages_executor_session = args.executor in {"claude", "hermes", "codex"}
@@ -1548,7 +1557,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                             {"executor": args.executor, "phase": "session_receipt"},
                         )
                         if recovery_marked:
-                            _write_terminal_report(task.id, service.board_root)
+                            _write_worker_terminal_report(service, task.id)
                             _notify_terminal(
                                 service,
                                 task.id,
@@ -1556,7 +1565,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                                 "warning",
                                 str(exc),
                             )
-                        _request_task_list_refresh(service.board_root)
+                        _request_task_list_refresh_for_service(service)
                         print(f"worker_error: executor session receipt failed for {task.id}: {exc}")
                         return 1
                 else:
@@ -1591,6 +1600,29 @@ def command_worker_run(args: argparse.Namespace) -> int:
                                 reason=str(approval_request.get("summary") or ""),
                                 reason_detail=str(approval_request.get("summary") or ""),
                                 execution_session=execution_session,
+                                tool_use_id=str(
+                                    approval_request.get("tool_use_id")
+                                    or approval_request.get("item_id")
+                                    or ""
+                                ),
+                                action_fingerprint=str(
+                                    approval_request.get("action_fingerprint") or ""
+                                ),
+                                escalation_domain=str(
+                                    approval_request.get("escalation_domain") or ""
+                                ),
+                                profile_digest=str(
+                                    approval_request.get("profile_digest")
+                                    or approval_request.get("host_profile_digest")
+                                    or ""
+                                ),
+                                control_path=str(
+                                    approval_request.get("control_path") or ""
+                                ),
+                                native_event=str(
+                                    approval_request.get("native_event")
+                                    or "claude_sdk_can_use_tool"
+                                ),
                             )
                         except ABCError as exc:
                             recovery_marked = service.mark_task_needs_recovery(
@@ -1606,7 +1638,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                                 execution_session=execution_session,
                             )
                             if recovery_marked:
-                                _write_terminal_report(task.id, service.board_root)
+                                _write_worker_terminal_report(service, task.id)
                                 _notify_terminal(
                                     service,
                                     task.id,
@@ -1614,7 +1646,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                                     "warning",
                                     str(exc),
                                 )
-                            _request_task_list_refresh(service.board_root)
+                            _request_task_list_refresh_for_service(service)
                             print(f"worker_error: native approval failed for {task.id}: {exc}")
                             return 1
                         notified_approval_requests.add(request_id)
@@ -1624,7 +1656,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                             config_path=getattr(args, "config", None),
                             interval_s=getattr(args, "interval", 2),
                         )
-                        _request_task_list_refresh(service.board_root)
+                        _request_task_list_refresh_for_service(service)
                         print(
                             f"input_required: {task.id} "
                             f"request={blocked.get('request_id', request_id)}"
@@ -1652,7 +1684,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                         {"executor": args.executor, "phase": "session_receipt"},
                     )
                     if recovery_marked:
-                        _write_terminal_report(task.id, service.board_root)
+                        _write_worker_terminal_report(service, task.id)
                         _notify_terminal(
                             service,
                             task.id,
@@ -1660,7 +1692,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                             "warning",
                             str(exc),
                         )
-                    _request_task_list_refresh(service.board_root)
+                    _request_task_list_refresh_for_service(service)
                     print(f"worker_error: executor session receipt failed for {task.id}: {exc}")
                     return 1
             else:
@@ -1704,9 +1736,9 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     )
                     event_type, level = "task.failed", "error"
                 if terminal_marked:
-                    _write_terminal_report(task.id, service.board_root)
+                    _write_worker_terminal_report(service, task.id)
                     _notify_terminal(service, task.id, event_type, level, failure_message)
-                _request_task_list_refresh(service.board_root)
+                _request_task_list_refresh_for_service(service)
                 print(f"worker_error: executor failed for {task.id}: {failure_message}")
                 return 1
 
@@ -1723,7 +1755,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     execution_session=execution_session,
                 )
                 if not blocked.get("ok"):
-                    _write_terminal_report(task.id, service.board_root)
+                    _write_worker_terminal_report(service, task.id)
                     _notify_terminal(
                         service,
                         task.id,
@@ -1734,7 +1766,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                             or "resource exhaustion wait failed; task requires recovery"
                         ),
                     )
-                    _request_task_list_refresh(service.board_root)
+                    _request_task_list_refresh_for_service(service)
                     print(f"needs_recovery: {task.id}")
                     return 1
                 _notify_input_required(
@@ -1743,7 +1775,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     config_path=getattr(args, "config", None),
                     interval_s=getattr(args, "interval", 2),
                 )
-                _request_task_list_refresh(service.board_root)
+                _request_task_list_refresh_for_service(service)
                 print(f"input_required: {task.id}")
                 if args.once:
                     return 0
@@ -1874,7 +1906,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     execution_session=execution_session,
                 )
                 if terminal_marked:
-                    _write_terminal_report(task.id, service.board_root)
+                    _write_worker_terminal_report(service, task.id)
                     _notify_terminal(
                         service,
                         task.id,
@@ -1882,7 +1914,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                         "error",
                         failure_message,
                     )
-                _request_task_list_refresh(service.board_root)
+                    _request_task_list_refresh_for_service(service)
                 print(f"worker_error: {failure_message}")
                 return 1
             finalized = service.get_task(task.id)
@@ -1907,7 +1939,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     )
                 else:
                     _notify_terminal(service, task.id, event_type, level, summary)
-            _request_task_list_refresh(service.board_root)
+            _request_task_list_refresh_for_service(service)
             print(f"{final_status}: {task.id}")
         except ABCError as exc:
             try:
@@ -1927,11 +1959,11 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     )
                 )
                 if terminal_marked:
-                    _write_terminal_report(task.id, service.board_root)
+                    _write_worker_terminal_report(service, task.id)
                     event_type = "task.failed" if executor_started else "task.recovery_required"
                     level = "error" if executor_started else "warning"
                     _notify_terminal(service, task.id, event_type, level, str(exc))
-                _request_task_list_refresh(service.board_root)
+                _request_task_list_refresh_for_service(service)
             except ABCError:
                 pass
             print(f"worker_error: {exc}")
@@ -2428,10 +2460,23 @@ def _print_execution_policy(policy: Any) -> None:
         )
 
 
-def _write_terminal_report(task_id: str, board_root: Path) -> None:
+def _write_terminal_report(
+    task_id: str,
+    board_root: Path,
+    *,
+    refresh_index: bool = True,
+) -> None:
     from .reports import write_report_files
 
-    write_report_files(task_id, board_root)
+    write_report_files(task_id, board_root, refresh_index=refresh_index)
+
+
+def _write_worker_terminal_report(service: TaskService, task_id: str) -> None:
+    _write_terminal_report(
+        task_id,
+        service.board_root,
+        refresh_index=not bool(getattr(service, "_runner_worker", False)),
+    )
 
 
 def _notify_terminal(
@@ -2477,6 +2522,12 @@ def _request_task_list_refresh(board_root: str | Path) -> None:
         request_dashboard_refresh(board_root)
     except OSError:
         pass
+
+
+def _request_task_list_refresh_for_service(service: TaskService) -> None:
+    if bool(getattr(service, "_runner_worker", False)):
+        return
+    _request_task_list_refresh(service.board_root)
 
 
 def _build_notification_payload(

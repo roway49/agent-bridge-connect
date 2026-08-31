@@ -1,7 +1,7 @@
 # AgentBC 1.0.4A 需求开发清单
 
 > 制定日期：2026-08-26
-> 状态：持续开发与回归中；`SESSION-104-001` 已通过，当前主线为 Claude `PERM-104-002` 审批循环
+> 状态：持续开发与回归中；`SESSION-104-001` 保持已通过，`PERM-104-002` 仍开放，当前主线为 Claude SDK native approval fail-closed 与生命周期回归
 > 目标版本：AgentBC `1.0.4A` / Python `1.0.4a1`
 > 来源基线：`private/integration@01f3ce1`
 > 已发布基线：`v1.0.3A2@62757a4`；公开 Formula 收口 `public/main@87c4bca`
@@ -56,7 +56,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `PROTO-104-001` | P0 / fixture matrix 已完成（2026-08-27）；production collaboration_spawn wiring 待回归（2026-08-28） | 上游 CLI version/help/argv/event 漂移只能靠临时补测试 | 三 Executor 完整版本化 fixture、capability matrix 和未知组合 fail-closed；生产派生会话接线需通过版本 fixture + live probe 双门 | 无 |
 | `ARCH-104-001` | P1 / 按域执行 | Service、Runner、CLI、approval、notification 责任仍集中 | 每个功能项先完成对应窄模块机械拆分，公共 API/CLI/磁盘行为不变 | `PROTO-104-001` |
 | `PERM-104-001` | P0 | native Deny 后 Agent 仍可用 Prompt/callback 请求 full 并启动第二 worker | 审批渠道和 fallback 完全由可信 transport event 与 Core policy 决定 | permission fixtures；对应 ARCH slice |
-| `PERM-104-002` | P0-Blocker / 当前唯一主线（2026-08-29） | Claude 已批准动作仍被宿主 containment 拒绝时会重复弹窗、grant 和 continuation；显式 full 还可能进入不可再升级 recovery | 稳定 fingerprint + escalation domain；人工授予、临时申请和权限继承三条路径的 full 都必须真实生效且在声明范围内无阻塞；完成后执行 `PERM-104-002-R1` 详情回归 | `PERM-104-001` |
+| `PERM-104-002` | P0-Blocker / 仍开放（RAXT-001，2026-08-31） | Claude native request 曾在 session receipt 建立前失败，后续 callback/full popup/worker crash 不能证明 native approval 成功；同一不可升级阻塞还可能重复请求 | 已补 session-first、native single_action 权威绑定、callback fail-closed、Runner contained cleanup 与回归；仍需 deployed explicit/temporary/inherited full 真机 canary 和 `PERM-104-002-R1` 详情回归，未通过前不得关闭 | `PERM-104-001` |
 | `FLOW-104-002` | P0 | report/record 超限可跳过终态通知和 cleanup receipt | terminal、report、notification、cleanup 独立且可重放，通知不被报告失败吞掉 | terminal fixtures；对应 ARCH slice |
 | `FLOW-104-001` | P1 | handoff 只能声明一个 step，自由文本多步骤直到 callback 才失败 | handoff 原生结构化 steps、dispatch 前预检、严格 callback 一致性 | schema fixtures；对应 ARCH slice |
 | `FLOW-103-001` | P1 / 跨版转入 | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | task/run/session scoped 单调 progress receipt；所有公共视图同源 | `FLOW-104-001` 的 declared steps |
@@ -362,6 +362,35 @@ Executor 拒绝必须在同 session、同 request Approve 后精确执行。
     `PERM-104-002-R1` 详情回归在合并后执行；P0 在 canary 通过前不宣布关闭；
 - `PERM-104-002-R1` 已接入本项验收：首块审批与合法 approval identity 的脱敏只读
   Details/View Details 投影回归在 `PERM-104-002` 收敛验收后执行，不单独占用 Wave。
+
+2026-08-31 `RAXT-001` 实施与证据边界（`agent/codex` 本地提交，未 push）：
+
+- 保留 `WDAB-001` 的关闭记录，不改写历史因果顺序：官方 session
+  `75706277-a80f-42e6-a6f5-f82dded33364` 只发出一次 Bash；在任何 native request identity
+  建立前先得到 `session_receipt_missing`，之后才出现
+  `input_required/requested_permission=full` callback，且在 Approve 前关闭。因此 WDAB 证明的是
+  native request 在 popup 前创建失败；后来的 full popup 与 worker crash 是下游现象，不是成功证据。
+- RAXT-001 已将 Claude SDK wiring 改为 receipt-before-query/can_use_tool：官方预分配或同 session
+  resume receipt 通过 `record_session_started` 且 task/run/session/resumed/source 校验成功后，才绑定
+  hooks、创建 transport、构造 prompt/options 并进入 SDK query；receipt/control/transport 初始化失败
+  统一走结构化 `needs_recovery`，不创建 input 或 full grant。
+- native `can_use_tool` 只产生一次绑定 task/run/session/tool_use_id/request_id/action fingerprint/
+  escalation domain/profile digest 的 `single_action`；Approve 原样返回同 session input，Deny/timeout/
+  transport death 使精确 request 失效；model callback、requested_permission、stderr、退出码和普通
+  access error 只作诊断，不能创建 permission input、grant、worker 或 continuation。相同 fingerprint/
+  domain/profile 在批准后收敛到 `permission_escalation_ineffective`。
+- contained worker 只写 task-scoped record/event/progress/control/temp/report；Runner 负责
+  `task_index.jsonl`/`TASK_INDEX.md` refresh。spawn/start/activation failure 会回收进程、清理 profile、
+  标记 recovery、阻断 runtime receipt、撤销 grant、失效 native input 并清除 worker/run 引用。
+- `CMF2-001` 使用尚未替换的旧安装包复现了自举缺口：contained worker 在 claim/start 阶段写全局
+  index，被 Seatbelt 拒绝后模型又生成兼容 full callback，Approve 只产生未消费 grant，重启 worker
+  仍在同一点失败。controller 已取消该任务并直接补齐 Codex App Server native-authoritative prompt/
+  terminal routing，以及 `control_events` 的终态有界投影；不得把 CMF2 popup 或 grant 视为权限成功。
+- 本轮专项回归见 artifact root 的 `RAXT-001_IMPLEMENTATION_NOTES.md` 与
+  `tests/test_perm104_002_r3.py`。本地单元回归不等于发布门禁：仍需支持宿主路径的真实 Seatbelt
+  probe、SDK live blocking/Approve/Deny/timeout/death 重启矩阵，以及三来源 full 生效 canary。
+  `SESSION-104-001` 本节不修改，仍按原有 `SESSION-104-001_CANARY_EVIDENCE.md` 结论处理；
+  `PERM-104-002` 继续保持开放。
 
 ### 4.5 `FLOW-104-001`：handoff 结构化多 steps
 

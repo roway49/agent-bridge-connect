@@ -140,8 +140,21 @@ class ChainResolution:
 class TaskService:
     def __init__(self, board_root: str | Path = DEFAULT_BOARD_ROOT, config: dict[str, Any] | None = None):
         self.board_root = Path(board_root).expanduser().resolve()
-        self.config = config or {}
-        init_board(self.board_root)
+        self.config = dict(config or {})
+        # A Runner-launched worker is already inside the frozen task-scoped
+        # Seatbelt profile.  It may read and update its task-owned files, but
+        # it must never initialise or refresh board-global metadata.  Requiring
+        # the board to exist also prevents this mode from widening containment
+        # by creating an arbitrary sibling/root on first use.
+        self._runner_worker = self.config.get("_runner_worker") is True
+        if self._runner_worker:
+            if not self.board_root.is_dir():
+                raise ABCError(
+                    "contained_board_missing",
+                    f"Contained worker board does not exist: {self.board_root}",
+                )
+        else:
+            init_board(self.board_root)
         self.store = TaskStore(self.board_root)
 
     def create_task(
@@ -954,7 +967,11 @@ class TaskService:
             },
         )
         try:
-            write_report_files(task_id, self.board_root)
+            write_report_files(
+                task_id,
+                self.board_root,
+                refresh_index=not self._runner_worker,
+            )
         except (ABCError, OSError, PermissionError) as exc:
             # Report generation writes the canonical Markdown before compacting
             # Record state and refreshing indexes. A later bookkeeping failure
@@ -1112,6 +1129,87 @@ class TaskService:
         current.extensions = extensions
         current.updated_at = _utc_now()
         self.store.write_task(task_id, _without_none(current.to_dict()))
+
+    def block_permission_runtime_after_failure(
+        self,
+        task_id: str,
+        *,
+        code: str = "permission_runtime_capability_unavailable",
+        domain: str = "host_containment",
+    ) -> bool:
+        """Move a live full-runtime receipt to ``blocked`` after worker loss."""
+        from .permission_runtime import block_permission_runtime_record
+
+        current = self.get_task(task_id)
+        extensions = dict(current.extensions or {})
+        runtime = extensions.get("agentbc.permission_runtime")
+        if not isinstance(runtime, dict):
+            return False
+        try:
+            blocked = block_permission_runtime_record(
+                runtime,
+                code=code,
+                domain=domain,
+            )
+        except ABCError as exc:
+            # A verified receipt is historical evidence and must not be
+            # rewritten.  Any other malformed live receipt is already a
+            # recovery condition, so leave the original evidence intact.
+            if exc.code == "permission_runtime_state_invalid":
+                return False
+            raise
+        extensions["agentbc.permission_runtime"] = blocked
+        current.extensions = extensions
+        current.updated_at = _utc_now()
+        self.store.write_task(task_id, _without_none(current.to_dict()))
+        self.store.append_event(
+            task_id,
+            {
+                "event_type": "permission_runtime_blocked",
+                "task_id": task_id,
+                "code": code,
+                "domain": domain,
+                "created_at": current.updated_at,
+                "source": "runner_fail_closed_recovery",
+            },
+        )
+        self._refresh_task_index()
+        return True
+
+    def clear_execution_run_references(self, task_id: str) -> list[str]:
+        """Remove active worker/run pointers after the Runner reaps a worker."""
+        current = self.get_task(task_id)
+        extensions = dict(current.extensions or {})
+        execution = dict(extensions.get("agentbc.execution") or {})
+        keys = (
+            "worker_run_id",
+            "worker_pid",
+            "executor_run_id",
+            "dispatch_status",
+            "monitor_status",
+            "monitor_message",
+        )
+        removed = [key for key in keys if key in execution]
+        if not removed:
+            return []
+        for key in removed:
+            execution.pop(key, None)
+        extensions["agentbc.execution"] = execution
+        current.extensions = extensions
+        current.updated_at = _utc_now()
+        self.store.write_task(task_id, _without_none(current.to_dict()))
+        self.store.append_event(
+            task_id,
+            {
+                "event_type": "worker_references_cleared",
+                "task_id": task_id,
+                "removed": removed,
+                "created_at": current.updated_at,
+                "source": "runner_worker_reap",
+            },
+        )
+        self._refresh_task_index()
+        return removed
 
     def _approval_receipt_for_response(
         self,
@@ -1856,6 +1954,12 @@ class TaskService:
         reason_detail: str = "",
         blocked_step_id: int | None = None,
         execution_session: dict[str, Any] | None = None,
+        tool_use_id: str = "",
+        action_fingerprint: str = "",
+        escalation_domain: str = "",
+        profile_digest: str = "",
+        control_path: str = "",
+        native_event: str = "",
     ) -> dict[str, Any]:
         """Block the first incomplete step for one structured native approval request.
 
@@ -1993,6 +2097,17 @@ class TaskService:
             "deadline_at": deadline_at,
             "status": "waiting",
         }
+        native_binding = {
+            "tool_use_id": str(tool_use_id or "").strip(),
+            "action_fingerprint": str(action_fingerprint or "").strip(),
+            "escalation_domain": str(escalation_domain or "").strip().lower(),
+            "profile_digest": str(profile_digest or "").strip(),
+            "control_path": str(control_path or "").strip(),
+            "native_event": str(native_event or "").strip(),
+        }
+        for key, value in native_binding.items():
+            if value:
+                request[key] = value[:512]
 
         extensions = dict(task.extensions or {})
         previous = extensions.get("agentbc.input")
@@ -2841,6 +2956,11 @@ class TaskService:
         else:
             self._set_known_executor_session_state(task, "needs_recovery")
         _supersede_final_callback(task, "needs_recovery", compact_message)
+        invalidated_input_id = self._invalidate_waiting_input_for_recovery(
+            task,
+            code=code,
+            at=now,
+        )
         execution_updates = {"internal_status": "needs_recovery"}
         from .run_lease import RunLeaseState, close_lease, load_lease
 
@@ -2863,6 +2983,18 @@ class TaskService:
                 "error": {"code": code, "message": compact_message},
             },
         )
+        if invalidated_input_id:
+            self.store.append_event(
+                task_id,
+                {
+                    "event_type": "task.input_invalidated",
+                    "task_id": task_id,
+                    "input_id": invalidated_input_id,
+                    "created_at": now,
+                    "reason_code": code,
+                    "source": "fail_closed_recovery",
+                },
+            )
         self._refresh_task_index()
         self._sync_terminal_report(task_id)
         return True
@@ -3228,7 +3360,11 @@ class TaskService:
         try:
             from .reports import write_report_files
 
-            write_report_files(task_id, self.board_root)
+            write_report_files(
+                task_id,
+                self.board_root,
+                refresh_index=not self._runner_worker,
+            )
         except (ABCError, OSError, PermissionError):
             pass
         self._cleanup_empty_managed_artifacts(task_id)
@@ -3810,7 +3946,48 @@ class TaskService:
         }
 
     def _refresh_task_index(self) -> None:
+        if self._runner_worker:
+            return
         refresh_task_index(self.board_root)
+
+    def _invalidate_waiting_input_for_recovery(
+        self,
+        task: TaskModel,
+        *,
+        code: str,
+        at: str,
+    ) -> str:
+        """Close a live input before exposing ``needs_recovery``.
+
+        Recovery is terminal for the current executor attempt.  Keeping a
+        ``waiting`` input alongside that state would leave a stale dialog able
+        to resume a dead run.  The request remains in bounded history for
+        audit, but no live input can be answered or redispatched.
+        """
+        extensions = dict(task.extensions or {})
+        request = extensions.get("agentbc.input")
+        if not isinstance(request, dict) or request.get("status") != "waiting":
+            return ""
+        input_id = str(request.get("input_id") or "").strip()
+        invalidated = dict(request)
+        invalidated["status"] = "invalidated"
+        invalidated["invalidated_at"] = at
+        invalidated["invalidated_reason"] = str(code or "recovery")[:120]
+        invalidated["response"] = {
+            "type": "deny",
+            "summary": "request invalidated by fail-closed recovery",
+            "source": "fail_closed_recovery",
+        }
+        history = [
+            item
+            for item in list(extensions.get("agentbc.input_history") or [])
+            if isinstance(item, dict)
+        ]
+        history.append(invalidated)
+        extensions["agentbc.input_history"] = history[-16:]
+        extensions.pop("agentbc.input", None)
+        task.extensions = extensions
+        return input_id
 
     def _task_status_with_chain(self, task: TaskModel) -> dict[str, Any]:
         status = task_to_status(task)

@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -67,7 +68,11 @@ from agent_bridge_connect.path_model import (
     validate_path_plan_workspace,
 )
 from agent_bridge_connect.protocol import ABCError
-from agent_bridge_connect.prompt_contract import PromptPlatformExtras, build_prompt_contract
+from agent_bridge_connect.prompt_contract import (
+    NATIVE_PERMISSION_RULE,
+    PromptPlatformExtras,
+    build_prompt_contract,
+)
 from agent_bridge_connect.runner import (
     CLAUDE_SDK_CONTROL_AUTHORIZATION,
     RunnerClient,
@@ -176,6 +181,8 @@ class ClaudeExecutor(CLIExecutorBase):
         self._run_metadata: dict[str, dict[str, Any]] = {}
         self._task_packets: dict[str, dict[str, Any]] = {}
         self._transport: ClaudeSDKControlTransport | None = None
+        self._sdk_runs: dict[str, dict[str, Any]] = {}
+        self._sdk_runs_lock = threading.RLock()
 
     def probe(self) -> ProbeResult:
         if self.agent_bin is None:
@@ -421,7 +428,6 @@ class ClaudeExecutor(CLIExecutorBase):
         run_id = f"claude-{task_packet.get('task_id', 'unknown')}-{uuid.uuid4().hex[:8]}"
         self._task_packets[run_id] = dict(task_packet)
         self._start_run_lease(task_packet, run_id, "claude")
-        prompt = _build_prompt(task_packet)
         try:
             permission = resolve_effective_permission(
                 task_packet,
@@ -442,6 +448,7 @@ class ClaudeExecutor(CLIExecutorBase):
             self._close_run_lease(run_id)
             return StartResult(ok=False, run_id="", message=str(exc))
         try:
+            prompt = _build_prompt(task_packet)
             command = self._build_command(prompt, root, task_packet, permission)
         except ValueError as exc:
             self._close_run_lease(run_id)
@@ -607,7 +614,6 @@ class ClaudeExecutor(CLIExecutorBase):
         run_id = f"claude-{task_packet.get('task_id', 'unknown')}-{uuid.uuid4().hex[:8]}"
         self._task_packets[run_id] = dict(task_packet)
         self._start_run_lease(task_packet, run_id, "claude")
-        prompt = _build_prompt(task_packet)
         try:
             permission = resolve_effective_permission(
                 task_packet,
@@ -689,6 +695,46 @@ class ClaudeExecutor(CLIExecutorBase):
             self._close_run_lease(run_id)
             return StartResult(ok=False, run_id="", message=f"approval_control_invalid: {exc}")
 
+        # Session-first invariant: the preallocated/resumed execution session
+        # is persisted and opened in the gate before prompt construction,
+        # SDK options, hooks, or any possible can_use_tool callback.  The
+        # exact receipt is recorded once for this executor run; it is never
+        # reconstructed from callback text or transport diagnostics.
+        try:
+            if execution_session is None:
+                plane.gate.mark_recovery(
+                    "session_receipt_missing",
+                    "Claude native control requires the preallocated execution session receipt.",
+                    evidence={"task_id": str(task_packet.get("task_id") or ""), "run_id": run_id},
+                )
+                raise SessionRecoveryRequired(
+                    "session_receipt_missing",
+                    "Claude native control requires the preallocated execution session receipt.",
+                )
+            plane.record_session_started(
+                execution_session,
+                expected_task_id=str(task_packet.get("task_id") or ""),
+                expected_executor_run_id=run_id,
+                expected_session_id=execution_session_id,
+                expected_resumed=bool(execution_session.get("resumed")),
+                expected_source="preallocated",
+            )
+            plane.gate.require_before_turn(execution_session_id)
+        except (ControlPlaneError, SessionRecoveryRequired) as exc:
+            self._store_run(run_id, execution_root, None)
+            self._mark_run_stale(run_id)
+            self._runs[run_id] = self._sdk_recovery_poll_result(
+                task_packet,
+                run_id,
+                execution_session,
+                getattr(exc, "code", "session_receipt_invalid"),
+                str(exc),
+            )
+            self._close_run_lease(run_id)
+            return StartResult(ok=True, run_id=run_id, message="claude session receipt needs recovery")
+
+        prompt = _build_prompt(task_packet)
+
         # PERM-104-002 (GGQN-001): the approval identity binds the
         # authoritative escalation domain and host profile digest from the
         # task/runtime capability context, so the ControlPlane convergence
@@ -747,15 +793,17 @@ class ClaudeExecutor(CLIExecutorBase):
             # verifies under the DECLARED authorization of the pre-authorized
             # full base (never an invented approval).
             transport.declare_run_authorization(mode="declared_run")
-        transport.start()
-        self._transport = transport
-
         runtime_verifier = self._sdk_runtime_verifier(
             task_packet, run_id, execution_session, transport=transport
         )
 
-        captured: dict[str, Any] | None = None
+        # Build and authorize the SDK connection synchronously after the
+        # receipt gate.  This is setup only: no query is submitted here and
+        # no can_use_tool callback can run until the background session thread
+        # starts with the already-bound options.
         try:
+            transport.start()
+            self._transport = transport
             if task_packet.get("runner_authorization_required") is True:
                 options = self._build_sdk_options_for_task(
                     task_packet,
@@ -784,7 +832,197 @@ class ClaudeExecutor(CLIExecutorBase):
                     execution_session_id,
                     sdk_facts,
                 )
-            self._heartbeat_run(run_id)
+        except (ClaudeSDKTransportError, OSError, RunnerError, ImportError) as exc:
+            try:
+                transport.record_transport_death("control setup failed before SDK query")
+            except Exception:  # noqa: BLE001 - original setup failure is retained.
+                pass
+            transport.stop()
+            self._store_run(run_id, execution_root, None)
+            self._mark_run_stale(run_id)
+            self._runs[run_id] = self._sdk_recovery_poll_result(
+                task_packet,
+                run_id,
+                execution_session,
+                getattr(exc, "code", "claude_sdk_control_setup_failed"),
+                str(exc),
+            )
+            self._close_run_lease(run_id)
+            return StartResult(ok=True, run_id=run_id, message="claude SDK control needs recovery")
+
+        self._heartbeat_run(run_id)
+        with self._sdk_runs_lock:
+            self._sdk_runs[run_id] = {
+                "status": "running",
+                "task_packet": dict(task_packet),
+                "steps_total": len(steps),
+                "execution_root": execution_root,
+                "execution_session": execution_session,
+                "transport": transport,
+                "options": options,
+                "prompt": prompt,
+                "runtime_verifier": runtime_verifier,
+            }
+        try:
+            worker = threading.Thread(
+                target=self._run_sdk_session,
+                kwargs={"run_id": run_id},
+                name=f"agentbc-claude-sdk-run-{run_id}",
+                daemon=True,
+            )
+            with self._sdk_runs_lock:
+                self._sdk_runs[run_id]["thread"] = worker
+            worker.start()
+        except (RuntimeError, OSError) as exc:
+            try:
+                transport.record_transport_death("SDK run worker could not start")
+            except Exception:  # noqa: BLE001 - preserve the start failure.
+                pass
+            transport.stop()
+            self._store_run(run_id, execution_root, None)
+            self._mark_run_stale(run_id)
+            self._runs[run_id] = self._sdk_recovery_poll_result(
+                task_packet,
+                run_id,
+                execution_session,
+                "claude_sdk_worker_start_failed",
+                str(exc),
+            )
+            self._close_run_lease(run_id)
+            with self._sdk_runs_lock:
+                self._sdk_runs[run_id]["status"] = "needs_recovery"
+            return StartResult(ok=True, run_id=run_id, message="claude SDK control needs recovery")
+        return StartResult(ok=True, run_id=run_id, message="claude SDK session started")
+
+    def poll(self, run_id: str) -> PollResult:
+        """Project a live SDK run without ending its coroutine/session.
+
+        A pending native request is transient ``input_required`` state only;
+        the SDK worker remains blocked inside ``can_use_tool`` until Runner
+        records Approve/Deny or the control plane invalidates the request.
+        """
+        with self._sdk_runs_lock:
+            record = self._sdk_runs.get(run_id)
+            if record is None:
+                return super().poll(run_id)
+            terminal = record.get("poll_result")
+            if isinstance(terminal, PollResult):
+                return terminal
+            transport = record.get("transport")
+            execution_session = record.get("execution_session")
+            task_packet = record.get("task_packet")
+            steps_total = int(record.get("steps_total") or 0)
+        if not isinstance(transport, ClaudeSDKControlTransport):
+            return PollResult(
+                status="needs_recovery",
+                progress={"steps_total": steps_total},
+                result={
+                    "failure": {
+                        "kind": "claude_sdk_transport_missing",
+                        "layer": "executor",
+                        "message": "Claude SDK transport is unavailable.",
+                        "retryable": False,
+                    }
+                },
+            )
+        control_state = transport.plane.status()
+        pending = control_state.get("pending_request")
+        if (
+            control_state.get("status") == "approval_pending"
+            and isinstance(pending, dict)
+            and pending.get("status") == "pending"
+        ):
+            request = {
+                key: value
+                for key, value in pending.items()
+                if key not in {"rpc_id"}
+            }
+            return PollResult(
+                status="input_required",
+                progress={
+                    "steps_total": steps_total,
+                    "approval_pending": True,
+                    "sdk_session_live": transport.is_alive(),
+                },
+                result={
+                    "approval_request": request,
+                    "native_event": "claude_sdk_can_use_tool",
+                    "execution_session": execution_session,
+                    "sdk_transport": transport.status(),
+                },
+            )
+        if control_state.get("status") == "needs_recovery":
+            code = str(control_state.get("recovery_code") or "transport_failed")
+            message = str(
+                control_state.get("recovery_message")
+                or "Claude SDK control requires recovery."
+            )
+            return self._sdk_recovery_poll_result(
+                task_packet if isinstance(task_packet, dict) else {},
+                run_id,
+                execution_session if isinstance(execution_session, dict) else None,
+                code,
+                message,
+            )
+        return PollResult(
+            status="running",
+            progress={
+                "steps_total": steps_total,
+                "sdk_session_live": transport.is_alive(),
+                "approval_pending": False,
+            },
+            result={
+                "execution_session": execution_session,
+                "sdk_transport": transport.status(),
+            },
+        )
+
+    def _sdk_recovery_poll_result(
+        self,
+        task_packet: dict[str, Any],
+        run_id: str,
+        execution_session: dict[str, Any] | None,
+        code: str,
+        message: str,
+    ) -> PollResult:
+        result: dict[str, Any] = {
+            "stdout": "",
+            "stderr": str(message or ""),
+            "summary": "",
+            "returncode": None,
+            "agent_callback": None,
+            "marker_valid": False,
+            "marker_seen": False,
+            "failure": {
+                "kind": str(code or "claude_sdk_control_failed"),
+                "layer": "executor",
+                "message": str(message or "Claude SDK control requires recovery."),
+                "retryable": False,
+            },
+            "extensions": self.get_extensions(),
+        }
+        if execution_session is not None:
+            result["execution_session"] = execution_session
+        return PollResult(
+            status="needs_recovery",
+            progress={"steps_total": len(task_packet.get("steps") or [])},
+            result=result,
+        )
+
+    def _run_sdk_session(self, *, run_id: str) -> None:
+        with self._sdk_runs_lock:
+            record = self._sdk_runs.get(run_id)
+            if not isinstance(record, dict):
+                return
+            task_packet = dict(record["task_packet"])
+            execution_root = Path(record["execution_root"])
+            execution_session = record.get("execution_session")
+            transport = record["transport"]
+            options = record["options"]
+            prompt = str(record["prompt"])
+            runtime_verifier = record["runtime_verifier"]
+            steps_total = int(record.get("steps_total") or 0)
+        try:
             captured = transport.run_controlled(
                 options=options,
                 prompt=prompt,
@@ -792,109 +1030,118 @@ class ClaudeExecutor(CLIExecutorBase):
                 runtime_verify_callback=runtime_verifier,
                 on_started=lambda: self._heartbeat_run(run_id),
             )
-        except subprocess.TimeoutExpired:
-            transport.record_transport_death("safety timeout while SDK client was live")
-            transport.stop()
+        except subprocess.TimeoutExpired as exc:
+            self._record_sdk_transport_death(transport, "safety timeout while SDK client was live")
             self._store_run(run_id, execution_root, None)
             self._mark_run_stale(run_id)
-            result = self._timeout_poll_result(steps, run_id, execution_session)
-            self._runs[run_id] = PollResult(
-                status="needs_recovery",
-                progress={"steps_total": len(steps)},
+            poll_result = self._sdk_recovery_poll_result(
+                task_packet,
+                run_id,
+                execution_session if isinstance(execution_session, dict) else None,
+                "executor_timeout",
+                f"claude safety runtime exceeded after {self.timeout_s}s: {exc}",
+            )
+        except ClaudeSDKTransportError as exc:
+            self._record_sdk_transport_death(transport, str(exc))
+            self._store_run(run_id, execution_root, None)
+            self._mark_run_stale(run_id)
+            poll_result = self._sdk_recovery_poll_result(
+                task_packet,
+                run_id,
+                execution_session if isinstance(execution_session, dict) else None,
+                exc.code,
+                str(exc),
+            )
+        except Exception as exc:  # noqa: BLE001 - native transport fails closed.
+            self._record_sdk_transport_death(transport, f"unexpected SDK failure: {exc}")
+            self._store_run(run_id, execution_root, None)
+            self._mark_run_stale(run_id)
+            poll_result = self._sdk_recovery_poll_result(
+                task_packet,
+                run_id,
+                execution_session if isinstance(execution_session, dict) else None,
+                "claude_sdk_transport_error",
+                str(exc),
+            )
+        else:
+            self._heartbeat_run(run_id)
+            stdout = str(captured.get("stdout") or "")
+            stderr = str(captured.get("stderr") or "")
+            output_text, parsed_output = _extract_output_text(stdout, self.output_format)
+            validation = extract_callback_validation_from_output(
+                output_text,
+                task_packet,
+                run_id,
+            )
+            returncode = int(captured.get("returncode") or 0)
+            terminal = route_executor_terminal(
+                validation,
+                returncode,
+                executor_name="claude",
+                stderr=stderr,
+                runtime_failure=detect_retryable_transport_failure(output_text, stderr),
+                resource_exhaustion=_claude_resource_exhaustion(
+                    stdout,
+                    stderr,
+                    parsed_output,
+                    task_packet,
+                    validation,
+                    returncode,
+                ),
+                native_approval_authoritative=True,
+            )
+            status = terminal.status
+            transport_status = transport.status()
+            self._store_run(run_id, execution_root, returncode)
+            result = {
+                "stdout": stdout,
+                "stderr": stderr,
+                "summary": _extract_summary(output_text),
+                "parsed_output": parsed_output,
+                "returncode": returncode,
+                "agent_callback": terminal.callback,
+                "marker_valid": validation.valid,
+                "marker_seen": validation.marker_seen,
+                "failure": terminal.failure,
+                "resource_exhaustion": terminal.resource_exhaustion,
+                "init_verified": captured.get("init_verified") is True,
+                "sdk_transport": transport_status,
+                "native_approval_authoritative": True,
+                "extensions": self.get_extensions(),
+            }
+            if execution_session is not None:
+                result["execution_session"] = execution_session
+            poll_result = PollResult(
+                status=status,
+                progress={
+                    "steps_total": steps_total,
+                    "callback_seen": terminal.callback is not None,
+                },
                 result=result,
             )
+        finally:
+            try:
+                transport.stop()
+            except Exception:  # noqa: BLE001 - worker cleanup is best effort.
+                pass
             self._close_run_lease(run_id)
-            return StartResult(ok=True, run_id=run_id, message="claude execution needs recovery")
-        except ClaudeSDKTransportError as exc:
-            transport.stop()
-            self._store_run(run_id, execution_root, None)
-            self._mark_run_stale(run_id)
-            self._runs[run_id] = PollResult(
-                status="needs_recovery",
-                progress={"steps_total": len(steps)},
-                result={
-                    "stdout": "",
-                    "stderr": str(exc),
-                    "summary": "",
-                    "returncode": None,
-                    "agent_callback": None,
-                    "marker_valid": False,
-                    "marker_seen": False,
-                    "failure": {
-                        "kind": exc.code,
-                        "layer": "executor",
-                        "message": str(exc),
-                        "retryable": False,
-                    },
-                    "extensions": self.get_extensions(),
-                    **(
-                        {"execution_session": execution_session}
-                        if execution_session is not None
-                        else {}
-                    ),
-                },
-            )
-            self._close_run_lease(run_id)
-            return StartResult(ok=True, run_id=run_id, message="claude SDK control failed closed")
-        except (OSError, RunnerError) as exc:
-            transport.stop()
-            self._close_run_lease(run_id)
-            return StartResult(ok=False, run_id="", message=f"failed to start claude: {exc}")
+        with self._sdk_runs_lock:
+            record = self._sdk_runs.get(run_id)
+            if isinstance(record, dict):
+                record["status"] = poll_result.status
+                record["poll_result"] = poll_result
+        if poll_result.status == "needs_recovery":
+            self._runs[run_id] = poll_result
 
-        self._heartbeat_run(run_id)
-        stdout = str(captured.get("stdout") or "")
-        stderr = str(captured.get("stderr") or "")
-        output_text, parsed_output = _extract_output_text(stdout, self.output_format)
-        validation = extract_callback_validation_from_output(
-            output_text,
-            task_packet,
-            run_id,
-        )
-        terminal = route_executor_terminal(
-            validation,
-            int(captured.get("returncode") or 0),
-            executor_name="claude",
-            stderr=stderr,
-            runtime_failure=detect_retryable_transport_failure(output_text, stderr),
-            resource_exhaustion=_claude_resource_exhaustion(
-                stdout,
-                stderr,
-                parsed_output,
-                task_packet,
-                validation,
-                int(captured.get("returncode") or 0),
-            ),
-        )
-        status = terminal.status
-        self._store_run(run_id, execution_root, int(captured.get("returncode") or 0))
-        result = {
-            "stdout": stdout,
-            "stderr": stderr,
-            "summary": _extract_summary(output_text),
-            "parsed_output": parsed_output,
-            "returncode": int(captured.get("returncode") or 0),
-            "agent_callback": terminal.callback,
-            "marker_valid": validation.valid,
-            "marker_seen": validation.marker_seen,
-            "failure": terminal.failure,
-            "resource_exhaustion": terminal.resource_exhaustion,
-            "init_verified": captured.get("init_verified") is True,
-            "sdk_transport": transport.status(),
-            "extensions": self.get_extensions(),
-            **(
-                {"execution_session": execution_session}
-                if execution_session is not None
-                else {}
-            ),
-        }
-        self._runs[run_id] = PollResult(
-            status=status,
-            progress={"steps_total": len(steps), "callback_seen": terminal.callback is not None},
-            result=result,
-        )
-        transport.stop()
-        self._close_run_lease(run_id)
-        return StartResult(ok=True, run_id=run_id, message=f"claude execution {status}")
+    @staticmethod
+    def _record_sdk_transport_death(
+        transport: ClaudeSDKControlTransport,
+        reason: str,
+    ) -> None:
+        try:
+            transport.record_transport_death(reason)
+        except Exception:  # noqa: BLE001 - retain the original failure.
+            pass
 
     def _full_is_declared_base(self, permission: dict[str, Any]) -> bool:
         """Return whether this run's full base is explicit or inherited.
@@ -1171,6 +1418,24 @@ class ClaudeExecutor(CLIExecutorBase):
         ]
         max_budget_usd = _claude_max_budget_usd(task_packet, self.max_budget_usd)
         hooks = None
+        task_id = str(task_packet.get("task_id") or "").strip()
+        task_board = (
+            task_packet.get("task_board")
+            if isinstance(task_packet.get("task_board"), dict)
+            else {}
+        )
+        board_root = str(task_board.get("root") or "").strip()
+        # Direct option-unit tests may intentionally exercise only the mode
+        # mapping with a skeletal packet.  A production packet always has the
+        # task/control identity; for that path a missing receipt/session or a
+        # failed hook binding is a hard pre-query error, never a silent
+        # unhooked fallback.
+        production_identity = bool(task_id and board_root)
+        if production_identity and not execution_session_id:
+            raise ClaudeSDKTransportError(
+                "session_receipt_missing",
+                "Claude SDK options require a persisted official session receipt.",
+            )
         try:
             from agent_bridge_connect.claude_sdk_hooks import (
                 bind_hook_log_session,
@@ -1182,7 +1447,7 @@ class ClaudeExecutor(CLIExecutorBase):
                 task_packet.get("task_board") or {}
             ).get("root") or _workspace_root(task_packet)
             control_root = control_root_for_task(
-                str(task_packet.get("task_id") or ""),
+                task_id,
                 board_root=board_root,
             )
             # GGQN-002: bind the hook log to the official session BEFORE the
@@ -1190,9 +1455,21 @@ class ClaudeExecutor(CLIExecutorBase):
             # session (an unbound log can never verify).  The same structured
             # events are captured on the transport for duplicate/failure/
             # cross-run rejection at verification time.
-            bind_hook_log_session(control_root, execution_session_id)
+            if not bind_hook_log_session(control_root, execution_session_id):
+                raise ClaudeSDKTransportError(
+                    "claude_sdk_hook_bind_failed",
+                    "Claude SDK hook log could not be bound to the official session.",
+                )
             hooks = build_sdk_hooks(control_root, event_sink=self._transport)
-        except Exception:  # noqa: BLE001 - hook feed is diagnostic-only.
+        except ClaudeSDKTransportError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - convert setup failure to recovery.
+            if production_identity:
+                raise ClaudeSDKTransportError(
+                    "claude_sdk_hook_init_failed",
+                    "Claude SDK hook control could not be initialized before the turn.",
+                    {"error": str(exc)},
+                ) from exc
             hooks = None
         return build_sdk_options(
             cli_path=str(self.agent_bin),
@@ -1847,6 +2124,11 @@ def _build_prompt(task_packet: dict[str, Any]) -> str:
                 "If the step asks another agent to execute or review work, use the AgentBC CLI handoff/dispatch command instead of doing that agent's work inline.",
                 "Keep required long-running commands in the foreground with a tool timeout longer than the expected runtime.",
                 "If Claude Code moves a command to the background, use BashOutput repeatedly until it exits. Never end this turn while a required background command is still running.",
+            ),
+            native_permission_rule=(
+                NATIVE_PERMISSION_RULE
+                if _claude_control_required(task_packet)
+                else None
             ),
         ),
     )

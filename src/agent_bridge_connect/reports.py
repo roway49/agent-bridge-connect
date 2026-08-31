@@ -242,7 +242,12 @@ def generate_task_brief(task_id: str, board_root: Path) -> dict[str, Any]:
     return redact_secrets(brief)
 
 
-def write_report_files(task_id: str, board_root: Path) -> tuple[dict[str, Any], str]:
+def write_report_files(
+    task_id: str,
+    board_root: Path,
+    *,
+    refresh_index: bool = True,
+) -> tuple[dict[str, Any], str]:
     """Write the single human-readable task record and enforce its size budget."""
     root = Path(board_root).expanduser().resolve()
     store = TaskStore(root)
@@ -272,9 +277,10 @@ def write_report_files(task_id: str, board_root: Path) -> tuple[dict[str, Any], 
     from .record_management import enforce_task_record_budget
 
     enforce_task_record_budget(task_dir, report_file)
-    from .task_index import refresh_task_index
+    if refresh_index:
+        from .task_index import refresh_task_index
 
-    refresh_task_index(root)
+        refresh_task_index(root)
     return report, markdown
 
 

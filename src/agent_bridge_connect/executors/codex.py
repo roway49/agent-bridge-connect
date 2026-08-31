@@ -215,7 +215,9 @@ class CodexExecutor(CLIExecutorBase):
             return self._cleanup_session_app_server(request)
         return self._cleanup_session_cli(request)
 
-    def _uses_cleanup_app_server(self, request: SessionCleanupRequest | None = None) -> bool:
+    def _uses_cleanup_app_server(
+        self, request: SessionCleanupRequest | None = None
+    ) -> bool:
         """Use App Server for auto/official cleanup and only explicit CLI otherwise."""
         if not isinstance(self.transport_mode, str):
             return True
@@ -263,7 +265,10 @@ class CodexExecutor(CLIExecutorBase):
                     else "unknown",
                     "checked_at": exc.cli_checked_at or _cleanup_now(),
                 },
-                "desktop_backend": {"status": "unavailable", "checked_at": _cleanup_now()},
+                "desktop_backend": {
+                    "status": "unavailable",
+                    "checked_at": _cleanup_now(),
+                },
                 "desktop_live": live,
             }
             return SessionCleanupResult(
@@ -306,7 +311,10 @@ class CodexExecutor(CLIExecutorBase):
         # observations stay as non-gating diagnostics, and the current Codex
         # Desktop refresh delay is accepted: desktop_live becomes
         # not_applicable and backend/live states never block the result.
-        if commands.get("archive", {}).get("status") in {"acknowledged", "confirmed"} and (
+        if commands.get("archive", {}).get("status") in {
+            "acknowledged",
+            "confirmed",
+        } and (
             commands.get("delete", {}).get("status") in {"acknowledged", "confirmed"}
         ):
             verification["desktop_live"] = {
@@ -404,7 +412,9 @@ class CodexExecutor(CLIExecutorBase):
             if status in {"absent", "present"}:
                 return {
                     "status": str(status),
-                    "checked_at": str(timestamp) if _is_cleanup_timestamp(timestamp) else checked_at,
+                    "checked_at": str(timestamp)
+                    if _is_cleanup_timestamp(timestamp)
+                    else checked_at,
                 }
         elif isinstance(value, str) and value.strip().lower() in {"absent", "present"}:
             return {"status": value.strip().lower(), "checked_at": checked_at}
@@ -485,7 +495,10 @@ class CodexExecutor(CLIExecutorBase):
             False,
             verification={
                 "cli": {"status": cli_status, "checked_at": _cleanup_now()},
-                "desktop_backend": {"status": "unavailable", "checked_at": _cleanup_now()},
+                "desktop_backend": {
+                    "status": "unavailable",
+                    "checked_at": _cleanup_now(),
+                },
                 "desktop_live": self._desktop_live_cleanup_verification(request),
             },
         )
@@ -500,7 +513,9 @@ class CodexExecutor(CLIExecutorBase):
         workspace = task_packet.get("workspace") or {}
         root = Path(workspace.get("root", ".")).expanduser().resolve()
         if not root.is_dir():
-            return StartResult(ok=False, run_id="", message=f"workspace not found: {root}")
+            return StartResult(
+                ok=False, run_id="", message=f"workspace not found: {root}"
+            )
 
         if self._uses_app_server_transport(task_packet):
             return self._start_app_server(task_packet, root)
@@ -579,10 +594,14 @@ class CodexExecutor(CLIExecutorBase):
                 progress={"events_seen": len(events)},
                 result=timeout_result,
             )
-            return StartResult(ok=True, run_id=run_id, message="codex execution needs recovery")
+            return StartResult(
+                ok=True, run_id=run_id, message="codex execution needs recovery"
+            )
         except (OSError, RunnerError) as exc:
             self._close_run_lease(run_id)
-            return StartResult(ok=False, run_id="", message=f"failed to start codex: {exc}")
+            return StartResult(
+                ok=False, run_id="", message=f"failed to start codex: {exc}"
+            )
 
         self._heartbeat_run(run_id)
         events = _parse_jsonl(completed.stdout)
@@ -597,7 +616,9 @@ class CodexExecutor(CLIExecutorBase):
             completed.returncode,
             executor_name="codex",
             stderr=completed.stderr,
-            runtime_failure=detect_retryable_transport_failure(completed.stdout, completed.stderr),
+            runtime_failure=detect_retryable_transport_failure(
+                completed.stdout, completed.stderr
+            ),
         )
         status = terminal.status
         result = {
@@ -623,7 +644,9 @@ class CodexExecutor(CLIExecutorBase):
         self._close_run_lease(run_id)
         return StartResult(ok=True, run_id=run_id, message=f"codex execution {status}")
 
-    def _uses_app_server_transport(self, task_packet: dict[str, Any] | None = None) -> bool:
+    def _uses_app_server_transport(
+        self, task_packet: dict[str, Any] | None = None
+    ) -> bool:
         if not isinstance(self.transport_mode, str):
             # Injected fake transport objects in tests are always App Server.
             return True
@@ -642,13 +665,21 @@ class CodexExecutor(CLIExecutorBase):
         grant = permission_grant_from_extensions(
             extensions if isinstance(extensions, dict) else {}
         )
-        session = extensions.get(SESSION_EXTENSION_KEY) if isinstance(extensions, dict) else None
+        session = (
+            extensions.get(SESSION_EXTENSION_KEY)
+            if isinstance(extensions, dict)
+            else None
+        )
         official_receipt = (
             isinstance(session, dict)
             and session.get("official_receipt_bound") is True
             and bool(str(session.get("session_id") or "").strip())
         )
-        if grant is not None and grant["state"]["status"] != "revoked" and not official_receipt:
+        if (
+            grant is not None
+            and grant["state"]["status"] != "revoked"
+            and not official_receipt
+        ):
             # A fresh compatibility full run has no official session to
             # resume, so keep the pre-receipt CLI start path.
             return False
@@ -664,7 +695,9 @@ class CodexExecutor(CLIExecutorBase):
             return False
         return transport == "auto" or transport in CODEX_APP_SERVER_TRANSPORT_ALIASES
 
-    def _freeze_app_server_capability(self, permission: dict[str, Any]) -> dict[str, Any]:
+    def _freeze_app_server_capability(
+        self, permission: dict[str, Any]
+    ) -> dict[str, Any]:
         """Verify the App Server contract before a receipt-bound run."""
         from agent_bridge_connect.codex_app_server import (
             CODEX_APP_SERVER_TRANSPORT,
@@ -692,7 +725,10 @@ class CodexExecutor(CLIExecutorBase):
                 if override.get("ok") is not True:
                     raise ABCError(
                         "permission_capability_unsupported",
-                        str(override.get("reason") or "App Server capability override failed"),
+                        str(
+                            override.get("reason")
+                            or "App Server capability override failed"
+                        ),
                         {
                             "executor": "codex",
                             "permission_mode": mode,
@@ -733,10 +769,14 @@ class CodexExecutor(CLIExecutorBase):
             if isinstance(parsed, (tuple, list)) and len(parsed) == 3
             else ""
         )
-        fixture = codex_collaboration_spawn_fixture_contract(version) if version else {
-            "ok": False,
-            "reason": "Codex version is unavailable for fixture matching",
-        }
+        fixture = (
+            codex_collaboration_spawn_fixture_contract(version)
+            if version
+            else {
+                "ok": False,
+                "reason": "Codex version is unavailable for fixture matching",
+            }
+        )
         enabled = bool(live.get("ok") is True and fixture.get("ok") is True)
         if enabled:
             reason = ""
@@ -896,7 +936,12 @@ class CodexExecutor(CLIExecutorBase):
                 run_id,
                 expected_session_id=explicit_session_id if resumed else None,
             )
-        except (ABCError, RunnerError, ControlPlaneError, SessionRecoveryRequired) as exc:
+        except (
+            ABCError,
+            RunnerError,
+            ControlPlaneError,
+            SessionRecoveryRequired,
+        ) as exc:
             self._close_run_lease(run_id)
             code = f"{exc.code}: " if isinstance(exc, ABCError) else ""
             return StartResult(
@@ -932,7 +977,9 @@ class CodexExecutor(CLIExecutorBase):
         record["thread"] = worker
         worker.start()
         record["ready"].wait(timeout=min(max(self.timeout_s, 0.1), 10.0))
-        return StartResult(ok=True, run_id=run_id, message="codex App Server run started")
+        return StartResult(
+            ok=True, run_id=run_id, message="codex App Server run started"
+        )
 
     def poll(self, run_id: str) -> PollResult:
         app_run = self._app_runs.get(run_id)
@@ -954,12 +1001,16 @@ class CodexExecutor(CLIExecutorBase):
         root: Path,
         command: list[str],
     ) -> Any:
-        if not isinstance(self.transport_mode, str) and hasattr(self.transport_mode, "send"):
+        if not isinstance(self.transport_mode, str) and hasattr(
+            self.transport_mode, "send"
+        ):
             return self.transport_mode
         factory = self.transport_factory
         if factory is not None:
             attempts = (
-                lambda: factory(run_id=run_id, task_packet=task_packet, cwd=root, command=command),
+                lambda: factory(
+                    run_id=run_id, task_packet=task_packet, cwd=root, command=command
+                ),
                 lambda: factory(run_id, task_packet, root),
                 lambda: factory(),
             )
@@ -988,7 +1039,9 @@ class CodexExecutor(CLIExecutorBase):
 
     @staticmethod
     def _transport_recv(transport: Any) -> dict[str, Any]:
-        receiver = getattr(transport, "recv", None) or getattr(transport, "receive", None)
+        receiver = getattr(transport, "recv", None) or getattr(
+            transport, "receive", None
+        )
         if not callable(receiver):
             raise TransportClosed("Codex App Server fake transport has no recv method")
         message = receiver()
@@ -1016,7 +1069,9 @@ class CodexExecutor(CLIExecutorBase):
         value = getattr(transport, "alive", None)
         return bool(value) if isinstance(value, bool) else True
 
-    def _app_rpc(self, record: dict[str, Any], method: str, params: dict[str, Any] | None = None) -> int:
+    def _app_rpc(
+        self, record: dict[str, Any], method: str, params: dict[str, Any] | None = None
+    ) -> int:
         request_id = int(record["next_rpc_id"])
         record["next_rpc_id"] = request_id + 1
         message: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
@@ -1025,7 +1080,9 @@ class CodexExecutor(CLIExecutorBase):
         self._transport_send(record["transport"], message)
         return request_id
 
-    def _app_notification(self, record: dict[str, Any], method: str, params: dict[str, Any] | None = None) -> None:
+    def _app_notification(
+        self, record: dict[str, Any], method: str, params: dict[str, Any] | None = None
+    ) -> None:
         message: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             message["params"] = params
@@ -1033,7 +1090,11 @@ class CodexExecutor(CLIExecutorBase):
 
     def _app_event(self, record: dict[str, Any], message: dict[str, Any]) -> None:
         method = str(message.get("method") or "rpc_response")
-        payload = message.get("params") if isinstance(message.get("params"), dict) else message.get("result")
+        payload = (
+            message.get("params")
+            if isinstance(message.get("params"), dict)
+            else message.get("result")
+        )
         record["events"].append(
             {
                 "event_type": method,
@@ -1092,7 +1153,9 @@ class CodexExecutor(CLIExecutorBase):
             }
         )
         extensions[SESSION_EXTENSION_KEY] = primary
-        parent_turn_id = str(payload.get("turnId") or payload.get("turn_id") or "").strip()
+        parent_turn_id = str(
+            payload.get("turnId") or payload.get("turn_id") or ""
+        ).strip()
         if method == "item/started":
             updated, entry = handle_codex_collaboration_item_started(
                 extensions,
@@ -1158,11 +1221,23 @@ class CodexExecutor(CLIExecutorBase):
 
         # Task 1 may expose an explicit v2 mapping.  Accept only the narrow
         # App Server fields; the legacy effective mode remains the fallback.
-        extensions = task_packet.get("extensions") if isinstance(task_packet.get("extensions"), dict) else {}
-        for key in ("agentbc.permission.v2", "agentbc.permissions.v2", "agentbc.permission_mapping"):
+        extensions = (
+            task_packet.get("extensions")
+            if isinstance(task_packet.get("extensions"), dict)
+            else {}
+        )
+        for key in (
+            "agentbc.permission.v2",
+            "agentbc.permissions.v2",
+            "agentbc.permission_mapping",
+        ):
             mapping = extensions.get(key)
             if isinstance(mapping, dict):
-                codex_mapping = mapping.get("codex") if isinstance(mapping.get("codex"), dict) else mapping
+                codex_mapping = (
+                    mapping.get("codex")
+                    if isinstance(mapping.get("codex"), dict)
+                    else mapping
+                )
                 if isinstance(codex_mapping, dict):
                     for field in ("sandbox", "approvalPolicy", "approvalsReviewer"):
                         value = codex_mapping.get(field)
@@ -1172,13 +1247,25 @@ class CodexExecutor(CLIExecutorBase):
 
     @staticmethod
     def _thread_id_from_message(message: dict[str, Any]) -> str:
-        result = message.get("result") if isinstance(message.get("result"), dict) else {}
+        result = (
+            message.get("result") if isinstance(message.get("result"), dict) else {}
+        )
         thread = result.get("thread") if isinstance(result.get("thread"), dict) else {}
         candidates = [thread.get("id"), result.get("threadId")]
-        values = [str(value).strip() for value in candidates if isinstance(value, str) and value.strip()]
-        return values[0] if len(set(values)) == 1 else (values[0] if len(values) == 1 else "")
+        values = [
+            str(value).strip()
+            for value in candidates
+            if isinstance(value, str) and value.strip()
+        ]
+        return (
+            values[0]
+            if len(set(values)) == 1
+            else (values[0] if len(values) == 1 else "")
+        )
 
-    def _app_wait_response(self, record: dict[str, Any], request_id: int) -> dict[str, Any]:
+    def _app_wait_response(
+        self, record: dict[str, Any], request_id: int
+    ) -> dict[str, Any]:
         while True:
             message = self._transport_recv(record["transport"])
             method = str(message.get("method") or "")
@@ -1218,7 +1305,9 @@ class CodexExecutor(CLIExecutorBase):
             if method == "turn/completed":
                 return message
 
-    def _handle_app_approval(self, record: dict[str, Any], message: dict[str, Any]) -> None:
+    def _handle_app_approval(
+        self, record: dict[str, Any], message: dict[str, Any]
+    ) -> None:
         plane: ApprovalControlPlane = record["plane"]
         event = plane.request_approval(message)
         request_id = str(event.get("request_id") or "")
@@ -1281,12 +1370,20 @@ class CodexExecutor(CLIExecutorBase):
             if not isinstance(response_payload, dict):
                 pending = plane.status().get("pending_request")
                 if not isinstance(pending, dict):
-                    raise ControlPlaneError("approval_response_missing", "Approval response payload is unavailable.")
-                response_payload = approval_response_payload(pending, response.get("decision"))
+                    raise ControlPlaneError(
+                        "approval_response_missing",
+                        "Approval response payload is unavailable.",
+                    )
+                response_payload = approval_response_payload(
+                    pending, response.get("decision")
+                )
             self._resume_run(record["run_id"])
             record["status"] = "running"
             record.setdefault("approval_history", []).append(
-                {"request_id": request_id, "decision": str(response.get("decision") or "")}
+                {
+                    "request_id": request_id,
+                    "decision": str(response.get("decision") or ""),
+                }
             )
             rpc_response = {
                 "jsonrpc": "2.0",
@@ -1306,7 +1403,9 @@ class CodexExecutor(CLIExecutorBase):
         transport: Any = None
         try:
             command = self._build_app_server_command()
-            transport = self._make_app_server_transport(run_id, record["task_packet"], record["root"], command)
+            transport = self._make_app_server_transport(
+                run_id, record["task_packet"], record["root"], command
+            )
             record["transport"] = transport
             self._transport_start(transport)
             initialize_id = self._app_rpc(
@@ -1354,11 +1453,17 @@ class CodexExecutor(CLIExecutorBase):
                     "session_receipt_missing",
                     "Codex App Server thread response did not contain an official thread ID.",
                 )
-            if record["resumed"] and official_thread_id != record["explicit_session_id"]:
+            if (
+                record["resumed"]
+                and official_thread_id != record["explicit_session_id"]
+            ):
                 raise SessionRecoveryRequired(
                     "session_receipt_run_mismatch",
                     "Codex App Server resume returned a different official thread ID.",
-                    {"expected_session_id": record["explicit_session_id"], "actual_session_id": official_thread_id},
+                    {
+                        "expected_session_id": record["explicit_session_id"],
+                        "actual_session_id": official_thread_id,
+                    },
                 )
             receipt = {
                 "version": 1,
@@ -1401,14 +1506,33 @@ class CodexExecutor(CLIExecutorBase):
                 turn_params["effort"] = "ultra"
             turn_id = self._app_rpc(record, "turn/start", turn_params)
             turn_response = self._app_wait_response(record, turn_id)
-            turn_result = turn_response.get("result") if isinstance(turn_response.get("result"), dict) else {}
-            turn = turn_result.get("turn") if isinstance(turn_result.get("turn"), dict) else {}
+            turn_result = (
+                turn_response.get("result")
+                if isinstance(turn_response.get("result"), dict)
+                else {}
+            )
+            turn = (
+                turn_result.get("turn")
+                if isinstance(turn_result.get("turn"), dict)
+                else {}
+            )
             record["turn_id"] = str(turn.get("id") or "")
             completed_message = self._app_wait_turn_completed(record)
-            completed_params = completed_message.get("params") if isinstance(completed_message.get("params"), dict) else {}
-            completed_turn = completed_params.get("turn") if isinstance(completed_params.get("turn"), dict) else {}
+            completed_params = (
+                completed_message.get("params")
+                if isinstance(completed_message.get("params"), dict)
+                else {}
+            )
+            completed_turn = (
+                completed_params.get("turn")
+                if isinstance(completed_params.get("turn"), dict)
+                else {}
+            )
             turn_status = str(completed_turn.get("status") or "completed")
-            plane.record_turn_completed(turn_id=str(completed_turn.get("id") or record.get("turn_id") or ""), status=turn_status)
+            plane.record_turn_completed(
+                turn_id=str(completed_turn.get("id") or record.get("turn_id") or ""),
+                status=turn_status,
+            )
             agent_events = _app_server_agent_message_events(record["events"])
             validation = extract_callback_validation_from_events(
                 agent_events,
@@ -1419,6 +1543,7 @@ class CodexExecutor(CLIExecutorBase):
                 validation,
                 0,
                 executor_name="codex",
+                native_approval_authoritative=True,
             )
             # Archive while this exact App Server connection still owns the
             # thread writer. A separate cleanup process is rejected by Codex
@@ -1431,7 +1556,10 @@ class CodexExecutor(CLIExecutorBase):
                 if isinstance(record["task_packet"].get("extensions"), dict)
                 else None
             )
-            if isinstance(session_policy, dict) and session_policy.get("retain") is False:
+            if (
+                isinstance(session_policy, dict)
+                and session_policy.get("retain") is False
+            ):
                 self._archive_registered_auxiliary_sessions(record)
                 archive_id = self._app_rpc(
                     record,
@@ -1527,7 +1655,9 @@ class CodexExecutor(CLIExecutorBase):
     ) -> tuple[list[str], str | None]:
         if self.agent_bin is None:
             raise RuntimeError("codex unavailable")
-        selected = permission or permission_record_from_extensions(task_packet.get("extensions"))
+        selected = permission or permission_record_from_extensions(
+            task_packet.get("extensions")
+        )
         resumed, session_id = _codex_resume_context(task_packet)
         command = [str(self.agent_bin), "exec", "--json"]
         command.extend(permission_flags("codex", selected["effective_mode"]))
@@ -1569,8 +1699,16 @@ class CodexExecutor(CLIExecutorBase):
             }
         if self._collaboration_spawn_capability is not None:
             collaboration = self._collaboration_spawn_capability
-            fixture = collaboration.get("fixture") if isinstance(collaboration.get("fixture"), dict) else {}
-            live = collaboration.get("live") if isinstance(collaboration.get("live"), dict) else {}
+            fixture = (
+                collaboration.get("fixture")
+                if isinstance(collaboration.get("fixture"), dict)
+                else {}
+            )
+            live = (
+                collaboration.get("live")
+                if isinstance(collaboration.get("live"), dict)
+                else {}
+            )
             metadata["collaboration_spawn"] = {
                 "enabled": bool(collaboration.get("enabled")),
                 "version": str(collaboration.get("version") or ""),
@@ -1595,7 +1733,10 @@ class CodexExecutor(CLIExecutorBase):
                 self._task_packets.get(run_id, {}).get("extensions")
             ),
             "writable_roots": [
-                str(path) for path in _codex_writable_roots(self._task_packets.get(run_id, {}), workspace)
+                str(path)
+                for path in _codex_writable_roots(
+                    self._task_packets.get(run_id, {}), workspace
+                )
             ],
             "events_seen": len(events),
             "returncode": returncode,
@@ -1685,7 +1826,9 @@ def _frozen_help_fixture_text(fixture_name: str) -> str:
     in any result.
     """
     here = Path(__file__).resolve()
-    candidate = here.parents[3] / "tests" / "fixtures" / "executor_runtime" / fixture_name
+    candidate = (
+        here.parents[3] / "tests" / "fixtures" / "executor_runtime" / fixture_name
+    )
     try:
         return candidate.read_text(encoding="utf-8")
     except OSError:
@@ -1711,11 +1854,14 @@ def _codex_has_exact_session_delete_entry(help_text: str) -> bool:
         and "--force" in lowered
         and "session must be a uuid" in lowered
     )
-    exact_positional = re.search(
-        r"^\s+session_id\b.*session id to delete",
-        help_text,
-        re.IGNORECASE | re.MULTILINE,
-    ) is not None
+    exact_positional = (
+        re.search(
+            r"^\s+session_id\b.*session id to delete",
+            help_text,
+            re.IGNORECASE | re.MULTILINE,
+        )
+        is not None
+    )
     return force_uuid or exact_positional
 
 
@@ -1783,10 +1929,20 @@ def _codex_cleanup_result_strategy(request: SessionCleanupRequest) -> str:
     return "official_session_delete"
 
 
-def _codex_writable_roots(task_packet: dict[str, Any], workspace_root: Path) -> list[Path]:
+def _codex_writable_roots(
+    task_packet: dict[str, Any], workspace_root: Path
+) -> list[Path]:
     """Return only task deliverable and compact runtime-state write roots."""
-    workspace = task_packet.get("workspace") if isinstance(task_packet.get("workspace"), dict) else {}
-    task_board = task_packet.get("task_board") if isinstance(task_packet.get("task_board"), dict) else {}
+    workspace = (
+        task_packet.get("workspace")
+        if isinstance(task_packet.get("workspace"), dict)
+        else {}
+    )
+    task_board = (
+        task_packet.get("task_board")
+        if isinstance(task_packet.get("task_board"), dict)
+        else {}
+    )
     candidates: list[str | Path | None] = [
         workspace_root,
         workspace.get("project_root"),
@@ -1817,14 +1973,23 @@ def _build_prompt(
 ) -> str:
     """Build the Codex prompt: shared contract plus Codex platform notes."""
     extra_rules: tuple[str, ...] = ()
+    native_permission_rule: str | None = None
     if native_single_action:
         extra_rules = (
-            ("If an exact action explicitly declared by a task step is blocked by the native sandbox, "
-            "retry that identical command exactly once with the same cwd through Codex's native "
-            "sandbox_permissions=require_escalated single-action request. This does not change the "
-            "task permission mode and is not a full fallback. Never use it for progress updates, "
-            "diagnostics, an alternate command or path, persistent/session-wide access, or any "
-            "undeclared action; if the native request cannot be emitted, stop and report the blocker."),
+            (
+                "If an exact action explicitly declared by a task step is blocked by the native sandbox, "
+                "retry that identical command exactly once with the same cwd through Codex's native "
+                "sandbox_permissions=require_escalated single-action request. This does not change the "
+                "task permission mode and is not a full fallback. Never use it for progress updates, "
+                "diagnostics, an alternate command or path, persistent/session-wide access, or any "
+                "undeclared action; if the native request cannot be emitted, stop and report the blocker."
+            ),
+        )
+        native_permission_rule = (
+            "For Codex App Server native permission events, never request full, mint a grant, or "
+            "emit a permission input from the model; only the structured requestApproval event can "
+            "block one exact single action. Native transport or containment failure requires "
+            "needs_recovery and must never become a full request."
         )
     return build_prompt_contract(
         task_packet,
@@ -1839,6 +2004,7 @@ def _build_prompt(
             ),
             summary_line="After completing all steps, write a summary of what you did.",
             extra_rules=extra_rules,
+            native_permission_rule=native_permission_rule,
         ),
     )
 

@@ -1562,6 +1562,7 @@ class RunnerState:
                 raise RunnerError("worker config is outside ~/.abc")
         self._validate_executor_config(executor, config)
         permission = permission_record_from_extensions(task_model.extensions, allow_legacy=False)
+        worker_run_id = f"runner-worker-{uuid.uuid4().hex[:12]}"
         try:
             assert_executor_permission_supported(
                 executor,
@@ -1569,6 +1570,13 @@ class RunnerState:
                 self.allowed_executables.get(executor),
             )
         except ABCError as exc:
+            self._reconcile_worker_start_failure(
+                board,
+                task_id,
+                executor,
+                worker_run_id,
+                f"{exc.code}: {exc}",
+            )
             raise RunnerError(f"{exc.code}: {exc}") from exc
         TaskStore(board).append_event(
             task_id,
@@ -1608,7 +1616,6 @@ class RunnerState:
         runtime_record: dict[str, Any] | None = None
         runtime_authorized: dict[str, Any] | None = None
         profile_digest = ""
-        worker_run_id = f"runner-worker-{uuid.uuid4().hex[:12]}"
         from .permission_runtime import (
             HOST_CONTAINMENT_UNLIFTABLE,
             PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE,
@@ -1720,6 +1727,8 @@ class RunnerState:
                         task_id,
                     )
                     containment = {
+                        "task_id": task_id,
+                        "board_root": str(board),
                         "writable_roots": [str(root) for root in real_roots]
                         + [str(task_temp)],
                         "writable_files": [
@@ -1744,6 +1753,13 @@ class RunnerState:
             except (ABCError, OSError) as exc:
                 error_code = str(
                     getattr(exc, "code", PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE)
+                )
+                self._reconcile_worker_start_failure(
+                    board,
+                    task_id,
+                    executor,
+                    worker_run_id,
+                    f"{error_code}: {exc}",
                 )
                 raise RunnerError(f"{error_code}: {exc}") from exc
         command = [
@@ -1794,6 +1810,13 @@ class RunnerState:
                 error_code = str(
                     getattr(exc, "code", PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE)
                 )
+                self._reconcile_worker_start_failure(
+                    board,
+                    task_id,
+                    executor,
+                    worker_run_id,
+                    f"{error_code}: {exc}",
+                )
                 raise RunnerError(f"{error_code}: {exc}") from exc
         try:
             result = self._spawn_process(
@@ -1804,7 +1827,7 @@ class RunnerState:
                 run_id=worker_run_id,
                 containment=containment,
             )
-        except RunnerError:
+        except Exception as exc:
             # Fail closed: a spawned-or-not record must never pretend the
             # capability became effective.  No dialog, no grant consumption
             # beyond what dispatch already did; the stable code is surfaced.
@@ -1819,6 +1842,13 @@ class RunnerState:
                     TaskStore(board).write_task(task_id, task)
                 except ABCError:
                     pass
+            self._reconcile_worker_start_failure(
+                board,
+                task_id,
+                executor,
+                worker_run_id,
+                str(exc),
+            )
             raise
         if runtime_authorized is not None:
             try:
@@ -1851,33 +1881,69 @@ class RunnerState:
                 error_code = str(
                     getattr(exc, "code", PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE)
                 )
+                self._reconcile_worker_start_failure(
+                    board,
+                    task_id,
+                    executor,
+                    worker_run_id,
+                    f"{error_code}: {exc}",
+                )
                 raise RunnerError(f"{error_code}: {exc}") from exc
-        service.update_execution_metadata(
-            task_id,
-            {
-                "worker_run_id": result["run_id"],
-                "worker_pid": result["pid"],
-                "dispatch_status": "accepted",
-            },
-        )
-        TaskStore(board).append_event(
-            task_id,
-            {
-                "event_type": "worker_dispatched",
-                "task_id": task_id,
-                "executor_id": executor,
-                "worker_run_id": result["run_id"],
-                "created_at": _utc_now(),
-            },
-        )
-        monitor_result = self._open_task_monitor(task_id, board) if monitor else {"status": "disabled"}
-        service.update_execution_metadata(
-            task_id,
-            {
-                "monitor_status": monitor_result["status"],
-                "monitor_message": monitor_result.get("message"),
-            },
-        )
+        try:
+            service.update_execution_metadata(
+                task_id,
+                {
+                    "worker_run_id": result["run_id"],
+                    "worker_pid": result["pid"],
+                    "dispatch_status": "accepted",
+                },
+            )
+            TaskStore(board).append_event(
+                task_id,
+                {
+                    "event_type": "worker_dispatched",
+                    "task_id": task_id,
+                    "executor_id": executor,
+                    "worker_run_id": result["run_id"],
+                    "created_at": _utc_now(),
+                },
+            )
+            monitor_result = self._open_task_monitor(task_id, board) if monitor else {"status": "disabled"}
+            service.update_execution_metadata(
+                task_id,
+                {
+                    "monitor_status": monitor_result["status"],
+                    "monitor_message": monitor_result.get("message"),
+                },
+            )
+        except Exception as exc:
+            # The process exists, but Runner has not completed the durable
+            # dispatch transition.  Reap it and close every capability before
+            # exposing the failure; a half-dispatched worker is never a valid
+            # continuation.
+            try:
+                self.cancel(result["run_id"])
+            except RunnerError:
+                pass
+            if runtime_authorized is not None:
+                try:
+                    blocked = block_permission_runtime_record(
+                        runtime_authorized,
+                        code=PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE,
+                        domain="host_containment",
+                    )
+                    task["extensions"][PERMISSION_RUNTIME_EXTENSION_KEY] = blocked
+                    TaskStore(board).write_task(task_id, task)
+                except ABCError:
+                    pass
+            self._reconcile_worker_start_failure(
+                board,
+                task_id,
+                executor,
+                worker_run_id,
+                f"worker_activation_failed: {exc}",
+            )
+            raise RunnerError(f"worker_activation_failed: {exc}") from exc
         return {
             **result,
             "task_id": task_id,
@@ -2616,6 +2682,11 @@ class RunnerState:
                 self.lock.release()
                 stdout_file.close()
                 stderr_file.close()
+                if profile_path is not None:
+                    try:
+                        profile_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                 raise
         try:
             process = subprocess.Popen(
@@ -2638,6 +2709,8 @@ class RunnerState:
             raise
         record: dict[str, Any] = {
             "run_id": run_id,
+            "task_id": str((containment or {}).get("task_id") or ""),
+            "board_root": str((containment or {}).get("board_root") or ""),
             "executor": executor,
             "command": list(wrapped_command),
             "cwd": str(work_dir),
@@ -3500,6 +3573,147 @@ class RunnerState:
                     pass
                 record["profile_path"] = None
             self._write_metadata(record)
+            reconciliation = dict(record)
+        self._reconcile_worker_exit(reconciliation)
+
+    def _reconcile_worker_start_failure(
+        self,
+        board: Path,
+        task_id: str,
+        executor: str,
+        worker_run_id: str,
+        reason: str,
+    ) -> None:
+        """Close a dispatch attempt that never produced a worker process."""
+        try:
+            from .service import TaskService
+
+            service = TaskService(board)
+            marked = service.mark_task_needs_recovery(
+                task_id,
+                "runner_worker_start_failed",
+                reason,
+                {
+                    "executor": executor,
+                    "worker_run_id": worker_run_id,
+                    "phase": "runner_spawn",
+                },
+            )
+            service.block_permission_runtime_after_failure(task_id)
+            service.clear_execution_run_references(task_id)
+            if marked:
+                from .reports import write_report_files
+
+                try:
+                    write_report_files(task_id, board)
+                except (OSError, ValueError):
+                    pass
+        except Exception:
+            # The original RunnerError remains authoritative.  The Runner
+            # cannot claim recovery if Core storage itself was unavailable.
+            pass
+        finally:
+            self._refresh_worker_board_index(board)
+
+    def _reconcile_worker_exit(self, record: dict[str, Any]) -> None:
+        """Reconcile a contained worker exit in Runner-owned storage.
+
+        The worker is not allowed to rewrite the board index.  A non-zero
+        contained worker exit also cannot leave an ``input_required`` task or
+        an execution worker reference pointing at a dead process.
+        """
+        board_value = str(record.get("board_root") or "").strip()
+        task_id = str(record.get("task_id") or "").strip()
+        if not board_value or not task_id:
+            return
+        try:
+            board = Path(board_value).expanduser().resolve()
+            if not any(_is_within(board, root) for root in self.allowed_roots):
+                return
+            from .service import TaskService
+
+            service = TaskService(board)
+            task = service.get_task(task_id)
+            execution = dict((task.extensions or {}).get("agentbc.execution") or {})
+            worker_run_id = str(execution.get("worker_run_id") or "").strip()
+            if worker_run_id != str(record.get("run_id") or "").strip():
+                self._refresh_worker_board_index(board)
+                return
+            if task.status in {
+                "completed",
+                "failed",
+                "cancelled",
+                "rejected",
+                "needs_recovery",
+            }:
+                self._refresh_worker_board_index(board)
+                return
+            service.mark_task_needs_recovery(
+                task_id,
+                "worker_process_exited",
+                "Contained Runner worker exited before a terminal task result.",
+                {
+                    "executor": record.get("executor"),
+                    "worker_run_id": record.get("run_id"),
+                    "returncode": record.get("returncode"),
+                    "phase": "runner_worker_exit",
+                },
+            )
+            service.block_permission_runtime_after_failure(task_id)
+            service.clear_execution_run_references(task_id)
+            self._invalidate_native_request_after_worker_exit(
+                board,
+                task,
+                str(record.get("run_id") or ""),
+            )
+        except Exception:
+            # A worker-exit reconciliation is best effort at this boundary;
+            # the Runner record and task-scoped event remain the diagnostics.
+            pass
+        finally:
+            self._refresh_worker_board_index(Path(board_value).expanduser().resolve())
+
+    def _invalidate_native_request_after_worker_exit(
+        self,
+        board: Path,
+        task: Any,
+        worker_run_id: str,
+    ) -> None:
+        extensions = task.extensions if hasattr(task, "extensions") else {}
+        session = extensions.get("agentbc.session") if isinstance(extensions, dict) else {}
+        session_id = str((session or {}).get("session_id") or "").strip()
+        request = extensions.get("agentbc.input") if isinstance(extensions, dict) else {}
+        request_id = str((request or {}).get("request_id") or "").strip()
+        if not session_id or not request_id:
+            return
+        try:
+            from .control import ApprovalControlPlane
+            from .session import control_root_for_task
+
+            plane = ApprovalControlPlane(
+                control_root_for_task(task.id, board_root=board),
+                task_id=task.id,
+                executor_run_id=worker_run_id,
+                session_id=session_id,
+                executor=str(task.assignee or ""),
+                create=False,
+            )
+            plane.record_transport_failed(
+                "Runner worker exited while a native approval was pending.",
+                request_id=request_id,
+                evidence={"worker_run_id": worker_run_id, "source": "runner"},
+            )
+        except Exception:
+            pass
+
+    def _refresh_worker_board_index(self, board: Path) -> None:
+        try:
+            from .task_index import refresh_task_index
+
+            if any(_is_within(board, root) for root in self.allowed_roots):
+                refresh_task_index(board)
+        except (OSError, ValueError):
+            pass
 
     def _public_record(self, record: dict[str, Any]) -> dict[str, Any]:
         stdout, stdout_truncated = _read_output(Path(record["stdout_path"]))

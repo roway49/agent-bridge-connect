@@ -143,8 +143,18 @@ class ClaudeSDKControlTransport:
         self.session_id = str(session_id or "").strip()
         self.executor = str(executor or "claude").strip().lower()
         self.approval_timeout_s = max(float(approval_timeout_s), 0.1)
-        self.escalation_domain = str(escalation_domain or "").strip()
+        self.escalation_domain = str(escalation_domain or "").strip().lower()
         self.host_profile_digest = str(host_profile_digest or "").strip()
+        if self.executor == "claude":
+            # The production executor supplies these frozen facts.  Direct
+            # transport callers still receive the same bounded defaults so a
+            # native request can never omit its domain/profile binding.
+            if not self.escalation_domain:
+                self.escalation_domain = "executor_policy"
+            if not self.host_profile_digest:
+                from agent_bridge_connect.permission_runtime import host_profile_digest
+
+                self.host_profile_digest = host_profile_digest()
         # PERM-104-002 (GGQN-002): the durable revocation path for consumed
         # temporary-full grants.  Production binds the TaskService store
         # callback; without it a consumed grant cannot be durably revoked and
@@ -168,6 +178,10 @@ class ClaudeSDKControlTransport:
         # The tool_use_id of the one in-flight single-action approval (or the
         # empty string): the concurrency gate and death-invalidation anchor.
         self._active_request = ""
+        # The durable ControlPlane request id paired with the active native
+        # tool identity.  These are deliberately separate: item/tool ids are
+        # SDK identities, while request ids are AgentBC response-file keys.
+        self._active_request_id = ""
         # PERM-104-002 temporary-full lifecycle: the grant envelope consumed
         # for this run, revoked durably on terminal/crash/handoff/reassign.
         self._consumed_grant: dict[str, Any] | None = None
@@ -368,7 +382,9 @@ class ClaudeSDKControlTransport:
         finally:
             with self._pending_lock:
                 self._pending_tool_use_ids.discard(tool_use_id)
-                self._active_request = ""
+                if self._active_request == tool_use_id:
+                    self._active_request = ""
+                    self._active_request_id = ""
 
     def _deny_result(self, message: str) -> Any:
         from claude_agent_sdk import PermissionResultDeny
@@ -397,6 +413,9 @@ class ClaudeSDKControlTransport:
         from agent_bridge_connect.approval import compute_request_fingerprint
 
         request_id = new_request_id()
+        with self._pending_lock:
+            if self._active_request == tool_use_id:
+                self._active_request_id = request_id
         fingerprint = compute_request_fingerprint(
             executor=self.executor,
             session_id=self.session_id,
@@ -417,7 +436,7 @@ class ClaudeSDKControlTransport:
         summary = core_bounded_summary(executor=self.executor, operation=tool)
         message = {
             "jsonrpc": "2.0",
-            "id": tool_use_id,
+            "id": request_id,
             "method": "item/commandExecution/requestApproval",
             "params": {
                 "threadId": self.session_id,
@@ -432,6 +451,7 @@ class ClaudeSDKControlTransport:
                 "task_id": self.task_id,
                 "executor_run_id": self.run_id,
                 "tool_use_id": tool_use_id,
+                "request_id": request_id,
                 "tool_name": tool,
                 "request_fingerprint": fingerprint,
                 "action_fingerprint": action_fingerprint_value,
@@ -497,7 +517,11 @@ class ClaudeSDKControlTransport:
         behind a dead client.
         """
         with self._pending_lock:
-            active = str(self._active_request or "")
+            active = str(self._active_request_id or "")
+        if not active:
+            pending = self.plane.status().get("pending_request")
+            if isinstance(pending, dict) and pending.get("status") == "pending":
+                active = str(pending.get("request_id") or "")
         return self.plane.record_transport_failed(
             f"Claude SDK {reason}",
             request_id=active,
@@ -512,6 +536,11 @@ class ClaudeSDKControlTransport:
             "session_bound": bool(self.session_id),
             "alive": self.is_alive(),
             "pending_tool_use_ids": len(self._pending_tool_use_ids),
+            "pending_request": (
+                self.plane.status().get("pending_request")
+                if self._pending_tool_use_ids
+                else None
+            ),
             "approval_timeout_s": self.approval_timeout_s,
         }
 
