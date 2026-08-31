@@ -949,6 +949,8 @@ class RunnerClient:
         board_root: str | Path,
         config_path: str | Path | None,
         interval_s: float = 2.0,
+        tool_matcher: str = "",
+        session_scope: bool = False,
     ) -> dict[str, Any]:
         return self._request(
             {
@@ -960,6 +962,8 @@ class RunnerClient:
                 "board_root": str(Path(board_root).expanduser()),
                 "config_path": str(Path(config_path).expanduser()) if config_path else "",
                 "interval_s": interval_s,
+                "tool_matcher": str(tool_matcher or ""),
+                "session_scope": bool(session_scope),
             }
         )
 
@@ -1286,6 +1290,38 @@ class RunnerState:
         except (ControlPlaneError, SessionRecoveryRequired) as exc:
             raise RunnerError(f"{getattr(exc, 'code', 'approval_control_error')}: {exc}") from exc
         return response
+
+    def respond_session_rule(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Issue the CLI-authorized session rule for one answered native input.
+
+        PERM-104-002: validates the answered ``agentbc.input`` against the
+        full fail-closed authority contract, records the task-scoped session
+        rule receipt on the task, and (when the executor's live transport is
+        reachable) applies the official SDK session-scoped ``addRules``
+        PermissionUpdate on the same live SDK session.  No second worker and
+        no second Claude process is ever started here.
+        """
+        from .config import load_config
+
+        board = self._atomic_board(str(request.get("board_root") or ""))
+        task_id = str(request.get("task_id") or "")
+        input_id = str(request.get("input_id") or "")
+        matcher_value = str(request.get("tool_matcher") or "")
+        if not task_id or not input_id:
+            raise RunnerError("session_rule_invalid: task and input IDs are required")
+        with self.lock:
+            from .service import TaskService
+
+            config = self._atomic_config(str(request.get("config_path") or ""))
+            service = TaskService(board, config=load_config(config))
+            try:
+                return service.issue_session_tool_rule(
+                    task_id,
+                    input_id,
+                    tool_matcher=matcher_value,
+                )
+            except ABCError as exc:
+                raise RunnerError(f"{exc.code}: {exc}") from exc
 
     def control_status(self, request: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -2079,6 +2115,8 @@ class RunnerState:
                 and bool(str(waiting_input.get("request_id") or "").strip())
                 else None
             )
+            tool_matcher = str(request.get("tool_matcher") or "").strip()
+            session_scope = bool(request.get("session_scope"))
             try:
                 result = service.respond_to_input(
                     task_id,
@@ -2147,6 +2185,59 @@ class RunnerState:
                     self._refresh_task_list_dashboard(board)
                     raise
                 self._ensure_task_list_dashboard(board, task_id=task_id)
+                if tool_matcher and session_scope:
+                    # PERM-104-002: the explicit CLI session-rule decision is
+                    # issued only for the exact native request that was just
+                    # approved through the control plane.  ``tool_matcher``
+                    # without ``session_scope`` is unreachable here because
+                    # the CLI parser makes them mutually exclusive with
+                    # --approve/--deny, but a malformed Runner request still
+                    # fails closed below via respond_session_rule.
+                    try:
+                        rule_result = self.respond_session_rule(
+                            {
+                                "task_id": task_id,
+                                "input_id": str(result.get("input_id") or ""),
+                                "tool_matcher": tool_matcher,
+                                "board_root": str(board),
+                            }
+                        )
+                    except RunnerError as exc:
+                        service.mark_task_needs_recovery(
+                            task_id,
+                            "session_rule_issue_failed",
+                            str(exc),
+                            {
+                                "input_id": result.get("input_id", ""),
+                                "request_id": native_approval.get("request_id", ""),
+                                "executor": resumed_task.assignee,
+                                "phase": "session_rule_issue",
+                            },
+                            executor_run_id=executor_run_id,
+                        )
+                        write_report_files(task_id, board)
+                        notify_terminal(
+                            service,
+                            task_id,
+                            "task.recovery_required",
+                            "warning",
+                            f"Session tool rule could not be issued: {exc}",
+                        )
+                        self._refresh_task_list_dashboard(board)
+                        raise
+                    return {
+                        **result,
+                        "task_id": task_id,
+                        "status": "running",
+                        "same_task": True,
+                        "same_session": True,
+                        "dispatch_required": False,
+                        "session_tool_rule": rule_result.get("session_tool_rule"),
+                        "native_response": {
+                            "request_id": str(native_response.get("request_id") or ""),
+                            "decision": str(native_response.get("decision") or decision),
+                        },
+                    }
                 return {
                     **result,
                     "task_id": task_id,
@@ -4021,6 +4112,8 @@ def _dispatch_request(state: RunnerState, request: dict[str, Any]) -> dict[str, 
         return state.dispatch_task(request)
     if operation == "respond_task":
         return state.respond_and_dispatch(request)
+    if operation == "respond_session_rule":
+        return state.respond_session_rule(request)
     if operation == "create_and_dispatch":
         return state.create_and_dispatch(request)
     if operation == "handoff_and_dispatch":

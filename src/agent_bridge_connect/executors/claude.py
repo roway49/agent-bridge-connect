@@ -1299,6 +1299,34 @@ class ClaudeExecutor(CLIExecutorBase):
                     outcome["reason"] = "claude_sdk_post_tool_use_event_rejected"
                     return outcome
                 outcome["tool_use_id"] = str(structured_event.get("tool_use_id") or "")
+                # PERM-104-002 (ZF5R-001): reconcile the approved action with
+                # its exact structured PostToolUse result.  The ledger entry
+                # recorded at decision time moves to execution_result=
+                # "succeeded" so the next identical action is NOT converged
+                # to permission_escalation_ineffective — blocked=false now
+                # records verified execution.
+                if transport is not None:
+                    binding = transport.approved_action_binding()
+                    action_fp = str(binding.get("action_fingerprint") or "")
+                    domain = str(binding.get("escalation_domain") or "")
+                    profile_digest = str(binding.get("profile_digest") or "")
+                    if action_fp and domain and profile_digest:
+                        try:
+                            from agent_bridge_connect.permission_runtime import (
+                                reconcile_block_success,
+                            )
+
+                            reconcile_block_success(
+                                control_root,
+                                task_id=str(task_packet.get("task_id") or ""),
+                                session_id=str(session_id or ""),
+                                action_fingerprint_value=action_fp,
+                                domain=domain,
+                                profile_digest=profile_digest,
+                                executor="claude",
+                            )
+                        except Exception:  # noqa: BLE001 - reconciliation failures surface via receipts, never break verification.
+                            pass
             from agent_bridge_connect.service import TaskService
 
             service = TaskService(board_root, config=getattr(self, "_config", None) or {})

@@ -363,6 +363,60 @@ Executor 拒绝必须在同 session、同 request Approve 后精确执行。
 - `PERM-104-002-R1` 已接入本项验收：首块审批与合法 approval identity 的脱敏只读
   Details/View Details 投影回归在 `PERM-104-002` 收敛验收后执行，不单独占用 Wave。
 
+2026-08-31 `F8MJ-001` 会话级批量审批（session-scoped tool rule）实施证据（agent/hermes 本地提交，未 push）：
+
+- ZF5R-001 固定失败回归基线：Claude 官方 session `95260a61-51b4-484b-a231-f8af12d5a862`
+  （run `claude-ZF5R-001-03745cf3`）在单动作审批闭环下对同 session 顺序产生 17 次独立 Bash
+  `can_use_tool` 请求；`call_d4307bd5d90e4640b9f3a3d7` 经 CLI 单动作 approve 且其结构化
+  PostToolUse 成功落盘（blocked=false），随后同一 session 又产生新的独立 Bash 请求
+  `call_79d1691b0af6467080776263` 并因响应事务竞态 stale 失败——证明一次 approve 只豁免一次
+  动作，同 session 后续同类动作仍需逐条弹窗（这正是本项要修复的批量审批缺口）。
+- 新增 `agentbc task respond <task-id> --input <input-id> --approve-tool <tool-matcher>
+  --scope session`：CLI 新 flag 与 `--message/--approve/--deny` 互斥且 `--approve-tool` 必须
+  恰好搭配 `--scope session`；新模块 `agent_bridge_connect/session_tool_rules.py` 承载权威
+  校验（input.type=permission、native_event=claude_sdk_can_use_tool、
+  control_path=sdk_control_transport、status=answered、scope=single_action、
+  task/executor_run/官方 session/request_id/tool_use_id/request/action fingerprint、
+  escalation_domain、profile digest 全绑定），缺失/stale/mismatch/wildcard-all/不支持
+  executor/兼容 full fallback/非 native 请求均以稳定错误码 fail closed
+  （`session_rule_input_missing|stale|not_permission|not_native`、
+  `session_rule_identity_mismatch`、`session_rule_matcher_invalid|wildcard`、
+  `session_rule_executor_unsupported`、`session_rule_already_active|replay_conflict`）；
+  matcher 语法只收窄 `Tool(command-prefix*)` / `Tool(content)`，裸工具名、`*`、`Tool(*)`
+  一律拒绝；既有 `--approve`/`--deny` 单动作行为零改动。
+- Runner 新 op `respond_session_rule` 与 `respond_task` 的 `tool_matcher/session_scope`
+  扩展：session rule 只在控制面 native accept 事务提交后的同一次响应内签发，签发失败
+  统一 `session_rule_issue_failed` 恢复，不启动第二个 worker。
+- SDK 面板：先以 live-compatible probe（`scripts/live_probe_perm104_session_rule.py`）确认
+  安装版 `claude-agent-sdk==0.2.142` + Claude CLI `2.1.247` 的官方 type shape
+  `PermissionUpdate(type="addRules", rules=[PermissionRuleValue(toolName, ruleContent)],
+  behavior="allow", destination="session")` 经 `PermissionResultAllow.updated_permissions`
+  在同一 live session 生效：匹配命令零二次审批直接执行、非匹配命令仍触发 `can_use_tool`
+  且 deny 零执行、`.claude/settings*.json` 零写入；probe 证据冻结于
+  `tests/fixtures/executor_runtime/matrix/claude/live_probe_sdk_session_rule_2026-08-31/`。
+  Transport 仅在该形状与冻结契约一致时（漂移返回
+  `claude_sdk_session_rule_contract_invalid`）把 rule 附着到当前 live transport
+  （`attach_session_rule`，仅内存、随 transport 死亡失效），且只对工具名匹配的已批准
+  allow 结果附加该 update；不启动/恢复第二 Claude 进程、不注入 `--allowedTools` 启动参数、
+  不持久化任何 user/project settings、不转换为 full/bypassPermissions。
+- 任务级 rule receipt 与生命周期：`agentbc.session_tool_rule` v1 receipt 记录 matcher、
+  session scope、`selection_source=cli_native_approval`、脱敏 binding digest、时间戳与
+  active/revoked 状态；同 input 重放幂等（零新增 rule/事件）、冲突重放
+  `session_rule_replay_conflict`、同 session 已有 active rule 时
+  `session_rule_already_active`；completed/failed/needs_recovery/cancelled/retry/reassign/
+  handoff 终态路径统一 `revoke_session_tool_rule`（terminal 标记永不改写 Claude 配置文件）；
+  status 公共视图只投影脱敏 receipt（`session_rule_public_projection`），binding 标识符
+  不外泄。
+- PostToolUse 对账（ZF5R-001 缺陷修复）：新增 `reconcile_block_success`，在 runtime
+  verification 选中 anchor 的结构化 PostToolUse 成功事件后，把该批准动作在 block ledger
+  的精确条目推进为 `execution_result="succeeded"`；此后同 fingerprint/domain/profile 的
+  动作不再被错误收敛为 `permission_escalation_ineffective`（blocked=false 记录为已验证
+  执行），ledger 对账幂等且 deny 条目永不 reconcile。
+- 回归：新增 `tests/test_perm104_002_session_tool_rules.py` 56 项（CLI 解析/互斥、pending
+  input 权威、matcher 校验、SDK 序列化对齐 live probe、单 session 复用、非匹配工具不继承、
+  duplicate/replay 幂等、终态撤销矩阵、Runner reload 幂等、PostToolUse 对账收敛消失）；
+  live probe verdict=pass（6/6 checks）。
+
 2026-08-31 `RAXT-001` 实施与证据边界（`agent/codex` 本地提交，未 push）：
 
 - 保留 `WDAB-001` 的关闭记录，不改写历史因果顺序：官方 session

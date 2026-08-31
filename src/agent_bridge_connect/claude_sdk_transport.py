@@ -92,6 +92,18 @@ SDK_SESSION_MODE_UPDATE: dict[str, str] = {
     "destination": "session",
 }
 
+# PERM-104-002: the official session-scoped PermissionUpdate shape applied
+# when a trusted CLI decision (--approve-tool --scope session) translates one
+# approved native request into a narrow allow rule on the SAME live session.
+# The live-compatible probe (scripts/live_probe_perm104_session_rule.py,
+# evidence tests/fixtures/executor_runtime/matrix/claude/
+# live_probe_sdk_session_rule_2026-08-31) proved the installed
+# claude-agent-sdk 0.2.142 + Claude CLI 2.1.247 tuple accepts exactly this
+# shape via PermissionResultAllow.updated_permissions.
+SDK_SESSION_RULE_UPDATE_TYPE = "addRules"
+SDK_SESSION_RULE_DESTINATION = "session"
+SDK_SESSION_RULE_BEHAVIOR = "allow"
+
 # The transport marks worker threads so a second worker can be detected and
 # refused deterministically in tests and diagnostics.
 _WORKER_THREAD_PREFIX = "agentbc-claude-sdk-"
@@ -200,10 +212,21 @@ class ClaudeSDKControlTransport:
         # satisfy the anchor contract fails closed.
         self._verification_anchor = ""
         self._anchor_mode = ""
+        # PERM-104-002: the approved request's structured escalation binding,
+        # recorded when the anchor is set so the executor's runtime
+        # verification can reconcile the exact ledger entry with the
+        # anchor's PostToolUse success (execution_result="succeeded").
+        self._anchor_action_fingerprint = ""
+        self._anchor_escalation_domain = ""
+        self._anchor_profile_digest = ""
         # Set once the driver finished consuming the session stream: only
         # PostToolUse events observed inside this exact run window are
         # eligible (a replayed foreign event fails closed).
         self._stream_consumed = threading.Event()
+        # PERM-104-002: the CLI-issued session rule attached to this live
+        # transport (in-memory only; never persisted, dies with the
+        # transport/session).
+        self._session_rule: dict[str, Any] | None = None
 
     # ── worker event-loop lifecycle ────────────────────────────────────────
 
@@ -272,6 +295,10 @@ class ClaudeSDKControlTransport:
         if self._closed:
             return
         self._closed = True
+        # PERM-104-002: transport death is a rule-revocation signal — the
+        # in-memory session rule dies here and can never be re-derived.
+        with self._pending_lock:
+            self._session_rule = None
         client = self._client
         if client is not None and self._loop is not None and self._loop.is_running():
             try:
@@ -396,6 +423,52 @@ class ClaudeSDKControlTransport:
 
         return PermissionResultAllow(updated_input=dict(original_input or {}))
 
+    def _session_rule_allow_result(
+        self,
+        original_input: dict[str, Any],
+        *,
+        tool_name: str,
+        rule_content: str,
+    ) -> Any:
+        """Build the allow result carrying the official session-scoped rule.
+
+        PERM-104-002: one trusted CLI decision translates into exactly one
+        official ``PermissionUpdate(type="addRules", ..., destination=
+        "session")`` carried on the allow result for the approved request.
+        The CLI applies it to the SAME live session before the next tool
+        evaluation; no settings file is touched and the rule dies with the
+        session.  Contract drift from the live-proven shape fails closed.
+        """
+        from claude_agent_sdk import PermissionResultAllow, PermissionUpdate
+        from claude_agent_sdk.types import PermissionRuleValue
+
+        if (
+            SDK_SESSION_RULE_UPDATE_TYPE != "addRules"
+            or SDK_SESSION_RULE_DESTINATION != "session"
+            or SDK_SESSION_RULE_BEHAVIOR != "allow"
+        ):
+            raise ClaudeSDKTransportError(
+                "claude_sdk_session_rule_contract_invalid",
+                "The frozen session-scoped rule-update contract drifted from "
+                "the official PermissionUpdate shape proven by the live "
+                "probe.",
+            )
+        update = PermissionUpdate(
+            type=SDK_SESSION_RULE_UPDATE_TYPE,
+            rules=[
+                PermissionRuleValue(
+                    tool_name=str(tool_name or ""),
+                    rule_content=str(rule_content or ""),
+                )
+            ],
+            behavior=SDK_SESSION_RULE_BEHAVIOR,
+            destination=SDK_SESSION_RULE_DESTINATION,
+        )
+        return PermissionResultAllow(
+            updated_input=dict(original_input or {}),
+            updated_permissions=[update],
+        )
+
     async def _request_and_wait(
         self,
         control_path: str,
@@ -494,6 +567,23 @@ class ClaudeSDKControlTransport:
                 # PostToolUse success may verify the runtime receipt.
                 with self._pending_lock:
                     self._verification_anchor = tool_use_id
+                    self._anchor_action_fingerprint = action_fingerprint_value
+                    self._anchor_escalation_domain = self.escalation_domain
+                    self._anchor_profile_digest = self.host_profile_digest
+                # PERM-104-002: a trusted CLI --approve-tool --scope session
+                # decision widens ONLY this exact action's tool into the
+                # official session-scoped addRules update on the same live
+                # session.  The durable receipt binding (task/run/session/
+                # request/tool_use_id/fingerprints) was validated by the
+                # Runner-issued receipt; the transport re-checks the cheap
+                # invariants before attaching the rule.
+                rule = self._session_rule_from_receipt()
+                if rule is not None and str(rule.get("tool_name") or "") == tool:
+                    return self._session_rule_allow_result(
+                        tool_input,
+                        tool_name=str(rule.get("tool_name") or ""),
+                        rule_content=str(rule.get("rule_content") or ""),
+                    )
                 return self._allow_result(tool_input)
             return self._deny_result(
                 "The user denied this action through AgentBC."
@@ -545,6 +635,62 @@ class ClaudeSDKControlTransport:
         }
 
     # ── structured tool-event capture (verification evidence) ─────────────
+
+    def attach_session_rule(self, rule: dict[str, Any]) -> None:
+        """Attach the CLI-issued session rule this transport may apply.
+
+        ``rule`` carries the validated matcher facts (``tool_name``,
+        ``rule_content``) plus the durable receipt binding.  The transport
+        applies the official session-scoped ``addRules`` update only when the
+        approved native request's tool matches the rule's tool name, and only
+        inside :meth:`can_use_tool` on the SAME live session.  The in-memory
+        rule dies with this transport; it is never persisted or re-derived.
+        """
+        tool_name = str((rule or {}).get("tool_name") or "").strip()
+        rule_content = str((rule or {}).get("rule_content") or "").strip()
+        if not tool_name or not rule_content:
+            raise ClaudeSDKTransportError(
+                "claude_sdk_session_rule_invalid",
+                "A session rule requires the exact tool name and rule "
+                "content from the validated receipt.",
+            )
+        self._session_rule = {
+            "tool_name": tool_name,
+            "rule_content": rule_content,
+            "session_id": self.session_id,
+            "run_id": self.run_id,
+        }
+
+    def session_rule_attached(self) -> bool:
+        with self._pending_lock:
+            return self._session_rule is not None
+
+    def approved_action_binding(self) -> dict[str, Any]:
+        """Return the approved anchor's structured escalation binding.
+
+        Empty ``action_fingerprint`` means no single-action approval is
+        anchored on this transport.  Used by the executor's runtime
+        verification to reconcile the exact block-ledger entry with the
+        anchor's structured PostToolUse success.
+        """
+        with self._pending_lock:
+            return {
+                "tool_use_id": self._verification_anchor,
+                "action_fingerprint": self._anchor_action_fingerprint,
+                "escalation_domain": self._anchor_escalation_domain,
+                "profile_digest": self._anchor_profile_digest,
+            }
+
+    def _session_rule_from_receipt(self) -> dict[str, Any] | None:
+        """Return the attached session rule if it is live for this session."""
+        with self._pending_lock:
+            rule = self._session_rule
+        if not isinstance(rule, dict):
+            return None
+        if str(rule.get("session_id") or "") != self.session_id:
+            # A rule bound to another session can never be applied here.
+            return None
+        return dict(rule)
 
     def capture_tool_event(
         self,
@@ -1008,6 +1154,9 @@ __all__ = [
     "ClaudeSDKControlTransport",
     "ClaudeSDKTransportError",
     "SDK_SESSION_MODE_UPDATE",
+    "SDK_SESSION_RULE_BEHAVIOR",
+    "SDK_SESSION_RULE_DESTINATION",
+    "SDK_SESSION_RULE_UPDATE_TYPE",
     "build_sdk_options",
     "monotonic_deadline",
     "new_transport_run_id",

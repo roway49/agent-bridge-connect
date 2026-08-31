@@ -21,6 +21,10 @@ from .approval import (
 )
 from .config import DEFAULT_BOARD_ROOT, get_executor_config, init_board
 from .execution_contract import validate_callback_payload
+from .session_tool_rules import (
+    SESSION_RULE_RECEIPT_EXTENSION_KEY,
+    session_rule_public_projection,
+)
 from .execution_policy import (
     RESOURCE_EXTENSION_KEY,
     RESOURCE_KIND_BY_EXECUTOR,
@@ -953,6 +957,7 @@ class TaskService:
         }
         task.extensions = _merge_execution(task.extensions, {"internal_status": final_state})
         self.revoke_permission_grant(task.id, "task_terminal", model=task)
+        self.revoke_session_tool_rule(task.id, "session_rule_task_terminal", model=task)
         self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)
@@ -1129,6 +1134,209 @@ class TaskService:
         current.extensions = extensions
         current.updated_at = _utc_now()
         self.store.write_task(task_id, _without_none(current.to_dict()))
+
+    def issue_session_tool_rule(
+        self,
+        task_id: str,
+        input_id: str,
+        *,
+        tool_matcher: str,
+    ) -> dict[str, Any]:
+        """Issue the CLI-authorized session rule for one answered native input.
+
+        PERM-104-002: the input must be the exact answered native
+        ``claude_sdk_can_use_tool`` permission request whose response was a
+        recorded ``approve``.  All identity fields are validated fail closed
+        by :mod:`agent_bridge_connect.session_tool_rules`.  The durable
+        task-scoped receipt is idempotent: replaying the same response never
+        creates a second rule.
+        """
+        from .session_tool_rules import (
+            SESSION_RULE_RECEIPT_EXTENSION_KEY,
+            SESSION_RULE_INPUT_MISSING,
+            SessionRuleError,
+            issue_session_rule_receipt,
+            validate_session_rule_request,
+        )
+
+        task = self.get_task(task_id)
+        extensions = dict(task.extensions or {})
+        current_input = extensions.get("agentbc.input")
+        history = list(extensions.get("agentbc.input_history") or [])
+        candidates: list[dict[str, Any]] = []
+        if isinstance(current_input, dict):
+            candidates.append(current_input)
+        candidates.extend(item for item in history if isinstance(item, dict))
+        answered = next(
+            (
+                item
+                for item in candidates
+                if str(item.get("input_id") or "") == str(input_id)
+            ),
+            None,
+        )
+        if answered is None:
+            raise ABCError(
+                SESSION_RULE_INPUT_MISSING,
+                f"Input {input_id} does not exist for task {task.id}",
+            )
+        session = extensions.get(SESSION_EXTENSION_KEY)
+        session_id = (
+            str(session.get("session_id") or "") if isinstance(session, dict) else ""
+        )
+        response_value = answered.get("response")
+        response: dict[str, Any] = dict(response_value) if isinstance(response_value, dict) else {}
+        if str(response.get("type") or "") != "approve":
+            raise ABCError(
+                "session_rule_decision_invalid",
+                "A session tool rule can only follow a recorded approve "
+                "decision for the same input.",
+                {"decision": str(response.get("type") or "")},
+            )
+        try:
+            binding = validate_session_rule_request(
+                task.id,
+                answered,
+                executor=task.assignee,
+                executor_run_id=str(answered.get("executor_run_id") or ""),
+                session_id=session_id,
+                matcher_value=tool_matcher,
+            )
+        except SessionRuleError as exc:
+            raise ABCError(exc.code, str(exc), exc.details) from exc
+        now = _utc_now()
+        try:
+            receipt = issue_session_rule_receipt(
+                extensions,
+                binding,
+                input_id=str(input_id),
+                created_at=now,
+            )
+        except SessionRuleError as exc:
+            raise ABCError(exc.code, str(exc), exc.details) from exc
+        replay = SESSION_RULE_RECEIPT_EXTENSION_KEY in extensions and (
+            extensions[SESSION_RULE_RECEIPT_EXTENSION_KEY] is receipt
+        )
+        extensions[SESSION_RULE_RECEIPT_EXTENSION_KEY] = receipt
+        task.extensions = extensions
+        task.updated_at = now
+        self.store.write_task(task.id, _without_none(task.to_dict()))
+        if not replay:
+            self.store.append_event(
+                task.id,
+                {
+                    "event_type": "task.session_tool_rule_issued",
+                    "task_id": task.id,
+                    "created_at": now,
+                    "input_id": str(input_id),
+                    "request_id": str(binding.get("request_id") or ""),
+                    "tool_use_id": str(binding.get("tool_use_id") or ""),
+                    "matcher": str(binding.get("matcher") or ""),
+                    "scope": "session",
+                    "selection_source": "cli_native_approval",
+                },
+            )
+        return {
+            "ok": True,
+            "task_id": task.id,
+            "input_id": str(input_id),
+            "session_tool_rule": {
+                "matcher": str(binding.get("matcher") or ""),
+                "tool_name": str(binding.get("tool_name") or ""),
+                "rule_content": str(binding.get("rule_content") or ""),
+                "scope": "session",
+                "state": str((receipt.get("state") or {}).get("status") or ""),
+                "session_rule_applied": False,
+            },
+        }
+
+    def mark_session_tool_rule_applied(
+        self,
+        task_id: str,
+        *,
+        session_id: str,
+        applied: bool,
+        error_code: str = "",
+    ) -> bool:
+        """Record whether the live transport accepted the session rule.
+
+        Called by the executor after the official ``addRules`` control round
+        trip.  A failed application with no prior active rule leaves the
+        receipt revoked (nothing was granted); a successful application keeps
+        the receipt active for the exact session only.
+        """
+        from .session_tool_rules import (
+            SESSION_RULE_RECEIPT_EXTENSION_KEY,
+            SessionRuleError,
+            revoke_session_rule_receipt,
+            session_rule_receipt_for_session,
+        )
+
+        current = self.get_task(task_id)
+        extensions = dict(current.extensions or {})
+        receipt = extensions.get(SESSION_RULE_RECEIPT_EXTENSION_KEY)
+        if receipt is None:
+            return False
+        if not session_rule_receipt_for_session(receipt, session_id):
+            raise ABCError(
+                "session_rule_session_mismatch",
+                "The session rule receipt is not bound to this session.",
+            )
+        if applied:
+            return True
+        from .session_tool_rules import SESSION_RULE_REVOKED
+
+        try:
+            revoked = revoke_session_rule_receipt(
+                receipt,
+                error_code or SESSION_RULE_REVOKED,
+                revoked_at=_utc_now(),
+            )
+        except SessionRuleError as exc:
+            raise ABCError(exc.code, str(exc), exc.details) from exc
+        if revoked is not None:
+            extensions[SESSION_RULE_RECEIPT_EXTENSION_KEY] = revoked
+            current.extensions = extensions
+            current.updated_at = _utc_now()
+            self.store.write_task(current.id, _without_none(current.to_dict()))
+        return False
+
+    def revoke_session_tool_rule(self, task_id: str, code: str, *, model: TaskModel | None = None) -> bool:
+        """Revoke the task's session rule receipt (lifecycle terminal paths).
+
+        Idempotent: tasks without a receipt, or receipts already revoked, are
+        untouched.  Claude configuration files are never edited — the
+        in-memory rule dies with the same terminal signal that revokes the
+        receipt here.
+        """
+        from .session_tool_rules import (
+            SESSION_RULE_RECEIPT_EXTENSION_KEY,
+            SessionRuleError,
+            revoke_session_rule_receipt,
+            session_rule_receipt_active,
+        )
+
+        current = model if model is not None else self.get_task(task_id)
+        extensions = dict(current.extensions or {})
+        if SESSION_RULE_RECEIPT_EXTENSION_KEY not in extensions:
+            return False
+        if not session_rule_receipt_active(extensions[SESSION_RULE_RECEIPT_EXTENSION_KEY]):
+            return False
+        try:
+            revoked = revoke_session_rule_receipt(
+                extensions[SESSION_RULE_RECEIPT_EXTENSION_KEY],
+                code,
+                revoked_at=_utc_now(),
+            )
+        except SessionRuleError as exc:
+            raise ABCError(exc.code, str(exc), exc.details) from exc
+        if revoked is not None:
+            extensions[SESSION_RULE_RECEIPT_EXTENSION_KEY] = revoked
+            current.extensions = extensions
+            if model is None:
+                current.updated_at = _utc_now()
+                self.store.write_task(task_id, _without_none(current.to_dict()))
+        return True
 
     def block_permission_runtime_after_failure(
         self,
@@ -2885,6 +3093,7 @@ class TaskService:
         task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
         task.extensions = _merge_execution(task.extensions, execution_updates)
         self.revoke_permission_grant(task.id, code, model=task)
+        self.revoke_session_tool_rule(task.id, "session_rule_task_failed", model=task)
         self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)
@@ -2971,6 +3180,7 @@ class TaskService:
         task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
         task.extensions = _merge_execution(task.extensions, execution_updates)
         self.revoke_permission_grant(task.id, code, model=task)
+        self.revoke_session_tool_rule(task.id, "session_rule_task_recovery", model=task)
         self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)
@@ -3018,6 +3228,7 @@ class TaskService:
             {"internal_status": "pending", "requeued_at": now},
         )
         self.revoke_permission_grant(task.id, "task_retry", model=task)
+        self.revoke_session_tool_rule(task.id, "session_rule_task_retry", model=task)
         if not bool((task.workspace or {}).get("customer_dir")):
             Path(str(task.workspace["artifact_root"])).expanduser().mkdir(parents=True, exist_ok=True)
         Path(task.workspace["task_file"]).parent.mkdir(parents=True, exist_ok=True)
@@ -3398,6 +3609,7 @@ class TaskService:
         task.steps = [_retry_step(step, step_id) for step in task.steps]
         task.updated_at = _utc_now()
         self.revoke_permission_grant(task.id, "task_retry", model=task)
+        self.revoke_session_tool_rule(task.id, "session_rule_task_retry", model=task)
         self.store.write_task(task_id, _without_none(task.to_dict()))
         self.store.append_event(task_id, {"event_type": "step_retry", "task_id": task_id, "step_id": step_id, "created_at": task.updated_at})
         self._append_intervention(task_id, "retry", task.updated_at, step_id=step_id)
@@ -3430,6 +3642,7 @@ class TaskService:
         )
         after_policy = execution_policy_view(task.extensions)
         self.revoke_permission_grant(task.id, "task_reassign", model=task)
+        self.revoke_session_tool_rule(task.id, "session_rule_task_reassign", model=task)
         self._release_lease(task_id)
         task.assignee = new_executor
         task.status = "pending"
@@ -3568,6 +3781,10 @@ class TaskService:
             inherited_permission=source_permission if permission_mode is None else None,
         )
         now = _utc_now()
+        # PERM-104-002: a handoff supersedes the source run — the source
+        # task's session-scoped rule must not be inherited by the new
+        # iteration (the new iteration runs in its own official session).
+        self.revoke_session_tool_rule(source.id, "session_rule_task_handoff")
         self.store.append_event(
             source.id,
             {
@@ -4177,6 +4394,16 @@ def task_to_status(task: TaskModel) -> dict[str, Any]:
             )
         except ABCError:
             extensions.pop(APPROVAL_EXTENSION_KEY, None)
+    # PERM-104-002: the session tool rule is projected through its sanitized
+    # public view only (matcher, scope, source, digests, state); the durable
+    # binding identifiers never reach status.
+    session_rule_value = extensions.get(SESSION_RULE_RECEIPT_EXTENSION_KEY)
+    if session_rule_value is not None:
+        projected_rule = session_rule_public_projection(session_rule_value)
+        if projected_rule is None:
+            extensions.pop(SESSION_RULE_RECEIPT_EXTENSION_KEY, None)
+        else:
+            extensions[SESSION_RULE_RECEIPT_EXTENSION_KEY] = projected_rule
     data["extensions"] = extensions
     if raw_status != data["status"]:
         extensions = dict(data.get("extensions") or {})

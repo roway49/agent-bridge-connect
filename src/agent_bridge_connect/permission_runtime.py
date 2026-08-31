@@ -938,6 +938,64 @@ def supersede_block(
     return ledger
 
 
+def reconcile_block_success(
+    control_root: str | Path,
+    *,
+    task_id: str,
+    session_id: str,
+    action_fingerprint_value: str,
+    domain: str,
+    profile_digest: str,
+    executor: str = "claude",
+    operation: str = "",
+) -> bool:
+    """Reconcile an approved block with its structured PostToolUse success.
+
+    PERM-104-002 (ZF5R-001 baseline): an approved native request whose exact
+    structured PostToolUse success executed must record
+    ``execution_result="succeeded"`` in the block ledger; otherwise the next
+    identical action converges to ``permission_escalation_ineffective`` even
+    though the approval really worked.  Called by the executor's runtime
+    verification path after the transport selected the anchor's PostToolUse
+    success event.  Idempotent; returns ``True`` when a ledger entry was
+    reconciled.
+    """
+    action_fp = str(action_fingerprint_value or "").strip() or action_fingerprint(
+        executor=executor,
+        session_id=session_id,
+        operation=operation,
+    )
+    ledger = load_block_ledger(control_root)
+    fp = block_fingerprint(
+        task_id=task_id,
+        session_id=session_id,
+        action_fingerprint_value=action_fp,
+        domain=domain,
+        profile_digest=profile_digest,
+    )
+    entries = ledger.get("entries")
+    entry = entries.get(fp) if isinstance(entries, dict) else None
+    if not isinstance(entry, dict) or entry.get("decision") != "approve":
+        return False
+    if entry.get("execution_result") == "succeeded":
+        return True
+    remember_block_outcome(
+        ledger,
+        fingerprint=fp,
+        task_id=task_id,
+        session_id=session_id,
+        action_fingerprint_value=action_fp,
+        domain=domain,
+        profile_digest=profile_digest,
+        decision="approve",
+        execution_result="succeeded",
+        domain_changed=bool(entry.get("domain_changed")),
+        code=str(entry.get("code") or PERMISSION_ESCALATION_INEFFECTIVE),
+    )
+    save_block_ledger(control_root, ledger)
+    return True
+
+
 def block_ledger_public_projection(ledger: dict[str, Any]) -> dict[str, Any]:
     """Bounded public projection: counts and latest facts only."""
     entries = ledger.get("entries")
