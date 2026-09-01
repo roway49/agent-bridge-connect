@@ -342,24 +342,12 @@ class DialogNotifier:
         ]
         if not selectable:
             return None
-        lines = ["Choose one native permission option:", ""]
-        for index, option in enumerate(selectable, start=1):
-            label = str(option.get("label") or "").strip()
-            kind = str(option.get("kind") or "").strip()
-            suffix = f" ({kind})" if kind and kind != "other" else ""
-            lines.append(f"{index}. {label}{suffix}")
         unsupported = [
             option
             for option in native_options
             if option.get("selectable", True) is False
         ]
-        if unsupported:
-            lines.append("")
-            lines.append(
-                "Persistent/always choices are audit-only in this release and "
-                "cannot be selected here."
-            )
-        body = "\n".join(lines)
+        current = 0
         while True:
             give_up_s = self._permission_give_up_seconds(deadline_at, dialog_timeout_s)
             if give_up_s <= 0:
@@ -369,7 +357,29 @@ class DialogNotifier:
                     f"dialog:{_INPUT_EVENT}",
                     {"action": "deny", "decision_source": "timeout"},
                 )
-            script = self._permission_choice_script(give_up_s, len(selectable))
+            option = selectable[current]
+            label = str(option.get("label") or "").strip()
+            kind = str(option.get("kind") or "").strip()
+            suffix = f" ({kind})" if kind and kind != "other" else ""
+            lines = [
+                f"Native permission option {current + 1} of {len(selectable)}:",
+                "",
+                f"{label}{suffix}",
+            ]
+            if unsupported:
+                lines.extend(
+                    [
+                        "",
+                        "Persistent/always choices are audit-only in this release and "
+                        "cannot be selected here.",
+                    ]
+                )
+            body = "\n".join(lines)
+            script = self._permission_choice_script(
+                give_up_s,
+                has_previous=current > 0,
+                has_next=current + 1 < len(selectable),
+            )
             result = self._run_script(title, body, script, give_up_s)
             if result is None:
                 return DeliveryResult(
@@ -390,21 +400,24 @@ class DialogNotifier:
             button = str(result).strip()
             if button == "Back":
                 return None
-            if button.isdigit():
-                index = int(button)
-                if 1 <= index <= len(selectable):
-                    option = selectable[index - 1]
-                    return DeliveryResult(
-                        True,
-                        f"dialog shown; choice={index}; gave_up=false",
-                        f"dialog:{_INPUT_EVENT}",
-                        {
-                            "action": "permission_option",
-                            "decision_source": "user",
-                            "option_handle": str(option.get("handle") or ""),
-                            "option_kind": str(option.get("kind") or ""),
-                        },
-                    )
+            if button == "Previous" and current > 0:
+                current -= 1
+                continue
+            if button == "Next" and current + 1 < len(selectable):
+                current += 1
+                continue
+            if button == "Select":
+                return DeliveryResult(
+                    True,
+                    f"dialog shown; choice={current + 1}; gave_up=false",
+                    f"dialog:{_INPUT_EVENT}",
+                    {
+                        "action": "permission_option",
+                        "decision_source": "user",
+                        "option_handle": str(option.get("handle") or ""),
+                        "option_kind": str(option.get("kind") or ""),
+                    },
+                )
             # Any other button is fail-closed: treat as denial once.
             return DeliveryResult(
                 True,
@@ -413,12 +426,20 @@ class DialogNotifier:
                 {"action": "deny", "decision_source": "fail_closed"},
             )
 
-    def _permission_choice_script(self, give_up_s: int, count: int) -> str:
-        """Build the numbered choice picker script (Back + numbered buttons)."""
-        buttons = ["Back"] + [str(index) for index in range(1, count + 1)]
+    def _permission_choice_script(
+        self,
+        give_up_s: int,
+        *,
+        has_previous: bool,
+        has_next: bool,
+    ) -> str:
+        """Build one native-choice page within macOS' three-button limit."""
+        buttons = ["Previous" if has_previous else "Back", "Select"]
+        if has_next:
+            buttons.append("Next")
         button_list = ", ".join(f'"{button}"' for button in buttons)
         dialog = (
-            f'buttons {{{button_list}}} default button "Back" '
+            f'buttons {{{button_list}}} default button 1 '
             f"giving up after {give_up_s} with icon caution"
         )
         return (
@@ -474,7 +495,10 @@ class DialogNotifier:
     ) -> str:
         buttons: list[str] = ["Deny", "Approve"]
         if has_options:
-            buttons = ["Deny", "Choose Permission", "Approve"]
+            # Approval v2 accepts only an executor-native opaque choice.  A
+            # flattened Approve is both invalid and would push a detailed
+            # dialog beyond macOS' hard three-button limit.
+            buttons = ["Deny", "Choose Permission"]
         if has_detail:
             buttons = ["View Details", *buttons]
         button_list = ", ".join(f'"{button}"' for button in buttons)
