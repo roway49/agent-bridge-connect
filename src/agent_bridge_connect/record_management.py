@@ -9,7 +9,7 @@ from typing import Any
 from .protocol import ABCError
 
 
-MAX_TASK_RECORD_BYTES = 10 * 1024
+MAX_TASK_RECORD_BYTES = 50 * 1024
 MAX_EVENT_LOG_BYTES = 1536
 MAX_DIAGNOSTIC_TEXT = 512
 MAX_TIGHT_EVENT_LOG_BYTES = 768
@@ -216,7 +216,7 @@ def enforce_task_record_budget(
     if total <= MAX_TASK_RECORD_BYTES:
         return total
     # Terminal task.json owns the authoritative state.  If its compact
-    # projection is still close to the 10 KiB ceiling, tighten only redundant
+    # projection is still close to the 50 KiB ceiling, tighten only redundant
     # diagnostic tails before declaring the record impossible to persist.
     _trim_jsonl(directory / "events.jsonl", MAX_TIGHT_EVENT_LOG_BYTES)
     _trim_jsonl(directory / "interventions.jsonl", MAX_TIGHT_INTERVENTION_LOG_BYTES)
