@@ -87,6 +87,21 @@ class ManifestIntegrityTests(unittest.TestCase):
                     set(manifest["executors"][executor]["versions"]), versions
                 )
 
+    def test_e52m003_live_probe_is_executor_level_evidence(self) -> None:
+        # The live probe of the installed production binary is recorded as
+        # executor-level evidence, not a matrix version: it adds no
+        # capability and must never satisfy version surface requirements.
+        manifest = load_manifest()
+        probe = manifest["executors"]["claude"]["live_probe_e52m003"]
+        self.assertTrue(probe["live_capture"])
+        self.assertFalse(probe["help_contains_permission_prompt_tool"])
+        self.assertIsNone(probe["stdio_control_live_capture"])
+        self.assertEqual(probe["decision"], "permission_transport_unsupported")
+        probe_dir = MATRIX / probe["surface_dir"]
+        body = json.loads((probe_dir / "permission_control.json").read_text())
+        self.assertTrue(body["captured_live"])
+        self.assertFalse(body["probe"]["help_contains_permission_prompt_tool"])
+
     def test_declared_hashes_match_stored_files(self) -> None:
         manifest = load_manifest()
         checked = 0
@@ -197,7 +212,7 @@ class ProductionBoundAgreementTests(unittest.TestCase):
                 if entry["in_production_supported_range"]
             }
             with self.subTest(executor=executor):
-                self.assertEqual(supported, {"codex": {"0.146.0", "0.147.0"},
+                self.assertEqual(supported, {"codex": {"0.146.0", "0.147.0", "0.150.1"},
                                              "claude": {"2.1.226"},
                                              "hermes": {"0.17.0"}}[executor])
 
@@ -230,9 +245,9 @@ class CandidateIsolationTests(unittest.TestCase):
                         f"{executor}/{version} must not look production-ready",
                     )
 
-    def test_newer_path_binary_does_not_widen_codex_gate(self) -> None:
+    def test_promoted_collaboration_binary_is_frozen_in_codex_gate(self) -> None:
         codex = load_manifest()["executors"]["codex"]
-        self.assertNotIn("0.150.1", {
+        self.assertIn("0.150.1", {
             version
             for version, entry in codex["versions"].items()
             if entry["in_production_supported_range"]
@@ -244,7 +259,7 @@ class CandidateIsolationTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
-        self.assertEqual(schema["_fixture"]["capture_status"], "candidate_unpromoted")
+        self.assertEqual(schema["_fixture"]["capture_status"], "supported_live_probe")
 
     def test_hermes_cleanup_freeze_text_stays_pinned(self) -> None:
         hermes = load_manifest()["executors"]["hermes"]
@@ -265,7 +280,15 @@ class CandidateIsolationTests(unittest.TestCase):
 class CodexCapabilityGroupTests(unittest.TestCase):
     """Named execution/cleanup groups agree across code, fixtures and schema."""
 
-    EXPECTED_CLEANUP = frozenset({"thread/delete", "thread/deleted", "thread/read"})
+    EXPECTED_CLEANUP = frozenset(
+        {
+            "thread/archive",
+            "thread/archived",
+            "thread/delete",
+            "thread/deleted",
+            "thread/read",
+        }
+    )
     EXPECTED_DESKTOP_VISIBILITY = frozenset({"thread/list"})
 
     def test_cleanup_group_membership_is_exact(self) -> None:
@@ -419,8 +442,16 @@ class FailClosedContractTests(unittest.TestCase):
                 self.assertTrue(body["timeout"]["fail_closed"])
                 self.assertTrue(body["transport_lost"]["fail_closed"])
 
-    def test_codex_cleanup_group_names_the_three_thread_members(self) -> None:
-        expected = frozenset({"thread/delete", "thread/deleted", "thread/read"})
+    def test_codex_cleanup_group_names_the_archive_and_delete_members(self) -> None:
+        expected = frozenset(
+            {
+                "thread/archive",
+                "thread/archived",
+                "thread/delete",
+                "thread/deleted",
+                "thread/read",
+            }
+        )
         body = json.loads(
             (MATRIX / "codex" / "0.146.0" / "app_server_cleanup.json").read_text(
                 encoding="utf-8"

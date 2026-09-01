@@ -94,7 +94,12 @@ def is_orphaned(lease: RunLease, recovery_timeout_s: int = 600) -> bool:
     return heartbeat_age_s(lease) > max(recovery_timeout_s, 0)
 
 
-def reconcile_task(task_id: str, board_root: Path) -> str:
+def reconcile_task(
+    task_id: str,
+    board_root: Path,
+    *,
+    refresh_index: bool = True,
+) -> str:
     """Lazily reconcile run health without treating timeout as failure."""
     root = Path(board_root).expanduser().resolve()
     lease = load_lease(task_id, root)
@@ -149,7 +154,7 @@ def reconcile_task(task_id: str, board_root: Path) -> str:
             try:
                 from .reports import write_report_files
 
-                write_report_files(task_id, root)
+                write_report_files(task_id, root, refresh_index=refresh_index)
             except (ABCError, OSError, PermissionError):
                 pass
         save_lease(lease, root)

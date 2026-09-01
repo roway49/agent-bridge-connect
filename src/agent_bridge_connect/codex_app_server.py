@@ -59,7 +59,10 @@ CODEX_APP_SERVER_TRANSPORT_ALIASES = frozenset(
 # release is 0.146.0 and the locally installed surface is 0.147.0.  Any other
 # version is rejected until a new schema fixture and probe evidence exist.
 CODEX_APP_SERVER_MIN_VERSION = (0, 146, 0)
-CODEX_APP_SERVER_MAX_VERSION = (0, 147, 0)
+CODEX_APP_SERVER_MAX_VERSION = (0, 150, 1)
+CODEX_APP_SERVER_SUPPORTED_VERSIONS = frozenset(
+    {(0, 146, 0), (0, 147, 0), (0, 150, 1)}
+)
 CODEX_APP_SERVER_REQUIRED_PROTOCOL = 2
 
 # Frozen App Server surface for the AgentBC single-action chain.
@@ -93,10 +96,16 @@ CODEX_APP_SERVER_CAPABILITY_GROUPS: dict[str, dict[str, frozenset[str]]] = {
         "notifications": CODEX_APP_SERVER_NOTIFICATIONS,
     },
     CODEX_APP_SERVER_CLEANUP_GROUP: {
-        # Exactly the three members frozen by PROTO-104-001.
-        "client_methods": frozenset({"thread/delete", "thread/read"}),
+        # SESSION-104-001: the archive members join the frozen delete surface.
+        # ``thread/archive`` must be acknowledged before ``thread/delete`` is
+        # sent; ``thread/archived`` stays advisory exactly like
+        # ``thread/deleted``.  Extra schema members are never added, so the
+        # closed set still fails closed on unknown versions.
+        "client_methods": frozenset(
+            {"thread/archive", "thread/delete", "thread/read"}
+        ),
         "server_requests": frozenset(),
-        "notifications": frozenset({"thread/deleted"}),
+        "notifications": frozenset({"thread/archived", "thread/deleted"}),
     },
     CODEX_APP_SERVER_DESKTOP_VISIBILITY_GROUP: {
         "client_methods": frozenset({"thread/list"}),
@@ -317,16 +326,19 @@ def codex_collaboration_spawn_fixture_contract(
 ) -> dict[str, Any]:
     """Check the frozen schema fixture for the collaboration spawn group."""
     normalized = str(version or "").strip()
-    root = (
-        Path(fixture_root).expanduser()
-        if fixture_root is not None
-        else Path(__file__).resolve().parents[2]
-        / "tests"
-        / "fixtures"
-        / "executor_runtime"
-        / "matrix"
-        / "codex"
-    )
+    if fixture_root is not None:
+        root = Path(fixture_root).expanduser()
+    else:
+        packaged_root = Path(__file__).resolve().parent / "protocol_fixtures" / "codex"
+        source_root = (
+            Path(__file__).resolve().parents[2]
+            / "tests"
+            / "fixtures"
+            / "executor_runtime"
+            / "matrix"
+            / "codex"
+        )
+        root = packaged_root if (packaged_root / normalized).is_dir() else source_root
     bundle_path = root / normalized / "app_server_schema.json"
     result: dict[str, Any] = {
         "ok": False,
@@ -422,9 +434,7 @@ def codex_app_server_contract(
     if parsed is None:
         result["reason"] = f"codex version is not parseable: {result['version']}"
         return result
-    if not (
-        CODEX_APP_SERVER_MIN_VERSION <= parsed <= CODEX_APP_SERVER_MAX_VERSION
-    ):
+    if parsed not in CODEX_APP_SERVER_SUPPORTED_VERSIONS:
         result["reason"] = (
             f"codex version {'.'.join(str(part) for part in parsed)} is outside the "
             f"frozen App Server surface "
@@ -657,6 +667,7 @@ __all__ = [
     "CODEX_APP_SERVER_MAX_VERSION",
     "CODEX_APP_SERVER_MIN_VERSION",
     "CODEX_APP_SERVER_NOTIFICATIONS",
+    "CODEX_APP_SERVER_SUPPORTED_VERSIONS",
     "CODEX_APP_SERVER_REQUIRED_PROTOCOL",
     "CODEX_APP_SERVER_REQUEST_METHODS",
     "CODEX_APP_SERVER_SCHEMA_EVIDENCE_VERSIONS",

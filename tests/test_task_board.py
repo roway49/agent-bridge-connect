@@ -234,3 +234,117 @@ class TaskListTests(unittest.TestCase):
         ids = [t.id for t in tasks]
         # Should be descending
         self.assertEqual(ids, sorted(ids, reverse=True))
+
+
+class StepIdSchemaRegressionTests(unittest.TestCase):
+    """PERM-104-002 / FLOW-104-001 correction (GGQN-001): string step ids
+    used to pass task creation and later fail the matching final callback
+    with ``completion_marker_task_steps_invalid`` after the whole run had
+    executed.  Canonical new tasks require integer ids and invalid input
+    fails BEFORE dispatch with a stable ``task_create_error``."""
+
+    def setUp(self):
+        self.test_dir = Path(tempfile.mkdtemp())
+        self.board = self.test_dir / "abc-tasks"
+        from agent_bridge_connect.task_board import init_board
+
+        init_board(self.board)
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def test_create_rejects_string_step_id_before_dispatch(self) -> None:
+        from agent_bridge_connect.protocol import ABCError
+        from agent_bridge_connect.service import TaskService
+
+        service = TaskService(
+            self.board,
+            config={"workspace_root": str(self.test_dir), "permission_mode": "safe"},
+        )
+        with self.assertRaises(ABCError) as raised:
+            service.create_task(
+                "string id",
+                "claude",
+                [{"id": "1", "description": "finish"}],
+                customer_dir=True,
+                customer_path=self.test_dir,
+            )
+        self.assertEqual(raised.exception.code, "task_create_error")
+        self.assertIn("integer", str(raised.exception))
+
+    def test_create_rejects_other_non_integer_step_ids(self) -> None:
+        from agent_bridge_connect.protocol import ABCError
+        from agent_bridge_connect.service import TaskService
+
+        service = TaskService(
+            self.board,
+            config={"workspace_root": str(self.test_dir), "permission_mode": "safe"},
+        )
+        for bad in (1.5, True, [1], {"id": 1}):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ABCError) as raised:
+                    service.create_task(
+                        "bad id",
+                        "claude",
+                        [{"id": bad, "description": "finish"}],
+                        customer_dir=True,
+                        customer_path=self.test_dir,
+                    )
+                self.assertEqual(raised.exception.code, "task_create_error")
+
+    def test_create_defaults_missing_ids_and_keeps_integers(self) -> None:
+        from agent_bridge_connect.service import TaskService
+
+        service = TaskService(
+            self.board,
+            config={"workspace_root": str(self.test_dir), "permission_mode": "safe"},
+        )
+        task = service.create_task(
+            "integer ids",
+            "claude",
+            [{"description": "first"}, {"id": 2, "description": "second"}],
+            customer_dir=True,
+            customer_path=self.test_dir,
+        )
+        ids = [step["id"] for step in task.steps]
+        self.assertEqual(ids, [1, 2])
+        # The canonical callback validator accepts these ids: a final
+        # callback built from the declared steps can never diverge.
+        from agent_bridge_connect.execution_contract import (
+            validate_callback_payload,
+        )
+
+        validation = validate_callback_payload(
+            {
+                "version": 1,
+                "task_id": task.id,
+                "final_state": "completed",
+                "summary": "done",
+                "step_results": [{"id": 1, "status": "done"}, {"id": 2, "status": "done"}],
+            },
+            task.id,
+            task.steps,
+        )
+        self.assertTrue(validation.valid, validation.message)
+
+    def test_string_id_yaml_steps_rejected_at_creation(self) -> None:
+        from agent_bridge_connect.protocol import ABCError
+        from agent_bridge_connect.service import TaskService, load_steps
+
+        steps_file = self.test_dir / "steps.yaml"
+        steps_file.write_text(
+            "steps:\n  - id: \"1\"\n    description: finish\n", encoding="utf-8"
+        )
+        service = TaskService(
+            self.board,
+            config={"workspace_root": str(self.test_dir), "permission_mode": "safe"},
+        )
+        with self.assertRaises(ABCError) as raised:
+            service.create_task(
+                "yaml string id",
+                "claude",
+                load_steps(str(steps_file)),
+                customer_dir=True,
+                customer_path=self.test_dir,
+            )
+        self.assertEqual(raised.exception.code, "task_create_error")

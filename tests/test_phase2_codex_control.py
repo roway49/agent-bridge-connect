@@ -149,6 +149,10 @@ class BlockingFakeTransport:
                         },
                     }
                 )
+            elif method == "thread/archive":
+                self.queue.append(
+                    {"jsonrpc": "2.0", "id": message["id"], "result": {}}
+                )
             self.condition.notify_all()
 
     def recv(self) -> dict:
@@ -391,12 +395,28 @@ class CodexControlPlaneTests(unittest.TestCase):
                 session_id="thread-fake-1",
                 create=False,
             )
+            # PERM-104-002 v2: a v2 native request only accepts an explicit
+            # choice handle; flattened approve/deny is rejected.
+            with self.assertRaises(ControlPlaneError):
+                plane.respond_approval(
+                    self.task_id,
+                    started.run_id,
+                    "thread-fake-1",
+                    approval["request_id"],
+                    "accept",
+                )
+            once_handle = next(
+                choice["handle"]
+                for choice in approval["offered_choices"]
+                if choice["kind"] == "once"
+            )
             response = plane.respond_approval(
                 self.task_id,
                 started.run_id,
                 "thread-fake-1",
                 approval["request_id"],
                 "accept",
+                choice_handle=once_handle,
             )
             self.assertEqual(response["decision"], "accept")
             deadline = time.monotonic() + 2
@@ -444,12 +464,18 @@ class CodexControlPlaneTests(unittest.TestCase):
                 session_id="thread-fake-1",
                 create=False,
             )
+            deny_handle = next(
+                choice["handle"]
+                for choice in request["offered_choices"]
+                if choice["kind"] == "deny"
+            )
             plane.respond_approval(
                 self.task_id,
                 started.run_id,
                 "thread-fake-1",
                 request["request_id"],
                 "decline",
+                choice_handle=deny_handle,
             )
             deadline = time.monotonic() + 2
             while time.monotonic() < deadline and executor.poll(started.run_id).status not in {"completed", "needs_recovery", "failed"}:

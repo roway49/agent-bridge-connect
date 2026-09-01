@@ -189,6 +189,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the configured permission mode for this task.",
     )
     task_create.add_argument(
+        "--collaboration-spawn",
+        action="store_true",
+        help="Require one verified native Codex collaboration/spawn capability for this task.",
+    )
+    task_create.add_argument(
         "--customer-dir",
         choices=["true", "false"],
         help=argparse.SUPPRESS,
@@ -259,6 +264,27 @@ def build_parser() -> argparse.ArgumentParser:
     response.add_argument("--message")
     response.add_argument("--approve", action="store_true")
     response.add_argument("--deny", action="store_true")
+    response.add_argument(
+        "--permission-option",
+        dest="permission_option",
+        help=(
+            "Select one executor-native permission choice by its opaque "
+            "handle, exactly as offered on the pending request."
+        ),
+    )
+    # PERM-104-002 1.04A tombstone: session tool rules were removed.  The
+    # flags parse for one release and always fail with
+    # legacy_session_tool_rule_removed so old scripts fail loudly instead of
+    # silently changing behavior.
+    task_respond.add_argument(
+        "--approve-tool",
+        dest="approve_tool",
+        help=argparse.SUPPRESS,
+    )
+    task_respond.add_argument(
+        "--scope",
+        help=argparse.SUPPRESS,
+    )
     task_respond.add_argument("--config", type=Path)
     task_respond.add_argument("--interval", type=float, default=2)
 
@@ -500,6 +526,7 @@ def command_task_create(args: argparse.Namespace) -> int:
                 interval_s=getattr(args, "interval", 2),
                 monitor=getattr(args, "monitor", False),
                 permission_mode=_permission_mode_arg(args),
+                collaboration_spawn=getattr(args, "collaboration_spawn", False) is True,
             )
         except (ABCError, RunnerError) as exc:
             print(f"atomic_dispatch_error: {exc}")
@@ -518,6 +545,7 @@ def command_task_create(args: argparse.Namespace) -> int:
             customer_path=customer_path,
             images=_image_args(args),
             permission_mode=_permission_mode_arg(args),
+            collaboration_spawn=getattr(args, "collaboration_spawn", False) is True,
         )
     except ABCError as exc:
         print(f"task_create_error: {exc}")
@@ -845,7 +873,22 @@ def command_task_dispatch(args: argparse.Namespace) -> int:
 def command_task_respond(args: argparse.Namespace) -> int:
     from .runner import RunnerClient, RunnerError
 
-    if args.message is not None:
+    approve_tool = str(getattr(args, "approve_tool", "") or "").strip()
+    scope = str(getattr(args, "scope", "") or "").strip()
+    if approve_tool or scope:
+        # PERM-104-002 1.04A tombstone: the legacy session tool rule grammar
+        # was removed.  The flags parse for one release and always fail so
+        # existing automation never silently changes behavior.
+        print(
+            "respond_error: legacy_session_tool_rule_removed: "
+            "--approve-tool/--scope session were removed; respond with "
+            "--permission-option <handle> (or --approve/--deny) instead."
+        )
+        return 1
+    permission_option = str(getattr(args, "permission_option", "") or "").strip()
+    if permission_option:
+        response_type, message = "permission_option", permission_option
+    elif args.message is not None:
         response_type, message = "message", str(args.message)
     elif args.approve:
         response_type, message = "approve", ""
@@ -1386,7 +1429,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 )
                 if recovery_marked:
                     _write_terminal_report(task_id, service.board_root)
-                _request_task_list_refresh(service.board_root)
+                _request_task_list_refresh_for_service(service)
             except ABCError:
                 pass
             print(f"worker_error: async dispatch failed: {exc}")
@@ -1398,6 +1441,11 @@ def command_worker_run(args: argparse.Namespace) -> int:
         return 0
 
     config = load_config(args.config)
+    # Runner-authorized workers run inside the task-scoped Seatbelt profile.
+    # Keep their TaskService writes task-local; the Runner refreshes global
+    # indexes after the process exits.
+    if getattr(args, "runner_authorize", False) is True:
+        config = {**config, "_runner_worker": True}
     service = TaskService(args.root, config=config)
     try:
         executor = get_executor(
@@ -1423,7 +1471,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                         {"executor": args.executor, "probe": probe.details},
                     )
                     if recovery_marked:
-                        _write_terminal_report(requested.id, service.board_root)
+                        _write_worker_terminal_report(service, requested.id)
                         _notify_terminal(
                             service,
                             requested.id,
@@ -1431,7 +1479,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                             "warning",
                             probe.message,
                         )
-                    _request_task_list_refresh(service.board_root)
+                    _request_task_list_refresh_for_service(service)
             except ABCError:
                 pass
         print(f"worker_error: executor probe failed: {probe.message}")
@@ -1440,7 +1488,11 @@ def command_worker_run(args: argparse.Namespace) -> int:
     while True:
         for active_status in ("running", "assigned", "working"):
             for active_task in service.list_tasks(status=active_status, assignee=args.executor):
-                reconcile_task(active_task.id, service.board_root)
+                reconcile_task(
+                    active_task.id,
+                    service.board_root,
+                    refresh_index=not bool(getattr(service, "_runner_worker", False)),
+                )
         raw_task_id = getattr(args, "task_id", None)
         requested_task_id = raw_task_id if isinstance(raw_task_id, str) and raw_task_id else None
         if requested_task_id:
@@ -1472,6 +1524,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
             start = executor.start(
                 {
                     "task_id": claimed_task.id,
+                    "assignee": claimed_task.assignee,
                     "title": claimed_task.title,
                     "steps": claimed_task.steps,
                     "workspace": _task_workspace(claimed_task, service.board_root, service.config),
@@ -1498,9 +1551,9 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     },
                 )
                 if recovery_marked:
-                    _write_terminal_report(task.id, service.board_root)
+                    _write_worker_terminal_report(service, task.id)
                     _notify_terminal(service, task.id, "task.recovery_required", "warning", start.message)
-                _request_task_list_refresh(service.board_root)
+                _request_task_list_refresh_for_service(service)
                 print(f"worker_error: executor start failed for {task.id}: {start.message}")
                 return 1
             manages_executor_session = args.executor in {"claude", "hermes", "codex"}
@@ -1541,7 +1594,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                             {"executor": args.executor, "phase": "session_receipt"},
                         )
                         if recovery_marked:
-                            _write_terminal_report(task.id, service.board_root)
+                            _write_worker_terminal_report(service, task.id)
                             _notify_terminal(
                                 service,
                                 task.id,
@@ -1549,7 +1602,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                                 "warning",
                                 str(exc),
                             )
-                        _request_task_list_refresh(service.board_root)
+                        _request_task_list_refresh_for_service(service)
                         print(f"worker_error: executor session receipt failed for {task.id}: {exc}")
                         return 1
                 else:
@@ -1584,6 +1637,49 @@ def command_worker_run(args: argparse.Namespace) -> int:
                                 reason=str(approval_request.get("summary") or ""),
                                 reason_detail=str(approval_request.get("summary") or ""),
                                 execution_session=execution_session,
+                                tool_name=str(
+                                    approval_request.get("tool_name") or ""
+                                ),
+                                tool_use_id=str(
+                                    approval_request.get("tool_use_id")
+                                    or approval_request.get("item_id")
+                                    or ""
+                                ),
+                                action_fingerprint=str(
+                                    approval_request.get("action_fingerprint") or ""
+                                ),
+                                escalation_domain=str(
+                                    approval_request.get("escalation_domain") or ""
+                                ),
+                                profile_digest=str(
+                                    approval_request.get("profile_digest")
+                                    or approval_request.get("host_profile_digest")
+                                    or ""
+                                ),
+                                control_path=str(
+                                    approval_request.get("control_path") or ""
+                                ),
+                                native_event=str(
+                                    approval_request.get("native_event")
+                                    or "claude_sdk_can_use_tool"
+                                ),
+                                offered_choices=(
+                                    [
+                                        dict(choice)
+                                        for choice in approval_request.get(
+                                            "offered_choices", []
+                                        )
+                                        if isinstance(choice, dict)
+                                    ]
+                                    if isinstance(approval_request.get("offered_choices"), list)
+                                    and approval_request.get("offered_choices")
+                                    else None
+                                ),
+                                authority=(
+                                    dict(approval_request.get("authority") or {})
+                                    if isinstance(approval_request.get("authority"), dict)
+                                    else None
+                                ),
                             )
                         except ABCError as exc:
                             recovery_marked = service.mark_task_needs_recovery(
@@ -1599,7 +1695,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                                 execution_session=execution_session,
                             )
                             if recovery_marked:
-                                _write_terminal_report(task.id, service.board_root)
+                                _write_worker_terminal_report(service, task.id)
                                 _notify_terminal(
                                     service,
                                     task.id,
@@ -1607,7 +1703,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                                     "warning",
                                     str(exc),
                                 )
-                            _request_task_list_refresh(service.board_root)
+                            _request_task_list_refresh_for_service(service)
                             print(f"worker_error: native approval failed for {task.id}: {exc}")
                             return 1
                         notified_approval_requests.add(request_id)
@@ -1617,7 +1713,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                             config_path=getattr(args, "config", None),
                             interval_s=getattr(args, "interval", 2),
                         )
-                        _request_task_list_refresh(service.board_root)
+                        _request_task_list_refresh_for_service(service)
                         print(
                             f"input_required: {task.id} "
                             f"request={blocked.get('request_id', request_id)}"
@@ -1645,7 +1741,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                         {"executor": args.executor, "phase": "session_receipt"},
                     )
                     if recovery_marked:
-                        _write_terminal_report(task.id, service.board_root)
+                        _write_worker_terminal_report(service, task.id)
                         _notify_terminal(
                             service,
                             task.id,
@@ -1653,7 +1749,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                             "warning",
                             str(exc),
                         )
-                    _request_task_list_refresh(service.board_root)
+                    _request_task_list_refresh_for_service(service)
                     print(f"worker_error: executor session receipt failed for {task.id}: {exc}")
                     return 1
             else:
@@ -1697,9 +1793,9 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     )
                     event_type, level = "task.failed", "error"
                 if terminal_marked:
-                    _write_terminal_report(task.id, service.board_root)
+                    _write_worker_terminal_report(service, task.id)
                     _notify_terminal(service, task.id, event_type, level, failure_message)
-                _request_task_list_refresh(service.board_root)
+                _request_task_list_refresh_for_service(service)
                 print(f"worker_error: executor failed for {task.id}: {failure_message}")
                 return 1
 
@@ -1716,7 +1812,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     execution_session=execution_session,
                 )
                 if not blocked.get("ok"):
-                    _write_terminal_report(task.id, service.board_root)
+                    _write_worker_terminal_report(service, task.id)
                     _notify_terminal(
                         service,
                         task.id,
@@ -1727,7 +1823,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                             or "resource exhaustion wait failed; task requires recovery"
                         ),
                     )
-                    _request_task_list_refresh(service.board_root)
+                    _request_task_list_refresh_for_service(service)
                     print(f"needs_recovery: {task.id}")
                     return 1
                 _notify_input_required(
@@ -1736,7 +1832,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     config_path=getattr(args, "config", None),
                     interval_s=getattr(args, "interval", 2),
                 )
-                _request_task_list_refresh(service.board_root)
+                _request_task_list_refresh_for_service(service)
                 print(f"input_required: {task.id}")
                 if args.once:
                     return 0
@@ -1755,6 +1851,129 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 callback=callback if isinstance(callback, dict) else None,
                 execution_session=execution_session,
             )
+            # PERM-104-002 (E52M-003 review fix): ``verified`` may only come
+            # from the structured success receipt of the declared target
+            # action - a valid agent callback finalized by Core plus the
+            # validated official session receipt.  ``poll.status ==
+            # "completed"`` alone is never proof.  Any verification failure
+            # moves the runtime record to ``blocked`` with a stable code and
+            # fails the task closed; the previous code caught ABCError and
+            # silently left a completed task behind.
+            runtime_closure_error: str = ""
+            try:
+                current = service.get_task(task.id)
+                runtime_value = (current.extensions or {}).get(
+                    "agentbc.permission_runtime"
+                )
+                if isinstance(runtime_value, dict):
+                    from .permission_runtime import (
+                        PERMISSION_ESCALATION_INEFFECTIVE,
+                        PERMISSION_RUNTIME_DOMAINS,
+                        block_permission_runtime_record,
+                        verify_permission_runtime_record,
+                    )
+                    from .permission_transport import (
+                        PERMISSION_TRANSPORT_UNSUPPORTED,
+                    )
+
+                    session_id = (
+                        str(execution_session.get("session_id") or "").strip()
+                        if isinstance(execution_session, dict)
+                        else ""
+                    )
+                    structured_success = (
+                        poll.status == "completed"
+                        and finalized_from_worker is True
+                        and isinstance(callback, dict)
+                        and bool(session_id)
+                        and execution_session is not None
+                    )
+                    if structured_success:
+                        runtime_closed = verify_permission_runtime_record(
+                            runtime_value,
+                            session_id=session_id,
+                        )
+                    elif session_id:
+                        runtime_closed = block_permission_runtime_record(
+                            runtime_value,
+                            code=PERMISSION_ESCALATION_INEFFECTIVE,
+                            domain="host_containment",
+                        )
+                    else:
+                        runtime_closed = block_permission_runtime_record(
+                            runtime_value,
+                            code=PERMISSION_TRANSPORT_UNSUPPORTED,
+                            domain=PERMISSION_RUNTIME_DOMAINS[0],
+                        )
+                    if poll.status == "completed" and not structured_success:
+                        runtime_closure_error = (
+                            "permission_runtime_verification_failed: completed "
+                            "run lacks the structured success receipt "
+                            "(valid callback + official session id)"
+                        )
+                    current.extensions = dict(current.extensions or {})
+                    current.extensions["agentbc.permission_runtime"] = (
+                        runtime_closed
+                    )
+                    current.updated_at = _utc_now_cli()
+                    service.store.write_task(current.id, current.to_dict())
+            except ABCError as closure_exc:
+                # E52M-003: a failed closure is never swallowed.  Persist the
+                # blocked state when the record is still writable and fail
+                # the completed task closed below.
+                try:
+                    failed_current = service.get_task(task.id)
+                    failed_value = (failed_current.extensions or {}).get(
+                        "agentbc.permission_runtime"
+                    )
+                    if isinstance(failed_value, dict):
+                        from .permission_runtime import (
+                            HOST_CONTAINMENT_UNLIFTABLE,
+                            block_permission_runtime_record,
+                        )
+
+                        failed_closed = block_permission_runtime_record(
+                            failed_value,
+                            code=HOST_CONTAINMENT_UNLIFTABLE,
+                            domain="host_containment",
+                        )
+                        failed_current.extensions = dict(
+                            failed_current.extensions or {}
+                        )
+                        failed_current.extensions[
+                            "agentbc.permission_runtime"
+                        ] = failed_closed
+                        failed_current.updated_at = _utc_now_cli()
+                        service.store.write_task(
+                            failed_current.id, failed_current.to_dict()
+                        )
+                except ABCError:
+                    pass
+                runtime_closure_error = (
+                    f"permission_runtime_verification_failed: {closure_exc}"
+                )
+            if runtime_closure_error and finalized_from_worker:
+                failure_message = runtime_closure_error
+                terminal_marked = service.mark_task_failed(
+                    task.id,
+                    "permission_runtime_verification_failed",
+                    failure_message,
+                    {"executor": args.executor},
+                    executor_run_id=start.run_id,
+                    execution_session=execution_session,
+                )
+                if terminal_marked:
+                    _write_worker_terminal_report(service, task.id)
+                    _notify_terminal(
+                        service,
+                        task.id,
+                        "task.failed",
+                        "error",
+                        failure_message,
+                    )
+                    _request_task_list_refresh_for_service(service)
+                print(f"worker_error: {failure_message}")
+                return 1
             finalized = service.get_task(task.id)
             final_status = finalized.status
             if final_status == "completed":
@@ -1777,7 +1996,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     )
                 else:
                     _notify_terminal(service, task.id, event_type, level, summary)
-            _request_task_list_refresh(service.board_root)
+            _request_task_list_refresh_for_service(service)
             print(f"{final_status}: {task.id}")
         except ABCError as exc:
             try:
@@ -1797,11 +2016,11 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     )
                 )
                 if terminal_marked:
-                    _write_terminal_report(task.id, service.board_root)
+                    _write_worker_terminal_report(service, task.id)
                     event_type = "task.failed" if executor_started else "task.recovery_required"
                     level = "error" if executor_started else "warning"
                     _notify_terminal(service, task.id, event_type, level, str(exc))
-                _request_task_list_refresh(service.board_root)
+                _request_task_list_refresh_for_service(service)
             except ABCError:
                 pass
             print(f"worker_error: {exc}")
@@ -2298,10 +2517,23 @@ def _print_execution_policy(policy: Any) -> None:
         )
 
 
-def _write_terminal_report(task_id: str, board_root: Path) -> None:
+def _write_terminal_report(
+    task_id: str,
+    board_root: Path,
+    *,
+    refresh_index: bool = True,
+) -> None:
     from .reports import write_report_files
 
-    write_report_files(task_id, board_root)
+    write_report_files(task_id, board_root, refresh_index=refresh_index)
+
+
+def _write_worker_terminal_report(service: TaskService, task_id: str) -> None:
+    _write_terminal_report(
+        task_id,
+        service.board_root,
+        refresh_index=not bool(getattr(service, "_runner_worker", False)),
+    )
 
 
 def _notify_terminal(
@@ -2347,6 +2579,12 @@ def _request_task_list_refresh(board_root: str | Path) -> None:
         request_dashboard_refresh(board_root)
     except OSError:
         pass
+
+
+def _request_task_list_refresh_for_service(service: TaskService) -> None:
+    if bool(getattr(service, "_runner_worker", False)):
+        return
+    _request_task_list_refresh(service.board_root)
 
 
 def _build_notification_payload(

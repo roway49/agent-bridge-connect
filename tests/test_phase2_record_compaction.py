@@ -19,7 +19,7 @@ from agent_bridge_connect.service import TaskService
 
 
 class Phase2RecordCompactionTests(unittest.TestCase):
-    def test_terminal_compaction_preserves_complete_policy_under_ten_kib(self) -> None:
+    def test_terminal_compaction_preserves_complete_policy_under_fifty_kib(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             board = root / "record"
@@ -42,7 +42,7 @@ class Phase2RecordCompactionTests(unittest.TestCase):
             session = raw["extensions"][SESSION_EXTENSION_KEY]
             permission = raw["extensions"][PERMISSION_EXTENSION_KEY]
             raw["status"] = "completed"
-            raw["extensions"]["agentbc.test.large"] = {"payload": "x" * 20000}
+            raw["extensions"]["agentbc.test.large"] = {"payload": "x" * 80000}
             service.store.write_task(task.id, raw)
 
             task_dir = service.store.task_dir(task.id)

@@ -1,0 +1,29 @@
+{
+  "captured_live": true,
+  "origin": "E52M-003 live probe of the production host binary. Captured via official `claude --version` and `claude --help` on 2026-08-28; full help text saved alongside as help.txt (home paths redacted).",
+  "surface": "permission_control",
+  "probe": {
+    "installed_version": "2.1.247",
+    "help_contains_permission_prompt_tool": false,
+    "help_flag_searched": "--permission-prompt-tool",
+    "mcp_permission_tool_supported": false,
+    "stdio_can_use_tool_proven": false,
+    "can_use_tool_live_capture": null,
+    "control_response_live_capture": null
+  },
+  "decision": "permission_transport_unsupported",
+  "mcp_permission_tool": {
+    "supported": false
+  },
+  "stdio_can_use_tool": {
+    "supported": false
+  },
+  "inner_sandbox": {
+    "sandbox_keys": [
+      "sandbox.enabled",
+      "sandbox.failIfUnavailable"
+    ],
+    "edit_deny": true,
+    "git_metadata_in_add_dir": false
+  }
+}

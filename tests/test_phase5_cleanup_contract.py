@@ -49,7 +49,13 @@ class CleanupReceiptContractTests(unittest.TestCase):
         )
         self.assertEqual(
             CLEANUP_STRATEGIES,
-            {"none", "retain", "claude_project_purge", "official_session_delete"},
+            {
+                "none",
+                "retain",
+                "claude_project_purge",
+                "official_session_delete",
+                "official_session_archive_then_delete",
+            },
         )
         self.assertEqual(
             CLEANUP_STATES,

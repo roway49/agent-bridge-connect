@@ -1,7 +1,7 @@
 # AgentBC 1.0.4A 需求开发清单
 
 > 制定日期：2026-08-26
-> 状态：持续开发与回归中；`SESSION-104-001` 保持 P0 未完成
+> 状态：持续开发与回归中；`SESSION-104-001` 保持已通过，`PERM-104-002` 仍开放，当前主线为 Claude SDK native approval fail-closed 与生命周期回归
 > 目标版本：AgentBC `1.0.4A` / Python `1.0.4a1`
 > 来源基线：`private/integration@01f3ce1`
 > 已发布基线：`v1.0.3A2@62757a4`；公开 Formula 收口 `public/main@87c4bca`
@@ -56,13 +56,53 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `PROTO-104-001` | P0 / fixture matrix 已完成（2026-08-27）；production collaboration_spawn wiring 待回归（2026-08-28） | 上游 CLI version/help/argv/event 漂移只能靠临时补测试 | 三 Executor 完整版本化 fixture、capability matrix 和未知组合 fail-closed；生产派生会话接线需通过版本 fixture + live probe 双门 | 无 |
 | `ARCH-104-001` | P1 / 按域执行 | Service、Runner、CLI、approval、notification 责任仍集中 | 每个功能项先完成对应窄模块机械拆分，公共 API/CLI/磁盘行为不变 | `PROTO-104-001` |
 | `PERM-104-001` | P0 | native Deny 后 Agent 仍可用 Prompt/callback 请求 full 并启动第二 worker | 审批渠道和 fallback 完全由可信 transport event 与 Core policy 决定 | permission fixtures；对应 ARCH slice |
-| `PERM-104-002` | P0 | 已批准动作仍被宿主 containment 拒绝时会重复弹窗、grant 和 continuation；显式 full 还可能进入不可再升级 recovery | 稳定 fingerprint + escalation domain；人工授予、临时申请和权限继承三条路径的 full 都必须真实生效且在声明范围内无阻塞；完成后执行 `PERM-104-002-R1` 详情回归 | `PERM-104-001` |
+| `PERM-104-002` | P0-Blocker / 仍开放（RAXT-001，2026-08-31） | Claude native request 曾在 session receipt 建立前失败，后续 callback/full popup/worker crash 不能证明 native approval 成功；同一不可升级阻塞还可能重复请求 | 已补 session-first、native single_action 权威绑定、callback fail-closed、Runner contained cleanup 与回归；仍需 deployed explicit/temporary/inherited full 真机 canary 和 `PERM-104-002-R1` 详情回归，未通过前不得关闭 | `PERM-104-001` |
 | `FLOW-104-002` | P0 | report/record 超限可跳过终态通知和 cleanup receipt | terminal、report、notification、cleanup 独立且可重放，通知不被报告失败吞掉 | terminal fixtures；对应 ARCH slice |
 | `FLOW-104-001` | P1 | handoff 只能声明一个 step，自由文本多步骤直到 callback 才失败 | handoff 原生结构化 steps、dispatch 前预检、严格 callback 一致性 | schema fixtures；对应 ARCH slice |
 | `FLOW-103-001` | P1 / 跨版转入 | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | task/run/session scoped 单调 progress receipt；所有公共视图同源 | `FLOW-104-001` 的 declared steps |
-| `SESSION-104-001` | P0 / 未完成（2026-08-28） | cleanup 成功只证明 CLI delete 返回成功，未证明 Codex CLI 与 Desktop 的恢复列表都彻底移除同一临时会话 | 以官方 session ID 做双入口、重启后和保留边界的真实验收；不能确认时 fail closed | `PROTO-104-001` Codex session fixtures；`FLOW-104-002` cleanup receipt；官方 Desktop 实时同步证据 |
+| `SESSION-104-001` | P0 / 已通过（2026-08-29） | 历史 cleanup 只证明 CLI delete；现已建立同一官方 session 的 archive→delete 命令闭环并完成 CLI/Desktop 后端真机验收 | `QV46-001` completed 与 `NMY4-001` failed 均对精确主会话完成 archive/delete acknowledgement，CLI、Desktop backend 及当前应用 active/archived 列表均 absent；Desktop 刷新延迟不作为门禁 | 已完成；原生派生子会话未实际触发转 `PROTO-105-001` P2 |
 | `FLOW-104-003` | P0 / 恢复闭环 | 当前终态 `failed` 既不能 `task retry`，也不能作为普通 handoff 源，失败后只能人工绕行 | status/report 给出机械可判定的 retry/handoff 动作；同任务重试与新 iteration 交接均保留审计和进度 | failure taxonomy；`FLOW-104-002` terminal receipts；`FLOW-104-001` steps |
 | `INPUT-104-001` | P0 / 派发阻断 | 显式 custom path 时，位于项目根之外的 `--image`/输入文件被 `image input is outside task roots` 原子拒绝 | 项目根与只读附件根分离；Runner 受控导入外部文件且不扩大 Executor 项目权限 | PathPlan v2；atomic dispatch；input manifest |
+
+### 2.1 P1 待回归项（不新增权威开发项）
+
+| ID | 优先级 | 现场基线 | 回归目标 | 主要依赖 |
+| --- | --- | --- | --- | --- |
+| `RESOURCE-104-001-R1` | P1 / 待回归 | `E52M-002` 的 Hermes run 使用完 `150/150` 次迭代后，Core 已持久化 `input_required(type=choice, kind=resource_limit)`、RunLease 已挂起且 CLI 可响应，但 Codex Desktop 没有显示“提高预算并继续 / 终止任务”弹窗 | 每个仍有效的 resource-limit input 都有且只有一个 Desktop 弹窗；Approve 将当前 Task 上限翻倍并恢复同一官方 session，Deny 单调终止；CLI 响应保持等价兜底，但不能替代 Desktop 真机验收 | `FLOW-104-002` notification delivery；`FLOW-103-001` progress receipt；DialogNotifier |
+| `FLOW-104-003-R1` | P1 / 待回归 | `E52M-003` 中 Hermes 0.20.1 运行 `2h37m` 后以返回码 `0` 结束，但输出停留在代码 diff、未产生 `AGENTBC_FINAL_CALLBACK`；Runner 明确记录 `output_truncated=false`、`marker_seen=false`，且没有可识别的迭代耗尽 receipt | 进程成功退出与任务合同完成继续严格分离；Hermes 必须提供结构化 terminal reason、实际/上限 turns 和最终响应边界。确属资源耗尽时生成唯一可恢复 input；仍有 pending step 却正常退出时给出稳定的 incomplete-exit 分类、保留部分进度并允许受审计 retry/handoff；不得伪造 callback | `FLOW-104-003` failed recovery；`FLOW-103-001` progress receipt；Hermes ACP/CLI terminal receipt |
+
+`RESOURCE-104-001-R1` 的固定验收合同：
+
+- 弹窗只投影持久化的 `agentbc.input`，展示 Task、Executor、已用/当前/下一上限、阻塞原因和两个固定
+  决策按钮；不得从 Agent 文本或 stderr 临时合成；
+- Approve 必须绑定原 `input_id`，保持 Task ID、官方 session ID、冻结权限与已完成进度，将当前上限按
+  已冻结 multiplier 提高后只启动一个 continuation；Deny 不启动 continuation，并记录资源耗尽终态；
+- Desktop 未运行、Notifier 投递失败或应用重启时必须保存可行动的 notification receipt；恢复投递后最多
+  重放一次，已由 CLI 响应或过期的 input 不得再次弹窗；
+- 回归覆盖首次耗尽、第二次耗尽、Runner 重启、Desktop 重启、重复/乱序投递、Approve、Deny、超时及
+  CLI/Desktop 竞争响应；公共 status/report/notification 必须同源；
+- CLI `agentbc task respond ... --approve|--deny` 是弹窗缺失时的正式恢复入口，但仅证明控制面可恢复，
+  不得据此把 Desktop 弹窗回归标记为通过。
+
+`FLOW-104-003-R1` 的固定验收合同：
+
+- 返回码 `0` 只证明 Executor 进程正常结束；只有合法且唯一的 `AGENTBC_FINAL_CALLBACK` 才能声明任务
+  flow completed，Core 不得从 diff、自然语言总结或退出码补写 callback；
+- Hermes terminal receipt 必须绑定 Task、run、官方 session 与冻结资源快照，并明确区分 completed、
+  max-turn/context exhaustion、user stop、transport failure 和 incomplete normal exit；未知原因 fail closed；
+- 资源耗尽分类不得只依赖人类可读 stderr 正则；fixture 与 live probe 必须覆盖当前支持版本，协议未知时保存
+  原始脱敏 reason 并进入可恢复诊断，而不是静默退化为不可重试的 `completion_marker_missing`；
+- 回归覆盖合法 callback、缺 callback 的返回码 0、非零退出、输出截断、最大 turns、上下文耗尽、Runner
+  重启，以及同 Executor retry/跨 Executor handoff；每条路径验证唯一 RunLease、部分进度单调和通知幂等。
+
+### 2.2 P2 待优化项（视进度决定是否并入 1.0.5A）
+
+| ID | 优先级 | 现场基线 | 优化目标 | 发布关系 |
+| --- | --- | --- | --- | --- |
+| `PROTO-105-001` | P2 / 待优化 | Codex 0.150.1 schema、fixture 与 live probe 均声明 `collabAgentToolCall`/`spawnAgent`，且 AgentBC 已显式选择 collaboration 与 Ultra；但 `C5FN-001`、`NMY4-001` 仍由父模型直接输出 `CHILD_SESSION_CANARY_OK`，没有官方 `spawnAgent` lifecycle、receiver thread ID 或 auxiliary ledger | 找到官方、可验证的原生协作工具启用合同；只有收到真实 `item/started`→`item/completed`、官方 receiver thread receipt 并完成父子 cleanup 后才算通过。禁止把模型文字或模拟子代理当作成功 | 不重新打开 `SESSION-104-001`；根据 1.0.5A 开发容量决定是否并入，未并入时继续 fail closed |
+
+`PROTO-105-001` 不属于 `1.0.4A` 发布门禁。当前主会话 completed/failed cleanup 已通过；由于上述 canary
+没有实际创建派生会话，它既不能证明派生清理通过，也不能否定已登记 auxiliary receipt 的现有清理实现。
 
 ## 3. 开发顺序与并行边界
 
@@ -97,6 +137,8 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 
 ### Wave 2：权限机械判定与不可升级阻塞收敛
 
+- 当前开发资源优先投入 Claude `PERM-104-002` 审批循环；在显式 full、临时 full、继承 full 三条真机
+  canary 收敛前，不继续扩展 Codex 原生派生会话能力；
 - `PERM-104-002` 必须在 `PERM-104-001` 的 Core-owned approval decision 落地后实施；
 - `PERM-104-002` 完成前不实施或单独验收详情按钮修复；先证明相同不可升级阻塞不会生成第二个 permission input；
 - `PERM-104-002` 通过定向/全量测试后执行派生项 `PERM-104-002-R1`，只补齐/验证 Core 详情投影和
@@ -108,7 +150,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 
 - `FLOW-104-002` 先建立独立 terminal/report/notification/cleanup receipt，作为失败恢复的审计基础；
 - `FLOW-104-003` 随后开放 Failed retry/handoff，禁止用清空失败记录或复制任务伪装恢复；
-- `SESSION-104-001` 在 terminal/cleanup receipt 稳定后跑 CLI/Desktop 真机矩阵并实施窄修复；
+- `SESSION-104-001` 已完成 CLI/Desktop 后端真机矩阵并通过；后续仅执行不改变发布结论的防回归；
 - 三项必须共同覆盖“旧 session 已清理后 retry 不得恢复已删除 session”与“handoff 不删除派发端对话”。
 
 ### Wave 4：结构化流程与权威进度
@@ -121,6 +163,8 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 
 - 运行三 Executor permission Approve/Deny/blocked、handoff multi-step、资源耗尽和 terminal failure
   真实 canary；
+- 执行 `RESOURCE-104-001-R1` 的 Desktop/CLI 双入口资源耗尽回归，保存弹窗、notification receipt、
+  同 session continuation、资源上限变化与去重证据；
 - 运行 Update、Homebrew、session teardown/auxiliary cleanup 全套回归；
 - 构建 `1.0.4a1` 候选并完成 macOS bundle、PyPI dist、Homebrew Formula/bottle 与双机验证；
 - 所有 Gate 完成前不创建公开 tag、GitHub Release 或 PyPI 文件。
@@ -253,6 +297,228 @@ Executor 拒绝必须在同 session、同 request Approve 后精确执行。
 - 回归覆盖 Claude/Codex/Hermes、Runner/宿主 containment、restart/recover/retry/handoff，并保留原
   task/run/session/request/fingerprint 审计链。
 
+2026-08-28 实施证据（`E52M-001`，agent/hermes 本地提交，未 push）：
+
+- 新增 `agentbc.permission_runtime` v1 权威 runtime capability receipt：统一
+  `explicit_task` / `one_shot_permission_grant` / `inherited_task` 三种 full 来源，绑定
+  task/chain head/executor/run/官方 session、PathPlan digest 与 host profile digest；固定五级
+  escalation 层级 `executor_policy` → `agentbc_policy` → `runner_pathplan` → `host_containment`
+  → `linked_worktree_metadata`，生命周期 `prepared → authorized → activated → verified | blocked`；
+  grant 只在 authorized 后消费，同一 host profile 内 activated，结构化动作成功后 verified；
+- 七个稳定错误码落地：`permission_runtime_capability_unavailable`、
+  `permission_transport_unsupported`、`permission_escalation_ineffective`、
+  `permission_action_already_blocked`、`linked_worktree_capability_invalid`、
+  `host_containment_unliftable`、`permission_block_evidence_unavailable`；
+- 可信 block ledger 持久化 fingerprint/domain/profile digest/decision/execution result/domain
+  变化；Approve 后相同 task/session/action/fingerprint/domain/profile 再现时收敛为
+  `permission_escalation_ineffective`（needs_recovery、step blocked、零新增
+  input/grant/worker/continuation/deadline/通知）；concrete full 直接收敛，不再请求 full 或产生
+  `permission_mode_unsupported` / `permission_resume_session_unavailable`；
+- macOS Runner 在锁内 realpath 校验 frozen PathPlan 根与 linked-worktree
+  root/per-worktree git dir/git common dir/当前 symbolic ref/reflog，生成 Runner-owned
+  task-scoped Seatbelt profile 并在其中启动 worker；linked-worktree 只允许 per-worktree git dir、
+  common objects 与当前 branch 精确 ref/lock/reflog，禁止其他 refs/worktrees/common
+  config/hooks/packed-refs 与整个主仓库；普通仓库不加能力；detached/bare/submodule、拓扑漂移与
+  其他 ref 稳定 blocked；sandbox-exec 不可用时启动前返回 `host_containment_unliftable`，不弹窗、
+  不消费 grant；Git metadata 不进入 Executor 内层 sandbox（--add-dir/allowWrite 同 outer 根），
+  Claude 内层保持 sandbox.enabled/failIfUnavailable 与 Edit deny；
+- Claude 历史上曾按 fixture 接入 MCP permission-tool / stdio can_use_tool+control_response
+  版本能力矩阵；该准入路径已于 2026-09-01 清退，fixture 仅保留为历史回归证据，不再决定
+  生产支持范围。worker 现在按原生协议结构选择 control path，并保留同进程 Approve/Deny 与
+  transport-death 失效语义；
+- 2026-09-01 `A7XB-001` 回归证明上述“未知版本 fail-closed”属于错误准入策略：配置从
+  Claude `2.1.233` 更新至接口兼容的 `2.1.247` 后，任务在进程启动前被版本表秒拒绝，原生
+  `can_use_tool` 根本没有机会产生。现已清退 CLI/SDK 版本白名单与 `--version` 准入；版本、
+  发行方和绝对路径只作为诊断/身份记录。生产准入改为机械检查 SDK 协议成员
+  （`ClaudeSDKClient.options`、`ClaudeAgentOptions.can_use_tool/cli_path/cwd/permission_mode/hooks`、
+  `ToolPermissionContext.tool_use_id/suggestions`、Allow/Deny/PermissionUpdate 精确返回形状）；
+  协议结构兼容的官方升级与 fork 默认支持，只有真实接口缺失、握手失败或运行中 transport
+  丢失才分别返回 `permission_protocol_shape_unsupported`、
+  `permission_protocol_handshake_failed`、`permission_transport_lost`。原生结构化事件仍是唯一
+  审批权威，文本、stderr、callback 与退出码仍不得创建审批；
+- Hermes canary：Agent callback / stderr / 退出码只作为诊断（`record_agent_callback` 仅持久化
+  completion intent），不能创建 input/grant；本任务真机执行中两次 python3/pip 探测被 Hermes
+  终端审批门以超时 fail-closed 拒绝，未产生任何 grant/input/continuation，证明 Hermes 不存在
+  Claude 的审批循环；获批 continuation 后已补跑全部验证：定向 68 项与全量 1529 项 unittest
+  通过，Ruff（src + 新测试文件）、compileall、`uv build` wheel/sdist（含三个新模块）与
+  `git diff --check` 全部通过；
+- 2026-08-30 官方 SDK transport 实施证据（`QJXH-001`，agent/hermes 本地提交
+  `2d493cc` → `1aba319` → `50b4d4e` → 第四笔，未 push）：
+  - 生产路径只剩官方 `claude_agent_sdk==0.2.142` `can_use_tool` transport；raw
+    `ClaudePermissionPromptBroker`、shell `--permission-prompt-tool` 与 CLI resume 均
+    不是生产路径；`can_use_tool` 在 worker event-loop 上 await ControlPlane 往返，
+    同一 ClaudeSDKClient 进程/会话跨审批保持存活，并发第二个请求 fail closed；
+  - transport 记录 in-flight `tool_use_id` 并把它交给 `record_transport_failed`，
+    transport 死亡时精确失效该 pending request；已接受过的 native identity 全程去重，
+    重复 `tool_use_id` 不产生第二个 permission input；审批 identity 绑定
+    task/run/session/`tool_use_id`/fingerprint，escalation domain 与 host profile
+    digest 顶层进入 ControlPlane，可信 approve 后相同 domain 再次阻塞收敛为
+    `permission_escalation_ineffective`（零新增 input/grant/worker/continuation）；
+  - 临时 full：consume 的一次性 grant 绑定到 transport，run 终态/崩溃/handoff/
+    reassign 时精确撤销一次；explicit 与 inherited full 经冻结 flag→mode 映射以
+    `bypassPermissions` 启动，safe/inherit 保持 SDK default 让 `can_use_tool` 继续触发；
+  - hooks feed（PreToolUse/PostToolUse/PostToolUseFailure）只持久化脱敏结构化记录，
+    verify 仅接受结构化 PostToolUse success；配置拆分 `tools`（可见性）与
+    `auto_approve_tools`（显式预批准），legacy `allowed_tools` 仅警告式双读为 `tools`，
+    setup/registry 同步；doctor `permission.claude_sdk` 投影保持脱敏；
+  - 修复 SDK 环境门平台标签（`Darwin`→`macOS`）使被探针 macOS arm64 tuple 通过自身
+    gate；live probe 于 2026-08-30 在隔离 venv 重跑通过（allow 原样执行、deny 零执行、
+    同一 session 三阶段存活；证据 `probe_evidence_rerun_2026-08-30.json`）；
+  - 定向 unittest：transport 19、sdk_transport 17、packaging 5、permission_runtime+
+    seatbelt 75、phase10c/d 176、permission_modes/canary 32 全部通过；Ruff（src+tests）、
+    compileall、`uv build` wheel/sdist、wheel metadata（`Requires-Dist:
+    claude-agent-sdk==0.2.142; extra == "claude"`）与 `git diff --check` 全部通过；
+  - 剩余门禁：deployed 三来源 canary（explicit/temporary/inherited 真机 full 生效）、
+    `PERM-104-002-R1` 详情回归在合并后执行；P0 在 canary 通过前不宣布关闭；
+- `PERM-104-002-R1` 已接入本项验收：首块审批与合法 approval identity 的脱敏只读
+  Details/View Details 投影回归在 `PERM-104-002` 收敛验收后执行，不单独占用 Wave。
+
+2026-08-31 `F8MJ-001` 会话级批量审批（session-scoped tool rule）实施证据（agent/hermes 本地提交，未 push）：
+
+- ZF5R-001 固定失败回归基线：Claude 官方 session `95260a61-51b4-484b-a231-f8af12d5a862`
+  （run `claude-ZF5R-001-03745cf3`）在单动作审批闭环下对同 session 顺序产生 17 次独立 Bash
+  `can_use_tool` 请求；`call_d4307bd5d90e4640b9f3a3d7` 经 CLI 单动作 approve 且其结构化
+  PostToolUse 成功落盘（blocked=false），随后同一 session 又产生新的独立 Bash 请求
+  `call_79d1691b0af6467080776263` 并因响应事务竞态 stale 失败——证明一次 approve 只豁免一次
+  动作，同 session 后续同类动作仍需逐条弹窗（这正是本项要修复的批量审批缺口）。
+- 新增 `agentbc task respond <task-id> --input <input-id> --approve-tool <tool-matcher>
+  --scope session`：CLI 新 flag 与 `--message/--approve/--deny` 互斥且 `--approve-tool` 必须
+  恰好搭配 `--scope session`；新模块 `agent_bridge_connect/session_tool_rules.py` 承载权威
+  校验（input.type=permission、native_event=claude_sdk_can_use_tool、
+  control_path=sdk_control_transport、status=answered、scope=single_action、
+  task/executor_run/官方 session/request_id/tool_use_id/request/action fingerprint、
+  escalation_domain、profile digest 全绑定），缺失/stale/mismatch/wildcard-all/不支持
+  executor/兼容 full fallback/非 native 请求均以稳定错误码 fail closed
+  （`session_rule_input_missing|stale|not_permission|not_native`、
+  `session_rule_identity_mismatch`、`session_rule_matcher_invalid|wildcard`、
+  `session_rule_executor_unsupported`、`session_rule_already_active|replay_conflict`）；
+  matcher 语法只收窄 `Tool(command-prefix*)` / `Tool(content)`，裸工具名、`*`、`Tool(*)`
+  一律拒绝；既有 `--approve`/`--deny` 单动作行为零改动。
+- Runner 新 op `respond_session_rule` 与 `respond_task` 的 `tool_matcher/session_scope`
+  扩展：session rule 只在控制面 native accept 事务提交后的同一次响应内签发，签发失败
+  统一 `session_rule_issue_failed` 恢复，不启动第二个 worker。
+- SDK 面板：先以 live-compatible probe（`scripts/live_probe_perm104_session_rule.py`）确认
+  安装版 `claude-agent-sdk==0.2.142` + Claude CLI `2.1.247` 的官方 type shape
+  `PermissionUpdate(type="addRules", rules=[PermissionRuleValue(toolName, ruleContent)],
+  behavior="allow", destination="session")` 经 `PermissionResultAllow.updated_permissions`
+  在同一 live session 生效：匹配命令零二次审批直接执行、非匹配命令仍触发 `can_use_tool`
+  且 deny 零执行、`.claude/settings*.json` 零写入；probe 证据冻结于
+  `tests/fixtures/executor_runtime/matrix/claude/live_probe_sdk_session_rule_2026-08-31/`。
+  Transport 仅在该形状与冻结契约一致时（漂移返回
+  `claude_sdk_session_rule_contract_invalid`）把 rule 附着到当前 live transport
+  （`attach_session_rule`，仅内存、随 transport 死亡失效），且只对工具名匹配的已批准
+  allow 结果附加该 update；不启动/恢复第二 Claude 进程、不注入 `--allowedTools` 启动参数、
+  不持久化任何 user/project settings、不转换为 full/bypassPermissions。
+- 任务级 rule receipt 与生命周期：`agentbc.session_tool_rule` v1 receipt 记录 matcher、
+  session scope、`selection_source=cli_native_approval`、脱敏 binding digest、时间戳与
+  active/revoked 状态；同 input 重放幂等（零新增 rule/事件）、冲突重放
+  `session_rule_replay_conflict`、同 session 已有 active rule 时
+  `session_rule_already_active`；completed/failed/needs_recovery/cancelled/retry/reassign/
+  handoff 终态路径统一 `revoke_session_tool_rule`（terminal 标记永不改写 Claude 配置文件）；
+  status 公共视图只投影脱敏 receipt（`session_rule_public_projection`），binding 标识符
+  不外泄。
+- PostToolUse 对账（ZF5R-001 缺陷修复）：新增 `reconcile_block_success`，在 runtime
+  verification 选中 anchor 的结构化 PostToolUse 成功事件后，把该批准动作在 block ledger
+  的精确条目推进为 `execution_result="succeeded"`；此后同 fingerprint/domain/profile 的
+  动作不再被错误收敛为 `permission_escalation_ineffective`（blocked=false 记录为已验证
+  执行），ledger 对账幂等且 deny 条目永不 reconcile。
+- 回归：新增 `tests/test_perm104_002_session_tool_rules.py` 56 项（CLI 解析/互斥、pending
+  input 权威、matcher 校验、SDK 序列化对齐 live probe、单 session 复用、非匹配工具不继承、
+  duplicate/replay 幂等、终态撤销矩阵、Runner reload 幂等、PostToolUse 对账收敛消失）；
+  live probe verdict=pass（6/6 checks）。
+
+2026-08-31 controller 收尾修订（`F8MJ-001` correction `I-001`）：
+
+- `--approve-tool Bash --scope session` 明确定义为当前可信 native Bash 阻塞所授权的
+  session-scoped 工具类型规则；CLI 的裸工具名与全局 matcher `*` 不同。CLI 输入 `*`、
+  `Tool(*)`、跨工具 matcher 继续 fail closed；仅在已绑定当前阻塞工具后，Adapter 按 Claude
+  官方等价语义把裸 `Tool` 编码为 SDK `PermissionRuleValue(tool_name=Tool,
+  rule_content="*")`。receipt 新增 `matcher_kind=tool_type|command_pattern`，仍绑定
+  task/run/官方 session/request/tool_use/fingerprint/profile，并在终态撤销。
+- 修复生产接线竞态：旧实现先写单动作 accept 唤醒 SDK，再签发 receipt，且
+  `attach_session_rule()` 只在测试中调用，真实 live transport 无法取得 rule。修订后 Runner
+  先验证并签发 receipt，再把完整绑定的 rule 原子写入同一 control response；SDK callback
+  对 task/run/session/request/tool_use/tool-name 全量复核后，才返回携带官方
+  `PermissionUpdate(addRules, destination=session)` 的 allow。
+- live probe 不再硬编码 Claude `2.1.247`，默认解析 Runner 配置中的
+  `executors.claude.command`，只允许以 `AGENTBC_PROBE_CLAUDE_BIN` 显式覆盖；证据必须记录
+  精确绝对路径和 `--version`。controller 先证明 `rule_content=null` 在生产 Runner
+  `2.1.233` 中不会抑制第二次同类回调，随后依据官方 `Tool` 等价于 `Tool(*)` 的规则语义改为
+  `rule_content="*"`。为避免给联网 probe 放行全部 Bash，最终实机证据使用两个无副作用的
+  in-process MCP 工具：同一官方 session 中 matching 工具连续执行两次但只有第一次进入
+  `can_use_tool`，distinct 工具重新进入 callback 且 deny 零执行，settings 零写入，6/6
+  checks pass；证据冻结于 `probe_evidence_tool_type_2.1.233_2026-08-31.json`。重新封包部署后
+  仍需以真实 AgentBC task 验证 Desktop 弹窗到 CLI `--approve-tool Bash --scope session` 的
+  端到端交互，方可关闭 P0。
+
+2026-08-31 PERM-104-002 9ZEV-001（native permission passthrough 与 legacy matcher 退役）：
+
+- `agentbc.approval` v2 choice broker 落地（`approval.py`）：receipt 绑定
+  authority（executor/protocol/protocol_version/method）、broker/provider request ID、
+  native item ID、fingerprint、每个 offered choice 的 opaque handle（`opt-*`，由
+  request id + offered digest 派生，仅对该 exact request 有效）、selection
+  （handle/native_option_id/kind/source/at）。v1 receipt 双读保持 valid；v2 拒绝
+  flattened `--approve`/`--deny`（`native_permission_choice_required`）。identical
+  replay 幂等、conflict/cross-identity/unknown handle 全部 fail closed。Raw payload
+  只存保护态任务控制；公共视图仅暴露 sanitized labels + opaque handles。
+- CLI 新增 `task respond --permission-option <handle>`（与 message/approve/deny 互斥）；
+  Runner `respond_task` 映射 handle → control plane v2 响应；同 worker/同 live
+  session 返回，不创建 grant/worker/continuation/mode change。`full` 保持 task-start-only，
+  永不出现在 choice popup。
+- Exact adapters：Codex 只返回 schema 支持的 `accept`/`acceptForSession`/`decline` 或
+  permissions turn/session 响应（原 ID；amendments/cancel 不可选）；Claude 只信任 SDK
+  `can_use_tool`：deny → `PermissionResultDeny`、once → `PermissionResultAllow`
+  （原始 input、无 updated_permissions）、session → 仅当 callback suggestions 是完整
+  allow-rule bundle（无 persistent destination、无 setMode bypassPermissions）时，将其未决
+  destination 机械绑定为 session 并原样保留规则内容，绝不生成 matcher；Hermes 保留 ACP request/session/tool-call/options 并
+  回传选中的原 optionId（order/label 无关），移除 allow_once-only 限制。
+- 动态弹窗（macOS/CLI 同一 Runner API）：一级固定 View Details / Deny / Approve，
+  Approve 只进入二级 Back / Once / This Session；只有 Deny、Once、This Session 携带
+  exact native handle 并回传，View Details、Approve、Back 仅导航、零回执。一个绝对
+  deadline 覆盖两级交互；无 allow default；close/timeout 恰好发送一次 exact denial。
+- Legacy matcher 退役：`session_tool_rules.py` 收缩为 tombstone
+  （`legacy_session_tool_rule_removed`），matcher 语法/rule API/lifecycle/Runner rule
+  routing/Claude synthesized rules/Hermes one-shot 常量/Codex session-decision 禁止全部移除；
+  `--approve-tool/--scope session` 隐藏为一次发布的 nonfunctional tombstone；
+  `legacy_permission_cutover_blocked` 扩展覆盖 active v1 waits、session rules、
+  approve-tool waits、grants、compatibility-full continuations（列 task IDs/reasons）；
+  terminal history 只读、v1/v2 双读、只写 v2。
+- 测试：新增 `tests/test_perm104_002_v2_broker.py` 29 项（v1/v2 读写与脱敏、handle
+  binding/replay/cross-identity 拒绝、Codex exact once/session/deny + amendment 拒绝、
+  Claude bundle mixed/persistent/bypass/unknown 拒绝、Hermes exact optionId、
+  migration gate 扩展、tombstone）；codex control/production 47 项更新为 v2 handle
+  响应语义；matcher probe 替换为 native-choice probe
+  （`scripts/live_probe_perm104_session_rule.py` 重写）。
+
+2026-08-31 `RAXT-001` 实施与证据边界（`agent/codex` 本地提交，未 push）：
+
+- 保留 `WDAB-001` 的关闭记录，不改写历史因果顺序：官方 session
+  `75706277-a80f-42e6-a6f5-f82dded33364` 只发出一次 Bash；在任何 native request identity
+  建立前先得到 `session_receipt_missing`，之后才出现
+  `input_required/requested_permission=full` callback，且在 Approve 前关闭。因此 WDAB 证明的是
+  native request 在 popup 前创建失败；后来的 full popup 与 worker crash 是下游现象，不是成功证据。
+- RAXT-001 已将 Claude SDK wiring 改为 receipt-before-query/can_use_tool：官方预分配或同 session
+  resume receipt 通过 `record_session_started` 且 task/run/session/resumed/source 校验成功后，才绑定
+  hooks、创建 transport、构造 prompt/options 并进入 SDK query；receipt/control/transport 初始化失败
+  统一走结构化 `needs_recovery`，不创建 input 或 full grant。
+- native `can_use_tool` 只产生一次绑定 task/run/session/tool_use_id/request_id/action fingerprint/
+  escalation domain/profile digest 的 `single_action`；Approve 原样返回同 session input，Deny/timeout/
+  transport death 使精确 request 失效；model callback、requested_permission、stderr、退出码和普通
+  access error 只作诊断，不能创建 permission input、grant、worker 或 continuation。相同 fingerprint/
+  domain/profile 在批准后收敛到 `permission_escalation_ineffective`。
+- contained worker 只写 task-scoped record/event/progress/control/temp/report；Runner 负责
+  `task_index.jsonl`/`TASK_INDEX.md` refresh。spawn/start/activation failure 会回收进程、清理 profile、
+  标记 recovery、阻断 runtime receipt、撤销 grant、失效 native input 并清除 worker/run 引用。
+- `CMF2-001` 使用尚未替换的旧安装包复现了自举缺口：contained worker 在 claim/start 阶段写全局
+  index，被 Seatbelt 拒绝后模型又生成兼容 full callback，Approve 只产生未消费 grant，重启 worker
+  仍在同一点失败。controller 已取消该任务并直接补齐 Codex App Server native-authoritative prompt/
+  terminal routing，以及 `control_events` 的终态有界投影；不得把 CMF2 popup 或 grant 视为权限成功。
+- 本轮专项回归见 artifact root 的 `RAXT-001_IMPLEMENTATION_NOTES.md` 与
+  `tests/test_perm104_002_r3.py`。本地单元回归不等于发布门禁：仍需支持宿主路径的真实 Seatbelt
+  probe、SDK live blocking/Approve/Deny/timeout/death 重启矩阵，以及三来源 full 生效 canary。
+  `SESSION-104-001` 本节不修改，仍按原有 `SESSION-104-001_CANARY_EVIDENCE.md` 结论处理；
+  `PERM-104-002` 继续保持开放。
+
 ### 4.5 `FLOW-104-001`：handoff 结构化多 steps
 
 - `agentbc task handoff` 接受与根任务一致的结构化 `steps[].description` 输入；
@@ -302,6 +568,12 @@ callback invalid。
 
 ### 4.8 `SESSION-104-001`：Codex CLI/Desktop 双入口临时会话清理
 
+> 2026-08-29 最终状态：本项已通过 `1.0.4A` 发布门禁。`QV46-001` 与 `NMY4-001`
+> 均对绑定任务的精确官方主会话取得 archive、delete acknowledgement，并在 CLI、Desktop
+> backend 及当前应用 active/archived 列表确认 absent；完整证据见
+> `SESSION-104-001_CANARY_EVIDENCE.md`。以下未完成结论仅保留为历史过程记录。原生派生子会话
+> 未实际触发的问题已降级为 `PROTO-105-001` P2 候选，不重新打开本项。
+>
 > 2026-08-28 `DEWX-001` continuation status：本项仍为 P0 未完成。`3XAZ-001` 在 Step 1 因
 > `permission_denied_by_user` 失败，完成 `0/5` 且没有合法 final callback；`WSR8-001` 是独立
 > primary canary，历史 report 的 CLI/Desktop 状态为 unknown；`8XF5-001` 因
@@ -310,35 +582,65 @@ callback invalid。
 > `collabAgentToolCall`、`spawnAgent`、`receiverThreadId`，所以 production collaboration_spawn
 > wiring 保持 disabled。App Server backend `thread/list` 缺失只能证明 backend absent；当前没有受支持
 > Desktop 实时读取/重启后复验通道，必须记录 `codex_desktop_verification_unavailable`，不得将本项关闭。
+>
+> 2026-08-29 `QEEY-001` 修订：release gate 改为「官方 archive → delete 命令闭环」。
+> `thread/archive` RPC 必须先发送并取得绑定同一 UUID 的 RPC acknowledgement，之后才允许发送
+> `thread/delete`；archive 未确认时 delete 调用次数必须为零。`thread/archived` 与
+> `thread/deleted` 仅作 advisory。新连接 `thread/read` 与分页 active/archived 全 source-kind
+> `thread/list` 观察保留为非门控 diagnostics；当前 Codex Desktop 刷新延迟被接受且不阻塞成功；
+> `desktop_live` 在 archive-then-delete 策略下记为 `not_applicable`。私有库扫描、GUI 自动化、
+> 强制刷新/重启、dispatcher 清理与无关会话清理依旧禁止。排序依据：`SQKX-001` 真实 canary 证明
+> 先 delete 后 archive 会返回 target-not-found（详见 `SESSION-104-001_CANARY_EVIDENCE.md`）；
+> 该历史 canary 只解释排序，不证明新实现。
 
 - 只清理由 AgentBC Executor 创建并从官方 early receipt 取得精确 ID 的临时会话；dispatcher
   conversation、用户会话、未登记会话和模糊名称匹配永不进入清理候选；
 - 测试必须把同一官方 session ID 在 Codex CLI `resume` 入口与 Codex Desktop 恢复列表中的可见性
   关联起来；若上游不提供可验证关联，记录 `unsupported`/blocker，禁止扫描或改写私有数据库；
-- `thread/delete` RPC 成功只是动作证据，不是双端清理完成证据；`thread/deleted` 在受支持的真实 stdio
-  canary 中可能不发出，只作为绑定同一 UUID 的辅助事件；权威完成必须由新连接 `thread/read` 返回不存在，
-  并由覆盖全部 source kind、分页和归档分区的 `thread/list` 证明 Desktop 恢复列表无该精确 UUID；
+- 发布门控是官方 archive→delete 命令闭环：同一官方 App Server 连接上先 `thread/archive` 并等待
+  其 RPC acknowledgement（`thread/archived` 通知只作 advisory），确认后才发送 `thread/delete`；
+  archive 超时、传输中断、RPC 错误或 target-not-found 都必须以稳定 archive 错误码 fail closed，
+  且 delete 调用次数为零；`thread/delete` 的 RPC acknowledgement 同样强制，`thread/deleted`
+  通知仍为 advisory；
+- 新连接 `thread/read` 缺失与覆盖全部 source kind、分页和归档分区的 `thread/list` 缺失保留为
+  非门控 diagnostics：它们不阻塞成功，也不作为成功条件；Desktop 当前刷新延迟被接受；
+- cleanup receipt v4（向后兼容）新增有界 `commands.archive` 与 `commands.delete`
+  status/checked_at 条目，状态只允许 `not_requested`、`acknowledged`、`confirmed`、`failed`、
+  `unverified`、`not_applicable`；Codex cleanup 只有两条命令均 `acknowledged`/`confirmed` 才能
+  `succeeded`；部分命令证据（尤其已确认的 archive）随 receipt 与 cleanup 事件持久化，重试与
+  Runner 重启不得丢失；已登记派生会话按同一规则清理，并保持 primary-first 与最深/最新顺序；
+- 显式 `cli/direct` fallback 只保留 `official_session_delete` 策略名，永不冒用
+  `official_session_archive_then_delete`；CLI exit 0 仍只是动作证据；
 - 覆盖 completed、failed、cancelled、permission Deny/timeout、transport lost、Runner/Desktop 重启，
   并验证同一 receipt 重放幂等；
 - 每个用例同时创建一条非 AgentBC 控制会话作为保留哨兵，证明清理没有扩大到 dispatcher 或用户会话；
-- status/report/doctor 显示 cleanup capability、strategy、attempt、双入口验证状态与稳定 error code，
-  不泄露私有会话路径、原始 prompt 或用户会话清单。
+- status/report/doctor 显示 cleanup capability、strategy、attempt、命令确认状态、验证诊断与稳定
+  error code，不泄露私有会话路径、原始 prompt 或用户会话清单。
 
-完成证据必须包含官方 ID 绑定、cleanup receipt、CLI 与 Desktop 清理前后快照、重启后复验和保留哨兵；
-缺少任一项不得写 `succeeded`。
+完成证据必须包含官方 ID 绑定、cleanup receipt v4 命令闭环（archive 与 delete 均 acknowledged/
+confirmed）、持久化的部分命令证据与保留哨兵；命令闭环缺失任一 acknowledgement 不得写 `succeeded`。
+Desktop 恢复列表的最终肉眼确认是延迟性诊断，不阻塞发布门控。
 
 历史实现证据（2026-08-27）：`agent/codex@d18697f` 完成 cleanup receipt v2、官方 UUID 绑定、
 App Server 删除/新连接 read 验证、status/report/doctor 同源投影与 fail-closed 错误；
 `private/integration@8aa60a6` 完成初次集成，`9fce6b6` 补齐生产 Desktop `thread/list` 全 source kind、
 分页和 archived/non-archived 验证。该段只描述历史实现基线，不构成本次双入口真机验收。
 
-本次 continuation 的可验证结果：cleanup receipt 已升为向后兼容 v3，分别持久化 `cli`、
-`desktop_backend`、`desktop_live`，公共投影保留 `desktop` 聚合字段；`transport=auto` 的有官方 receipt
-路径统一使用 App Server，只有显式 `cli/direct` 允许 CLI action fallback，CLI exit 0 不产生 cleanup
-success。真实 0.147.0 单父 timeout canary 取得官方 thread ID；App Server delete 返回成功，新连接
-`thread/read` 返回缺失，active（3 页）与 archived（1 页）的全 source-kind `thread/list` 均不含该 ID。
-CLI `delete --help` 清理前后均为 exit 0，但仅作 action capability evidence。由于当前 Desktop 实时通道
-与应用重启后证据仍不可用，`SESSION-104-001` 保持未完成。
+`DEWX-001` continuation 的可验证结果（历史基线）：cleanup receipt 曾升为向后兼容 v3，分别持久化
+`cli`、`desktop_backend`、`desktop_live`，公共投影保留 `desktop` 聚合字段；`transport=auto` 的有官方
+receipt 路径统一使用 App Server，只有显式 `cli/direct` 允许 CLI action fallback，CLI exit 0 不产生
+cleanup success。真实 0.147.0 单父 timeout canary 取得官方 thread ID；App Server delete 返回成功，
+新连接 `thread/read` 返回缺失，active（3 页）与 archived（1 页）的全 source-kind `thread/list` 均不含
+该 ID。CLI `delete --help` 清理前后均为 exit 0，但仅作 action capability evidence。该历史 canary 只
+证明当时的 delete-only 链路，不构成 archive-then-delete 门控的验收。
+
+`QEEY-001` 实施结果（2026-08-29）：receipt 升为向后兼容 v4；`codex.session_cleanup` 能力组扩展为
+`thread/archive`、`thread/delete`、`thread/read` 与 advisory `thread/archived`、`thread/deleted`；
+新增策略 `official_session_archive_then_delete` 与 archive 稳定错误码
+（`codex_session_archive_failed`、`codex_session_archive_invalid_session_id`、
+`codex_session_archive_target_missing`、`codex_session_archive_timeout`、
+`codex_session_archive_transport_lost`）；App Server 清理路径先 archive 后 delete，零确认即零删除；
+status/report/doctor 投影命令证据。
 
 ### 4.9 `FLOW-104-003`：Failed 任务 retry 与 handoff
 
@@ -428,6 +730,10 @@ CLI `delete --help` 清理前后均为 exit 0，但仅作 action capability evid
 - custom path 同时传入项目外单图/多图并成功原子派发，证明附件只读、父目录不可访问、失败无残留；
 - handoff 单 step 与 multi-step 分别跨至少两个不同 Executor；
 - progress canary 包含部分 step 完成后资源/permission/transport 阻塞；
+- 资源耗尽 canary 必须触发 `RESOURCE-104-001-R1` 的 Desktop 弹窗；Approve 后同 Task、同 session、
+  唯一 continuation 继续，CLI fallback 只作控制面兜底而不替代 UI 通过证据；
+- Hermes terminal canary 必须触发 `FLOW-104-003-R1` 的正常完成、资源耗尽和 incomplete normal exit 三条
+  路径，证明返回码 `0` 不替代 callback，且缺 marker 的部分进度可通过正式 retry/handoff 继续；
 - terminal canary 注入 report 不可写、record 超限、UI notifier 失败和 Runner 重启；
 - 不把弹窗出现、`accepted`、退出码 0 或聊天总结当通过证据。
 
@@ -472,6 +778,10 @@ CLI `delete --help` 清理前后均为 exit 0，但仅作 action capability evid
 - custom path 可安全组合项目外只读附件，input manifest 可复验、失败零残留且不扩大项目权限；
 - handoff multi-step 在 dispatch 前完成合同校验，callback 严格一致；
 - progress receipt 单调且不被资源/permission/terminal 覆盖回退；
+- `RESOURCE-104-001-R1` 证明资源耗尽 input 在 Desktop 稳定显示、决策幂等、应用/Runner 重启可重放，
+  且 CLI 响应与 UI 使用同一持久化 input；
+- `FLOW-104-003-R1` 证明 Hermes 的 terminal reason 与 turns receipt 可机械判定，返回码 `0` 且缺失
+  callback 时不会误报完成、丢失部分进度或陷入不可继续的 failed 终态；
 - report/record/notification/cleanup 任一阶段失败时其余阶段仍可独立完成或重放；
 - Update、Homebrew、session cleanup 和 `1.0.3A` 权限行为无回归；
 - integration 与三个 agent 分支干净，Runner identity match，Doctor blocker 为 0；

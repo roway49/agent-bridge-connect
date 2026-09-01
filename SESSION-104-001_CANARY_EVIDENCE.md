@@ -4,6 +4,11 @@ Date: 2026-08-28
 Task: `DEWX-001`
 Artifact root: this existing `agent/claude` worktree
 
+> 2026-08-29 `QEEY-001` note: the sections below describe the historical
+> delete-only implementation and its 0.147.0 canary. They are retained
+> verbatim as history and are NOT proof of the current archive-then-delete
+> gate. See "QEEY-001 archive-then-delete gate evidence" at the end.
+
 ## Scope and preserved handoff
 
 - Step 1 evidence was retained from `3XAZ-001`: authoritative status was failed
@@ -100,3 +105,85 @@ the live collaboration marker probe returned `ok=true`. The version-matched
 frozen fixture returned `ok=false` with the three missing collaboration markers,
 so the combined production gate returned `enabled=false`. The candidate 0.150.1
 fixture is recorded only as candidate evidence and does not promote 0.147.0.
+
+## QEEY-001 archive-then-delete gate evidence (2026-08-29)
+
+Task: `QEEY-001` (worktree `agent/hermes`, fast-forwarded from
+`private/integration` at `c28760b`; no push, no history rewrite).
+
+### SQKX-001 ordering finding (rationale, not proof)
+
+`SQKX-001` (2026-08-28, Codex executor, completed in 20s) deleted its retained
+official session `01a04914-765f-7e60-a661-ae360f1d889f` first through the then
+official App Server cleanup path, and the controller then attempted to archive
+the already-deleted session through the Codex Desktop control plane. The
+archive attempt returned a target-not-found style error for the deleted
+thread. This proves delete-then-archive is an unusable ordering: once the
+exact thread is deleted, the archive precondition can no longer be
+established. It is recorded here as the ordering rationale only; the
+historical canary is not evidence that the new archive-then-delete gate works.
+
+### Implementation now under the release gate
+
+- The release gate for Codex cleanup is the official archive-then-delete
+  command closure: one App Server connection sends `thread/archive` and
+  requires its bound RPC acknowledgement before `thread/delete` may be sent;
+  if archive is not confirmed (RPC error, target-missing, timeout, or
+  transport loss), zero `thread/delete` calls are sent. `thread/archived` and
+  `thread/deleted` notifications are advisory only.
+- Cleanup receipt v4 (backward compatible) persists bounded
+  `commands.archive` and `commands.delete` entries whose status is one of
+  `not_requested`, `acknowledged`, `confirmed`, `failed`, `unverified`,
+  `not_applicable`. New Codex cleanup succeeds only when both commands are
+  acknowledged or officially confirmed. v1/v2/v3 receipts are read and
+  projected as-is; history is never rewritten and old failures are never
+  retroactively closed. Unknown versions fail closed.
+- Post-delete fresh `thread/read` and paginated active/archived all-source-kind
+  `thread/list` are preserved as non-gating diagnostics. Current Codex
+  Desktop refresh delay is accepted and non-blocking; `desktop_live` is
+  `not_applicable` under the archive-then-delete strategy.
+- Stable archive codes: `codex_session_archive_failed`,
+  `codex_session_archive_invalid_session_id`,
+  `codex_session_archive_target_missing`, `codex_session_archive_timeout`,
+  `codex_session_archive_transport_lost`. Existing delete codes are preserved,
+  and the explicit `cli`/`direct` fallback keeps the
+  `official_session_delete` strategy name and can never claim the archive
+  gate.
+- Partial command evidence (an acknowledged archive before a transport death)
+  is persisted in the receipt and in the bounded cleanup event log, so
+  retries and Runner restarts do not lose it. Registered auxiliary sessions
+  follow the same rules while primary-first and deepest/newest ordering is
+  preserved.
+- Still forbidden: private-store scans, GUI automation, forced
+  refresh/restart, dispatcher conversation cleanup, and unrelated-session
+  cleanup. Desktop visibility is not a success gate; GUI refresh, app
+  restart, and sidebar disappearance are never used to judge cleanup.
+
+## SESSION-104-001 final acceptance (2026-08-29)
+
+`SESSION-104-001` is accepted for the `1.0.4A` release gate. Historical
+incomplete statements above remain valid for their individual canaries but are
+superseded by the following installed-build evidence:
+
+- installed AgentBC build identity: `private/integration@d2f77b8`, Codex CLI
+  `0.150.1`;
+- `QV46-001` completed with one valid `AGENTBC_FINAL_CALLBACK`, official parent
+  session `01a04db3-2a59-70f1-859a-cce2a044ff7e`, archive acknowledged,
+  delete acknowledged, cleanup `succeeded`, CLI `absent`, Desktop backend
+  `absent`;
+- `NMY4-001` correctly failed with `completion_marker_missing`, but its exact
+  parent session `01a04db3-4135-7d52-ada4-a26c786b8264` still completed archive
+  acknowledgement, delete acknowledgement, cleanup `succeeded`, CLI `absent`,
+  and Desktop backend `absent` after terminal notification;
+- a fresh read through the current Codex Desktop application control plane
+  found neither exact session ID in active nor archived task listings;
+- both tasks froze `retain=false`; no dispatcher conversation, unrelated task,
+  private database, GUI automation, forced refresh, or application restart was
+  used.
+
+The attempted child canary did not create an official derived conversation:
+there was no `spawnAgent` lifecycle, receiver thread receipt, or auxiliary
+ledger, and the parent model merely emitted `CHILD_SESSION_CANARY_OK`. This is
+recorded separately as P2 `PROTO-105-001`, considered for `1.0.5A`; it does not
+reopen the accepted primary/failed-session cleanup gate and must remain
+fail-closed until an official native collaboration receipt exists.

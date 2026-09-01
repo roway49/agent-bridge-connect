@@ -21,7 +21,8 @@
             "capture_kind": "offline_frozen_evidence",
             "captured_by": "tests/fixtures/executor_runtime/tools/capture_protocol_fixture.py",
             "live_capture": false,
-            "origin": "Help/budget characterization frozen during PERM-103-007 and PERM-103-009."
+            "origin": "Help/budget characterization frozen during PERM-103-007 and PERM-103-009.",
+            "e52m003_permission_withdrawn": "permission_control support withdrawn by E52M-003 review: no live-captured fixture or can_use_tool/control_response exchange proves either control path; live probe of installed 2.1.247 shows --permission-prompt-tool absent from --help."
           },
           "in_production_supported_range": true,
           "promotion_blocker": null,
@@ -56,6 +57,10 @@
               "bytes": 619,
               "sha256": "f74e5f3bfef11d80aac6b5ca73cc411f127c02739ea98d1abf29d222ab513df6"
             },
+            "permission_control.json": {
+              "bytes": 1231,
+              "sha256": "4c037f7c19c78c56787f376af9a50e17e865b59bd6d91eabd3f603254893a1d9"
+            },
             "project_purge.json": {
               "bytes": 720,
               "sha256": "45393d57cc2d015b246f87270f0ad83b8d5bb6d7227602a0682c71efc4a39a10"
@@ -79,7 +84,8 @@
             "capture_kind": "characterized_expectation",
             "captured_by": "tests/fixtures/executor_runtime/tools/capture_protocol_fixture.py",
             "live_capture": false,
-            "origin": "Declared current baseline for PROTO-104-001; no binary at exactly this version existed on the capture host."
+            "origin": "Declared current baseline for PROTO-104-001; no binary at exactly this version existed on the capture host.",
+            "e52m003_permission_withdrawn": "permission_control support withdrawn by E52M-003 review: no live-captured fixture or can_use_tool/control_response exchange proves either control path; live probe of installed 2.1.247 shows --permission-prompt-tool absent from --help."
           },
           "in_production_supported_range": false,
           "promotion_blocker": "Requires an official-probe capture at exactly 2.1.233 plus a live canary before any Claude production bound may widen.",
@@ -97,6 +103,10 @@
             "path_capability.json": {
               "bytes": 650,
               "sha256": "d91362ce508cd0265dd748d409e8b172e10b1dacf25cedaf0b03e48fa6104974"
+            },
+            "permission_control.json": {
+              "bytes": 1267,
+              "sha256": "7943224e9fda3cff77f9406be9678569336d335aba1d38e79b0dae63269435b6"
             },
             "project_purge.json": {
               "bytes": 752,
@@ -116,13 +126,37 @@
             }
           }
         }
+      },
+      "live_probe_e52m003": {
+        "captured_at": "2026-08-28",
+        "surface_dir": "claude/live_probe_2026-08-28",
+        "live_capture": true,
+        "installed_version": "2.1.247",
+        "help_contains_permission_prompt_tool": false,
+        "stdio_control_live_capture": null,
+        "decision": "permission_transport_unsupported",
+        "note": "Executor-level evidence: live probe of the production host binary. It is not a matrix version and adds no transport capability; it proves the installed binary supports no AgentBC permission control path.",
+        "surfaces": {
+          "version.json": {
+            "bytes": 265,
+            "sha256": "9f392c56e25b0e7f018b681bf34e189b3864634120a62f83f8962e2a3f9c71f1"
+          },
+          "permission_control.json": {
+            "bytes": 928,
+            "sha256": "fee47c92aee46cd20e7f933529e2d8719d5ae59dd0cce21fbd3b9d1e3d3c8ed7"
+          },
+          "help.txt": {
+            "bytes": 16890,
+            "sha256": "71ad650f59e08ae40ede14c534db4f49d8590ee5a4f92f6da2882d3a5560fea6"
+          }
+        }
       }
     },
     "codex": {
       "capability_groups_reference": "agent_bridge_connect.codex_app_server",
       "production": {
         "app_server_bounds": {
-          "max_inclusive": "0.147.0",
+          "max_inclusive": "0.150.1",
           "min_inclusive": "0.146.0"
         },
         "binding_constants": [
@@ -136,7 +170,8 @@
         "codex/shared/app_server_v2_contract_summary.json": {
           "applies_to": [
             "0.146.0",
-            "0.147.0"
+            "0.147.0",
+            "0.150.1"
           ],
           "bytes": 1126,
           "note": "Distilled v2 protocol contract summary used by the App Server control tests.",
@@ -157,8 +192,8 @@
           "status": "supported",
           "surfaces": {
             "app_server_cleanup.json": {
-              "bytes": 855,
-              "sha256": "4fb72d3ecdabb42d5fe42afa3fbfa38e38273e6ef2693d7f9dda658cb84f3bd6"
+              "bytes": 1012,
+              "sha256": "0dd34298d81f6da15b3874a0b2fc772abc6014bd17bc449d46486d1113e1b442"
             },
             "app_server_execution.json": {
               "bytes": 976,
@@ -219,8 +254,8 @@
           "status": "supported",
           "surfaces": {
             "app_server_cleanup.json": {
-              "bytes": 855,
-              "sha256": "4fb72d3ecdabb42d5fe42afa3fbfa38e38273e6ef2693d7f9dda658cb84f3bd6"
+              "bytes": 1012,
+              "sha256": "0dd34298d81f6da15b3874a0b2fc772abc6014bd17bc449d46486d1113e1b442"
             },
             "app_server_execution.json": {
               "bytes": 976,
@@ -267,14 +302,14 @@
             "live_capture": true,
             "origin": "Official read-only probes captured locally on 2026-08-27; every frozen execution method and the full cleanup group are present in the generated schema bundle."
           },
-          "in_production_supported_range": false,
-          "promotion_blocker": "Candidate stays outside production: the full help/event/canary contract has not been run against a paid live canary.",
+          "in_production_supported_range": true,
+          "promotion_blocker": "",
           "release_channel": "observed_path_binary",
-          "status": "candidate",
+          "status": "supported",
           "surfaces": {
             "app_server_cleanup.json": {
-              "bytes": 855,
-              "sha256": "4fb72d3ecdabb42d5fe42afa3fbfa38e38273e6ef2693d7f9dda658cb84f3bd6"
+              "bytes": 1012,
+              "sha256": "0dd34298d81f6da15b3874a0b2fc772abc6014bd17bc449d46486d1113e1b442"
             },
             "app_server_execution.json": {
               "bytes": 976,
@@ -282,7 +317,7 @@
             },
             "app_server_schema.json": {
               "bytes": 598692,
-              "sha256": "5299e1c756474c9ae92d21d3bbd682bb88627c72e9965bdfb8194d6eef7cd627"
+              "sha256": "2d3830122e5e8196d920144462cd7bec1ae02c78e4bd2d78fc2e3baf969b6738"
             },
             "argv_contract.json": {
               "bytes": 792,
@@ -318,7 +353,7 @@
             },
             "version.json": {
               "bytes": 170,
-              "sha256": "1238249fbfdc498e012a6f5c88e275814323868ebc7c2887d66bb51e52a06c31"
+              "sha256": "88d7cb4ea9cc9c66ba444b095f8ab7cadc372811b7b5d83e4d853e2fd2d2f090"
             }
           }
         }

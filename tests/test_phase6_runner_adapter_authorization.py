@@ -20,7 +20,12 @@ from agent_bridge_connect.permission_grants import (
 )
 from agent_bridge_connect.permission_modes import permission_flags
 from agent_bridge_connect.protocol import ABCError
-from agent_bridge_connect.runner import RunnerClient, RunnerError, RunnerState
+from agent_bridge_connect.runner import (
+    CLAUDE_SDK_CONTROL_AUTHORIZATION,
+    RunnerClient,
+    RunnerError,
+    RunnerState,
+)
 from agent_bridge_connect.service import TaskService
 
 
@@ -166,6 +171,41 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
         if executor == "claude":
             return packet["extensions"]["agentbc.session"]["project_path"]
         return str(self.project)
+
+    def test_issued_grant_prepares_outer_containment_before_worker_spawn(self) -> None:
+        service, packet, _source_run_id, _session_id = self._grant_packet("hermes")
+        task_id = packet["task_id"]
+        fake_run = {
+            "ok": True,
+            "run_id": "runner-worker-123456789abc",
+            "pid": 42,
+            "status": "running",
+        }
+        with mock.patch.object(
+            self.state, "_spawn_process", return_value=fake_run
+        ) as spawn:
+            result = self.state.dispatch_worker(
+                task_id,
+                "hermes",
+                str(self.board),
+                "",
+                0.2,
+                False,
+                resuming=True,
+            )
+        self.assertEqual(result["dispatch_status"], "accepted")
+        _args, kwargs = spawn.call_args
+        self.assertIsInstance(kwargs.get("containment"), dict)
+        runtime = service.get_task(task_id).extensions["agentbc.permission_runtime"]
+        self.assertEqual(
+            runtime["binding"]["permission_source"],
+            "one_shot_permission_grant",
+        )
+        self.assertEqual(runtime["state"]["status"], "activated")
+        # The outer Worker is contained first.  The exact Adapter run later
+        # consumes the grant through RunnerClient.authorize_command.
+        grant = service.get_task(task_id).extensions[PERMISSION_GRANT_EXTENSION_KEY]
+        self.assertEqual(grant["state"]["status"], "issued")
 
     def test_common_resolver_upgrades_only_the_approved_target_context(self) -> None:
         for executor in ("codex", "claude", "hermes"):
@@ -535,17 +575,66 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                         return_value=completed,
                     )
                 elif executor_name == "claude":
+                    # PERM-104-002 correction (GGQN-001): a granted full run
+                    # routes through the official SDK control transport; the
+                    # raw CLI full argv branch no longer exists.  Prove the
+                    # authorized command carries the same frozen executor
+                    # run id and that the SDK session argv keeps the exact
+                    # resume binding instead.
                     completed = subprocess.CompletedProcess(
                         [], 0, stdout='{"type":"result","result":"done"}\n', stderr=""
                     )
                     authorize_patch = mock.patch(
-                        "agent_bridge_connect.executors.claude.RunnerClient.authorize_command",
+                        "agent_bridge_connect.executors.claude.RunnerClient.authorize_transport",
                         return_value={"ok": True},
+                    )
+                    authorize_calls: dict[str, object] = {}
+
+                    def _capture_authorize(*args, **kwargs):
+                        authorize_calls["executor_run_id"] = kwargs.get("executor_run_id")
+                        return {"ok": True}
+
+                    options = object()
+                    options_patch = mock.patch.object(
+                        executor,
+                        "_build_sdk_options_for_task",
+                        return_value=options,
                     )
                     run_patch = mock.patch(
                         "agent_bridge_connect.executors.claude.subprocess.run",
                         return_value=completed,
                     )
+                    captured: dict[str, object] = {}
+
+                    def _capture_run_controlled(**kwargs):
+                        captured["options"] = kwargs.get("options")
+                        return {
+                            "stdout": '{"type":"result","result":"done"}',
+                            "stderr": "",
+                            "returncode": 0,
+                            "init_verified": True,
+                            "session_id": "",
+                            "result": {"is_error": False},
+                        }
+
+                    transport_patch = mock.patch(
+                        "agent_bridge_connect.executors.claude.ClaudeSDKControlTransport.run_controlled",
+                        side_effect=_capture_run_controlled,
+                    )
+                    select_patch = mock.patch(
+                        "agent_bridge_connect.executors.claude.select_claude_control_path",
+                        return_value="sdk_control_transport",
+                    )
+                    sdk_env_patch = mock.patch(
+                        "agent_bridge_connect.permission_transport.assert_claude_sdk_environment",
+                        return_value={"sdk_version": "0.2.142", "platform": "macOS arm64", "cli_path": "/opt/claude"},
+                    )
+                    authorize_patch = mock.patch(
+                        "agent_bridge_connect.executors.claude.RunnerClient.authorize_transport",
+                        side_effect=_capture_authorize,
+                    )
+                    unused = None
+                    _ = unused
                 else:
                     completed = subprocess.CompletedProcess(
                         [], 0, stdout="done", stderr=f"session_id: {session_id}\n"
@@ -569,6 +658,30 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                     authorize_patch as authorize,
                     run_patch as run,
                 ):
+                    if executor_name == "claude":
+                        # Corrected contract: the granted full run is
+                        # authorized with the frozen run id and dispatched
+                        # into the SDK control transport (no raw CLI argv).
+                        with (
+                            options_patch,
+                            transport_patch,
+                            select_patch,
+                            sdk_env_patch,
+                        ):
+                            started = executor.start(packet)
+                        self.assertTrue(started.ok, started.message)
+                        self.assertEqual(
+                            authorize_calls["executor_run_id"], started.run_id
+                        )
+                        self.assertIs(captured["options"], options)
+                        # The control-plane authorize call must never carry a
+                        # raw full argv for the SDK transport path.
+                        for call in run.call_args_list:
+                            self.assertNotIn(
+                                permission_flags("claude", "full")[0],
+                                call.args[0],
+                            )
+                        continue
                     started = executor.start(packet)
                 self.assertTrue(started.ok, started.message)
                 self.assertEqual(
@@ -641,6 +754,149 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
             submit_payload = request.call_args.args[0]
             self.assertEqual(
                 submit_payload["executor_run_id"], "hermes-EFGH-001-target"
+            )
+            client.authorize_transport(
+                "claude",
+                CLAUDE_SDK_CONTROL_AUTHORIZATION,
+                self.project,
+                {"task_id": "SDKC-001"},
+                {"control_path": "sdk_control_transport"},
+                executor_run_id="claude-SDKC-001-target",
+            )
+            transport_payload = request.call_args.args[0]
+            self.assertEqual(transport_payload["op"], "authorize_transport")
+            self.assertEqual(
+                transport_payload["transport"], CLAUDE_SDK_CONTROL_AUTHORIZATION
+            )
+            self.assertEqual(
+                transport_payload["executor_run_id"], "claude-SDKC-001-target"
+            )
+            self.assertEqual(
+                transport_payload["context"],
+                {"control_path": "sdk_control_transport"},
+            )
+
+    def test_runner_authorizes_claude_sdk_transport_without_fake_print_argv(self) -> None:
+        _service, packet, _source, session_id = self._grant_packet("claude")
+        run_id = f"claude-{packet['task_id']}-sdk"
+        permission = resolve_effective_permission(
+            packet,
+            "claude",
+            run_id,
+            trusted_runner_managed=True,
+        )
+        executor = ClaudeExecutor(command=str(self.binaries["claude"]))
+        execution_root = Path(self._cwd("claude", packet))
+        context = executor._build_sdk_authorization_context(
+            packet,
+            execution_root,
+            session_id,
+            {
+                "sdk_version": "0.2.142",
+                "platform": "macOS arm64",
+                "cli_path": str(self.binaries["claude"]),
+            },
+            permission,
+        )
+
+        def _probe(command, *_args, **_kwargs):
+            if "--help" in command:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="--dangerously-skip-permissions\n",
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(
+                command, 0, stdout="2.1.233 (Claude Code)\n", stderr=""
+            )
+
+        with (
+            mock.patch(
+                "agent_bridge_connect.runner.assert_claude_sdk_environment",
+                return_value={
+                    "sdk_version": "0.2.142",
+                    "platform": "macOS arm64",
+                    "cli_path": str(self.binaries["claude"]),
+                },
+            ),
+            mock.patch(
+                "agent_bridge_connect.runner.subprocess.run",
+                side_effect=_probe,
+            ),
+        ):
+            result = self.state.authorize_transport(
+                "claude",
+                CLAUDE_SDK_CONTROL_AUTHORIZATION,
+                str(execution_root),
+                packet,
+                context,
+                run_id,
+            )
+        self.assertEqual(result["effective_permission_mode"], "full")
+        self.assertEqual(context["permission_mode"], "default")
+        self.assertEqual(context["session_mode_update"], "bypassPermissions")
+
+    def test_runner_sdk_transport_rejects_context_drift(self) -> None:
+        service = TaskService(
+            self.root / "sdk-safe-board",
+            config={
+                "workspace_root": str(self.root / "sdk-safe-workspace"),
+                "executors": {"claude": {"max_budget_usd": 10.0}},
+                "sessions": {"retain_executor_sessions": True},
+            },
+        )
+        task = service.create_task(
+            "SDK context drift",
+            "claude",
+            [{"id": 1, "description": "reject drift"}],
+            customer_dir=True,
+            customer_path=self.project,
+            permission_mode="safe",
+        )
+        packet = service.store.read_task(task.id)
+        packet["task_id"] = task.id
+        packet["task_board"] = {"root": str(service.board_root)}
+        packet["runner_authorization_required"] = True
+        session = packet["extensions"]["agentbc.session"]
+        executor = ClaudeExecutor(command=str(self.binaries["claude"]))
+        context = executor._build_sdk_authorization_context(
+            packet,
+            Path(session["project_path"]),
+            session["session_id"],
+            {
+                "sdk_version": "0.2.142",
+                "platform": "macOS arm64",
+                "cli_path": str(self.binaries["claude"]),
+            },
+            resolve_effective_permission(packet, "claude", "claude-sdk-drift"),
+        )
+        context["permission_mode"] = "bypassPermissions"
+        version_probe = subprocess.CompletedProcess(
+            [], 0, stdout="2.1.233 (Claude Code)\n", stderr=""
+        )
+        with (
+            mock.patch(
+                "agent_bridge_connect.runner.assert_claude_sdk_environment",
+                return_value={
+                    "sdk_version": "0.2.142",
+                    "platform": "macOS arm64",
+                    "cli_path": str(self.binaries["claude"]),
+                },
+            ),
+            mock.patch(
+                "agent_bridge_connect.runner.subprocess.run",
+                return_value=version_probe,
+            ),
+            self.assertRaisesRegex(RunnerError, "permission_transport_mismatch"),
+        ):
+            self.state.authorize_transport(
+                "claude",
+                CLAUDE_SDK_CONTROL_AUTHORIZATION,
+                session["project_path"],
+                packet,
+                context,
+                "claude-sdk-drift",
             )
 
     def test_preconsume_dispatch_failure_calls_core_revoke_helper(self) -> None:

@@ -303,4 +303,35 @@ def _task_cutover_reasons(task: Any) -> list[str]:
         request_status = str(input_request.get("status") or "").strip().lower()
         if request_type == "permission" and request_status in {"waiting", "answered"}:
             reasons.append("legacy_permission_marker")
+    # PERM-104-002 1.04A: the legacy matcher-era channels also block the
+    # cutover until they drain.  Each reason names the exact retired surface
+    # still present on the task; matchers themselves are never converted.
+    history = extensions.get("agentbc.input_history")
+    if isinstance(history, list):
+        for item in history:
+            if not isinstance(item, dict):
+                continue
+            response = item.get("response")
+            if (
+                isinstance(response, dict)
+                and response.get("tool_matcher_session") is True
+            ):
+                reasons.append("approve_tool_wait_in_history")
+                break
+    if isinstance(extensions.get("agentbc.session_tool_rule"), dict):
+        state = extensions["agentbc.session_tool_rule"].get("state")
+        state_status = (
+            str(state.get("status") or "") if isinstance(state, dict) else ""
+        )
+        if state_status == "active":
+            reasons.append("active_session_tool_rule")
+        else:
+            reasons.append("historical_session_tool_rule")
+    runtime = extensions.get("agentbc.permission_runtime")
+    if (
+        isinstance(runtime, dict)
+        and str(runtime.get("source") or "") == "compatibility_full_fallback"
+        and status in {"running", "input_required"}
+    ):
+        reasons.append("compatibility_full_continuation")
     return reasons

@@ -163,7 +163,7 @@ class SchemaContractTests(unittest.TestCase):
 
     def test_min_max_version_bounds_are_frozen(self) -> None:
         self.assertEqual(CODEX_APP_SERVER_MIN_VERSION, (0, 146, 0))
-        self.assertEqual(CODEX_APP_SERVER_MAX_VERSION, (0, 147, 0))
+        self.assertEqual(CODEX_APP_SERVER_MAX_VERSION, (0, 150, 1))
 
     def test_transport_aliases_are_only_backward_compatible(self) -> None:
         self.assertEqual(CODEX_APP_SERVER_TRANSPORT, "app-server")
@@ -324,6 +324,10 @@ class BlockingFakeTransport:
                         },
                     }
                 )
+            elif method == "thread/archive":
+                self.queue.append(
+                    {"jsonrpc": "2.0", "id": message["id"], "result": {}}
+                )
             elif message.get("id") == 90:
                 self.approval_count += 1
                 if self.emit_callback:
@@ -431,6 +435,47 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
             },
         }
 
+    def test_collaboration_task_selects_official_ultra_activation(self) -> None:
+        fake = BlockingFakeTransport(self.board, self.task_id, emit_callback=False)
+        executor = self._executor(fake, version="0.150.1")
+        executor._collaboration_spawn_capability = {
+            "enabled": True,
+            "version": "0.150.1",
+            "fixture": {"ok": True},
+            "live": {"ok": True},
+        }
+        packet = self._packet()
+        packet["extensions"]["agentbc.codex.collaboration_spawn"] = {
+            "version": 1,
+            "enabled": True,
+        }
+        with (
+            mock.patch.object(executor, "_start_run_lease"),
+            mock.patch.object(executor, "_suspend_run"),
+            mock.patch.object(executor, "_resume_run"),
+            mock.patch.object(executor, "_close_run_lease"),
+        ):
+            started = executor.start(packet)
+            self.assertEqual(
+                self._wait_status(executor, started.run_id, {"input_required"}),
+                "input_required",
+            )
+            executor.cancel(started.run_id)
+        thread_start = next(
+            message for message in fake.sent if message.get("method") == "thread/start"
+        )
+        turn_start = next(
+            message for message in fake.sent if message.get("method") == "turn/start"
+        )
+        self.assertEqual(
+            thread_start["params"]["multiAgentMode"], "explicitRequestOnly"
+        )
+        self.assertEqual(
+            turn_start["params"]["multiAgentMode"], "explicitRequestOnly"
+        )
+        self.assertEqual(thread_start["params"]["effort"], "ultra")
+        self.assertEqual(turn_start["params"]["effort"], "ultra")
+
     def _executor(self, fake: BlockingFakeTransport, *, version: str = "0.146.0") -> CodexExecutor:
         executor = CodexExecutor(
             command=sys.executable,
@@ -479,16 +524,23 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
             self.assertEqual(approval["type"], "permission")
             self.assertEqual(approval["scope"], "single_action")
             self.assertEqual(approval["session_id"], "thread-fake-1")
+            once_handle = next(
+                choice["handle"]
+                for choice in approval["offered_choices"]
+                if choice["kind"] == "once"
+            )
             self._plane(started.run_id).respond_approval(
                 self.task_id,
                 started.run_id,
                 "thread-fake-1",
                 approval["request_id"],
                 "accept",
+                choice_handle=once_handle,
             )
             status = self._wait_status(executor, started.run_id, {"completed", "needs_recovery", "failed"})
             result = executor.poll(started.run_id)
         self.assertEqual(status, "completed")
+        self.assertTrue(fake.closed)
         self.assertTrue(suspend_lease.called)
         self.assertTrue(resume_lease.called)
         # The decision is returned to the same live App Server session.
@@ -503,6 +555,9 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
         )
         self.assertEqual(result.result["execution_session"]["session_id"], "thread-fake-1")
         self.assertFalse(result.result["execution_session"]["resumed"])
+        self.assertTrue(
+            result.result["execution_session"]["archive_acknowledged"]
+        )
         self.assertTrue(result.result["marker_valid"])
         self.assertEqual(
             result.result["agent_callback"]["summary"],
@@ -528,12 +583,18 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
                 "input_required",
             )
             approval = executor.poll(started.run_id).result["approval_request"]
+            deny_handle = next(
+                choice["handle"]
+                for choice in approval["offered_choices"]
+                if choice["kind"] == "deny"
+            )
             self._plane(started.run_id).respond_approval(
                 self.task_id,
                 started.run_id,
                 "thread-fake-1",
                 approval["request_id"],
                 "decline",
+                choice_handle=deny_handle,
             )
             status = self._wait_status(
                 executor,
@@ -603,12 +664,18 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
             status = self._wait_status(executor, started.run_id, {"input_required"})
             self.assertEqual(status, "input_required")
             approval = executor.poll(started.run_id).result["approval_request"]
+            deny_handle = next(
+                choice["handle"]
+                for choice in approval["offered_choices"]
+                if choice["kind"] == "deny"
+            )
             self._plane(started.run_id).respond_approval(
                 self.task_id,
                 started.run_id,
                 "thread-fake-1",
                 approval["request_id"],
                 "decline",
+                choice_handle=deny_handle,
             )
             status = self._wait_status(executor, started.run_id, {"completed", "needs_recovery", "failed"})
             executor.poll(started.run_id)
@@ -632,12 +699,18 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
             status = self._wait_status(executor, started.run_id, {"input_required"})
             self.assertEqual(status, "input_required")
             request = executor.poll(started.run_id).result["approval_request"]
+            deny_handle = next(
+                choice["handle"]
+                for choice in request["offered_choices"]
+                if choice["kind"] == "deny"
+            )
             self._plane(started.run_id).respond_approval(
                 self.task_id,
                 started.run_id,
                 "thread-fake-1",
                 request["request_id"],
                 "decline",
+                choice_handle=deny_handle,
             )
             status = self._wait_status(executor, started.run_id, {"completed", "needs_recovery", "failed"})
         self.assertEqual(status, "completed")
@@ -905,6 +978,101 @@ class RunnerCapabilityValidationTests(unittest.TestCase):
             resumed.extensions["agentbc.session"]["session_id"],
             "thread-native-1",
         )
+
+    def test_v2_option_handle_crosses_runner_client_message_envelope(self) -> None:
+        service = TaskService(
+            self.board,
+            config={"workspace_root": str(self.root), "permission_mode": "inherit"},
+        )
+        task = service.create_task(
+            "native v2 response bridge",
+            "codex",
+            [{"id": 1, "description": "request one action"}],
+            customer_dir=True,
+            customer_path=self.root,
+            permission_mode="inherit",
+        )
+        run_id = "codex-native-v2-run-1"
+        session_id = "thread-native-v2-1"
+        service.start_task_run(task.id, "codex")
+        service.record_executor_run_started(task.id, run_id)
+        receipt = {
+            "version": 1,
+            "executor": "codex",
+            "session_id": session_id,
+            "resumed": False,
+            "persistence": "persistent",
+            "source": "jsonl_thread_started",
+        }
+        plane = ApprovalControlPlane(
+            control_root_for_task(task.id, board_root=self.board),
+            task_id=task.id,
+            executor_run_id=run_id,
+            session_id=session_id,
+        )
+        plane.record_session_started(receipt)
+        event = plane.request_approval(
+            {
+                "jsonrpc": "2.0",
+                "id": 88,
+                "method": "item/commandExecution/requestApproval",
+                "params": {
+                    "threadId": session_id,
+                    "turnId": "turn-native-v2-1",
+                    "itemId": "item-native-v2-1",
+                    "command": ["printf", "ok"],
+                },
+                "approval_version": 2,
+                "authority": {
+                    "executor": "codex",
+                    "protocol": "codex_app_server",
+                    "protocol_version": 2,
+                    "method": "item/commandExecution/requestApproval",
+                },
+                "offered_choices": [
+                    {"native_option_id": "decline", "kind": "deny", "label": "Deny"},
+                    {"native_option_id": "accept", "kind": "once", "label": "Once"},
+                ],
+            }
+        )
+        pending = plane.status()["pending_request"]
+        blocked = service.block_task_for_approval(
+            task.id,
+            executor_run_id=run_id,
+            session_id=session_id,
+            request_id="88",
+            request_fingerprint=str(event["request_fingerprint"]),
+            executor="codex",
+            operation="command",
+            execution_session=receipt,
+            tool_use_id="item-native-v2-1",
+            offered_choices=list(pending["offered_choices"]),
+            authority=dict(pending["authority"]),
+        )
+        waiting = service.get_task(task.id).extensions["agentbc.input"]
+        once_handle = next(
+            choice["handle"] for choice in waiting["choices"] if choice["kind"] == "once"
+        )
+
+        result = self.state.respond_and_dispatch(
+            {
+                "task_id": task.id,
+                "input_id": blocked["input_id"],
+                "response_type": "permission_option",
+                # This is the exact stable RunnerClient envelope used by the
+                # dialog responder: the handle is carried in message.
+                "message": once_handle,
+                "board_root": str(self.board),
+                "config_path": "",
+                "interval_s": 0.01,
+            }
+        )
+
+        self.assertEqual(result["permission_choice"]["handle"], once_handle)
+        self.assertTrue(result["same_session"])
+        self.assertFalse(result["dispatch_required"])
+        response = plane.wait_for_decision("88", 0.1)
+        self.assertEqual(response["decision"], "accept")
 
     def _packet(
         self,

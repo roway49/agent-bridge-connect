@@ -1,0 +1,85 @@
+{
+  "checks": {
+    "allow_with_original_input": {
+      "allow_file_content": "probe-allow",
+      "allow_file_created": true,
+      "ok": true,
+      "returned_updated_input_matches_original": true
+    },
+    "can_use_tool_fired_with_stable_tool_use_id": {
+      "ok": true,
+      "requests": [
+        {
+          "input": {
+            "command": "echo probe-allow > allow.txt",
+            "description": "Write probe-allow to allow.txt"
+          },
+          "tool": "Bash",
+          "tool_use_id": "call_016b84c90ea847088e536e19"
+        },
+        {
+          "input": {
+            "command": "echo probe-deny > deny.txt",
+            "description": "Write probe-deny to deny.txt"
+          },
+          "tool": "Bash",
+          "tool_use_id": "call_6a491be1ff6844fba8ec1b47"
+        }
+      ]
+    },
+    "cli_version": {
+      "ok": true,
+      "version": "2.1.233 (Claude Code)"
+    },
+    "deny_zero_execution": {
+      "deny_file_created": false,
+      "ok": true
+    },
+    "same_client_session_continued": {
+      "ok": true,
+      "session_ids": [
+        "a1838531-e3e9-4b05-b41c-1118646bdd23",
+        "a1838531-e3e9-4b05-b41c-1118646bdd23",
+        "a1838531-e3e9-4b05-b41c-1118646bdd23"
+      ],
+      "single_session_all_phases": true,
+      "tail_reply": "ALIVE"
+    }
+  },
+  "cli_path": "configured_absolute_cli_path (redacted; agentbc config executors.claude.command)",
+  "cli_version": "2.1.233 (Claude Code)",
+  "events": [
+    {
+      "event": "can_use_tool",
+      "input_keys": [
+        "command",
+        "description"
+      ],
+      "tool": "Bash",
+      "tool_use_id": "call_016b84c90ea847088e536e19"
+    },
+    {
+      "event": "result_allow_phase",
+      "is_error": false,
+      "session_id": "a1838531-e3e9-4b05-b41c-1118646bdd23"
+    },
+    {
+      "event": "can_use_tool",
+      "input_keys": [
+        "command",
+        "description"
+      ],
+      "tool": "Bash",
+      "tool_use_id": "call_6a491be1ff6844fba8ec1b47"
+    },
+    {
+      "event": "result_deny_phase",
+      "session_id": "a1838531-e3e9-4b05-b41c-1118646bdd23"
+    }
+  ],
+  "probe": "PERM-104-002-sliceA-repeat",
+  "probe_rerun": "QJXH-001 2026-08-30 (isolated venv /tmp/claude-sdk-probe, same pinned tuple)",
+  "sdk_package": "claude-agent-sdk==0.2.142",
+  "sdk_version": "0.2.142",
+  "verdict": "pass"
+}

@@ -22,6 +22,15 @@ Issues = "https://github.com/roway49/agent-bridge-connect/issues"
 [project.scripts]
 agentbc = "agent_bridge_connect.cli:main"
 
+[project.optional-dependencies]
+# PERM-104-002: the official Claude Agent SDK transport is an optional extra
+# pinned to the exact version proven by the isolated live probe
+# (tests/fixtures/executor_runtime/matrix/claude/live_probe_sdk_2026-08-29).
+# Core installs stay light; Alpha/full installs select this extra by default.
+claude = [
+    "claude-agent-sdk==0.2.142",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
@@ -30,5 +39,6 @@ agent_bridge_connect = [
     "skills/*.md",
     "skills/*.yaml",
     "skills/references/*.md",
+    "protocol_fixtures/codex/*/*.json",
     "_build_info.json",
 ]

@@ -1,0 +1,31 @@
+{
+  "probe": "PERM-104-002-session-rule-live-probe",
+  "sdk_version": "0.2.142",
+  "cli_path_pin": "2.1.247",
+  "probe_model": "glm-5.3[1M]",
+  "can_use_tool_calls": [
+    {
+      "tool": "Bash",
+      "command": "echo probe-rule-allow > matched.txt",
+      "tool_use_id": "call_143b9cf22880472aa306a261"
+    },
+    {
+      "tool": "Bash",
+      "command": "echo probe-other > nonmatched.txt",
+      "tool_use_id": "call_ed59d5117db0449bbb32acf5"
+    }
+  ],
+  "session_ids": [
+    "a17cbf1b-4845-4b31-94c1-e704b281769e"
+  ],
+  "result_tail": "DONE",
+  "checks": {
+    "single_session": true,
+    "matched_command_executed": true,
+    "nonmatching_command_not_executed": true,
+    "nonmatching_command_re_prompted": true,
+    "matching_command_no_second_prompt": true,
+    "settings_files_untouched": true
+  },
+  "verdict": "pass"
+}

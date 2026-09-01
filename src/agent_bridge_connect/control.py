@@ -15,11 +15,21 @@ import subprocess
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterator
 
 from .approval import compute_request_fingerprint
+from .permission_runtime import (
+    PERMISSION_BLOCK_EVIDENCE_UNAVAILABLE,
+    PERMISSION_RUNTIME_DOMAINS,
+    action_fingerprint,
+    block_fingerprint,
+    converge_approved_block,
+    load_block_ledger,
+    record_block_decision,
+    save_block_ledger,
+)
 from .session import (
     SessionFirstGate,
     SessionRecoveryRequired,
@@ -39,6 +49,12 @@ APPROVAL_METHODS = {
     "item/fileChange/requestApproval": "file_change",
     "item/permissions/requestApproval": "permissions",
 }
+# PERM-104-002: the executor-native choice broker authority.  Each approved
+# protocol/method pair owns the exact schema-supported choices Core may offer;
+# Core never infers a permission category from tool/command/path/text/error
+# matching.
+APPROVAL_V2_ERROR_CHOICE_REQUIRED = "native_permission_choice_required"
+CODEX_SCHEMA_SESSION_DECISIONS = frozenset({"acceptForSession"})
 
 
 class ControlPlaneError(RuntimeError):
@@ -125,6 +141,17 @@ class ApprovalRequest:
     turn_id: str = ""
     item_id: str = ""
     requested_permissions: dict[str, Any] = field(default_factory=dict)
+    tool_name: str = ""
+    tool_use_id: str = ""
+    action_fingerprint: str = ""
+    escalation_domain: str = ""
+    profile_digest: str = ""
+    control_path: str = ""
+    # PERM-104-002 v2: executor-native choice broker fields.
+    approval_version: int = 1
+    offered_choices: tuple[dict[str, Any], ...] = ()
+    native_event: str = ""
+    authority: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         value: dict[str, Any] = {
@@ -143,6 +170,26 @@ class ApprovalRequest:
         }
         if self.operation == "permissions":
             value["requested_permissions"] = _bounded_json(self.requested_permissions)
+        for key, item in (
+            ("tool_name", self.tool_name),
+            ("tool_use_id", self.tool_use_id),
+            ("action_fingerprint", self.action_fingerprint),
+            ("escalation_domain", self.escalation_domain),
+            ("profile_digest", self.profile_digest),
+            ("control_path", self.control_path),
+            ("native_event", self.native_event),
+        ):
+            if item:
+                value[key] = _bounded_text(item, 512)
+        if self.approval_version == 2:
+            value["approval_version"] = 2
+            value["offered_choices"] = [
+                dict(choice) for choice in self.offered_choices
+            ]
+            # The authority block rides on the pending request so the v2
+            # respond path can dispatch the executor-native payload shape
+            # (e.g. Hermes ACP outcome vs Codex decision).
+            value["authority"] = _bounded_json(dict(self.authority or {}))
         return value
 
 
@@ -186,14 +233,91 @@ def normalize_approval_request(
     requested = params.get("permissions") if operation == "permissions" else {}
     if not isinstance(requested, dict):
         requested = {}
+    agentbc = message.get("_agentbc") if isinstance(message.get("_agentbc"), dict) else {}
+    native_request_fingerprint = _bounded_text(
+        agentbc.get("request_fingerprint"), 160
+    )
+    native_tool_name = _bounded_text(agentbc.get("tool_name"), 120)
+    native_tool_use_id = _bounded_text(agentbc.get("tool_use_id"), 512)
+    native_action_fingerprint = _bounded_text(
+        agentbc.get("action_fingerprint"), 160
+    )
+    native_domain = _bounded_text(agentbc.get("escalation_domain"), 120)
+    native_profile = _bounded_text(agentbc.get("host_profile_digest"), 160)
+    native_control_path = _bounded_text(agentbc.get("control_path"), 160)
+    # PERM-104-002 v2: executor-supplied native choice set.  The authority
+    # block and offered choices are validated structurally here; semantic
+    # validation (schema-supported shapes per executor) happens in the
+    # choice builders and the v2 respond path.
+    approval_version = 1
+    offered_choices: tuple[dict[str, Any], ...] = ()
+    raw_offered = message.get("offered_choices")
+    if message.get("approval_version") == 2 or isinstance(raw_offered, list):
+        authority = (
+            message.get("authority")
+            if isinstance(message.get("authority"), dict)
+            else {}
+        )
+        if not isinstance(raw_offered, list) or not raw_offered:
+            raise ControlPlaneError(
+                "approval_choices_missing",
+                "A v2 approval request requires the executor's offered choice list.",
+            )
+        if str(authority.get("executor") or "").strip().lower() != "claude" and not authority:
+            # The authority block is required on every v2 request.
+            raise ControlPlaneError(
+                "approval_authority_invalid",
+                "A v2 approval request requires its authority block.",
+            )
+        approval_version = 2
+        normalized: list[dict[str, Any]] = []
+        for index, choice in enumerate(raw_offered):
+            if not isinstance(choice, dict):
+                raise ControlPlaneError(
+                    "approval_choices_invalid",
+                    "Each offered choice must be an object.",
+                )
+            native_option_id = _bounded_text(choice.get("native_option_id"), 160)
+            if not native_option_id:
+                raise ControlPlaneError(
+                    "approval_choices_invalid",
+                    "Each offered choice requires a native option id.",
+                )
+            kind = _bounded_text(choice.get("kind"), 40)
+            if kind not in {"once", "session", "deny", "other"}:
+                raise ControlPlaneError(
+                    "approval_choices_invalid",
+                    f"Offered choice kind is unsupported: {kind}",
+                )
+            label = _bounded_text(choice.get("label"), 120)
+            entry: dict[str, Any] = {
+                "native_option_id": native_option_id,
+                "kind": kind,
+                "label": label,
+                "selectable": choice.get("selectable", True) is not False,
+            }
+            # PERM-104-002 v2: opaque handles are computed by the control
+            # plane from the exact request id + offered shape, so a handle is
+            # only ever valid for this exact request and choice.
+            from .approval import compute_offered_choice_digest, build_choice_handle
+
+            digest = compute_offered_choice_digest(entry)
+            entry["offered_digest"] = digest
+            entry["handle"] = build_choice_handle(str(request_id), index, digest)
+            normalized.append(entry)
+        offered_choices = tuple(normalized)
     return ApprovalRequest(
         request_id=request_id,
-        request_fingerprint=compute_request_fingerprint(
-            executor="codex",
-            session_id=str(session_id),
-            tool_name=operation,
-            tool_input=params,
-            extra={"method": method},
+        request_fingerprint=(
+            native_request_fingerprint
+            if native_request_fingerprint.startswith("fp-")
+            else compute_request_fingerprint(
+                executor="codex",
+                session_id=str(session_id),
+                tool_name=operation,
+                tool_input=params,
+                extra={"method": method},
+            )
         ),
         rpc_id=message.get("id"),
         task_id=str(task_id),
@@ -206,6 +330,19 @@ def normalize_approval_request(
         turn_id=turn_id,
         item_id=item_id,
         requested_permissions=_bounded_json(requested),
+        tool_name=native_tool_name,
+        tool_use_id=native_tool_use_id,
+        action_fingerprint=native_action_fingerprint,
+        escalation_domain=native_domain,
+        profile_digest=native_profile,
+        control_path=native_control_path,
+        approval_version=approval_version,
+        offered_choices=offered_choices,
+        authority=(
+            dict(message.get("authority"))
+            if isinstance(message.get("authority"), dict)
+            else {}
+        ),
     )
 
 
@@ -218,6 +355,195 @@ def normalize_decision(decision: Any) -> str:
             {"allowed": sorted(APPROVAL_DECISIONS)},
         )
     return value
+
+
+# ---------------------------------------------------------------------------
+# PERM-104-002: executor-native choice builders (no inference, exact shapes)
+# ---------------------------------------------------------------------------
+
+
+def codex_offered_choices(
+    operation: str,
+    *,
+    session_decisions_supported: bool,
+) -> tuple[dict[str, Any], ...]:
+    """Return the exact choices the Codex App Server schema supports.
+
+    ``accept`` (this turn), ``decline``, and — only where the captured schema
+    contract proves session scope is supported — ``acceptForSession``.
+    Execpolicy/network-policy amendments and ``cancel`` are never offered
+    (non-selectable in 1.04A).  The permissions method returns the exact
+    turn/session response shapes instead of inferred categories.
+    """
+    if operation in {"command", "file_change"}:
+        choices: list[dict[str, Any]] = [
+            {"native_option_id": "accept", "kind": "once", "label": "Approve once"},
+            {"native_option_id": "decline", "kind": "deny", "label": "Deny"},
+        ]
+        if session_decisions_supported:
+            choices.insert(
+                1,
+                {
+                    "native_option_id": "acceptForSession",
+                    "kind": "session",
+                    "label": "Approve for this session",
+                },
+            )
+        return tuple(choices)
+    if operation == "permissions":
+        return (
+            {
+                "native_option_id": "accept_turn",
+                "kind": "once",
+                "label": "Approve for this turn",
+            },
+            {
+                "native_option_id": "accept_session",
+                "kind": "session",
+                "label": "Approve for this session",
+            },
+            {
+                "native_option_id": "decline",
+                "kind": "deny",
+                "label": "Deny",
+            },
+        )
+    raise ControlPlaneError(
+        "approval_operation_invalid",
+        "Codex v2 choices are not defined for this operation.",
+        {"operation": operation},
+    )
+
+
+def claude_offered_choices(
+    *,
+    session_bundle_supported: bool,
+) -> tuple[dict[str, Any], ...]:
+    """Return the exact choices the Claude SDK can_use_tool contract supports.
+
+    Deny via PermissionResultDeny, once via PermissionResultAllow carrying the
+    original input with no updated_permissions.  Session is offered only when
+    the callback's current suggestions form a fully valid destination=session
+    bundle (validated by the adapter); persistent and bypass modes are never
+    selectable choices.
+    """
+    choices: list[dict[str, Any]] = [
+        {"native_option_id": "deny", "kind": "deny", "label": "Deny"},
+        {"native_option_id": "allow_once", "kind": "once", "label": "Approve once"},
+    ]
+    if session_bundle_supported:
+        choices.insert(
+            2,
+            {
+                "native_option_id": "allow_session",
+                "kind": "session",
+                "label": "Approve for this session",
+            },
+        )
+    return tuple(choices)
+
+
+def hermes_offered_choices(
+    options: list[dict[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Return the exact offered ACP session/request_permission options.
+
+    Every original optionId is preserved verbatim and order/label independent;
+    options the ACP agent marks non-selectable stay non-selectable.  Unknown
+    option shapes fail closed upstream (validate_permission_request).
+    """
+    choices: list[dict[str, Any]] = []
+    for option in options:
+        choices.append(
+            {
+                "native_option_id": str(option.get("native_option_id") or ""),
+                "kind": str(option.get("kind") or "other"),
+                "label": str(option.get("label") or ""),
+                "selectable": bool(option.get("selectable", True)),
+            }
+        )
+    return tuple(choices)
+
+
+def approval_response_payload_v2(
+    request: ApprovalRequest | dict[str, Any],
+    *,
+    choice_kind: str,
+    native_option_id: str,
+    decision: str,
+) -> dict[str, Any]:
+    """Build the executor-native response payload for one selected choice.
+
+    Codex returns only exact schema-supported requestApproval decisions or
+    permissions turn/session responses.  Claude's PermissionResult objects are
+    resolved on the SDK adapter; the control plane carries the abstract
+    behavior contract.  Hermes returns the selected original optionId.
+    """
+    selected = normalize_decision(decision)
+    if isinstance(request, ApprovalRequest):
+        operation = request.operation
+        authority = request.authority or {}
+    else:
+        operation = str(request.get("operation") or "")
+        authority = request.get("authority")
+        authority = authority if isinstance(authority, dict) else {}
+    authority_method = str(authority.get("method") or "")
+    authority_executor = str(authority.get("executor") or "").strip().lower()
+    # Dispatch on the executor authority, never on the bridged operation:
+    # Claude and Hermes requests ride Codex-shaped methods on the control
+    # plane but MUST return their own payload shapes.
+    if authority_method == "session/request_permission":
+        # Hermes ACP: the selected original optionId verbatim.
+        return {"outcome": {"optionId": native_option_id}}
+    if authority_executor == "claude":
+        # Claude SDK: the abstract allow/deny contract.  The concrete
+        # PermissionResult objects are resolved on the SDK adapter.
+        return {"behavior": "allow" if selected == "accept" else "deny"}
+    if operation in {"command", "file_change"}:
+        if selected == "decline":
+            return {"decision": "decline"}
+        if native_option_id == "acceptForSession":
+            if native_option_id not in CODEX_SCHEMA_SESSION_DECISIONS:
+                raise ControlPlaneError(
+                    "approval_choice_unsupported",
+                    "The session decision is not supported by the captured schema.",
+                    {"native_option_id": native_option_id},
+                )
+            return {"decision": "acceptForSession"}
+        if native_option_id == "accept":
+            return {"decision": "accept"}
+        raise ControlPlaneError(
+            "approval_choice_unsupported",
+            "The selected native decision is not schema-supported.",
+            {"native_option_id": native_option_id},
+        )
+    if operation == "permissions":
+        requested = (
+            request.requested_permissions
+            if isinstance(request, ApprovalRequest)
+            else request.get("requested_permissions")
+        )
+        scope = "session" if choice_kind == "session" else "turn"
+        if selected != "accept" and choice_kind != "deny":
+            raise ControlPlaneError(
+                "approval_choice_unsupported",
+                "Permissions responses support only turn/session accept or deny.",
+                {"choice_kind": choice_kind},
+            )
+        if choice_kind == "deny":
+            return {"decision": "decline"}
+        return {
+            "permissions": _bounded_json(requested)
+            if isinstance(requested, dict)
+            else {},
+            "scope": scope,
+            "strictAutoReview": False,
+        }
+    raise ControlPlaneError(
+        "approval_operation_invalid",
+        "Approval operation is not supported.",
+        {"operation": operation},
+    )
 
 
 def approval_response_payload(request: ApprovalRequest | dict[str, Any], decision: Any) -> dict[str, Any]:
@@ -234,6 +560,24 @@ def approval_response_payload(request: ApprovalRequest | dict[str, Any], decisio
             "strictAutoReview": False,
         }
     raise ControlPlaneError("approval_operation_invalid", "Approval operation is not supported.")
+
+
+def _session_rule_response_payload(
+    pending: dict[str, Any],
+    value: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Retired: session tool rules were removed in PERM-104-002 1.04A.
+
+    Kept only as a fail-closed tombstone: any attempt to carry a rule on a
+    response is rejected instead of validated.
+    """
+    if value is None:
+        return None
+    raise ControlPlaneError(
+        "session_rule_response_invalid",
+        "Session tool rules were retired; the legacy matcher grammar is no "
+        "longer accepted on any response path.",
+    )
 
 
 class _ControlFileLock:
@@ -329,9 +673,88 @@ class ApprovalControlPlane:
             os.fsync(handle.fileno())
         return value
 
-    def record_session_started(self, receipt: dict[str, Any]) -> dict[str, Any]:
+    def record_session_started(
+        self,
+        receipt: dict[str, Any],
+        *,
+        expected_task_id: str | None = None,
+        expected_executor_run_id: str | None = None,
+        expected_session_id: str | None = None,
+        expected_resumed: bool | None = None,
+        expected_source: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist the one official receipt bound to this control plane.
+
+        Adapters may receive a preallocated receipt (Claude) or an official
+        transport receipt (Codex/Hermes).  The receipt schema intentionally
+        does not duplicate task/run metadata, so this method validates the
+        optional metadata when present *and* validates the expected identity
+        supplied by the adapter.  A mismatch is recorded as recovery before
+        anything can bind hooks or submit a turn.
+        """
         with self._locked():
+            raw = receipt if isinstance(receipt, dict) else {}
+            expected_task = str(expected_task_id or self.task_id).strip()
+            expected_run = str(
+                expected_executor_run_id or self.executor_run_id
+            ).strip()
+            raw_task = str(raw.get("task_id") or "").strip()
+            raw_run = str(
+                raw.get("executor_run_id") or raw.get("run_id") or ""
+            ).strip()
+            identity_errors: list[str] = []
+            if raw_task and raw_task != expected_task:
+                identity_errors.append("task_id does not match the control plane")
+            if raw_run and raw_run != expected_run:
+                identity_errors.append(
+                    "executor_run_id does not match the control plane"
+                )
+            if expected_session_id is not None:
+                actual_session = str(raw.get("session_id") or "").strip()
+                if actual_session != str(expected_session_id).strip():
+                    identity_errors.append(
+                        "session_id does not match the expected execution session"
+                    )
+            if expected_resumed is not None and raw.get("resumed") is not expected_resumed:
+                identity_errors.append("resumed does not match task session history")
+            if expected_source is not None and str(raw.get("source") or "") != str(expected_source):
+                identity_errors.append("source does not match the executor transport")
+            if identity_errors:
+                evidence = {
+                    "expected_task_id": expected_task,
+                    "expected_executor_run_id": expected_run,
+                    "expected_session_id": str(expected_session_id or ""),
+                    "expected_resumed": expected_resumed,
+                    "expected_source": str(expected_source or ""),
+                    "errors": identity_errors,
+                }
+                self._recovery(
+                    "session_receipt_run_mismatch",
+                    "; ".join(identity_errors),
+                    evidence,
+                )
+                raise SessionRecoveryRequired(
+                    "session_receipt_run_mismatch",
+                    "; ".join(identity_errors),
+                    evidence,
+                )
             normalized = self.gate.persist_official_receipt(receipt)
+            if self.session_id and normalized["session_id"] != self.session_id:
+                evidence = {
+                    "expected_session_id": self.session_id,
+                    "actual_session_id": normalized["session_id"],
+                    "executor_run_id": self.executor_run_id,
+                }
+                self._recovery(
+                    "session_receipt_session_mismatch",
+                    "Official session receipt does not match the control plane session.",
+                    evidence,
+                )
+                raise SessionRecoveryRequired(
+                    "session_receipt_session_mismatch",
+                    "Official session receipt does not match the control plane session.",
+                    evidence,
+                )
             self.session_id = normalized["session_id"]
             return self._append_event(
                 ControlEvent(
@@ -363,6 +786,107 @@ class ApprovalControlPlane:
                 executor_run_id=self.executor_run_id,
                 session_id=exact_session,
             )
+            if self.executor == "claude":
+                # Claude's SDK callback is the only permission authority for
+                # this transport.  Require the adapter's complete structured
+                # binding before creating a pending request; a callback,
+                # stderr, exit code, or requested_permission value cannot
+                # substitute for any of these fields.
+                identity = (
+                    message.get("_agentbc")
+                    if isinstance(message.get("_agentbc"), dict)
+                    else {}
+                )
+                expected_identity = {
+                    "task_id": self.task_id,
+                    "executor_run_id": self.executor_run_id,
+                    "session_id": exact_session,
+                    "request_id": request.request_id,
+                    "tool_use_id": request.item_id,
+                    "tool_name": request.tool_name,
+                    "control_path": "sdk_control_transport",
+                }
+                actual_identity = {
+                    "task_id": str(identity.get("task_id") or "").strip(),
+                    "executor_run_id": str(
+                        identity.get("executor_run_id") or ""
+                    ).strip(),
+                    "session_id": request.thread_id,
+                    "request_id": str(identity.get("request_id") or "").strip(),
+                    "tool_use_id": str(identity.get("tool_use_id") or "").strip(),
+                    "tool_name": str(identity.get("tool_name") or "").strip(),
+                    "control_path": str(
+                        identity.get("control_path") or ""
+                    ).strip(),
+                }
+                binding_errors = [
+                    key
+                    for key, expected_value in expected_identity.items()
+                    if actual_identity.get(key) != expected_value
+                ]
+                request_fingerprint = str(
+                    identity.get("request_fingerprint") or ""
+                ).strip()
+                action_fingerprint_value = str(
+                    identity.get("action_fingerprint") or ""
+                ).strip()
+                domain = str(identity.get("escalation_domain") or "").strip().lower()
+                profile_digest = str(
+                    identity.get("host_profile_digest") or ""
+                ).strip()
+                top_level_domain = str(
+                    message.get("escalation_domain") or ""
+                ).strip().lower()
+                top_level_profile = str(
+                    message.get("host_profile_digest") or ""
+                ).strip()
+                if request_fingerprint != request.request_fingerprint:
+                    binding_errors.append("request_fingerprint")
+                if not request_fingerprint.startswith("fp-"):
+                    binding_errors.append("request_fingerprint_missing")
+                if not action_fingerprint_value.startswith("fp-"):
+                    binding_errors.append("action_fingerprint")
+                if not actual_identity["tool_name"]:
+                    binding_errors.append("tool_name")
+                if domain not in PERMISSION_RUNTIME_DOMAINS:
+                    binding_errors.append("escalation_domain")
+                if top_level_domain != domain:
+                    binding_errors.append("top_level_escalation_domain")
+                if not (
+                    profile_digest.startswith("sha256:")
+                    and len(profile_digest) == len("sha256:") + 64
+                    and all(character in "0123456789abcdef" for character in profile_digest[7:])
+                ):
+                    binding_errors.append("host_profile_digest")
+                if top_level_profile != profile_digest:
+                    binding_errors.append("top_level_host_profile_digest")
+                if binding_errors:
+                    evidence = {
+                        "request_id": request.request_id,
+                        "task_id": self.task_id,
+                        "executor_run_id": self.executor_run_id,
+                        "session_id": exact_session,
+                        "binding_errors": sorted(set(binding_errors)),
+                    }
+                    self._recovery(
+                        PERMISSION_BLOCK_EVIDENCE_UNAVAILABLE,
+                        "Claude native approval evidence is incomplete or mismatched.",
+                        evidence,
+                    )
+                    raise ControlPlaneError(
+                        PERMISSION_BLOCK_EVIDENCE_UNAVAILABLE,
+                        "Claude native approval evidence is incomplete or mismatched.",
+                        evidence,
+                    )
+                request = replace(
+                    request,
+                    tool_name=actual_identity["tool_name"],
+                    tool_use_id=actual_identity["tool_use_id"],
+                    action_fingerprint=action_fingerprint_value,
+                    escalation_domain=domain,
+                    profile_digest=profile_digest,
+                    control_path=actual_identity["control_path"],
+                )
             if request.thread_id != exact_session:
                 evidence = {"request_id": request.request_id, "expected_session_id": exact_session, "actual_session_id": request.thread_id}
                 self._recovery("approval_session_mismatch", "Approval request thread does not match the official session.", evidence)
@@ -416,6 +940,61 @@ class ApprovalControlPlane:
                 evidence = {"pending_request_id": pending.get("request_id"), "request_id": request.request_id}
                 self._recovery(code, message_text, evidence)
                 raise ControlPlaneError(code, message_text, evidence)
+            # PERM-104-002 convergence: an identical approved-but-ineffective
+            # escalation never creates a second permission input.  Only a
+            # trusted structured escalation domain on the block event can
+            # reach this point; stderr, natural language and exit codes are
+            # diagnostics only.
+            domain = str(message.get("escalation_domain") or "").strip().lower()
+            profile_digest = str(message.get("host_profile_digest") or "").strip()
+            agentbc_identity = (
+                message.get("_agentbc")
+                if isinstance(message.get("_agentbc"), dict)
+                else {}
+            )
+            structured_action_fingerprint = str(
+                agentbc_identity.get("action_fingerprint") or ""
+            ).strip()
+            if not structured_action_fingerprint.startswith("fp-"):
+                structured_action_fingerprint = action_fingerprint(
+                    executor=self.executor,
+                    session_id=exact_session,
+                    operation=str(request.operation or "").strip(),
+                )
+            if domain:
+                if domain not in PERMISSION_RUNTIME_DOMAINS:
+                    evidence = {"domain": domain, "request_id": request.request_id}
+                    raise ControlPlaneError(
+                        PERMISSION_BLOCK_EVIDENCE_UNAVAILABLE,
+                        "Permission block evidence names an unsupported escalation domain.",
+                        evidence,
+                    )
+                converged = converge_approved_block(
+                    self.root,
+                    task_id=self.task_id,
+                    session_id=exact_session,
+                    executor=self.executor,
+                    operation=str(request.operation or "").strip(),
+                    domain=domain,
+                    profile_digest=profile_digest,
+                    action_fingerprint_value=structured_action_fingerprint,
+                )
+                if converged is not None:
+                    evidence = {
+                        "request_id": request.request_id,
+                        "domain": domain,
+                        "code": converged,
+                    }
+                    self._recovery(
+                        converged,
+                        "The approved action is still blocked by the same escalation domain; escalation is ineffective.",
+                        evidence,
+                    )
+                    raise ControlPlaneError(
+                        converged,
+                        "The approved action is still blocked by the same escalation domain; escalation is ineffective.",
+                        evidence,
+                    )
             if state.get("status") == "needs_recovery":
                 raise ControlPlaneError("approval_control_needs_recovery", "Approval control state requires recovery.")
             pending = {
@@ -425,6 +1004,17 @@ class ApprovalControlPlane:
                 "created_at": utc_now(),
                 "expires_at": time.time() + self.approval_timeout_s,
             }
+            if domain:
+                pending["escalation_domain"] = domain
+                pending["action_fingerprint"] = structured_action_fingerprint
+                pending["profile_digest"] = profile_digest
+                pending["block_fingerprint"] = block_fingerprint(
+                    task_id=self.task_id,
+                    session_id=exact_session,
+                    action_fingerprint_value=pending["action_fingerprint"],
+                    domain=domain,
+                    profile_digest=profile_digest,
+                )
             state.update(
                 {
                     "version": CONTROL_VERSION,
@@ -455,6 +1045,7 @@ class ApprovalControlPlane:
                         "summary": request.summary,
                         "turn_id": request.turn_id,
                         "item_id": request.item_id,
+                        "approval_version": request.approval_version,
                     },
                 )
             )
@@ -475,6 +1066,9 @@ class ApprovalControlPlane:
         session_id: str,
         request_id: str,
         decision: str,
+        session_rule: dict[str, Any] | None = None,
+        *,
+        choice_handle: str = "",
     ) -> dict[str, Any]:
         selected = normalize_decision(decision)
         with self._locked():
@@ -540,7 +1134,69 @@ class ApprovalControlPlane:
             if path.exists():
                 self._stale(state, "approval_response_duplicate", "Approval response was already recorded.")
                 raise ControlPlaneError("approval_response_duplicate", "Approval response was already recorded.")
-            response_payload = approval_response_payload(pending, selected)
+            pending_version = int(pending.get("approval_version") or 1)
+            if pending_version == 2 and session_rule is not None:
+                raise ControlPlaneError(
+                    "session_rule_response_invalid",
+                    "Session tool rules were retired; a v2 permission response "
+                    "must select one native choice handle.",
+                )
+            if pending_version == 2 and not choice_handle:
+                raise ControlPlaneError(
+                    APPROVAL_V2_ERROR_CHOICE_REQUIRED,
+                    "A v2 native permission request requires an explicit "
+                    "choice handle (--permission-option).",
+                    {"request_id": str(request_id)},
+                )
+            offered_choices = (
+                tuple(pending.get("offered_choices") or [])
+                if isinstance(pending.get("offered_choices"), list)
+                else ()
+            )
+            selected_choice: dict[str, Any] | None = None
+            if pending_version == 2:
+                for choice in offered_choices:
+                    if (
+                        isinstance(choice, dict)
+                        and str(choice.get("handle") or "") == choice_handle
+                    ):
+                        selected_choice = dict(choice)
+                        break
+                if selected_choice is None:
+                    raise ControlPlaneError(
+                        "approval_handle_mismatch",
+                        "The choice handle was not offered by this exact request.",
+                        {"request_id": str(request_id), "handle": choice_handle[:64]},
+                    )
+                if selected_choice.get("selectable", True) is False:
+                    raise ControlPlaneError(
+                        "approval_choice_not_selectable",
+                        "The selected native choice was offered as non-selectable.",
+                        {"handle": choice_handle[:64]},
+                    )
+                choice_kind = str(selected_choice.get("kind") or "")
+                if choice_kind == "deny" and selected != "decline":
+                    raise ControlPlaneError(
+                        "approval_choice_conflict",
+                        "The selected native choice does not match the decision.",
+                        {"handle": choice_handle[:64], "decision": selected},
+                    )
+                if choice_kind in {"once", "session"} and selected != "accept":
+                    raise ControlPlaneError(
+                        "approval_choice_conflict",
+                        "The selected native choice does not match the decision.",
+                        {"handle": choice_handle[:64], "decision": selected},
+                    )
+            response_payload = (
+                approval_response_payload_v2(
+                    pending,
+                    choice_kind=str(selected_choice.get("kind") or ""),
+                    native_option_id=str(selected_choice.get("native_option_id") or ""),
+                    decision=selected,
+                )
+                if pending_version == 2 and selected_choice is not None
+                else approval_response_payload(pending, selected)
+            )
             response = {
                 "version": CONTROL_VERSION,
                 "task_id": self.task_id,
@@ -551,13 +1207,72 @@ class ApprovalControlPlane:
                 "response_payload": response_payload,
                 "responded_at": utc_now(),
             }
-            atomic_write_json(path, response)
+            if selected_choice is not None:
+                response["choice"] = {
+                    "handle": str(selected_choice.get("handle") or ""),
+                    "native_option_id": str(selected_choice.get("native_option_id") or ""),
+                    "kind": str(selected_choice.get("kind") or ""),
+                }
+            # Commit the decision as one fail-closed control-plane
+            # transaction.  The response file is the worker-visible commit
+            # marker and is therefore written LAST: if ledger or state
+            # persistence fails, the worker cannot observe an approval that
+            # the controller reported as failed.  On a final response-write
+            # failure, restore the pre-decision state and ledger before
+            # propagating the error.
+            domain = str(pending.get("escalation_domain") or "").strip()
+            previous_state = json.loads(json.dumps(state))
+            previous_ledger = load_block_ledger(self.root) if domain else None
             pending = dict(pending)
             pending.update({"status": "responded", "decision": selected, "responded_at": response["responded_at"]})
             state["pending_request"] = pending
             state["status"] = "approval_responded"
             state["updated_at"] = utc_now()
-            self._save_state(state)
+            try:
+                # PERM-104-002: persist the trusted decision in the block
+                # ledger so a later identical block converges instead of
+                # re-asking. ``record_block_decision`` owns the protocol to
+                # ledger decision mapping (accept/decline -> approve/deny).
+                if domain:
+                    record_block_decision(
+                        self.root,
+                        fingerprint=str(pending.get("block_fingerprint") or ""),
+                        task_id=self.task_id,
+                        session_id=self.session_id,
+                        action_fingerprint_value=str(pending.get("action_fingerprint") or ""),
+                        domain=domain,
+                        profile_digest=str(pending.get("profile_digest") or ""),
+                        decision=selected,
+                    )
+                self._save_state(state)
+                atomic_write_json(path, response)
+            except Exception as exc:
+                # No response file was committed, so the worker remains
+                # blocked.  Restore both durable projections to the exact
+                # pre-decision snapshots.  Attempt both rollbacks even if one
+                # fails; an incomplete rollback becomes an explicit recovery
+                # state instead of hiding behind the original I/O error.
+                rollback_errors: list[str] = []
+                try:
+                    self._save_state(previous_state)
+                except Exception as rollback_exc:
+                    rollback_errors.append(f"state:{rollback_exc}")
+                if previous_ledger is not None:
+                    try:
+                        save_block_ledger(self.root, previous_ledger)
+                    except Exception as rollback_exc:
+                        rollback_errors.append(f"ledger:{rollback_exc}")
+                if rollback_errors:
+                    raise ControlPlaneError(
+                        "approval_decision_transaction_incomplete",
+                        "Approval decision persistence failed and its rollback "
+                        "was incomplete; explicit recovery is required.",
+                        {
+                            "request_id": str(request_id),
+                            "rollback_errors": rollback_errors,
+                        },
+                    ) from exc
+                raise
             return {"ok": True, **response}
 
     def wait_for_decision(self, request_id: str, timeout_s: float | None = None) -> dict[str, Any]:
@@ -696,6 +1411,7 @@ def respond_approval(
     *,
     root: str | Path,
     executor: str = "codex",
+    choice_handle: str = "",
 ) -> dict[str, Any]:
     """IPC-facing convenience command used by Runner and Task 3/Core."""
     plane = ApprovalControlPlane(
@@ -706,7 +1422,14 @@ def respond_approval(
         executor=executor,
         create=False,
     )
-    return plane.respond_approval(task_id, executor_run_id, session_id, request_id, decision)
+    return plane.respond_approval(
+        task_id,
+        executor_run_id,
+        session_id,
+        request_id,
+        decision,
+        choice_handle=choice_handle,
+    )
 
 
 class StdioJsonRpcTransport:
@@ -815,8 +1538,10 @@ CodexAppServerTransport = StdioJsonRpcTransport
 
 __all__ = [
     "APPROVAL_DECISIONS",
+    "APPROVAL_V2_ERROR_CHOICE_REQUIRED",
     "ApprovalControlPlane",
     "ApprovalRequest",
+    "CODEX_SCHEMA_SESSION_DECISIONS",
     "CodexAppServerTransport",
     "ControlEvent",
     "ControlPlaneError",
@@ -825,6 +1550,10 @@ __all__ = [
     "StdioJsonRpcTransport",
     "TransportClosed",
     "approval_response_payload",
+    "approval_response_payload_v2",
+    "claude_offered_choices",
+    "codex_offered_choices",
+    "hermes_offered_choices",
     "normalize_approval_request",
     "normalize_decision",
     "respond_approval",

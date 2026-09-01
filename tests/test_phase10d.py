@@ -108,12 +108,15 @@ class RunLeaseTests(unittest.TestCase):
 
     def test_oversized_task_definition_is_rejected_without_partial_task(self):
         from agent_bridge_connect.protocol import ABCError
+        from agent_bridge_connect.record_management import MAX_TASK_RECORD_BYTES
+
+        self.assertEqual(MAX_TASK_RECORD_BYTES, 50 * 1024)
 
         with self.assertRaises(ABCError) as raised:
             self.service.create_task(
                 "Oversized task",
                 "codex",
-                [{"id": 1, "description": "large requirement " * 2000}],
+                [{"id": 1, "description": "large requirement " * 5000}],
                 customer_path="default path",
             )
         self.assertEqual(raised.exception.code, "record_budget_exceeded")
@@ -138,7 +141,7 @@ class RunLeaseTests(unittest.TestCase):
         self.assertEqual(snapshots[0].suffix, ".gz")
         self.assertLessEqual(task_record_size(self.service.store.task_dir(self.task.id)), MAX_TASK_RECORD_BYTES)
 
-    def test_terminal_record_stays_within_ten_kilobytes(self):
+    def test_terminal_record_stays_within_fifty_kibibytes(self):
         from agent_bridge_connect.record_management import MAX_TASK_RECORD_BYTES, task_record_size
 
         self.service.start_task_run(self.task.id, "shell")
@@ -3445,7 +3448,9 @@ class Phase10dIntegrationTests(unittest.TestCase):
         self.assertEqual(executor.permission_mode, "acceptEdits")
         self.assertTrue(executor.safe_mode)
         self.assertEqual(executor.output_format, "text")
-        self.assertEqual(executor.allowed_tools, ["Read", "Write"])
+        # PERM-104-002: legacy ``allowed_tools`` is dual-read as ``tools``.
+        self.assertEqual(executor.tools, ["Read", "Write"])
+        self.assertEqual(executor.auto_approve_tools, [])
 
     def test_executor_registry_rejects_claude_bypass_permissions(self):
         from agent_bridge_connect.executor_registry import get_executor

@@ -211,6 +211,10 @@ def build_doctor_report(
         "blockers",
         lambda: _collect_blockers(effective_board_root, cleanup=cleanup),
     )
+    permission_runtime, permission_runtime_checks = _safe_collect(
+        "permission_runtime",
+        lambda: _collect_permission_runtime(loaded_config),
+    )
     checks = _build_checks(
         package_checks=package_checks,
         config_checks=config_checks,
@@ -219,6 +223,7 @@ def build_doctor_report(
         skills_checks=skills_checks,
         executors_checks=executors_checks,
         cleanup=cleanup,
+        permission_runtime_checks=permission_runtime_checks,
         blockers_checks=blockers_checks,
     )
     status = _overall_status(checks)
@@ -234,6 +239,7 @@ def build_doctor_report(
         "executors": executors,
         "session_cleanup": cleanup,
         "blockers": blockers,
+        "permission_runtime": permission_runtime,
         "checks": checks,
     }
 
@@ -504,7 +510,7 @@ def _one_auxiliary_diagnostic(entry: Any, task_id: str, now: datetime) -> dict[s
         "error_code": cleanup["error_code"],
         "retryable": cleanup["retryable"],
     }
-    for field in ("version", "strategy", "verification"):
+    for field in ("version", "strategy", "verification", "commands"):
         if field in cleanup:
             base[field] = cleanup[field]
     if retain:
@@ -729,6 +735,7 @@ def _render_cleanup(cleanup: dict[str, Any]) -> list[str]:
     for diagnostic in cleanup.get("diagnostics", []):
         strategy = diagnostic.get("strategy")
         verification = diagnostic.get("verification")
+        commands = diagnostic.get("commands")
         detail = ""
         if strategy:
             detail += f" strategy={_text_value(strategy)}"
@@ -742,6 +749,13 @@ def _render_cleanup(cleanup: dict[str, Any]) -> list[str]:
                 f" desktop_backend={_text_value(desktop_backend.get('status'))}"
                 f" desktop_live={_text_value(desktop_live.get('status'))}"
                 f" desktop={_text_value(desktop.get('status'))}"
+            )
+        if isinstance(commands, dict) and commands:
+            archive = commands.get("archive") if isinstance(commands.get("archive"), dict) else {}
+            delete = commands.get("delete") if isinstance(commands.get("delete"), dict) else {}
+            detail += (
+                f" archive={_text_value(archive.get('status'))}"
+                f" delete={_text_value(delete.get('status'))}"
             )
         lines.append(
             "  "
@@ -1439,6 +1453,137 @@ def _collect_blockers(
     )
 
 
+def _collect_permission_runtime(
+    config: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """PERM-104-002: project host containment capability and stable codes.
+
+    Only stable capability facts and error codes are exposed; raw argv,
+    tokens and private paths never enter the projection.
+    """
+    from .permission_runtime import (
+        HOST_CONTAINMENT_UNLIFTABLE,
+        PERMISSION_TRANSPORT_UNSUPPORTED,
+        PERMISSION_RUNTIME_BLOCK_CODES,
+    )
+    from .seatbelt import seatbelt_available
+
+    available = seatbelt_available()
+    checks: list[dict[str, str]] = [
+        {
+            "id": "permission.runtime",
+            "status": "healthy" if available else "warning",
+            "message": (
+                "Seatbelt host containment is available for full-mode linked-worktree tasks."
+                if available
+                else "sandbox-exec is unavailable; full-mode linked-worktree tasks cannot expand host containment."
+            ),
+        }
+    ]
+    sdk_check = _collect_claude_sdk_capability(config)
+    checks.append(sdk_check)
+    return (
+        {
+            "seatbelt_available": available,
+            "host_containment_unliftable": HOST_CONTAINMENT_UNLIFTABLE,
+            "permission_transport_unsupported": PERMISSION_TRANSPORT_UNSUPPORTED,
+            "stable_block_codes": sorted(PERMISSION_RUNTIME_BLOCK_CODES),
+            "claude_sdk_capability": _claude_sdk_capability_projection(config),
+        },
+        checks,
+    )
+
+
+def _collect_claude_sdk_capability(config: dict[str, Any] | None) -> dict[str, str]:
+    """Check the executor-native SDK protocol, independent of versions."""
+    from .permission_transport import (
+        assert_claude_sdk_environment,
+    )
+    from .protocol import ABCError
+
+    executors = (config or {}).get("executors")
+    claude_config = (
+        executors.get("claude")
+        if isinstance(executors, dict) and isinstance(executors.get("claude"), dict)
+        else {}
+    )
+    configured_command = str(claude_config.get("command") or "").strip()
+    if not configured_command:
+        # Claude is not configured: nothing to gate, and a Codex/Hermes-only
+        # install must keep the doctor healthy baseline.
+        return {
+            "id": "permission.claude_sdk",
+            "status": "healthy",
+            "message": (
+                "The Claude executor is not configured; the optional SDK "
+                "permission protocol is not applicable."
+            ),
+        }
+    try:
+        assert_claude_sdk_environment(configured_command)
+    except ABCError as exc:
+        return {
+            "id": "permission.claude_sdk",
+            "status": "warning",
+            "message": (
+                f"Claude SDK transport unsupported ({exc.code}); the "
+                "native permission protocol handshake failed."
+            ),
+        }
+    except Exception:  # noqa: BLE001 - a probe failure must never crash doctor.
+        return {
+            "id": "permission.claude_sdk",
+            "status": "warning",
+            "message": (
+                "The Claude SDK environment probe failed; the permission "
+                "protocol handshake failed."
+            ),
+        }
+    return {
+        "id": "permission.claude_sdk",
+        "status": "healthy",
+        "message": (
+            "The Claude SDK exposes the required native permission protocol."
+        ),
+    }
+
+
+def _claude_sdk_capability_projection(
+    config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Redacted public projection of the Claude SDK transport capability."""
+    from .permission_transport import assert_claude_sdk_environment
+    from .protocol import ABCError
+
+    projection: dict[str, Any] = {
+        "selection": "protocol_capability",
+        "supported": False,
+        "status": "permission_protocol_unavailable",
+    }
+    executors = (config or {}).get("executors")
+    claude_config = (
+        executors.get("claude")
+        if isinstance(executors, dict) and isinstance(executors.get("claude"), dict)
+        else {}
+    )
+    configured_command = str(claude_config.get("command") or "").strip()
+    if not configured_command:
+        return projection
+    try:
+        facts = assert_claude_sdk_environment(configured_command)
+    except ABCError as exc:
+        projection["status"] = exc.code
+        return projection
+    except Exception:  # noqa: BLE001 - fail closed, redacted.
+        projection["status"] = "permission_protocol_handshake_failed"
+        return projection
+    projection["supported"] = True
+    projection["status"] = "healthy"
+    projection["protocol"] = facts.get("protocol", "sdk.can_use_tool")
+    projection["sdk_version"] = facts.get("sdk_version", "unknown")
+    return projection
+
+
 def _build_checks(
     *,
     package_checks: list[dict[str, str]],
@@ -1449,6 +1594,7 @@ def _build_checks(
     executors_checks: list[dict[str, str]],
     cleanup: dict[str, Any],
     blockers_checks: list[dict[str, str]],
+    permission_runtime_checks: list[dict[str, str]],
 ) -> list[dict[str, str]]:
     checks: list[dict[str, str]] = [
         *package_checks,
@@ -1457,6 +1603,7 @@ def _build_checks(
         *storage_checks,
         *skills_checks,
         *executors_checks,
+        *permission_runtime_checks,
     ]
     if cleanup["warnings"]:
         checks.append(

@@ -40,7 +40,9 @@ from .execution_policy import (
     SESSION_RECEIPT_SOURCES,
     TERMINAL_SESSION_CLEANUP_STATUSES,
     build_session_cleanup_receipt,
+    _empty_cleanup_commands,
     _empty_cleanup_verification,
+    normalize_cleanup_commands,
     normalize_cleanup_verification,
     read_session_cleanup_receipt,
     session_cleanup_view,
@@ -85,7 +87,12 @@ AUXILIARY_ENTRY_FIELDS = frozenset(
     }
 )
 _AUXILIARY_OPTIONAL_ENTRY_FIELDS = frozenset(
-    {"collaboration_item_id", "parent_turn_id"}
+    {
+        "collaboration_item_id",
+        "parent_turn_id",
+        "archive_acknowledged",
+        "archive_checked_at",
+    }
 )
 _AUX_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _PURPOSE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -169,8 +176,16 @@ def validate_auxiliary_entry(value: Any) -> list[str]:
     if missing or unknown:
         return errors
     for field in _AUXILIARY_OPTIONAL_ENTRY_FIELDS:
+        if field == "archive_acknowledged":
+            if field in value and type(value[field]) is not bool:
+                errors.append(f"{field} must be a boolean")
+            continue
         if field in value and not isinstance(value[field], str):
             errors.append(f"{field} must be a string")
+    if value.get("archive_acknowledged") is True and not str(
+        value.get("archive_checked_at") or ""
+    ).strip():
+        errors.append("archive_checked_at is required after archive acknowledgement")
     if value.get("version") != AUXILIARY_ENTRY_VERSION:
         errors.append(f"version must be {AUXILIARY_ENTRY_VERSION}")
     aux_id = value.get("aux_id")
@@ -863,6 +878,7 @@ def transition_auxiliary_cleanup(
     retryable: bool = False,
     next_attempt_at: str = "",
     verification: Any | None = None,
+    commands: Any | None = None,
     occurred_at: str | None = None,
 ) -> dict[str, Any]:
     """Apply one pure, fail-closed auxiliary cleanup receipt transition.
@@ -956,18 +972,62 @@ def transition_auxiliary_cleanup(
 
     updated = dict(receipt)
     updated["last_attempt_at"] = now
+    # SESSION-104-001 v4 gate: same archive+delete acknowledgement proof for
+    # registered auxiliary Codex sessions; desktop_live is not_applicable.
+    executor_is_codex = str(entry.get("executor") or "").strip().lower() == "codex"
+    is_archive_strategy = (
+        (strategy or receipt["strategy"]) == "official_session_archive_then_delete"
+    )
+    normalized_commands = (
+        normalize_cleanup_commands(commands) if commands is not None else receipt.get("commands")
+    )
     if target_state == "succeeded":
         normalized_verification = (
             normalize_cleanup_verification(verification)
             if verification is not None
             else (
                 _empty_cleanup_verification("not_applicable")
-                if str(entry.get("executor") or "").strip().lower() != "codex"
+                if not executor_is_codex
                 else receipt["verification"]
             )
         )
-        if (
-            str(entry.get("executor") or "").strip().lower() == "codex"
+        if not executor_is_codex:
+            # Non-Codex executors have no official archive/delete commands.
+            normalized_commands = _empty_cleanup_commands("not_applicable", checked_at=now)
+        elif not normalized_commands or all(
+            (normalized_commands or {}).get(command, {}).get("status") == "not_requested"
+            for command in ("archive", "delete")
+        ):
+            # A Codex adapter supplied no command evidence: fail closed to
+            # not_applicable rather than leaving invalid not_requested proof.
+            normalized_commands = _empty_cleanup_commands("not_applicable", checked_at=now)
+            if is_archive_strategy:
+                _raise_cleanup_transition(
+                    "Codex auxiliary cleanup succeeded without both official archive "
+                    "and delete command acknowledgements"
+                )
+        if executor_is_codex and is_archive_strategy:
+            archive_status = str(
+                (normalized_commands or {}).get("archive", {}).get("status") or ""
+            )
+            delete_status = str(
+                (normalized_commands or {}).get("delete", {}).get("status") or ""
+            )
+            if archive_status not in {"acknowledged", "confirmed"} or delete_status not in {
+                "acknowledged",
+                "confirmed",
+            }:
+                _raise_cleanup_transition(
+                    "Codex auxiliary cleanup succeeded without both official archive "
+                    "and delete command acknowledgements"
+                )
+            normalized_verification = dict(normalized_verification)
+            normalized_verification["desktop_live"] = {
+                "status": "not_applicable",
+                "checked_at": now,
+            }
+        elif (
+            executor_is_codex
             and {
                 normalized_verification[side]["status"]
                 for side in CLEANUP_VERIFICATION_SIDES
@@ -987,6 +1047,7 @@ def transition_auxiliary_cleanup(
                 "retryable": False,
                 "next_attempt_at": "",
                 "verification": normalized_verification,
+                "commands": normalized_commands,
             }
         )
     elif target_state == "unsupported":
@@ -1002,6 +1063,7 @@ def transition_auxiliary_cleanup(
                 "verification": normalize_cleanup_verification(verification)
                 if verification is not None
                 else receipt["verification"],
+                "commands": normalized_commands,
             }
         )
     else:
@@ -1017,19 +1079,28 @@ def transition_auxiliary_cleanup(
                 "verification": normalize_cleanup_verification(verification)
                 if verification is not None
                 else receipt["verification"],
+                "commands": normalized_commands,
             }
         )
     return _validated_cleanup_transition(updated)
 
 
 def auxiliary_cleanup_strategy(entry: Any) -> str:
-    """Return the exact-session delete strategy for one auxiliary entry."""
+    """Return the official Codex archive-then-delete strategy for one entry.
+
+    Codex cleanup is always the acknowledged archive gate followed by delete;
+    Claude keeps its project purge; everything else uses the exact-session
+    delete strategy.  Primary-first and deepest/newest auxiliary ordering are
+    preserved by the coordinator.
+    """
     if entry.get("retain") is True:
         return "retain"
     executor = str(entry.get("executor") or "").strip().lower()
     project_mode = str(entry.get("project_mode") or "").strip().lower()
     if executor == "claude" and project_mode == "ephemeral":
         return "claude_project_purge"
+    if executor == "codex":
+        return "official_session_archive_then_delete"
     return "official_session_delete"
 
 

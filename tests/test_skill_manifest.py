@@ -157,10 +157,28 @@ class SkillManifestTests(unittest.TestCase):
             fingerprints["codex"]["files"]["references/controller-contract.md"],
             "370af89b528469368c75f49b9986f004951397b240a1d9721d6598057665c38d",
         )
-        # The published 1.0.2a1 sdist shipped byte-identical Skill templates,
-        # so the trusted 1.0.2a1 -> 1.0.3a1 upgrade differs only in the
-        # manifest package_version and must classify as managed_outdated and
-        # refresh without any forced overwrite.
+
+    def test_managed_103a2_fingerprints_match_current_package(self):
+        """PERM-104-002 9ZEV-001: the current release fingerprint is frozen."""
+        fingerprints = MANAGED_SKILL_FINGERPRINTS["1.0.3a2"]
+        self.assertEqual(set(fingerprints), {"codex", "claude", "hermes"})
+        self.assertEqual(
+            fingerprints["codex"]["files"]["references/controller-contract.md"],
+            "4fa6d01aeb66d05df356cd1b9d10bbedde9227d726cb427cd94f439070ee73b1",
+        )
+        # SKILL.md and the steps YAML reference are byte-identical to 1.0.2a1.
+        self.assertEqual(
+            fingerprints["codex"]["files"]["SKILL.md"],
+            MANAGED_SKILL_FINGERPRINTS["1.0.2a1"]["codex"]["files"]["SKILL.md"],
+        )
+        self.assertEqual(
+            fingerprints["codex"]["files"]["references/agentbc-steps-yaml.md"],
+            MANAGED_SKILL_FINGERPRINTS["1.0.2a1"]["codex"]["files"][
+                "references/agentbc-steps-yaml.md"
+            ],
+        )
+        # The current package must classify as current against the frozen
+        # 1.0.3a2 fingerprint (template aggregate + per-file hashes).
         from agent_bridge_connect.setup import _current_skill_files, _expected_skill_manifest
 
         for platform in ("codex", "claude", "hermes"):
@@ -192,14 +210,49 @@ class SkillManifestTests(unittest.TestCase):
         (root / ".agentbc-skill.json").write_bytes(serialize_skill_manifest(manifest))
 
     def _write_real_102a1_package(self, platform: str, root: Path) -> None:
+        # PERM-104-002 9ZEV-001: the current package is now 1.0.3a2, so the
+        # genuine intact-older-package fixture reconstructs 1.0.2a1 from the
+        # FROZEN per-file fingerprints instead of the current templates
+        # (whose controller contract changed in this release).
+        from agent_bridge_connect.skill_packages import (
+            MANAGED_SKILL_FINGERPRINTS,
+        )
+
+        fingerprint = MANAGED_SKILL_FINGERPRINTS["1.0.2a1"][platform]
         from agent_bridge_connect.setup import _current_skill_files
 
-        self._write_managed_package(
-            platform,
-            root,
-            _current_skill_files(platform),
-            "1.0.2a1",
-        )
+        current = _current_skill_files(platform)
+        # The controller contract changed in 1.0.3a2 (executor-native choice
+        # broker section); its 1.0.2a1 bytes are preserved verbatim as a
+        # committed fixture.  Byte-identical files come from the current
+        # package.  Every path is hash-verified against the frozen
+        # fingerprint so an invented fixture can never pass.
+        frozen_override = {
+            "references/controller-contract.md": Path(__file__).parent
+            / "fixtures"
+            / "skill"
+            / "1.0.2a1"
+            / "controller-contract.md",
+        }
+        files: dict[str, bytes] = {}
+        for relative_path, digest in fingerprint["files"].items():
+            override = frozen_override.get(relative_path)
+            if override is not None and override.exists():
+                candidate = override.read_bytes()
+            else:
+                candidate = current.get(relative_path)
+                if candidate is None:
+                    raise AssertionError(
+                        f"no current bytes for {platform}:{relative_path}"
+                    )
+            if sha256_bytes(candidate) != digest:
+                raise AssertionError(
+                    "frozen 1.0.2a1 bytes unavailable for "
+                    f"{platform}:{relative_path}; the file changed and the "
+                    "preserved fixture is missing or stale"
+                )
+            files[relative_path] = candidate
+        self._write_managed_package(platform, root, files, "1.0.2a1")
 
     def test_managed_outdated_real_102a1_is_classified_and_refreshed_for_every_platform(self):
         for platform in ("codex", "claude", "hermes"):

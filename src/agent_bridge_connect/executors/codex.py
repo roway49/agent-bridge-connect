@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import re
 import subprocess
@@ -23,6 +24,7 @@ from agent_bridge_connect.adapters import (
 from agent_bridge_connect.codex_session_cleanup import (
     CODEX_DESKTOP_UI_STALE_CODE,
     CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE,
+    CODEX_SESSION_ARCHIVE_INVALID_ID_CODE,
     CODEX_SESSION_DELETE_FAILED_CODE,
     CODEX_SESSION_DELETE_INVALID_ID_CODE,
     CODEX_SESSION_DELETE_STILL_PRESENT_CODE,
@@ -173,9 +175,11 @@ class CodexExecutor(CLIExecutorBase):
         if self.agent_bin is None:
             return _codex_cleanup_unsupported()
         if self._uses_cleanup_app_server(request):
+            # SESSION-104-001: the official App Server sequence is always
+            # archive first (acknowledged) then delete.
             return SessionCleanupCapability(
                 "supported",
-                "official_session_delete",
+                "official_session_archive_then_delete",
             )
         try:
             completed = subprocess.run(
@@ -195,7 +199,7 @@ class CodexExecutor(CLIExecutorBase):
         )
 
     def cleanup_session(self, request: SessionCleanupRequest) -> SessionCleanupResult:
-        """Delete one exact official UUID through the official cleanup chain."""
+        """Archive-then-delete one exact official UUID through the official chain."""
         if request.retain is True:
             return SessionCleanupResult("retained", "not_applicable", "retain")
         request_error = _codex_cleanup_request_error(request)
@@ -203,7 +207,7 @@ class CodexExecutor(CLIExecutorBase):
             return SessionCleanupResult(
                 "failed",
                 "supported",
-                "official_session_delete",
+                _codex_cleanup_result_strategy(request),
                 request_error,
                 False,
             )
@@ -211,7 +215,9 @@ class CodexExecutor(CLIExecutorBase):
             return self._cleanup_session_app_server(request)
         return self._cleanup_session_cli(request)
 
-    def _uses_cleanup_app_server(self, request: SessionCleanupRequest | None = None) -> bool:
+    def _uses_cleanup_app_server(
+        self, request: SessionCleanupRequest | None = None
+    ) -> bool:
         """Use App Server for auto/official cleanup and only explicit CLI otherwise."""
         if not isinstance(self.transport_mode, str):
             return True
@@ -228,6 +234,7 @@ class CodexExecutor(CLIExecutorBase):
         request: SessionCleanupRequest,
     ) -> SessionCleanupResult:
         verification = _unknown_cleanup_verification()
+        commands = _unknown_cleanup_commands()
         try:
             assert self.agent_bin is not None
             root = _cleanup_workspace_root(request)
@@ -242,8 +249,13 @@ class CodexExecutor(CLIExecutorBase):
                 ),
                 timeout_s=_CODEX_CLEANUP_TIMEOUT_S,
             )
-            observation = cleanup_client.delete_and_verify(request.session_id)
+            observation = cleanup_client.delete_and_verify(
+                request.session_id,
+                archive_acknowledged=request.archive_acknowledged,
+                archive_checked_at=request.archive_checked_at,
+            )
             verification = observation.verification()
+            commands = observation.commands()
         except CodexSessionCleanupError as exc:
             live = self._desktop_live_cleanup_verification(request)
             verification = {
@@ -253,16 +265,20 @@ class CodexExecutor(CLIExecutorBase):
                     else "unknown",
                     "checked_at": exc.cli_checked_at or _cleanup_now(),
                 },
-                "desktop_backend": {"status": "unavailable", "checked_at": _cleanup_now()},
+                "desktop_backend": {
+                    "status": "unavailable",
+                    "checked_at": _cleanup_now(),
+                },
                 "desktop_live": live,
             }
             return SessionCleanupResult(
                 "failed",
                 "supported",
-                "official_session_delete",
+                OFFICIAL_SESSION_ARCHIVE_THEN_DELETE,
                 exc.code,
                 exc.retryable,
                 verification=verification,
+                commands=exc.commands or _unknown_cleanup_commands(),
             )
         except (OSError, TransportClosed, RuntimeError):
             live = self._desktop_live_cleanup_verification(request)
@@ -273,10 +289,11 @@ class CodexExecutor(CLIExecutorBase):
             return SessionCleanupResult(
                 "failed",
                 "supported",
-                "official_session_delete",
+                OFFICIAL_SESSION_ARCHIVE_THEN_DELETE,
                 CODEX_SESSION_DELETE_TRANSPORT_LOST_CODE,
                 True,
                 verification=verification,
+                commands=_unknown_cleanup_commands(),
             )
 
         try:
@@ -289,34 +306,52 @@ class CodexExecutor(CLIExecutorBase):
         cli_status = verification["cli"]["status"]
         backend_status = desktop_backend["status"]
         live_status = desktop_live["status"]
-        if (
-            cli_status == "absent"
-            and backend_status == "absent"
-            and live_status == "absent"
+        # SESSION-104-001: under the archive-then-delete gate the two
+        # acknowledged commands are the success proof.  The fresh read/list
+        # observations stay as non-gating diagnostics, and the current Codex
+        # Desktop refresh delay is accepted: desktop_live becomes
+        # not_applicable and backend/live states never block the result.
+        if commands.get("archive", {}).get("status") in {
+            "acknowledged",
+            "confirmed",
+        } and (
+            commands.get("delete", {}).get("status") in {"acknowledged", "confirmed"}
         ):
+            verification["desktop_live"] = {
+                "status": "not_applicable",
+                "checked_at": commands.get("delete", {}).get("checked_at")
+                or _cleanup_now(),
+            }
             return SessionCleanupResult(
-                "succeeded",
+                "succeeded" if cli_status == "absent" else "failed",
                 "supported",
-                "official_session_delete",
+                OFFICIAL_SESSION_ARCHIVE_THEN_DELETE,
+                ""
+                if cli_status == "absent"
+                else CODEX_SESSION_DELETE_STILL_PRESENT_CODE,
+                False,
                 verification=verification,
+                commands=commands,
             )
         if backend_status == "absent" and live_status == "present":
             return SessionCleanupResult(
                 "failed",
                 "supported",
-                "official_session_delete",
+                OFFICIAL_SESSION_ARCHIVE_THEN_DELETE,
                 CODEX_DESKTOP_UI_STALE_CODE,
                 False,
                 verification=verification,
+                commands=commands,
             )
         if cli_status == "present" or backend_status == "present":
             return SessionCleanupResult(
                 "failed",
                 "supported",
-                "official_session_delete",
+                OFFICIAL_SESSION_ARCHIVE_THEN_DELETE,
                 CODEX_SESSION_DELETE_STILL_PRESENT_CODE,
                 False,
                 verification=verification,
+                commands=commands,
             )
         if (
             cli_status == "absent"
@@ -326,20 +361,22 @@ class CodexExecutor(CLIExecutorBase):
             return SessionCleanupResult(
                 "failed",
                 "supported",
-                "official_session_delete",
+                OFFICIAL_SESSION_ARCHIVE_THEN_DELETE,
                 CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE,
                 False,
                 verification=verification,
+                commands=commands,
             )
         return SessionCleanupResult(
             "failed",
             "supported",
-            "official_session_delete",
+            OFFICIAL_SESSION_ARCHIVE_THEN_DELETE,
             CODEX_SESSION_DELETE_STILL_PRESENT_CODE
             if cli_status == "present"
             else CODEX_SESSION_DELETE_FAILED_CODE,
             False,
             verification=verification,
+            commands=commands,
         )
 
     def _desktop_live_cleanup_verification(
@@ -375,7 +412,9 @@ class CodexExecutor(CLIExecutorBase):
             if status in {"absent", "present"}:
                 return {
                     "status": str(status),
-                    "checked_at": str(timestamp) if _is_cleanup_timestamp(timestamp) else checked_at,
+                    "checked_at": str(timestamp)
+                    if _is_cleanup_timestamp(timestamp)
+                    else checked_at,
                 }
         elif isinstance(value, str) and value.strip().lower() in {"absent", "present"}:
             return {"status": value.strip().lower(), "checked_at": checked_at}
@@ -456,7 +495,10 @@ class CodexExecutor(CLIExecutorBase):
             False,
             verification={
                 "cli": {"status": cli_status, "checked_at": _cleanup_now()},
-                "desktop_backend": {"status": "unavailable", "checked_at": _cleanup_now()},
+                "desktop_backend": {
+                    "status": "unavailable",
+                    "checked_at": _cleanup_now(),
+                },
                 "desktop_live": self._desktop_live_cleanup_verification(request),
             },
         )
@@ -471,7 +513,9 @@ class CodexExecutor(CLIExecutorBase):
         workspace = task_packet.get("workspace") or {}
         root = Path(workspace.get("root", ".")).expanduser().resolve()
         if not root.is_dir():
-            return StartResult(ok=False, run_id="", message=f"workspace not found: {root}")
+            return StartResult(
+                ok=False, run_id="", message=f"workspace not found: {root}"
+            )
 
         if self._uses_app_server_transport(task_packet):
             return self._start_app_server(task_packet, root)
@@ -550,10 +594,14 @@ class CodexExecutor(CLIExecutorBase):
                 progress={"events_seen": len(events)},
                 result=timeout_result,
             )
-            return StartResult(ok=True, run_id=run_id, message="codex execution needs recovery")
+            return StartResult(
+                ok=True, run_id=run_id, message="codex execution needs recovery"
+            )
         except (OSError, RunnerError) as exc:
             self._close_run_lease(run_id)
-            return StartResult(ok=False, run_id="", message=f"failed to start codex: {exc}")
+            return StartResult(
+                ok=False, run_id="", message=f"failed to start codex: {exc}"
+            )
 
         self._heartbeat_run(run_id)
         events = _parse_jsonl(completed.stdout)
@@ -568,7 +616,9 @@ class CodexExecutor(CLIExecutorBase):
             completed.returncode,
             executor_name="codex",
             stderr=completed.stderr,
-            runtime_failure=detect_retryable_transport_failure(completed.stdout, completed.stderr),
+            runtime_failure=detect_retryable_transport_failure(
+                completed.stdout, completed.stderr
+            ),
         )
         status = terminal.status
         result = {
@@ -594,7 +644,9 @@ class CodexExecutor(CLIExecutorBase):
         self._close_run_lease(run_id)
         return StartResult(ok=True, run_id=run_id, message=f"codex execution {status}")
 
-    def _uses_app_server_transport(self, task_packet: dict[str, Any] | None = None) -> bool:
+    def _uses_app_server_transport(
+        self, task_packet: dict[str, Any] | None = None
+    ) -> bool:
         if not isinstance(self.transport_mode, str):
             # Injected fake transport objects in tests are always App Server.
             return True
@@ -613,13 +665,21 @@ class CodexExecutor(CLIExecutorBase):
         grant = permission_grant_from_extensions(
             extensions if isinstance(extensions, dict) else {}
         )
-        session = extensions.get(SESSION_EXTENSION_KEY) if isinstance(extensions, dict) else None
+        session = (
+            extensions.get(SESSION_EXTENSION_KEY)
+            if isinstance(extensions, dict)
+            else None
+        )
         official_receipt = (
             isinstance(session, dict)
             and session.get("official_receipt_bound") is True
             and bool(str(session.get("session_id") or "").strip())
         )
-        if grant is not None and grant["state"]["status"] != "revoked" and not official_receipt:
+        if (
+            grant is not None
+            and grant["state"]["status"] != "revoked"
+            and not official_receipt
+        ):
             # A fresh compatibility full run has no official session to
             # resume, so keep the pre-receipt CLI start path.
             return False
@@ -635,7 +695,9 @@ class CodexExecutor(CLIExecutorBase):
             return False
         return transport == "auto" or transport in CODEX_APP_SERVER_TRANSPORT_ALIASES
 
-    def _freeze_app_server_capability(self, permission: dict[str, Any]) -> dict[str, Any]:
+    def _freeze_app_server_capability(
+        self, permission: dict[str, Any]
+    ) -> dict[str, Any]:
         """Verify the App Server contract before a receipt-bound run."""
         from agent_bridge_connect.codex_app_server import (
             CODEX_APP_SERVER_TRANSPORT,
@@ -663,7 +725,10 @@ class CodexExecutor(CLIExecutorBase):
                 if override.get("ok") is not True:
                     raise ABCError(
                         "permission_capability_unsupported",
-                        str(override.get("reason") or "App Server capability override failed"),
+                        str(
+                            override.get("reason")
+                            or "App Server capability override failed"
+                        ),
                         {
                             "executor": "codex",
                             "permission_mode": mode,
@@ -704,10 +769,14 @@ class CodexExecutor(CLIExecutorBase):
             if isinstance(parsed, (tuple, list)) and len(parsed) == 3
             else ""
         )
-        fixture = codex_collaboration_spawn_fixture_contract(version) if version else {
-            "ok": False,
-            "reason": "Codex version is unavailable for fixture matching",
-        }
+        fixture = (
+            codex_collaboration_spawn_fixture_contract(version)
+            if version
+            else {
+                "ok": False,
+                "reason": "Codex version is unavailable for fixture matching",
+            }
+        )
         enabled = bool(live.get("ok") is True and fixture.get("ok") is True)
         if enabled:
             reason = ""
@@ -731,10 +800,87 @@ class CodexExecutor(CLIExecutorBase):
 
     @staticmethod
     def _collaboration_spawn_requested(task_packet: dict[str, Any]) -> bool:
+        extensions = (
+            task_packet.get("extensions")
+            if isinstance(task_packet.get("extensions"), dict)
+            else {}
+        )
+        frozen = extensions.get("agentbc.codex.collaboration_spawn")
         return bool(
             task_packet.get("collaboration_spawn") is True
             or task_packet.get("enable_collaboration_spawn") is True
+            or (isinstance(frozen, dict) and frozen.get("enabled") is True)
         )
+
+    def _archive_registered_auxiliary_sessions(self, record: dict[str, Any]) -> None:
+        """Archive exact registered Codex children on the owning connection."""
+        from agent_bridge_connect.auxiliary_sessions import (
+            AUXILIARY_EXTENSION_KEY,
+            read_auxiliary_ledger,
+            validate_auxiliary_ledger,
+        )
+        from agent_bridge_connect.task_store import TaskStore
+
+        packet = record["task_packet"]
+        extensions = copy.deepcopy(packet.get("extensions") or {})
+        ledger = read_auxiliary_ledger(extensions)
+        owner_task_id = str(packet.get("task_id") or packet.get("id") or "").strip()
+        owner_run_id = str(record.get("run_id") or "").strip()
+        parent_session_id = str(record.get("session_id") or "").strip()
+        candidates = [
+            entry
+            for entry in ledger["sessions"]
+            if str(entry.get("owner_task_id") or "") == owner_task_id
+            and str(entry.get("owner_run_id") or "") == owner_run_id
+            and str(entry.get("parent_session_id") or "") == parent_session_id
+            and str(entry.get("executor") or "").strip().lower() == "codex"
+            and entry.get("retain") is False
+            and str(entry.get("session_state") or "") == "terminal"
+            and str(entry.get("session_id") or "").strip()
+        ]
+        candidates.sort(
+            key=lambda entry: (
+                str(entry.get("updated_at") or ""),
+                str(entry.get("aux_id") or ""),
+            ),
+            reverse=True,
+        )
+        for candidate in candidates:
+            session_id = str(candidate["session_id"]).strip()
+            archive_id = self._app_rpc(
+                record,
+                "thread/archive",
+                {"threadId": session_id},
+            )
+            self._app_wait_response(record, archive_id)
+            checked_at = _cleanup_now()
+            for entry in ledger["sessions"]:
+                if entry.get("aux_id") == candidate.get("aux_id"):
+                    entry["archive_acknowledged"] = True
+                    entry["archive_checked_at"] = checked_at
+                    entry["updated_at"] = checked_at
+                    break
+        if not candidates:
+            return
+        errors = validate_auxiliary_ledger(ledger)
+        if errors:
+            raise ABCError(
+                "codex_auxiliary_receipt_missing",
+                "; ".join(errors),
+            )
+        extensions[AUXILIARY_EXTENSION_KEY] = ledger
+        packet["extensions"] = extensions
+        board = packet.get("task_board")
+        board_root = board.get("root") if isinstance(board, dict) else ""
+        if not board_root:
+            raise ABCError(
+                "codex_auxiliary_receipt_missing",
+                "Codex collaboration archive has no authoritative task board.",
+            )
+        store = TaskStore(board_root)
+        persisted = store.read_task(owner_task_id)
+        persisted["extensions"] = extensions
+        store.write_task(owner_task_id, persisted)
 
     def _build_app_server_command(self) -> list[str]:
         if self.agent_bin is None:
@@ -790,7 +936,12 @@ class CodexExecutor(CLIExecutorBase):
                 run_id,
                 expected_session_id=explicit_session_id if resumed else None,
             )
-        except (ABCError, RunnerError, ControlPlaneError, SessionRecoveryRequired) as exc:
+        except (
+            ABCError,
+            RunnerError,
+            ControlPlaneError,
+            SessionRecoveryRequired,
+        ) as exc:
             self._close_run_lease(run_id)
             code = f"{exc.code}: " if isinstance(exc, ABCError) else ""
             return StartResult(
@@ -826,7 +977,9 @@ class CodexExecutor(CLIExecutorBase):
         record["thread"] = worker
         worker.start()
         record["ready"].wait(timeout=min(max(self.timeout_s, 0.1), 10.0))
-        return StartResult(ok=True, run_id=run_id, message="codex App Server run started")
+        return StartResult(
+            ok=True, run_id=run_id, message="codex App Server run started"
+        )
 
     def poll(self, run_id: str) -> PollResult:
         app_run = self._app_runs.get(run_id)
@@ -848,12 +1001,16 @@ class CodexExecutor(CLIExecutorBase):
         root: Path,
         command: list[str],
     ) -> Any:
-        if not isinstance(self.transport_mode, str) and hasattr(self.transport_mode, "send"):
+        if not isinstance(self.transport_mode, str) and hasattr(
+            self.transport_mode, "send"
+        ):
             return self.transport_mode
         factory = self.transport_factory
         if factory is not None:
             attempts = (
-                lambda: factory(run_id=run_id, task_packet=task_packet, cwd=root, command=command),
+                lambda: factory(
+                    run_id=run_id, task_packet=task_packet, cwd=root, command=command
+                ),
                 lambda: factory(run_id, task_packet, root),
                 lambda: factory(),
             )
@@ -882,7 +1039,9 @@ class CodexExecutor(CLIExecutorBase):
 
     @staticmethod
     def _transport_recv(transport: Any) -> dict[str, Any]:
-        receiver = getattr(transport, "recv", None) or getattr(transport, "receive", None)
+        receiver = getattr(transport, "recv", None) or getattr(
+            transport, "receive", None
+        )
         if not callable(receiver):
             raise TransportClosed("Codex App Server fake transport has no recv method")
         message = receiver()
@@ -910,7 +1069,9 @@ class CodexExecutor(CLIExecutorBase):
         value = getattr(transport, "alive", None)
         return bool(value) if isinstance(value, bool) else True
 
-    def _app_rpc(self, record: dict[str, Any], method: str, params: dict[str, Any] | None = None) -> int:
+    def _app_rpc(
+        self, record: dict[str, Any], method: str, params: dict[str, Any] | None = None
+    ) -> int:
         request_id = int(record["next_rpc_id"])
         record["next_rpc_id"] = request_id + 1
         message: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
@@ -919,7 +1080,9 @@ class CodexExecutor(CLIExecutorBase):
         self._transport_send(record["transport"], message)
         return request_id
 
-    def _app_notification(self, record: dict[str, Any], method: str, params: dict[str, Any] | None = None) -> None:
+    def _app_notification(
+        self, record: dict[str, Any], method: str, params: dict[str, Any] | None = None
+    ) -> None:
         message: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             message["params"] = params
@@ -927,7 +1090,11 @@ class CodexExecutor(CLIExecutorBase):
 
     def _app_event(self, record: dict[str, Any], message: dict[str, Any]) -> None:
         method = str(message.get("method") or "rpc_response")
-        payload = message.get("params") if isinstance(message.get("params"), dict) else message.get("result")
+        payload = (
+            message.get("params")
+            if isinstance(message.get("params"), dict)
+            else message.get("result")
+        )
         record["events"].append(
             {
                 "event_type": method,
@@ -953,6 +1120,12 @@ class CodexExecutor(CLIExecutorBase):
             return
         item = payload["item"]
         if str(item.get("type") or "") != "collabAgentToolCall":
+            return
+        # Collaboration-mode turns also publish lifecycle items for wait,
+        # listAgents, and the other coordination tools.  Only spawnAgent
+        # creates a new session receipt; those sibling calls are not malformed
+        # spawn events and must not abort the parent transport.
+        if str(item.get("tool") or "") != "spawnAgent":
             return
         from agent_bridge_connect.auxiliary_sessions import (
             handle_codex_collaboration_item_completed,
@@ -980,7 +1153,9 @@ class CodexExecutor(CLIExecutorBase):
             }
         )
         extensions[SESSION_EXTENSION_KEY] = primary
-        parent_turn_id = str(payload.get("turnId") or payload.get("turn_id") or "").strip()
+        parent_turn_id = str(
+            payload.get("turnId") or payload.get("turn_id") or ""
+        ).strip()
         if method == "item/started":
             updated, entry = handle_codex_collaboration_item_started(
                 extensions,
@@ -1046,11 +1221,23 @@ class CodexExecutor(CLIExecutorBase):
 
         # Task 1 may expose an explicit v2 mapping.  Accept only the narrow
         # App Server fields; the legacy effective mode remains the fallback.
-        extensions = task_packet.get("extensions") if isinstance(task_packet.get("extensions"), dict) else {}
-        for key in ("agentbc.permission.v2", "agentbc.permissions.v2", "agentbc.permission_mapping"):
+        extensions = (
+            task_packet.get("extensions")
+            if isinstance(task_packet.get("extensions"), dict)
+            else {}
+        )
+        for key in (
+            "agentbc.permission.v2",
+            "agentbc.permissions.v2",
+            "agentbc.permission_mapping",
+        ):
             mapping = extensions.get(key)
             if isinstance(mapping, dict):
-                codex_mapping = mapping.get("codex") if isinstance(mapping.get("codex"), dict) else mapping
+                codex_mapping = (
+                    mapping.get("codex")
+                    if isinstance(mapping.get("codex"), dict)
+                    else mapping
+                )
                 if isinstance(codex_mapping, dict):
                     for field in ("sandbox", "approvalPolicy", "approvalsReviewer"):
                         value = codex_mapping.get(field)
@@ -1060,13 +1247,25 @@ class CodexExecutor(CLIExecutorBase):
 
     @staticmethod
     def _thread_id_from_message(message: dict[str, Any]) -> str:
-        result = message.get("result") if isinstance(message.get("result"), dict) else {}
+        result = (
+            message.get("result") if isinstance(message.get("result"), dict) else {}
+        )
         thread = result.get("thread") if isinstance(result.get("thread"), dict) else {}
         candidates = [thread.get("id"), result.get("threadId")]
-        values = [str(value).strip() for value in candidates if isinstance(value, str) and value.strip()]
-        return values[0] if len(set(values)) == 1 else (values[0] if len(values) == 1 else "")
+        values = [
+            str(value).strip()
+            for value in candidates
+            if isinstance(value, str) and value.strip()
+        ]
+        return (
+            values[0]
+            if len(set(values)) == 1
+            else (values[0] if len(values) == 1 else "")
+        )
 
-    def _app_wait_response(self, record: dict[str, Any], request_id: int) -> dict[str, Any]:
+    def _app_wait_response(
+        self, record: dict[str, Any], request_id: int
+    ) -> dict[str, Any]:
         while True:
             message = self._transport_recv(record["transport"])
             method = str(message.get("method") or "")
@@ -1106,8 +1305,42 @@ class CodexExecutor(CLIExecutorBase):
             if method == "turn/completed":
                 return message
 
-    def _handle_app_approval(self, record: dict[str, Any], message: dict[str, Any]) -> None:
+    def _handle_app_approval(
+        self, record: dict[str, Any], message: dict[str, Any]
+    ) -> None:
         plane: ApprovalControlPlane = record["plane"]
+        # PERM-104-002 v2: enrich the native App Server request with the
+        # exact schema-supported choice set before it reaches the control
+        # plane.  The captured fixtures prove session-scope decisions are
+        # schema-supported (acceptForSession on command/file_change;
+        # turn/session permissions responses); amendments stay non-selectable
+        # and never offered.
+        from agent_bridge_connect.control import codex_offered_choices
+
+        method = str(message.get("method") or "")
+        operation = {
+            "item/commandExecution/requestApproval": "command",
+            "item/fileChange/requestApproval": "file_change",
+            "item/permissions/requestApproval": "permissions",
+        }.get(method, "")
+        if operation:
+            message = {
+                **message,
+                "approval_version": 2,
+                "authority": {
+                    "executor": "codex",
+                    "protocol": "codex_app_server",
+                    "protocol_version": 2,
+                    "method": method,
+                },
+                "offered_choices": [
+                    dict(choice)
+                    for choice in codex_offered_choices(
+                        operation,
+                        session_decisions_supported=True,
+                    )
+                ],
+            }
         event = plane.request_approval(message)
         request_id = str(event.get("request_id") or "")
         record["events"].append(
@@ -1118,7 +1351,7 @@ class CodexExecutor(CLIExecutorBase):
                 "payload": event,
             }
         )
-        approval = {
+        approval: dict[str, Any] = {
             "type": "permission",
             "request_id": request_id,
             "request_fingerprint": str(event.get("request_fingerprint") or ""),
@@ -1128,6 +1361,23 @@ class CodexExecutor(CLIExecutorBase):
             "scope": "single_action",
             "session_id": str(event.get("session_id") or ""),
         }
+        # PERM-104-002 v2: the offered native choices ride on the poll result
+        # so the CLI worker can persist them on the input request.  The
+        # choices come from the CONTROL PLANE's normalized pending request,
+        # because that is where the opaque handles are computed and bound.
+        pending_after = plane.status().get("pending_request")
+        if (
+            isinstance(pending_after, dict)
+            and str(pending_after.get("approval_version") or "") == "2"
+            and isinstance(pending_after.get("offered_choices"), list)
+        ):
+            approval["approval_version"] = 2
+            approval["authority"] = dict(pending_after.get("authority") or {})
+            approval["offered_choices"] = [
+                dict(choice)
+                for choice in pending_after.get("offered_choices") or []
+                if isinstance(choice, dict)
+            ]
         record["status"] = "input_required"
         record["result"] = {
             "events": list(record["events"]),
@@ -1169,12 +1419,24 @@ class CodexExecutor(CLIExecutorBase):
             if not isinstance(response_payload, dict):
                 pending = plane.status().get("pending_request")
                 if not isinstance(pending, dict):
-                    raise ControlPlaneError("approval_response_missing", "Approval response payload is unavailable.")
-                response_payload = approval_response_payload(pending, response.get("decision"))
+                    raise ControlPlaneError(
+                        "approval_response_missing",
+                        "Approval response payload is unavailable.",
+                    )
+                response_payload = approval_response_payload(
+                    pending, response.get("decision")
+                )
+            # PERM-104-002 v2: the exact selected native choice decides the
+            # response shape (accept / acceptForSession / decline on the
+            # original id; permissions turn/session responses).  Amendments
+            # are never selectable and never returned.
             self._resume_run(record["run_id"])
             record["status"] = "running"
             record.setdefault("approval_history", []).append(
-                {"request_id": request_id, "decision": str(response.get("decision") or "")}
+                {
+                    "request_id": request_id,
+                    "decision": str(response.get("decision") or ""),
+                }
             )
             rpc_response = {
                 "jsonrpc": "2.0",
@@ -1194,7 +1456,9 @@ class CodexExecutor(CLIExecutorBase):
         transport: Any = None
         try:
             command = self._build_app_server_command()
-            transport = self._make_app_server_transport(run_id, record["task_packet"], record["root"], command)
+            transport = self._make_app_server_transport(
+                run_id, record["task_packet"], record["root"], command
+            )
             record["transport"] = transport
             self._transport_start(transport)
             initialize_id = self._app_rpc(
@@ -1223,6 +1487,17 @@ class CodexExecutor(CLIExecutorBase):
             else:
                 thread_params = dict(common_params)
                 thread_method = "thread/start"
+            collaboration_enabled = bool(
+                isinstance(record.get("collaboration_spawn"), dict)
+                and record["collaboration_spawn"].get("enabled") is True
+            )
+            if collaboration_enabled:
+                # Codex 0.150.1 marks multiAgentMode as deprecated/ignored and
+                # names Ultra effort as the supported activation path. Keep
+                # both the explicit-request policy and activation task-scoped;
+                # ordinary AgentBC tasks retain their configured effort.
+                thread_params["multiAgentMode"] = "explicitRequestOnly"
+                thread_params["effort"] = "ultra"
             thread_rpc_id = self._app_rpc(record, thread_method, thread_params)
             thread_response = self._app_wait_response(record, thread_rpc_id)
             official_thread_id = self._thread_id_from_message(thread_response)
@@ -1231,11 +1506,17 @@ class CodexExecutor(CLIExecutorBase):
                     "session_receipt_missing",
                     "Codex App Server thread response did not contain an official thread ID.",
                 )
-            if record["resumed"] and official_thread_id != record["explicit_session_id"]:
+            if (
+                record["resumed"]
+                and official_thread_id != record["explicit_session_id"]
+            ):
                 raise SessionRecoveryRequired(
                     "session_receipt_run_mismatch",
                     "Codex App Server resume returned a different official thread ID.",
-                    {"expected_session_id": record["explicit_session_id"], "actual_session_id": official_thread_id},
+                    {
+                        "expected_session_id": record["explicit_session_id"],
+                        "actual_session_id": official_thread_id,
+                    },
                 )
             receipt = {
                 "version": 1,
@@ -1269,20 +1550,42 @@ class CodexExecutor(CLIExecutorBase):
                 for image in task_image_paths(record["task_packet"])
             ]
             inputs.append({"type": "text", "text": prompt})
-            turn_id = self._app_rpc(
-                record,
-                "turn/start",
-                {"threadId": official_thread_id, "input": inputs},
-            )
+            turn_params: dict[str, Any] = {
+                "threadId": official_thread_id,
+                "input": inputs,
+            }
+            if collaboration_enabled:
+                turn_params["multiAgentMode"] = "explicitRequestOnly"
+                turn_params["effort"] = "ultra"
+            turn_id = self._app_rpc(record, "turn/start", turn_params)
             turn_response = self._app_wait_response(record, turn_id)
-            turn_result = turn_response.get("result") if isinstance(turn_response.get("result"), dict) else {}
-            turn = turn_result.get("turn") if isinstance(turn_result.get("turn"), dict) else {}
+            turn_result = (
+                turn_response.get("result")
+                if isinstance(turn_response.get("result"), dict)
+                else {}
+            )
+            turn = (
+                turn_result.get("turn")
+                if isinstance(turn_result.get("turn"), dict)
+                else {}
+            )
             record["turn_id"] = str(turn.get("id") or "")
             completed_message = self._app_wait_turn_completed(record)
-            completed_params = completed_message.get("params") if isinstance(completed_message.get("params"), dict) else {}
-            completed_turn = completed_params.get("turn") if isinstance(completed_params.get("turn"), dict) else {}
+            completed_params = (
+                completed_message.get("params")
+                if isinstance(completed_message.get("params"), dict)
+                else {}
+            )
+            completed_turn = (
+                completed_params.get("turn")
+                if isinstance(completed_params.get("turn"), dict)
+                else {}
+            )
             turn_status = str(completed_turn.get("status") or "completed")
-            plane.record_turn_completed(turn_id=str(completed_turn.get("id") or record.get("turn_id") or ""), status=turn_status)
+            plane.record_turn_completed(
+                turn_id=str(completed_turn.get("id") or record.get("turn_id") or ""),
+                status=turn_status,
+            )
             agent_events = _app_server_agent_message_events(record["events"])
             validation = extract_callback_validation_from_events(
                 agent_events,
@@ -1293,7 +1596,35 @@ class CodexExecutor(CLIExecutorBase):
                 validation,
                 0,
                 executor_name="codex",
+                native_approval_authoritative=True,
             )
+            # Archive while this exact App Server connection still owns the
+            # thread writer. A separate cleanup process is rejected by Codex
+            # with "already has an active writer". Publishing terminal state
+            # before this acknowledgement creates that race. The bounded
+            # receipt lets cleanup skip the non-idempotent archive call and
+            # retain the existing delete implementation.
+            session_policy = (
+                record["task_packet"].get("extensions", {}).get(SESSION_EXTENSION_KEY)
+                if isinstance(record["task_packet"].get("extensions"), dict)
+                else None
+            )
+            if (
+                isinstance(session_policy, dict)
+                and session_policy.get("retain") is False
+            ):
+                self._archive_registered_auxiliary_sessions(record)
+                archive_id = self._app_rpc(
+                    record,
+                    "thread/archive",
+                    {"threadId": official_thread_id},
+                )
+                self._app_wait_response(record, archive_id)
+                receipt["archive_acknowledged"] = True
+                receipt["archive_checked_at"] = _cleanup_now()
+                self._transport_close(transport)
+                transport = None
+                record["transport"] = None
             result = {
                 "events": list(record["events"]),
                 "summary": _extract_summary(agent_events),
@@ -1377,7 +1708,9 @@ class CodexExecutor(CLIExecutorBase):
     ) -> tuple[list[str], str | None]:
         if self.agent_bin is None:
             raise RuntimeError("codex unavailable")
-        selected = permission or permission_record_from_extensions(task_packet.get("extensions"))
+        selected = permission or permission_record_from_extensions(
+            task_packet.get("extensions")
+        )
         resumed, session_id = _codex_resume_context(task_packet)
         command = [str(self.agent_bin), "exec", "--json"]
         command.extend(permission_flags("codex", selected["effective_mode"]))
@@ -1419,8 +1752,16 @@ class CodexExecutor(CLIExecutorBase):
             }
         if self._collaboration_spawn_capability is not None:
             collaboration = self._collaboration_spawn_capability
-            fixture = collaboration.get("fixture") if isinstance(collaboration.get("fixture"), dict) else {}
-            live = collaboration.get("live") if isinstance(collaboration.get("live"), dict) else {}
+            fixture = (
+                collaboration.get("fixture")
+                if isinstance(collaboration.get("fixture"), dict)
+                else {}
+            )
+            live = (
+                collaboration.get("live")
+                if isinstance(collaboration.get("live"), dict)
+                else {}
+            )
             metadata["collaboration_spawn"] = {
                 "enabled": bool(collaboration.get("enabled")),
                 "version": str(collaboration.get("version") or ""),
@@ -1445,7 +1786,10 @@ class CodexExecutor(CLIExecutorBase):
                 self._task_packets.get(run_id, {}).get("extensions")
             ),
             "writable_roots": [
-                str(path) for path in _codex_writable_roots(self._task_packets.get(run_id, {}), workspace)
+                str(path)
+                for path in _codex_writable_roots(
+                    self._task_packets.get(run_id, {}), workspace
+                )
             ],
             "events_seen": len(events),
             "returncode": returncode,
@@ -1489,6 +1833,23 @@ def _unknown_cleanup_verification() -> dict[str, dict[str, str]]:
     }
 
 
+# SESSION-104-001 strategy name.  The App Server path is the only producer;
+# the explicit cli/direct fallback keeps ``official_session_delete`` so the
+# fallback can never claim the archive gate it does not perform.
+OFFICIAL_SESSION_ARCHIVE_THEN_DELETE = "official_session_archive_then_delete"
+_CODEX_CLEANUP_REQUEST_STRATEGIES = frozenset(
+    {"official_session_delete", OFFICIAL_SESSION_ARCHIVE_THEN_DELETE}
+)
+
+
+def _unknown_cleanup_commands() -> dict[str, dict[str, str]]:
+    """Bounded v4 command evidence when nothing can be proven (fail closed)."""
+    return {
+        "archive": {"status": "unverified", "checked_at": _cleanup_now()},
+        "delete": {"status": "unverified", "checked_at": _cleanup_now()},
+    }
+
+
 def _cleanup_workspace_root(request: SessionCleanupRequest) -> Path:
     workspace = request.workspace if isinstance(request.workspace, dict) else {}
     candidate = str(workspace.get("root") or workspace.get("project_root") or ".")
@@ -1518,7 +1879,9 @@ def _frozen_help_fixture_text(fixture_name: str) -> str:
     in any result.
     """
     here = Path(__file__).resolve()
-    candidate = here.parents[3] / "tests" / "fixtures" / "executor_runtime" / fixture_name
+    candidate = (
+        here.parents[3] / "tests" / "fixtures" / "executor_runtime" / fixture_name
+    )
     try:
         return candidate.read_text(encoding="utf-8")
     except OSError:
@@ -1544,11 +1907,14 @@ def _codex_has_exact_session_delete_entry(help_text: str) -> bool:
         and "--force" in lowered
         and "session must be a uuid" in lowered
     )
-    exact_positional = re.search(
-        r"^\s+session_id\b.*session id to delete",
-        help_text,
-        re.IGNORECASE | re.MULTILINE,
-    ) is not None
+    exact_positional = (
+        re.search(
+            r"^\s+session_id\b.*session id to delete",
+            help_text,
+            re.IGNORECASE | re.MULTILINE,
+        )
+        is not None
+    )
     return force_uuid or exact_positional
 
 
@@ -1580,7 +1946,7 @@ def _codex_cleanup_request_error(request: SessionCleanupRequest) -> str:
         return "codex_cleanup_executor_mismatch"
     if request.retain is not False or request.project_mode != "none":
         return "codex_cleanup_mode_invalid"
-    if request.strategy != "official_session_delete":
+    if request.strategy not in _CODEX_CLEANUP_REQUEST_STRATEGIES:
         return "codex_cleanup_strategy_mismatch"
     if (
         request.official_receipt_bound is not True
@@ -1591,16 +1957,45 @@ def _codex_cleanup_request_error(request: SessionCleanupRequest) -> str:
     try:
         parsed = uuid.UUID(session_id)
     except (AttributeError, ValueError):
-        return CODEX_SESSION_DELETE_INVALID_ID_CODE
+        return _codex_invalid_id_code(request.strategy)
     if str(parsed) != session_id.lower():
-        return CODEX_SESSION_DELETE_INVALID_ID_CODE
+        return _codex_invalid_id_code(request.strategy)
     return ""
 
 
-def _codex_writable_roots(task_packet: dict[str, Any], workspace_root: Path) -> list[Path]:
+def _codex_invalid_id_code(strategy: str) -> str:
+    """Return the strategy-scoped invalid-id code without widening the gate."""
+    if strategy == "official_session_archive_then_delete":
+        return CODEX_SESSION_ARCHIVE_INVALID_ID_CODE
+    return CODEX_SESSION_DELETE_INVALID_ID_CODE
+
+
+def _codex_cleanup_result_strategy(request: SessionCleanupRequest) -> str:
+    """Mirror the caller's strategy so a legacy request keeps its own name.
+
+    The new archive-then-delete strategy is only ever claimed by the App
+    Server path that actually performs the archive gate; the explicit
+    cli/direct fallback keeps reporting ``official_session_delete``.
+    """
+    if request.strategy == "official_session_archive_then_delete":
+        return "official_session_archive_then_delete"
+    return "official_session_delete"
+
+
+def _codex_writable_roots(
+    task_packet: dict[str, Any], workspace_root: Path
+) -> list[Path]:
     """Return only task deliverable and compact runtime-state write roots."""
-    workspace = task_packet.get("workspace") if isinstance(task_packet.get("workspace"), dict) else {}
-    task_board = task_packet.get("task_board") if isinstance(task_packet.get("task_board"), dict) else {}
+    workspace = (
+        task_packet.get("workspace")
+        if isinstance(task_packet.get("workspace"), dict)
+        else {}
+    )
+    task_board = (
+        task_packet.get("task_board")
+        if isinstance(task_packet.get("task_board"), dict)
+        else {}
+    )
     candidates: list[str | Path | None] = [
         workspace_root,
         workspace.get("project_root"),
@@ -1631,14 +2026,23 @@ def _build_prompt(
 ) -> str:
     """Build the Codex prompt: shared contract plus Codex platform notes."""
     extra_rules: tuple[str, ...] = ()
+    native_permission_rule: str | None = None
     if native_single_action:
         extra_rules = (
-            ("If an exact action explicitly declared by a task step is blocked by the native sandbox, "
-            "retry that identical command exactly once with the same cwd through Codex's native "
-            "sandbox_permissions=require_escalated single-action request. This does not change the "
-            "task permission mode and is not a full fallback. Never use it for progress updates, "
-            "diagnostics, an alternate command or path, persistent/session-wide access, or any "
-            "undeclared action; if the native request cannot be emitted, stop and report the blocker."),
+            (
+                "If an exact action explicitly declared by a task step is blocked by the native sandbox, "
+                "retry that identical command exactly once with the same cwd through Codex's native "
+                "sandbox_permissions=require_escalated single-action request. This does not change the "
+                "task permission mode and is not a full fallback. Never use it for progress updates, "
+                "diagnostics, an alternate command or path, persistent/session-wide access, or any "
+                "undeclared action; if the native request cannot be emitted, stop and report the blocker."
+            ),
+        )
+        native_permission_rule = (
+            "For Codex App Server native permission events, never request full, mint a grant, or "
+            "emit a permission input from the model; only the structured requestApproval event can "
+            "block one exact single action. Native transport or containment failure requires "
+            "needs_recovery and must never become a full request."
         )
     return build_prompt_contract(
         task_packet,
@@ -1653,6 +2057,7 @@ def _build_prompt(
             ),
             summary_line="After completing all steps, write a summary of what you did.",
             extra_rules=extra_rules,
+            native_permission_rule=native_permission_rule,
         ),
     )
 

@@ -160,11 +160,66 @@ def claude_ephemeral_path_capability(
             "Claude Artifact root must be separate from its ephemeral project",
         )
 
+    # PERM-104-002 (E52M-003 review fix): when the task's project root is a
+    # linked worktree, the inner sandbox mirrors the outer Seatbelt
+    # capability under the joint-constraint contract:
+    #
+    # * the controlled Git metadata (per-worktree git dir + common dir) is
+    #   IN ``sandbox.filesystem.allowWrite`` so Bash/Git subprocesses can
+    #   actually commit; the outer Seatbelt narrows that surface to the
+    #   exact current-branch ref/lock/reflog and the common objects;
+    # * metadata is NEVER in ``denyWrite`` (a sandbox-level deny would break
+    #   every git commit) and NEVER in ``--add-dir``;
+    # * the built-in Edit/Write file tools are blocked from metadata via
+    #   permission rules - only Bash/Git under the joint constraint may
+    #   touch it;
+    # * ``allowWrite`` and ``denyWrite`` never overlap: the previous
+    #   settings allowed ``project_root`` and denied the same path, which
+    #   is contradictory and broke Claude's own project state.
+    # A plain repository or directory contributes no Git metadata
+    # constraints.  The ephemeral project root itself is never the
+    # containment root.  The main repo's working tree is deliberately
+    # absent from allowWrite: not listed means not writable.
+    git_dir: str | None = None
+    git_common_dir: str | None = None
+    for probe_root in (artifact_root, project_root):
+        if git_common_dir is not None:
+            break
+        try:
+            from .seatbelt import validate_linked_worktree
+
+            linked = validate_linked_worktree(probe_root)
+        except (ABCError, OSError, ValueError):
+            linked = None
+        if isinstance(linked, dict):
+            git_dir = str(linked["git_dir"])
+            git_common_dir = str(linked["common_dir"])
+    containment_root = artifact_root
+
+    # File-tool deny rules cover Claude's built-in Write/Edit tools via the
+    # absolute // permission-rule syntax.  The deliverable/ephemeral roots
+    # deny the file tools by prior PERM-103-007 policy; metadata denies are
+    # the E52M-003 addition.  Git subprocesses are not affected by these
+    # rules - they are bounded by the joint outer Seatbelt + inner sandbox
+    # filesystem constraint instead.
+    file_tool_denies = [
+        f"Edit(//{str(project_root).lstrip('/')}/**)",
+        f"Edit(//{str(containment_root).lstrip('/')}/**)",
+        f"Write(//{str(containment_root).lstrip('/')}/**)",
+    ]
+    allow_write = [str(containment_root), str(project_root)]
+    if git_common_dir is not None:
+        file_tool_denies += [
+            f"Write(//{str(git_common_dir).lstrip('/')}/**)",
+            f"Edit(//{str(git_common_dir).lstrip('/')}/**)",
+            f"Write(//{str(git_dir).lstrip('/')}/**)",
+            f"Edit(//{str(git_dir).lstrip('/')}/**)",
+        ]
+        allow_write += [str(git_common_dir), str(git_dir)]
+
     settings = {
         "permissions": {
-            # Edit rules cover Claude's built-in Write/Edit file tools.  The
-            # absolute // syntax is Claude's permission-rule syntax.
-            "deny": [f"Edit(//{str(project_root).lstrip('/')}/**)"]
+            "deny": file_tool_denies,
         },
         "sandbox": {
             "enabled": True,
@@ -174,8 +229,16 @@ def claude_ephemeral_path_capability(
             # boundary and must not silently auto-approve Bash actions.
             "autoAllowBashIfSandboxed": False,
             "filesystem": {
-                "allowWrite": [str(artifact_root)],
-                "denyWrite": [str(project_root)],
+                # E52M-003: allowWrite is the frozen task roots plus, for a
+                # linked worktree, the controlled Git metadata.  The outer
+                # Seatbelt profile narrows the metadata surface to the exact
+                # current-branch ref/lock/reflog and common objects, so the
+                # inner allow and the outer profile cannot disagree and
+                # Bash/Git can still commit.  denyWrite stays empty: it must
+                # never repeat an allowWrite path and must never carry the
+                # metadata (that broke git commit).
+                "allowWrite": allow_write,
+                "denyWrite": [],
             },
         },
     }

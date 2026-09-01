@@ -134,6 +134,37 @@ class Phase3RunnerArgumentTests(unittest.TestCase):
                 resumed,
             )
 
+    def test_hermes_acp_authorization_uses_frozen_transport(self) -> None:
+        packet = self._packet("hermes")
+        command = [str(self.binaries["hermes"]), "acp"]
+        self.assertTrue(
+            self.state.authorize_command(
+                "hermes", command, str(self.project), packet
+            )["authorized"]
+        )
+
+        with self.assertRaisesRegex(RunnerError, "exact headless protocol entrypoint"):
+            self.state.authorize_command(
+                "hermes",
+                [*command, "--unexpected"],
+                str(self.project),
+                packet,
+            )
+
+        drifted = dict(packet)
+        drifted["extensions"] = dict(packet["extensions"])
+        permission = dict(drifted["extensions"]["agentbc.permission"])
+        permission["mapping"] = dict(permission["mapping"])
+        permission["mapping"]["hermes"] = dict(permission["mapping"]["hermes"])
+        permission["mapping"]["hermes"]["transport"] = "direct"
+        drifted["extensions"]["agentbc.permission"] = permission
+        with self.assertRaisesRegex(
+            RunnerError, "stale or command-injected permission authorization"
+        ):
+            self.state.authorize_command(
+                "hermes", command, str(self.project), drifted
+            )
+
     def test_codex_resume_requires_exact_id_and_forbids_last(self) -> None:
         session_id = "019feed0-0000-7000-8000-000000000003"
         packet = self._resume_packet("codex", session_id)

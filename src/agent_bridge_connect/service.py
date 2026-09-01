@@ -12,8 +12,9 @@ from typing import Any
 from .approval import (
     APPROVAL_EXTENSION_KEY,
     APPROVAL_SCOPE,
-    approval_public_projection,
+    approval_public_projection_v2,
     build_approval_receipt,
+    build_approval_receipt_v2,
     normalize_reason_summary,
     record_approval_decision,
     sanitize_reason_detail,
@@ -21,6 +22,10 @@ from .approval import (
 )
 from .config import DEFAULT_BOARD_ROOT, get_executor_config, init_board
 from .execution_contract import validate_callback_payload
+from .session_tool_rules import (
+    SESSION_RULE_RECEIPT_EXTENSION_KEY,
+    session_rule_public_projection,
+)
 from .execution_policy import (
     RESOURCE_EXTENSION_KEY,
     RESOURCE_KIND_BY_EXECUTOR,
@@ -140,8 +145,21 @@ class ChainResolution:
 class TaskService:
     def __init__(self, board_root: str | Path = DEFAULT_BOARD_ROOT, config: dict[str, Any] | None = None):
         self.board_root = Path(board_root).expanduser().resolve()
-        self.config = config or {}
-        init_board(self.board_root)
+        self.config = dict(config or {})
+        # A Runner-launched worker is already inside the frozen task-scoped
+        # Seatbelt profile.  It may read and update its task-owned files, but
+        # it must never initialise or refresh board-global metadata.  Requiring
+        # the board to exist also prevents this mode from widening containment
+        # by creating an arbitrary sibling/root on first use.
+        self._runner_worker = self.config.get("_runner_worker") is True
+        if self._runner_worker:
+            if not self.board_root.is_dir():
+                raise ABCError(
+                    "contained_board_missing",
+                    f"Contained worker board does not exist: {self.board_root}",
+                )
+        else:
+            init_board(self.board_root)
         self.store = TaskStore(self.board_root)
 
     def create_task(
@@ -160,6 +178,7 @@ class TaskService:
         images: list[str | Path] | None = None,
         permission_mode: str | None = None,
         inherited_permission: dict[str, Any] | None = None,
+        collaboration_spawn: bool = False,
     ) -> TaskModel:
         assert_maintenance_command_allowed(self, "create")
         title = title.strip()
@@ -243,6 +262,16 @@ class TaskService:
             resources=resources,
             session=executor_session,
         )
+        if collaboration_spawn:
+            if assignee != "codex":
+                raise ABCError(
+                    "task_create_error",
+                    "collaboration_spawn is supported only for Codex tasks",
+                )
+            extensions["agentbc.codex.collaboration_spawn"] = {
+                "version": 1,
+                "enabled": True,
+            }
         task = TaskModel(
             id=task_id,
             title=title,
@@ -943,7 +972,11 @@ class TaskService:
             },
         )
         try:
-            write_report_files(task_id, self.board_root)
+            write_report_files(
+                task_id,
+                self.board_root,
+                refresh_index=not self._runner_worker,
+            )
         except (ABCError, OSError, PermissionError) as exc:
             # Report generation writes the canonical Markdown before compacting
             # Record state and refreshing indexes. A later bookkeeping failure
@@ -1006,6 +1039,73 @@ class TaskService:
             self.store.write_task(task_id, _without_none(current.to_dict()))
         return True
 
+    def revoke_permission_grant_for_target_run(
+        self,
+        task_id: str,
+        code: str,
+        *,
+        target_run_id: str,
+        expected_grant: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Durably revoke a consumed grant bound to one executor run.
+
+        GGQN-002: the transport-lifecycle revocation path.  Reloads the task
+        through the TaskService store, verifies the persisted grant is the
+        exact consumed grant backing ``target_run_id`` (same ``grant_id`` and
+        ``binding.target_run_id`` when ``expected_grant`` is supplied),
+        revokes it with a stable reason code, and writes the envelope back
+        durably.  Returns the revoked envelope on success, or ``None`` when
+        the persisted grant is missing, does not match the expected binding,
+        is not the run's consumed grant, or fails validation — callers must
+        treat ``None`` as a fail-closed revocation failure.  ``OSError`` from
+        the durable write propagates to the caller.
+        """
+        current = self.get_task(task_id)
+        extensions = dict(current.extensions or {})
+        persisted = extensions.get(PERMISSION_GRANT_EXTENSION_KEY)
+        if not isinstance(persisted, dict):
+            return None
+        if expected_grant is not None:
+            # The caller mirrors the exact grant envelope the Runner consumed
+            # for this run.  Both the grant id AND the target-run binding
+            # must match the persisted envelope, so a transport holding a
+            # grant bound to a different run can never revoke it (GGQN-002
+            # fail-closed wrong-identity rejection).
+            expected_id = str((expected_grant or {}).get("grant_id") or "")
+            if expected_id and str(persisted.get("grant_id") or "") != expected_id:
+                return None
+            expected_binding = (expected_grant or {}).get("binding")
+            expected_binding_map = (
+                expected_binding if isinstance(expected_binding, dict) else {}
+            )
+            expected_target = str(expected_binding_map.get("target_run_id") or "").strip()
+            persisted_binding = persisted.get("binding")
+            persisted_binding_map = (
+                persisted_binding if isinstance(persisted_binding, dict) else {}
+            )
+            persisted_target = str(persisted_binding_map.get("target_run_id") or "").strip()
+            if expected_target and persisted_target != expected_target:
+                return None
+        binding = persisted.get("binding")
+        binding_map = binding if isinstance(binding, dict) else {}
+        if (
+            str(binding_map.get("target_run_id") or "").strip()
+            != str(target_run_id or "").strip()
+        ):
+            return None
+        try:
+            revoked = revoke_grant_contract(
+                persisted,
+                _stable_revocation_code(code),
+            )
+        except ABCError:
+            return None
+        extensions[PERMISSION_GRANT_EXTENSION_KEY] = revoked
+        current.extensions = extensions
+        current.updated_at = _utc_now()
+        self.store.write_task(task_id, _without_none(current.to_dict()))
+        return revoked
+
     def revoke_permission_grant_for_recovery(self, task_id: str) -> None:
         """Fail-closed revocation used by explicit task recovery.
 
@@ -1034,6 +1134,164 @@ class TaskService:
         current.extensions = extensions
         current.updated_at = _utc_now()
         self.store.write_task(task_id, _without_none(current.to_dict()))
+
+    def permission_choice_for_response(
+        self,
+        task_id: str,
+        input_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the exact recorded permission choice for one answered input.
+
+        PERM-104-002 v2: the Runner maps this choice to the executor-native
+        response payload.  ``None`` when the input was answered without a
+        native choice (v1 dual-read) or does not exist.
+        """
+        task = self.get_task(task_id)
+        extensions = dict(task.extensions or {})
+        current_input = extensions.get("agentbc.input")
+        history = list(extensions.get("agentbc.input_history") or [])
+        candidates: list[dict[str, Any]] = []
+        if isinstance(current_input, dict):
+            candidates.append(current_input)
+        candidates.extend(item for item in history if isinstance(item, dict))
+        answered = next(
+            (
+                item
+                for item in candidates
+                if str(item.get("input_id") or "") == str(input_id)
+            ),
+            None,
+        )
+        if answered is None:
+            return None
+        response = answered.get("response")
+        if not isinstance(response, dict):
+            return None
+        choice = response.get("permission_choice")
+        if isinstance(choice, dict) and str(choice.get("handle") or "").strip():
+            return dict(choice)
+        return None
+
+    def issue_session_tool_rule(
+        self,
+        task_id: str,
+        input_id: str,
+        *,
+        tool_matcher: str,
+    ) -> dict[str, Any]:
+        """Retired tombstone (PERM-104-002 1.04A).
+
+        The legacy matcher-grammar session rules were removed.  Historical
+        receipts stay audit-only readable; no new rule can ever be issued.
+        """
+        raise ABCError(
+            "legacy_session_tool_rule_removed",
+            "Session tool rules were removed; respond with "
+            "--permission-option <handle> instead",
+        )
+
+    def mark_session_tool_rule_applied(
+        self,
+        task_id: str,
+        *,
+        session_id: str,
+        applied: bool,
+        error_code: str = "",
+    ) -> bool:
+        """Retired tombstone (PERM-104-002 1.04A)."""
+        raise ABCError(
+            "legacy_session_tool_rule_removed",
+            "Session tool rules were removed; nothing can be applied",
+        )
+
+    def revoke_session_tool_rule(self, task_id: str, code: str, *, model: TaskModel | None = None) -> bool:
+        """Retired tombstone (PERM-104-002 1.04A).
+
+        Historical receipts are preserved verbatim (read-only audit) and are
+        never rewritten, revoked, or re-derived.
+        """
+        return False
+
+    def block_permission_runtime_after_failure(
+        self,
+        task_id: str,
+        *,
+        code: str = "permission_runtime_capability_unavailable",
+        domain: str = "host_containment",
+    ) -> bool:
+        """Move a live full-runtime receipt to ``blocked`` after worker loss."""
+        from .permission_runtime import block_permission_runtime_record
+
+        current = self.get_task(task_id)
+        extensions = dict(current.extensions or {})
+        runtime = extensions.get("agentbc.permission_runtime")
+        if not isinstance(runtime, dict):
+            return False
+        try:
+            blocked = block_permission_runtime_record(
+                runtime,
+                code=code,
+                domain=domain,
+            )
+        except ABCError as exc:
+            # A verified receipt is historical evidence and must not be
+            # rewritten.  Any other malformed live receipt is already a
+            # recovery condition, so leave the original evidence intact.
+            if exc.code == "permission_runtime_state_invalid":
+                return False
+            raise
+        extensions["agentbc.permission_runtime"] = blocked
+        current.extensions = extensions
+        current.updated_at = _utc_now()
+        self.store.write_task(task_id, _without_none(current.to_dict()))
+        self.store.append_event(
+            task_id,
+            {
+                "event_type": "permission_runtime_blocked",
+                "task_id": task_id,
+                "code": code,
+                "domain": domain,
+                "created_at": current.updated_at,
+                "source": "runner_fail_closed_recovery",
+            },
+        )
+        self._refresh_task_index()
+        return True
+
+    def clear_execution_run_references(self, task_id: str) -> list[str]:
+        """Remove active worker/run pointers after the Runner reaps a worker."""
+        current = self.get_task(task_id)
+        extensions = dict(current.extensions or {})
+        execution = dict(extensions.get("agentbc.execution") or {})
+        keys = (
+            "worker_run_id",
+            "worker_pid",
+            "executor_run_id",
+            "dispatch_status",
+            "monitor_status",
+            "monitor_message",
+        )
+        removed = [key for key in keys if key in execution]
+        if not removed:
+            return []
+        for key in removed:
+            execution.pop(key, None)
+        extensions["agentbc.execution"] = execution
+        current.extensions = extensions
+        current.updated_at = _utc_now()
+        self.store.write_task(task_id, _without_none(current.to_dict()))
+        self.store.append_event(
+            task_id,
+            {
+                "event_type": "worker_references_cleared",
+                "task_id": task_id,
+                "removed": removed,
+                "created_at": current.updated_at,
+                "source": "runner_worker_reap",
+            },
+        )
+        self._refresh_task_index()
+        return removed
 
     def _approval_receipt_for_response(
         self,
@@ -1778,6 +2036,15 @@ class TaskService:
         reason_detail: str = "",
         blocked_step_id: int | None = None,
         execution_session: dict[str, Any] | None = None,
+        tool_name: str = "",
+        tool_use_id: str = "",
+        action_fingerprint: str = "",
+        escalation_domain: str = "",
+        profile_digest: str = "",
+        control_path: str = "",
+        native_event: str = "",
+        offered_choices: list[dict[str, Any]] | None = None,
+        authority: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Block the first incomplete step for one structured native approval request.
 
@@ -1873,20 +2140,43 @@ class TaskService:
         )
         clean_reason_detail = sanitize_reason_detail(reason_detail)
 
-        receipt = build_approval_receipt(
-            task_id=task_id,
-            executor_run_id=normalized_run_id,
-            executor=normalized_executor,
-            session_id=official_session_id,
-            request_id=clean_request_id,
-            request_fingerprint=clean_fingerprint,
-            kind="permission",
-            operation=clean_operation,
-            summary=str(redact_secrets(clean_summary)),
-            reason_summary=clean_reason_summary,
-            reason_detail=clean_reason_detail,
-            scope=APPROVAL_SCOPE,
-        )
+        if offered_choices:
+            native_authority = dict(authority or {})
+            receipt = build_approval_receipt_v2(
+                task_id=task_id,
+                executor_run_id=normalized_run_id,
+                executor=normalized_executor,
+                session_id=official_session_id,
+                request_id=clean_request_id,
+                request_fingerprint=clean_fingerprint,
+                operation=clean_operation,
+                summary=str(redact_secrets(clean_summary)),
+                reason_summary=clean_reason_summary,
+                reason_detail=clean_reason_detail,
+                authority_protocol=str(native_authority.get("protocol") or ""),
+                authority_protocol_version=int(
+                    native_authority.get("protocol_version") or 0
+                ),
+                authority_method=str(native_authority.get("method") or ""),
+                broker_request_id=clean_request_id,
+                native_item_id=str(tool_use_id or "").strip(),
+                offered_choices=[dict(choice) for choice in offered_choices],
+            )
+        else:
+            receipt = build_approval_receipt(
+                task_id=task_id,
+                executor_run_id=normalized_run_id,
+                executor=normalized_executor,
+                session_id=official_session_id,
+                request_id=clean_request_id,
+                request_fingerprint=clean_fingerprint,
+                kind="permission",
+                operation=clean_operation,
+                summary=str(redact_secrets(clean_summary)),
+                reason_summary=clean_reason_summary,
+                reason_detail=clean_reason_detail,
+                scope=APPROVAL_SCOPE,
+            )
 
         step_id = blocked_step_id or _first_incomplete_step_id(task.steps)
         if step_id is None:
@@ -1915,6 +2205,27 @@ class TaskService:
             "deadline_at": deadline_at,
             "status": "waiting",
         }
+        native_binding = {
+            "tool_name": str(tool_name or "").strip(),
+            "tool_use_id": str(tool_use_id or "").strip(),
+            "action_fingerprint": str(action_fingerprint or "").strip(),
+            "escalation_domain": str(escalation_domain or "").strip().lower(),
+            "profile_digest": str(profile_digest or "").strip(),
+            "control_path": str(control_path or "").strip(),
+            "native_event": str(native_event or "").strip(),
+        }
+        for key, value in native_binding.items():
+            if value:
+                request[key] = value[:512]
+        # PERM-104-002 v2: persist the executor-native choice set verbatim on
+        # the input request so the dialog and CLI can offer exactly what the
+        # executor offered, bound to this exact request.  Handles were
+        # computed by the adapter against the native request id; the v2
+        # request rejects flattened approve/deny.
+        if offered_choices:
+            request["approval_version"] = 2
+            request["authority"] = dict(receipt["authority"])
+            request["choices"] = [dict(choice) for choice in receipt["choices"]]
 
         extensions = dict(task.extensions or {})
         previous = extensions.get("agentbc.input")
@@ -2091,18 +2402,68 @@ class TaskService:
                 {"task_id": task.id, "run_id": lease.run_id, "run_lease_state": lease.state},
             )
         response_type = str(response_type or "").strip()
-        if response_type not in {"message", "approve", "deny"}:
+        if response_type not in {"message", "approve", "deny", "permission_option"}:
             raise ABCError("invalid_input_response", f"Unsupported response type: {response_type}")
         clean_message = str(redact_secrets(message)).strip() if response_type == "message" else response_type
         if response_type == "message" and not clean_message:
             raise ABCError("invalid_input_response", "--message requires non-empty text")
 
         is_permission_request = request.get("type") == "permission"
-        if is_permission_request and response_type not in {"approve", "deny"}:
+        is_v2_permission = (
+            is_permission_request
+            and int(request.get("approval_version") or 1) == 2
+            and isinstance(request.get("choices"), list)
+            and bool(request.get("choices"))
+        )
+        if is_permission_request and response_type == "permission_option":
+            if not is_v2_permission:
+                raise ABCError(
+                    "native_permission_choice_required",
+                    "Only a v2 native permission request accepts an explicit "
+                    "choice handle",
+                )
+            if not str(message or "").strip():
+                raise ABCError(
+                    "invalid_input_response",
+                    "--permission-option requires the exact offered handle",
+                )
+        elif is_permission_request and response_type not in {"approve", "deny"}:
             raise ABCError(
                 "invalid_input_response",
                 "Permission requests only accept approve or deny",
             )
+        if is_v2_permission and response_type in {"approve", "deny"}:
+            raise ABCError(
+                "native_permission_choice_required",
+                "A v2 native permission request requires an explicit choice "
+                "handle (--permission-option), not a flattened approve/deny",
+            )
+        # PERM-104-002 v2: resolve and validate the selected choice against
+        # the exact offered set before anything is recorded.  An identical
+        # replay is idempotent; a conflicting handle is rejected.
+        selected_choice: dict[str, Any] | None = None
+        if response_type == "permission_option":
+            handle = str(message or "").strip()
+            offered_choices = [
+                choice
+                for choice in request.get("choices", [])
+                if isinstance(choice, dict)
+            ]
+            matched = [
+                choice for choice in offered_choices if str(choice.get("handle") or "") == handle
+            ]
+            if not matched:
+                raise ABCError(
+                    "approval_handle_mismatch",
+                    "The choice handle was not offered by this exact request",
+                    {"input_id": str(request.get("input_id") or "")},
+                )
+            selected_choice = dict(matched[0])
+            if selected_choice.get("selectable", True) is False:
+                raise ABCError(
+                    "approval_choice_not_selectable",
+                    "The selected native choice was offered as non-selectable",
+                )
 
         is_resource_decision = is_resource_decision_request(request)
         updated_resources: dict[str, Any] | None = None
@@ -2137,7 +2498,7 @@ class TaskService:
             and message == PERMISSION_DIALOG_CLOSED_RESPONSE
             else "user"
         )
-        answered["response"] = {
+        response_payload: Any = {
             "type": response_type,
             "summary": clean_message,
             **(
@@ -2146,6 +2507,15 @@ class TaskService:
                 else {}
             ),
         }
+        if response_type == "permission_option" and selected_choice is not None:
+            # The exact selected native choice is recorded on the answered
+            # request so the Runner maps it to the native payload.
+            response_payload["permission_choice"] = {
+                "handle": str(selected_choice.get("handle") or ""),
+                "native_option_id": str(selected_choice.get("native_option_id") or ""),
+                "kind": str(selected_choice.get("kind") or ""),
+            }
+        answered["response"] = response_payload
         extensions = dict(task.extensions or {})
         extensions["agentbc.input"] = answered
         if updated_resources is not None:
@@ -2163,19 +2533,35 @@ class TaskService:
                 request,
                 current_input_id,
             )
-            approval_source = permission_denial_source if response_type == "deny" else "user"
-            updated_receipt = record_approval_decision(
-                receipt,
-                response_type,
-                source=approval_source,
-                decided_at=now,
-                executor=task.assignee,
-                task_id=task.id,
-                session_id=str(
-                    (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
-                ),
-                request_id=str(request.get("request_id") or ""),
-            )
+            if response_type == "permission_option" and selected_choice is not None:
+                from .approval import record_approval_selection
+
+                approval_source = permission_denial_source if str(
+                    selected_choice.get("kind") or ""
+                ) == "deny" and permission_denial_source != "user" else "user"
+                decided_type = (
+                    "deny" if str(selected_choice.get("kind") or "") == "deny" else "approve"
+                )
+                updated_receipt = record_approval_selection(
+                    receipt,
+                    str(selected_choice.get("handle") or ""),
+                    source=approval_source,
+                    decided_type=decided_type,
+                )
+            else:
+                approval_source = permission_denial_source if response_type == "deny" else "user"
+                updated_receipt = record_approval_decision(
+                    receipt,
+                    response_type,
+                    source=approval_source,
+                    decided_at=now,
+                    executor=task.assignee,
+                    task_id=task.id,
+                    session_id=str(
+                        (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
+                    ),
+                    request_id=str(request.get("request_id") or ""),
+                )
             extensions[APPROVAL_EXTENSION_KEY] = updated_receipt
             blocked_step_id = request.get("blocked_step_id")
             if not any(
@@ -2763,6 +3149,11 @@ class TaskService:
         else:
             self._set_known_executor_session_state(task, "needs_recovery")
         _supersede_final_callback(task, "needs_recovery", compact_message)
+        invalidated_input_id = self._invalidate_waiting_input_for_recovery(
+            task,
+            code=code,
+            at=now,
+        )
         execution_updates = {"internal_status": "needs_recovery"}
         from .run_lease import RunLeaseState, close_lease, load_lease
 
@@ -2785,6 +3176,18 @@ class TaskService:
                 "error": {"code": code, "message": compact_message},
             },
         )
+        if invalidated_input_id:
+            self.store.append_event(
+                task_id,
+                {
+                    "event_type": "task.input_invalidated",
+                    "task_id": task_id,
+                    "input_id": invalidated_input_id,
+                    "created_at": now,
+                    "reason_code": code,
+                    "source": "fail_closed_recovery",
+                },
+            )
         self._refresh_task_index()
         self._sync_terminal_report(task_id)
         return True
@@ -3150,7 +3553,11 @@ class TaskService:
         try:
             from .reports import write_report_files
 
-            write_report_files(task_id, self.board_root)
+            write_report_files(
+                task_id,
+                self.board_root,
+                refresh_index=not self._runner_worker,
+            )
         except (ABCError, OSError, PermissionError):
             pass
         self._cleanup_empty_managed_artifacts(task_id)
@@ -3354,6 +3761,9 @@ class TaskService:
             inherited_permission=source_permission if permission_mode is None else None,
         )
         now = _utc_now()
+        # PERM-104-002: a handoff supersedes the source run — the source
+        # task's session-scoped rule must not be inherited by the new
+        # iteration (the new iteration runs in its own official session).
         self.store.append_event(
             source.id,
             {
@@ -3494,6 +3904,11 @@ class TaskService:
         # candidates; Claude/Hermes retain their existing cleanup behavior.
         session["receipt_source"] = str(validated.get("source") or "")
         session["official_receipt_bound"] = True
+        if validated.get("archive_acknowledged") is True:
+            session["archive_acknowledged"] = True
+            session["archive_checked_at"] = str(
+                validated.get("archive_checked_at") or _utc_now()
+            )
         session["session_state"] = session_state
         errors = validate_session_snapshot(session, executor=task.assignee)
         if errors:
@@ -3727,7 +4142,48 @@ class TaskService:
         }
 
     def _refresh_task_index(self) -> None:
+        if self._runner_worker:
+            return
         refresh_task_index(self.board_root)
+
+    def _invalidate_waiting_input_for_recovery(
+        self,
+        task: TaskModel,
+        *,
+        code: str,
+        at: str,
+    ) -> str:
+        """Close a live input before exposing ``needs_recovery``.
+
+        Recovery is terminal for the current executor attempt.  Keeping a
+        ``waiting`` input alongside that state would leave a stale dialog able
+        to resume a dead run.  The request remains in bounded history for
+        audit, but no live input can be answered or redispatched.
+        """
+        extensions = dict(task.extensions or {})
+        request = extensions.get("agentbc.input")
+        if not isinstance(request, dict) or request.get("status") != "waiting":
+            return ""
+        input_id = str(request.get("input_id") or "").strip()
+        invalidated = dict(request)
+        invalidated["status"] = "invalidated"
+        invalidated["invalidated_at"] = at
+        invalidated["invalidated_reason"] = str(code or "recovery")[:120]
+        invalidated["response"] = {
+            "type": "deny",
+            "summary": "request invalidated by fail-closed recovery",
+            "source": "fail_closed_recovery",
+        }
+        history = [
+            item
+            for item in list(extensions.get("agentbc.input_history") or [])
+            if isinstance(item, dict)
+        ]
+        history.append(invalidated)
+        extensions["agentbc.input_history"] = history[-16:]
+        extensions.pop("agentbc.input", None)
+        task.extensions = extensions
+        return input_id
 
     def _task_status_with_chain(self, task: TaskModel) -> dict[str, Any]:
         status = task_to_status(task)
@@ -3912,11 +4368,22 @@ def task_to_status(task: TaskModel) -> dict[str, Any]:
     approval_value = extensions.get(APPROVAL_EXTENSION_KEY)
     if approval_value is not None:
         try:
-            extensions[APPROVAL_EXTENSION_KEY] = approval_public_projection(
+            extensions[APPROVAL_EXTENSION_KEY] = approval_public_projection_v2(
                 approval_value
             )
         except ABCError:
             extensions.pop(APPROVAL_EXTENSION_KEY, None)
+    # PERM-104-002 1.04A: the session tool rule surface is retired; historical
+    # receipts are projected through the audit-only public view (matcher,
+    # digests, state) so terminal tasks stay readable without rewriting
+    # history.  No new receipt can ever be issued.
+    session_rule_value = extensions.get(SESSION_RULE_RECEIPT_EXTENSION_KEY)
+    if session_rule_value is not None:
+        projected_rule = session_rule_public_projection(session_rule_value)
+        if projected_rule is None:
+            extensions.pop(SESSION_RULE_RECEIPT_EXTENSION_KEY, None)
+        else:
+            extensions[SESSION_RULE_RECEIPT_EXTENSION_KEY] = projected_rule
     data["extensions"] = extensions
     if raw_status != data["status"]:
         extensions = dict(data.get("extensions") or {})
@@ -3949,7 +4416,24 @@ def _normalize_step(step: dict[str, Any], index: int) -> dict[str, Any]:
             "task_create_error",
             f"step {index} must define a non-empty description or action",
         )
-    normalized.setdefault("id", index)
+    # FLOW-104-001 / GGQN-001 schema correction: canonical new tasks carry
+    # integer step ids only.  A string id (e.g. ``"1"``) used to pass task
+    # creation and then fail the matching final callback with
+    # ``completion_marker_task_steps_invalid`` after the whole run had
+    # executed.  The mismatch now fails BEFORE dispatch with a stable
+    # ``task_create_error``; legacy tasks keep their stored ids (dual-read).
+    declared_id = normalized.get("id")
+    if declared_id is not None and (
+        isinstance(declared_id, bool) or not isinstance(declared_id, int)
+    ):
+        raise ABCError(
+            "task_create_error",
+            f"step {index} id must be an integer (got {type(declared_id).__name__}); "
+            "string step ids are rejected before dispatch so the final "
+            "callback can never diverge from the declared steps",
+        )
+    if declared_id is None:
+        normalized["id"] = index
     normalized["description"] = description
     normalized.setdefault("record", f"steps/{index:02d}.json")
     return normalized

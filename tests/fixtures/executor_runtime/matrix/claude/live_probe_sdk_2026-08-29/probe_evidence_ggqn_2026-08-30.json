@@ -1,0 +1,38 @@
+{
+  "probe": "GGQN-001-frozen-live-probe",
+  "sdk_package": "claude-agent-sdk",
+  "sdk_version": "0.2.142",
+  "cli_version": "2.1.233 (Claude Code)",
+  "events": [
+    {
+      "event": "can_use_tool",
+      "tool": "Bash",
+      "tool_use_id": "call_4427608207d447b4bc8cf588",
+      "input_keys": [
+        "command",
+        "description"
+      ]
+    },
+    {
+      "event": "can_use_tool",
+      "tool": "Bash",
+      "tool_use_id": "call_235bd2871e0a417db7e1ba0e",
+      "input_keys": [
+        "command",
+        "description"
+      ]
+    }
+  ],
+  "checks": {
+    "allow_result": {
+      "is_error": false
+    },
+    "allow_file_created": true,
+    "allow_file_content": "probe-allow",
+    "deny_file_created": false,
+    "single_session_all_phases": true,
+    "session_count": 1,
+    "ok": true
+  },
+  "verdict": "pass"
+}

@@ -344,6 +344,7 @@ def route_executor_terminal(
     stderr: str = "",
     runtime_failure: dict[str, Any] | None = None,
     resource_exhaustion: dict[str, Any] | None = None,
+    native_approval_authoritative: bool = False,
 ) -> ExecutorTerminalResult:
     """Route only declared flow state plus explicit process/transport evidence.
 
@@ -352,6 +353,32 @@ def route_executor_terminal(
     a confirmed resource exhaustion becomes a system ``input_required`` wait,
     and only then does a strict marker failure apply.
     """
+    if (
+        native_approval_authoritative
+        and returncode == 0
+        and validation.valid
+        and validation.callback is not None
+        and validation.callback.get("final_state") == "input_required"
+    ):
+        # A model-authored callback is never an authority for a native SDK
+        # permission wait.  The only actionable native event is the
+        # structured can_use_tool request projected by the live Adapter.  A
+        # callback that asks for full (or otherwise asks for input) is
+        # diagnostic evidence and must not mint Core input, a grant, or a
+        # continuation.
+        return ExecutorTerminalResult(
+            "needs_recovery",
+            None,
+            {
+                "kind": "native_permission_callback_ignored",
+                "layer": "permission",
+                "message": (
+                    "A Claude SDK callback cannot create native permission input; "
+                    "the native request/control session requires recovery."
+                ),
+                "retryable": False,
+            },
+        )
     if returncode == 0 and validation.valid and validation.callback is not None:
         return ExecutorTerminalResult(
             status=str(validation.callback["final_state"]),

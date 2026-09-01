@@ -1,6 +1,6 @@
 {
   "_fixture": {
-    "capture_status": "candidate_unpromoted",
+    "capture_status": "supported_live_probe",
     "captured_by": "tests/fixtures/executor_runtime/tools/capture_protocol_fixture.py",
     "codex_version": "0.150.1",
     "generated_from": "codex app-server generate-json-schema --experimental",

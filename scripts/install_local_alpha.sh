@@ -33,6 +33,16 @@ PIP_DISABLE_PIP_VERSION_CHECK=1 "$VENV_DIR/bin/python" -m pip install \
   --no-deps \
   --force-reinstall \
   "$WHEEL"
+# PERM-104-002: Alpha/full installs select the probed Claude Agent SDK extra
+# by default; AGENTBC_SKIP_CLAUDE_EXTRA=1 keeps a core-only install light.
+if [ "${AGENTBC_SKIP_CLAUDE_EXTRA:-0}" != "1" ]; then
+  PIP_DISABLE_PIP_VERSION_CHECK=1 "$VENV_DIR/bin/python" -m pip install \
+    "claude-agent-sdk==0.2.142" || {
+      echo "warning: claude-agent-sdk==0.2.142 install failed; " \
+           "the Claude SDK permission transport stays unsupported " \
+           "(permission_transport_unsupported)" >&2
+    }
+fi
 
 TARGET="$BIN_DIR/agentbc"
 if [ -e "$TARGET" ] && [ ! -L "$TARGET" ]; then

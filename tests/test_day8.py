@@ -11,23 +11,40 @@ from pathlib import Path
 FIXTURES = Path(__file__).parent / "fixtures"
 STEPS_YAML = FIXTURES / "sample_steps.yaml"
 
+# PERM-104-002 CI note: the CLI subprocess tests below must run under the same
+# interpreter that runs this suite.  Bare ``python3`` (CommandLineTools) has no
+# agentbc install, so the suite pins PYTHONPATH to this checkout's src/ tree;
+# inside a venv with the editable install the added entry is harmless.
+_SRC_ROOT = str(Path(__file__).resolve().parents[1] / "src")
+_CLI_ENV = {"PYTHONPATH": _SRC_ROOT}
+
+
+def _cli_run(*args: str):
+    """Run the CLI in-process-equivalent: python3 -m with the src tree."""
+    import os
+    import subprocess
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = _SRC_ROOT + os.pathsep + env.get("PYTHONPATH", "")
+    return subprocess.run(
+        [sys.executable, "-m", "agent_bridge_connect.cli", *args],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
 
 class AgentBCCLITests(unittest.TestCase):
     """Test agentbc CLI entry point and subcommands."""
 
     def test_agentbc_help(self):
         """agentbc --help should work."""
-        import subprocess
-        r = subprocess.run(
-            ["python3", "-m", "agent_bridge_connect.cli", "--help"],
-            capture_output=True, text=True
-        )
+        r = _cli_run("--help")
         # Should not crash
         self.assertIn("agentbc", r.stdout.lower() + r.stderr.lower())
 
     def test_agentbc_task_create_list_status(self):
         """Full CLI loop: create → list → status."""
-        import subprocess
         test_dir = Path(tempfile.mkdtemp())
         workspace = test_dir / "workspace"
         workspace.mkdir()
@@ -35,18 +52,14 @@ class AgentBCCLITests(unittest.TestCase):
         config.write_text(f'workspace_root = "{workspace}"\n', encoding="utf-8")
         try:
             # init
-            subprocess.run(
-                ["python3", "-m", "agent_bridge_connect.cli", "init", "--root", str(test_dir)],
-                capture_output=True, text=True
-            )
+            _cli_run("init", "--root", str(test_dir))
             # create
-            r = subprocess.run(
-                ["python3", "-m", "agent_bridge_connect.cli", "task", "create",
-                 "--title", "CLI test", "--assignee", "mock",
-                 "--steps", str(STEPS_YAML), "--root", str(test_dir),
-                 "--customer-dir", "true", "--customer-path", str(workspace),
-                 "--config", str(config)],
-                capture_output=True, text=True
+            r = _cli_run(
+                "task", "create",
+                "--title", "CLI test", "--assignee", "mock",
+                "--steps", str(STEPS_YAML), "--root", str(test_dir),
+                "--customer-dir", "true", "--customer-path", str(workspace),
+                "--config", str(config),
             )
             self.assertEqual(r.returncode, 0, f"create failed: {r.stderr}")
             match = re.search(r"[23456789ABCDEFGHJKMNPQRSTVWXYZ]{4}-001", r.stdout)
@@ -54,19 +67,17 @@ class AgentBCCLITests(unittest.TestCase):
             task_id = match.group(0)
 
             # list
-            r = subprocess.run(
-                ["python3", "-m", "agent_bridge_connect.cli", "task", "list",
-                 "--root", str(test_dir)],
-                capture_output=True, text=True
+            r = _cli_run(
+                "task", "list",
+                "--root", str(test_dir),
             )
             self.assertEqual(r.returncode, 0, f"list failed: {r.stderr}")
             self.assertIn(task_id.split("-")[0], r.stdout)
 
             # status
-            r = subprocess.run(
-                ["python3", "-m", "agent_bridge_connect.cli", "task", "status",
-                 task_id, "--root", str(test_dir)],
-                capture_output=True, text=True
+            r = _cli_run(
+                "task", "status",
+                task_id, "--root", str(test_dir),
             )
             self.assertEqual(r.returncode, 0, f"status failed: {r.stderr}")
             self.assertIn("pending", r.stdout.lower())

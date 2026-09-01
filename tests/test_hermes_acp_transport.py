@@ -59,6 +59,15 @@ FAKE_SESSION_ID = "acp-session-fake-1"
 FAKE_OTHER_SESSION_ID = "acp-session-other-1"
 
 
+def _kind_handle(approval: dict, kind: str) -> str:
+    """Resolve the opaque handle of the first choice with this kind."""
+    return next(
+        choice["handle"]
+        for choice in approval["offered_choices"]
+        if choice["kind"] == kind
+    )
+
+
 def _permission_frame(
     *,
     request_id: int = 100,
@@ -208,19 +217,23 @@ class HermesAcpTransportUnitTests(unittest.TestCase):
             validate_initialize_result(None)
 
     def test_permission_option_surface(self) -> None:
-        has_once, offered = permission_request_options(
+        # PERM-104-002 v2: AgentBC preserves every offered optionId verbatim
+        # and no longer requires a one-shot allow_once option.
+        has_selectable, offered = permission_request_options(
             [
                 {"optionId": "allow_once", "kind": "allow_once"},
                 {"optionId": "allow_session", "kind": "allow_always"},
                 {"optionId": "deny", "kind": "reject_once"},
             ]
         )
-        self.assertTrue(has_once)
+        self.assertTrue(has_selectable)
         self.assertEqual(offered, ["allow_once", "allow_session", "deny"])
-        has_once, offered = permission_request_options(
+        # A deny-only surface is now valid (selectable) and never rejected
+        # for lacking allow_once.
+        has_selectable, offered = permission_request_options(
             [{"optionId": "deny", "kind": "reject_once"}]
         )
-        self.assertFalse(has_once)
+        self.assertTrue(has_selectable)
         self.assertEqual(offered, ["deny"])
         self.assertFalse(permission_request_options(None)[0])
         self.assertFalse(permission_request_options("nope")[0])
@@ -244,10 +257,24 @@ class HermesAcpTransportUnitTests(unittest.TestCase):
                 executor_run_id="hermes-run-1",
                 session_id=FAKE_SESSION_ID,
             )
-        # Missing allow_once option -> unsupported.
+        # v2: a frame without allow_once is accepted; its exact optionIds
+        # travel as the offered choice set.
+        message_without_once = build_approval_message(
+            _permission_frame(include_allow_once=False),
+            task_id="T-1",
+            executor_run_id="hermes-run-1",
+            session_id=FAKE_SESSION_ID,
+        )
+        self.assertEqual(
+            [choice["native_option_id"] for choice in message_without_once["offered_choices"]],
+            ["deny", "allow_session"],
+        )
+        # An empty options list still fails closed.
+        empty_frame = _permission_frame(include_allow_once=False)
+        empty_frame["params"]["options"] = []
         with self.assertRaisesRegex(HermesAcpError, "options_unsupported"):
             build_approval_message(
-                _permission_frame(include_allow_once=False),
+                empty_frame,
                 task_id="T-1",
                 executor_run_id="hermes-run-1",
                 session_id=FAKE_SESSION_ID,
@@ -534,6 +561,7 @@ class HermesAcpExecutorTests(unittest.TestCase):
                 FAKE_SESSION_ID,
                 approval["request_id"],
                 "accept",
+                choice_handle=_kind_handle(approval, "once"),
             )
             status = self._wait_status(executor, started.run_id, {"completed", "needs_recovery", "failed"})
             result = executor.poll(started.run_id)
@@ -556,6 +584,12 @@ class HermesAcpExecutorTests(unittest.TestCase):
         )
         self.assertEqual(result.result["execution_session"]["session_id"], FAKE_SESSION_ID)
         self.assertFalse(result.result["execution_session"]["resumed"])
+        hermes = result.result["extensions"]["executor"]["hermes"]
+        self.assertEqual(hermes["transport"], "acp")
+        self.assertEqual(
+            hermes["acp"]["request_permission"]["state"],
+            "bound",
+        )
 
     def test_deny_maps_to_cancelled(self) -> None:
         fake = FakeAcpTransport(self.board, self.task_id)
@@ -577,15 +611,19 @@ class HermesAcpExecutorTests(unittest.TestCase):
                 FAKE_SESSION_ID,
                 approval["request_id"],
                 "decline",
+                choice_handle=_kind_handle(approval, "deny"),
             )
             status = self._wait_status(executor, started.run_id, {"completed", "needs_recovery", "failed"})
         self.assertEqual(status, "completed")
         permission_response = next(
             message for message in fake.sent if message.get("method") == "permission_response"
         )
+        # PERM-104-002 v2: the deny choice returns the EXACT original
+        # optionId (the ACP "cancelled" sentinel only remains as the v1
+        # fallback for decisions recorded without a choice payload).
         self.assertEqual(
             permission_response["outcome"],
-            {"outcome": {"outcome": "cancelled"}},
+            {"outcome": {"optionId": "deny"}},
         )
 
     def test_explicit_resume_loads_only_persisted_session(self) -> None:
@@ -622,7 +660,11 @@ class HermesAcpExecutorTests(unittest.TestCase):
 
     def test_unsupported_options_never_reach_control_plane(self) -> None:
         fake = FakeAcpTransport(self.board, self.task_id)
-        fake.permission_frames = [_permission_frame(include_allow_once=False)]
+        # v2 fail-closed surface: a permission request with NO options at all
+        # (a deny-only surface is valid under the native choice broker).
+        frame = _permission_frame(include_allow_once=False)
+        frame["params"]["options"] = []
+        fake.permission_frames = [frame]
         executor = self._executor(fake)
         with (
             mock.patch.object(executor, "_start_run_lease"),
@@ -676,6 +718,7 @@ class HermesAcpExecutorTests(unittest.TestCase):
                 FAKE_SESSION_ID,
                 approval["request_id"],
                 "accept",
+                choice_handle=_kind_handle(approval, "once"),
             )
             status = self._wait_status(executor, started.run_id, {"needs_recovery", "failed", "completed"})
             result = executor.poll(started.run_id)

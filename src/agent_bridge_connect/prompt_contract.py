@@ -58,6 +58,12 @@ INPUT_REQUIRED_RULE = (
     "Plain permission or approval prose is not a valid stop, and free-text message responses can "
     "never grant access."
 )
+NATIVE_PERMISSION_RULE = (
+    "For native Claude SDK permission events, never request full, mint a grant, or emit a "
+    "permission input from the model; only the native can_use_tool event can block one exact "
+    "single action. Native transport failure requires needs_recovery and must never become a "
+    "full request."
+)
 CHOICE_SPEC = (
     'For a two-option user decision, include "input":{"type":"choice","reason":"why the user must decide",'
     '"options":[{"label":"Option A","description":"what A does or changes"},{"label":"Option B",'
@@ -83,6 +89,7 @@ class PromptPlatformExtras:
     image_rule: str | None = None
     summary_line: str = "After completing all steps, write a summary of what you did."
     extra_rules: tuple[str, ...] = ()
+    native_permission_rule: str | None = None
 
 
 def build_prompt_contract(
@@ -182,7 +189,7 @@ def build_prompt_contract(
                 f'"final_state":"completed","summary":"concise summary",'
                 f'"step_results":[{step_results}]}}'
             ),
-            INPUT_REQUIRED_RULE,
+            platform.native_permission_rule or INPUT_REQUIRED_RULE,
             CHOICE_SPEC,
             ZERO_EXIT_RULE,
         ]

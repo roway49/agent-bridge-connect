@@ -20,9 +20,11 @@ from .control import StdioJsonRpcTransport, TransportClosed
 
 CODEX_SESSION_CLEANUP_CAPABILITY_GROUP = "codex.session_cleanup"
 CODEX_SESSION_CLEANUP_CLIENT_METHODS = frozenset(
-    {"initialize", "thread/delete", "thread/read"}
+    {"initialize", "thread/archive", "thread/delete", "thread/read"}
 )
-CODEX_SESSION_CLEANUP_NOTIFICATIONS = frozenset({"thread/deleted"})
+CODEX_SESSION_CLEANUP_NOTIFICATIONS = frozenset(
+    {"thread/archived", "thread/deleted"}
+)
 CODEX_DESKTOP_VISIBILITY_METHOD = "thread/list"
 CODEX_THREAD_SOURCE_KINDS = (
     "cli",
@@ -51,6 +53,15 @@ CODEX_DESKTOP_UI_STALE_CODE = "codex_desktop_ui_stale"
 CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE = (
     "codex_desktop_verification_unavailable"
 )
+
+# SESSION-104-001 stable archive codes.  ``target missing`` also covers the
+# SQKX-001 ordering finding: deleting first and archiving afterwards returns
+# a target-not-found style error, which is exactly why archive must run first.
+CODEX_SESSION_ARCHIVE_FAILED_CODE = "codex_session_archive_failed"
+CODEX_SESSION_ARCHIVE_INVALID_ID_CODE = "codex_session_archive_invalid_session_id"
+CODEX_SESSION_ARCHIVE_TARGET_MISSING_CODE = "codex_session_archive_target_missing"
+CODEX_SESSION_ARCHIVE_TIMEOUT_CODE = "codex_session_archive_timeout"
+CODEX_SESSION_ARCHIVE_TRANSPORT_LOST_CODE = "codex_session_archive_transport_lost"
 
 # Compatibility aliases for callers that used the descriptive term "missing"
 # before the v2 receipt name was frozen.
@@ -89,6 +100,7 @@ class CodexSessionCleanupObservation:
     cli_checked_at: str = ""
     error_code: str = ""
     retryable: bool = False
+    command_evidence: dict[str, dict[str, str]] | None = None
 
     def verification(self) -> dict[str, dict[str, str]]:
         return {
@@ -96,6 +108,25 @@ class CodexSessionCleanupObservation:
                 "status": self.cli_status,
                 "checked_at": _checked_at(self.cli_checked_at),
             }
+        }
+
+    def commands(self) -> dict[str, dict[str, str]]:
+        """Return the bounded v4 per-command evidence for this observation."""
+        if self.command_evidence is not None:
+            return {
+                name: dict(value)
+                for name, value in self.command_evidence.items()
+                if name in {"archive", "delete"} and isinstance(value, dict)
+            }
+        checked_at = _checked_at(self.cli_checked_at)
+        if self.cli_status == "absent":
+            return {
+                "archive": {"status": "acknowledged", "checked_at": checked_at},
+                "delete": {"status": "acknowledged", "checked_at": checked_at},
+            }
+        return {
+            "archive": {"status": "unverified", "checked_at": checked_at},
+            "delete": {"status": "unverified", "checked_at": checked_at},
         }
 
 
@@ -109,11 +140,15 @@ class CodexSessionCleanupError(RuntimeError):
         retryable: bool = False,
         cli_status: str = "unknown",
         cli_checked_at: str = "",
+        commands: dict[str, dict[str, str]] | None = None,
     ) -> None:
         self.code = str(code or CODEX_SESSION_DELETE_FAILED_CODE)
         self.retryable = bool(retryable)
         self.cli_status = str(cli_status or "unknown")
         self.cli_checked_at = str(cli_checked_at or "")
+        # Bounded partial command evidence for the phase that failed.  None
+        # means no command was even attempted (e.g. an invalid session id).
+        self.commands = commands
         super().__init__(self.code)
 
 
@@ -159,6 +194,36 @@ def _is_not_found(message: dict[str, Any]) -> bool:
     )
 
 
+def _archive_error_is_target_missing(message: dict[str, Any]) -> bool:
+    """Return True when an archive error names the exact target as missing.
+
+    SQKX-001 evidence: delete followed by archive returns a target-not-found
+    error for the deleted thread.  The same error on a fresh archive means
+    the exact UUID no longer exists, so the archive precondition cannot be
+    established and the cleanup must fail closed before any delete call.
+    """
+    return _is_not_found(message)
+
+
+def _partial_commands_after_archive(
+    checked_at: str,
+    archive_status: str = "acknowledged",
+) -> dict[str, dict[str, str]]:
+    """Bounded evidence after the archive gate: delete was never requested."""
+    return {
+        "archive": {"status": archive_status, "checked_at": checked_at},
+        "delete": {"status": "not_requested", "checked_at": checked_at},
+    }
+
+
+def _archive_phase_unverified_evidence(checked_at: str) -> dict[str, dict[str, str]]:
+    """Evidence before the archive result is known; delete was never sent."""
+    return {
+        "archive": {"status": "unverified", "checked_at": checked_at},
+        "delete": {"status": "not_requested", "checked_at": checked_at},
+    }
+
+
 class CodexSessionCleanupClient:
     """Execute the exact delete/notification/fresh-read verification chain."""
 
@@ -180,26 +245,111 @@ class CodexSessionCleanupClient:
         self._connection_count = 0
         self._next_id = 1
 
-    def delete_and_verify(self, session_id: str) -> CodexSessionCleanupObservation:
-        """Delete one UUID and verify absence using a separate App Server connection."""
+    def delete_and_verify(
+        self,
+        session_id: str,
+        *,
+        archive_acknowledged: bool = False,
+        archive_checked_at: str = "",
+    ) -> CodexSessionCleanupObservation:
+        """Archive then delete one UUID and verify absence on a new connection.
+
+        SESSION-104-001 sequence, in exact order:
+
+        1. Require a bounded ``thread/archive`` acknowledgement. It may be
+           supplied by the original Executor connection, which avoids Codex's
+           active-writer rejection, or requested here for legacy callers.
+           ``thread/archived`` notifications are advisory. No acknowledgement
+           means zero ``thread/delete`` calls are ever sent. SQKX-001 proved
+           the reverse order is unusable: deleting first and archiving
+           afterwards returns target-not-found.
+        2. connection A: ``thread/delete`` with a mandatory RPC
+           acknowledgement; ``thread/deleted`` stays advisory.
+        3. connection B: fresh ``thread/read`` absence proof.
+
+        Only bounded statuses leave this method; raw RPC text never does.
+        """
         exact_id = self._validate_session_id(session_id)
-        first = self._new_transport()
+        delete_sent = False
+        prearchived = bool(archive_acknowledged)
+        archive_at = _checked_at(archive_checked_at) if prearchived else ""
+        try:
+            first = self._new_transport()
+        except (TransportClosed, OSError, RuntimeError) as exc:
+            raise CodexSessionCleanupError(
+                CODEX_SESSION_DELETE_TRANSPORT_LOST_CODE
+                if prearchived
+                else CODEX_SESSION_ARCHIVE_TRANSPORT_LOST_CODE,
+                retryable=True,
+                commands=_partial_commands_after_archive(archive_at)
+                if prearchived
+                else _archive_phase_unverified_evidence(_utc_now()),
+            ) from exc
         try:
             self._start(first)
             self._initialize(first)
+            if not prearchived:
+                archive_id = self._send(first, "thread/archive", {"threadId": exact_id})
+                self._wait_archive(first, archive_id)
+                archive_at = _utc_now()
             delete_id = self._send(first, "thread/delete", {"threadId": exact_id})
+            delete_sent = True
             self._wait_delete(first, delete_id)
+        except CodexSessionCleanupError:
+            raise
+        except (TransportClosed, OSError, RuntimeError) as exc:
+            if delete_sent or prearchived:
+                # Delete was already sent, which proves the archive gate had
+                # passed: never downgrade the archive evidence.
+                raise CodexSessionCleanupError(
+                    CODEX_SESSION_DELETE_TRANSPORT_LOST_CODE,
+                    retryable=True,
+                    commands=_partial_commands_after_archive(archive_at, "acknowledged"),
+                ) from exc
+            raise CodexSessionCleanupError(
+                CODEX_SESSION_ARCHIVE_TRANSPORT_LOST_CODE,
+                retryable=True,
+                commands=_archive_phase_unverified_evidence(_utc_now()),
+            ) from exc
         finally:
             self._close(first)
 
-        second = self._new_transport()
+        second = None
         try:
+            second = self._new_transport()
             self._start(second)
             self._initialize(second)
             read_id = self._send(second, "thread/read", {"threadId": exact_id})
-            return self._read_absence(second, read_id, exact_id)
+            observation = self._read_absence(second, read_id, exact_id)
+            checked_at = _checked_at(observation.cli_checked_at)
+            return CodexSessionCleanupObservation(
+                cli_status=observation.cli_status,
+                cli_checked_at=checked_at,
+                error_code=observation.error_code,
+                retryable=observation.retryable,
+                command_evidence={
+                    "archive": {
+                        "status": "acknowledged",
+                        "checked_at": archive_at or checked_at,
+                    },
+                    "delete": {"status": "acknowledged", "checked_at": checked_at},
+                },
+            )
+        except CodexSessionCleanupError:
+            # A bounded protocol verdict (e.g. still_present) is authoritative
+            # and must never be re-labeled as a transport failure.
+            raise
+        except (TransportClosed, OSError, RuntimeError) as exc:
+            # Both commands were acknowledged; only the fresh-read diagnostic
+            # connection died, so the evidence keeps both acknowledgements.
+            raise CodexSessionCleanupError(
+                CODEX_SESSION_DELETE_TRANSPORT_LOST_CODE,
+                retryable=True,
+                commands=_partial_commands_after_archive(_utc_now(), "acknowledged"),
+            ) from exc
         finally:
-            self._close(second)
+            if second is not None:
+                self._close(second)
 
     def verify_desktop_absence(self, session_id: str) -> dict[str, str]:
         """Verify that the exact thread is absent from Desktop's official list surface.
@@ -416,7 +566,75 @@ class CodexSessionCleanupClient:
                 raise CodexSessionCleanupError(CODEX_SESSION_DELETE_FAILED_CODE)
             return message
 
+    def _wait_archive(self, transport: Any, request_id: int) -> None:
+        """Require the archive RPC acknowledgement before any delete call.
+
+        ``thread/archived`` is an advisory notification and never satisfies
+        the gate.  Timeout and transport loss raise stable archive-scoped
+        codes carrying the partial ``commands`` evidence (archive attempted,
+        delete not_requested) so a retry or Runner restart never loses an
+        acknowledged archive and never invents a delete attempt.
+        """
+        deadline = time.monotonic() + self.timeout_s
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise CodexSessionCleanupError(
+                    CODEX_SESSION_ARCHIVE_TIMEOUT_CODE,
+                    retryable=True,
+                    commands={
+                        "archive": {"status": "unverified", "checked_at": _utc_now()},
+                        "delete": {"status": "not_requested", "checked_at": _utc_now()},
+                    },
+                )
+            try:
+                message = self._receive(transport, remaining)
+            except TimeoutError as exc:
+                raise CodexSessionCleanupError(
+                    CODEX_SESSION_ARCHIVE_TIMEOUT_CODE,
+                    retryable=True,
+                    commands={
+                        "archive": {"status": "unverified", "checked_at": _utc_now()},
+                        "delete": {"status": "not_requested", "checked_at": _utc_now()},
+                    },
+                ) from exc
+            except (TransportClosed, OSError) as exc:
+                raise CodexSessionCleanupError(
+                    CODEX_SESSION_ARCHIVE_TRANSPORT_LOST_CODE,
+                    retryable=True,
+                    commands={
+                        "archive": {"status": "unverified", "checked_at": _utc_now()},
+                        "delete": {"status": "not_requested", "checked_at": _utc_now()},
+                    },
+                ) from exc
+            if message.get("id") == request_id:
+                if isinstance(message.get("error"), dict):
+                    code = (
+                        CODEX_SESSION_ARCHIVE_TARGET_MISSING_CODE
+                        if _archive_error_is_target_missing(message)
+                        else CODEX_SESSION_ARCHIVE_FAILED_CODE
+                    )
+                    raise CodexSessionCleanupError(
+                        code,
+                        commands={
+                            "archive": {"status": "failed", "checked_at": _utc_now()},
+                            "delete": {"status": "not_requested", "checked_at": _utc_now()},
+                        },
+                    )
+                # The bound RPC acknowledgement is mandatory.  A server that
+                # reports the thread was already archived still acknowledges
+                # the archive state, so the sequence may continue.
+                return
+            if message.get("method") == "thread/archived":
+                # Advisory only: keep waiting for the bound RPC response.
+                continue
+
     def _wait_delete(self, transport: Any, request_id: int) -> None:
+        """Require the delete RPC acknowledgement after the archive gate.
+
+        A failure here carries partial evidence: the archive was already
+        acknowledged, so a retry or Runner restart must never lose it.
+        """
         deadline = time.monotonic() + self.timeout_s
         while True:
             remaining = deadline - time.monotonic()
@@ -424,6 +642,7 @@ class CodexSessionCleanupClient:
                 raise CodexSessionCleanupError(
                     CODEX_SESSION_DELETE_TIMEOUT_CODE,
                     retryable=True,
+                    commands=_partial_commands_after_archive(_utc_now()),
                 )
             try:
                 message = self._receive(transport, remaining)
@@ -431,16 +650,21 @@ class CodexSessionCleanupClient:
                 raise CodexSessionCleanupError(
                     CODEX_SESSION_DELETE_TIMEOUT_CODE,
                     retryable=True,
+                    commands=_partial_commands_after_archive(_utc_now()),
                 ) from exc
             except (TransportClosed, OSError) as exc:
                 raise CodexSessionCleanupError(
                     CODEX_SESSION_DELETE_TRANSPORT_LOST_CODE,
                     retryable=True,
+                    commands=_partial_commands_after_archive(_utc_now()),
                 ) from exc
 
             if message.get("id") == request_id:
                 if isinstance(message.get("error"), dict):
-                    raise CodexSessionCleanupError(CODEX_SESSION_DELETE_FAILED_CODE)
+                    raise CodexSessionCleanupError(
+                        CODEX_SESSION_DELETE_FAILED_CODE,
+                        commands=_partial_commands_after_archive(_utc_now(), "failed"),
+                    )
                 # Current supported and candidate Codex builds expose the
                 # thread/deleted schema but do not reliably emit it on stdio.
                 # The RPC acknowledgement remains mandatory; authoritative
@@ -495,6 +719,11 @@ __all__ = [
     "CODEX_DESKTOP_UI_STALE_CODE",
     "CODEX_DESKTOP_VISIBILITY_METHOD",
     "CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE",
+    "CODEX_SESSION_ARCHIVE_FAILED_CODE",
+    "CODEX_SESSION_ARCHIVE_INVALID_ID_CODE",
+    "CODEX_SESSION_ARCHIVE_TARGET_MISSING_CODE",
+    "CODEX_SESSION_ARCHIVE_TIMEOUT_CODE",
+    "CODEX_SESSION_ARCHIVE_TRANSPORT_LOST_CODE",
     "CODEX_SESSION_CLEANUP_CAPABILITY_GROUP",
     "CODEX_SESSION_CLEANUP_CLIENT_METHODS",
     "CODEX_SESSION_CLEANUP_NOTIFICATIONS",

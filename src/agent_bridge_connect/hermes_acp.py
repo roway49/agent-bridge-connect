@@ -164,16 +164,18 @@ def validate_session_id(value: Any) -> str:
 
 
 def permission_request_options(options: Any) -> tuple[bool, list[str]]:
-    """Return whether ``allow_once`` is offered and the offered option ids.
+    """Return the offered ACP option ids and whether any option is selectable.
 
-    ``allow_session``, ``allow_always`` and ``deny_always`` may be offered by
-    the agent; AgentBC never selects them.  A request that cannot express a
-    one-time approval (no ``allow_once`` option) is unsupported.
+    PERM-104-002 v2: AgentBC no longer requires a one-shot ``allow_once``
+    option.  Every original optionId is preserved verbatim (order and label
+    independent) so the user's exact selected optionId can be echoed back.
+    Unknown/malformed option shapes fail closed in
+    :func:`normalize_permission_options`.
     """
-    if not isinstance(options, list):
-        return False, []
     offered: list[str] = []
-    has_allow_once = False
+    has_selectable = False
+    if not isinstance(options, list):
+        return False, offered
     for option in options:
         if not isinstance(option, dict):
             continue
@@ -181,9 +183,61 @@ def permission_request_options(options: Any) -> tuple[bool, list[str]]:
         if not option_id:
             continue
         offered.append(option_id)
-        if option_id == HERMES_ACP_ALLOW_ONCE_OPTION:
-            has_allow_once = True
-    return has_allow_once, offered
+        if option.get("kind") not in {False, "non_selectable"}:
+            has_selectable = True
+    return has_selectable, offered
+
+
+def normalize_permission_options(options: Any) -> list[dict[str, Any]]:
+    """Normalize ACP options into exact v2 choice entries (fail closed).
+
+    Each entry carries the original ``optionId`` verbatim, a choice kind
+    mapped from the official ACP ``PermissionOptionKind`` values, and the
+    bounded sanitized name/label.  Unknown kinds map to ``other`` and stay
+    selectable only when the agent did not mark them otherwise.
+    """
+    if not isinstance(options, list) or not options:
+        raise HermesAcpError(
+            "hermes_acp_permission_options_unsupported",
+            "ACP permission request offers no selectable options.",
+        )
+    kind_map = {
+        "allow_once": "once",
+        "allow_always": "other",
+        "allow_session": "session",
+        "reject_once": "deny",
+        "reject_always": "other",
+        "cancelled": "deny",
+    }
+    normalized: list[dict[str, Any]] = []
+    for option in options:
+        if not isinstance(option, dict):
+            raise HermesAcpError(
+                "hermes_acp_permission_options_invalid",
+                "Each ACP permission option must be an object.",
+            )
+        option_id = str(option.get("optionId") or option.get("option_id") or "").strip()
+        if not option_id:
+            raise HermesAcpError(
+                "hermes_acp_permission_options_invalid",
+                "Each ACP permission option requires an optionId.",
+            )
+        raw_kind = str(option.get("kind") or "").strip()
+        kind = kind_map.get(raw_kind, "other")
+        name = _bounded_text(option.get("name"), 120)
+        entry: dict[str, Any] = {
+            "native_option_id": option_id,
+            "kind": kind,
+            "label": name or option_id,
+            "selectable": True,
+        }
+        normalized.append(entry)
+    if not normalized:
+        raise HermesAcpError(
+            "hermes_acp_permission_options_unsupported",
+            "ACP permission request offers no usable options.",
+        )
+    return normalized
 
 
 def validate_permission_request(
@@ -236,13 +290,10 @@ def validate_permission_request(
             "ACP permission request has no tool call details.",
         )
     _tool_call_identifier(tool_call.get("id") or tool_call.get("tool_call_id"))
-    has_allow_once, offered = permission_request_options(params.get("options"))
-    if not has_allow_once:
-        raise HermesAcpError(
-            "hermes_acp_permission_options_unsupported",
-            "ACP permission request cannot express a one-time approval.",
-            {"offered_options": offered[:16]},
-        )
+    # PERM-104-002 v2: the exact offered option shapes are validated here.
+    # A request whose options list cannot express any usable choice fails
+    # closed; the allow_once-only restriction is retired.
+    normalize_permission_options(params.get("options"))
     return frame["id"], tool_call
 
 
@@ -273,13 +324,19 @@ def build_approval_message(
     App-Server approval message shape; the transport preserves that public
     interface and only translates the wire format.  ``threadId`` is the
     official ACP session id so the plane's session-first gate binds the
-    request to the exact persisted receipt.
+    request to the exact persisted receipt.  PERM-104-002 v2: the exact
+    offered ACP options travel as the executor-native choice set; Core never
+    infers a permission category and the selected original optionId is
+    returned verbatim on response.
     """
     request_id, tool_call = validate_permission_request(
         frame,
         session_id=session_id,
     )
     summary = permission_summary(tool_call)
+    frame_params = frame.get("params")
+    params = dict(frame_params) if isinstance(frame_params, dict) else {}
+    offered = normalize_permission_options(params.get("options"))
     return {
         "jsonrpc": _JSONRPC,
         "id": request_id,
@@ -294,24 +351,44 @@ def build_approval_message(
             "task_id": str(task_id or "").strip(),
             "executor_run_id": str(executor_run_id or "").strip(),
         },
+        "approval_version": 2,
+        "authority": {
+            "executor": "hermes",
+            "protocol": "hermes_acp",
+            "protocol_version": HERMES_ACP_PROTOCOL_VERSION,
+            "method": "session/request_permission",
+        },
+        "offered_choices": [dict(choice) for choice in offered],
     }
 
 
 def approval_outcome_for_decision(decision: Any) -> dict[str, Any]:
     """Map one ControlPlane decision to the exact ACP permission outcome.
 
-    ``accept`` maps to ``allow_once`` (one action only); ``decline`` maps to
-    ``cancelled``.  Any other value raises so a malformed decision can never
-    be forwarded as a grant.
+    PERM-104-002 v2: a selected native choice returns the EXACT original
+    optionId verbatim (``decision`` carries ``{"outcome": {"optionId": ...}}``
+    produced from the offered choices).  The legacy one-shot mapping
+    (accept -> allow_once / decline -> cancelled) remains only as the
+    fail-closed fallback for a decision without a native choice payload —
+    the v1 dual-read path.
     """
     selected = str(decision or "").strip().lower()
+    if isinstance(decision, dict):
+        outcome = decision.get("outcome")
+        if isinstance(outcome, dict):
+            option_id = str(outcome.get("optionId") or "").strip()
+            if option_id:
+                return {"outcome": {"optionId": option_id}}
+        option_id = str(decision.get("native_option_id") or "").strip()
+        if option_id:
+            return {"outcome": {"optionId": option_id}}
     if selected == "accept":
         return {"outcome": {"optionId": HERMES_ACP_ALLOW_ONCE_OPTION}}
     if selected == "decline":
         return {"outcome": {"outcome": HERMES_ACP_DENIED_OUTCOME}}
     raise HermesAcpError(
         "hermes_acp_approval_decision_invalid",
-        "Only the exact allow_once and deny outcomes may be returned to Hermes ACP.",
+        "Only the exact offered optionId outcomes may be returned to Hermes ACP.",
         {"decision": _bounded_text(decision, 40)},
     )
 

@@ -8,6 +8,10 @@ from typing import Any
 
 from .execution_policy import execution_policy_view, public_workspace_view
 from .permission_modes import permission_record_from_extensions
+from .permission_runtime import (
+    permission_runtime_from_extensions,
+    permission_runtime_public_projection,
+)
 from .protocol import task_step_text
 from .run_lease import (
     RunLeaseState,
@@ -117,6 +121,15 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
     # report/status input projection must remain summary-only.
     input_request.pop("reason_detail", None)
     permission = permission_record_from_extensions(extensions)
+    # PERM-104-002: status/report/doctor project only mode, permission source,
+    # hierarchy statuses, stable error codes, timestamps and sanitized
+    # digests from the runtime capability record - never binding identifiers.
+    permission_runtime_projection = None
+    runtime_record = permission_runtime_from_extensions(extensions)
+    if runtime_record is not None:
+        permission_runtime_projection = permission_runtime_public_projection(
+            runtime_record
+        )
 
     report = {
         "task_id": task.get("id", task_id),
@@ -156,6 +169,7 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "timing": timing,
         "input": input_request,
         "permission": permission,
+        "permission_runtime": permission_runtime_projection,
         "execution_policy": execution_policy_view(extensions),
         "run_lease_state": lease_state,
         "time_since_last_heartbeat_s": heartbeat_age,
@@ -228,7 +242,12 @@ def generate_task_brief(task_id: str, board_root: Path) -> dict[str, Any]:
     return redact_secrets(brief)
 
 
-def write_report_files(task_id: str, board_root: Path) -> tuple[dict[str, Any], str]:
+def write_report_files(
+    task_id: str,
+    board_root: Path,
+    *,
+    refresh_index: bool = True,
+) -> tuple[dict[str, Any], str]:
     """Write the single human-readable task record and enforce its size budget."""
     root = Path(board_root).expanduser().resolve()
     store = TaskStore(root)
@@ -258,9 +277,10 @@ def write_report_files(task_id: str, board_root: Path) -> tuple[dict[str, Any], 
     from .record_management import enforce_task_record_budget
 
     enforce_task_record_budget(task_dir, report_file)
-    from .task_index import refresh_task_index
+    if refresh_index:
+        from .task_index import refresh_task_index
 
-    refresh_task_index(root)
+        refresh_task_index(root)
     return report, markdown
 
 
@@ -667,7 +687,7 @@ def _render_report_md(report: dict[str, Any]) -> str:
             f"- Cleanup retryable: `{'yes' if session_cleanup.get('retryable') else 'no'}`",
         ]
     )
-    if session_cleanup.get("version") == 3:
+    if session_cleanup.get("version") in (3, 4):
         verification = session_cleanup.get("verification") or {}
         cli = verification.get("cli") if isinstance(verification, dict) else {}
         desktop_backend = verification.get("desktop_backend") if isinstance(verification, dict) else {}
@@ -690,6 +710,15 @@ def _render_report_md(report: dict[str, Any]) -> str:
                 f"- Desktop verification (aggregate): `{desktop_status}` checked_at=`{desktop_checked_at}`",
             ]
         )
+    if session_cleanup.get("version") == 4:
+        commands = session_cleanup.get("commands") or {}
+        for command in ("archive", "delete"):
+            entry = commands.get(command) if isinstance(commands, dict) else None
+            status = entry.get("status") if isinstance(entry, dict) else "not_requested"
+            checked_at = entry.get("checked_at") if isinstance(entry, dict) else ""
+            lines.append(
+                f"- Cleanup `{command}` command: `{status or 'not_requested'}` checked_at=`{checked_at}`"
+            )
     if grant:
         lines.extend(
             [

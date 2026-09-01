@@ -460,7 +460,7 @@ class NotificationTests(unittest.TestCase):
             {"action": "deny", "decision_source": "user"},
         )
         self.assertIn(
-            'buttons {"Deny", "Approve"}',
+            'buttons {"View Details", "Deny", "Approve"}',
             run.call_args.kwargs["input"],
         )
         self.assertIn('default button "Deny"', run.call_args.kwargs["input"])
