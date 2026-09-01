@@ -49,6 +49,7 @@ from .permission_grants import (
     consume_permission_grant,
     permission_grant_from_extensions,
 )
+from .permission_registry import TRANSPORT_HERMES_ACP
 from .protocol import ABCError
 from .permission_transport import (
     CONTROL_PATH_SDK_TRANSPORT,
@@ -2984,6 +2985,41 @@ class RunnerState:
                     "the frozen permission transport"
                 )
             return
+        hermes_acp = (
+            executor == "hermes"
+            and len(command) >= 2
+            and command[1] == "acp"
+        )
+        if hermes_acp:
+            if command != [command[0], "acp"]:
+                raise RunnerError(
+                    "permission_transport_invalid: Hermes ACP command must be the "
+                    "exact headless protocol entrypoint"
+                )
+            try:
+                persisted_permission = permission_record_from_extensions(
+                    persisted_task.get("extensions")
+                    if isinstance(persisted_task, dict)
+                    else {},
+                    allow_legacy=False,
+                )
+            except ABCError as exc:
+                raise RunnerError(f"{exc.code}: {exc}") from exc
+            mapping = persisted_permission.get("mapping")
+            hermes_mapping = (
+                mapping.get("hermes") if isinstance(mapping, dict) else None
+            )
+            frozen_transport = (
+                str(hermes_mapping.get("transport") or "").strip().lower()
+                if isinstance(hermes_mapping, dict)
+                else ""
+            )
+            if frozen_transport != TRANSPORT_HERMES_ACP:
+                raise RunnerError(
+                    "runner_capability_mismatch: Hermes ACP command does not match "
+                    "the frozen permission transport"
+                )
+            return
         required_subcommand = rules.get("required_subcommand")
         if required_subcommand and required_subcommand not in command:
             raise RunnerError(
@@ -3360,6 +3396,36 @@ class RunnerState:
             )
         session_id = str(session.get("session_id") or "").strip()
         resumed = bool(session.get("run_ids") or [])
+
+        hermes_acp = (
+            executor == "hermes"
+            and command == [command[0], "acp"]
+        )
+        if hermes_acp:
+            resources = extensions.get(RESOURCE_EXTENSION_KEY)
+            resource_errors = validate_resource_snapshot(resources, executor=executor)
+            if resource_errors:
+                raise RunnerError(
+                    f"runner_resource_argument_mismatch: {'; '.join(resource_errors)}"
+                )
+            project_path = str(session.get("project_path") or "").strip()
+            expected_project = (
+                Path(project_path).expanduser().resolve() if project_path else None
+            )
+            if expected_project is not None and cwd != expected_project:
+                raise RunnerError(
+                    "runner_executor_cwd_mismatch: Hermes ACP cwd does not match "
+                    "the frozen session project"
+                )
+            if resumed and not session_id:
+                raise RunnerError(
+                    "runner_session_argument_mismatch: Hermes ACP resume requires "
+                    "the frozen official session ID"
+                )
+            # ACP carries resource/session state on its structured session
+            # requests.  It must not be made to impersonate the legacy
+            # ``hermes chat`` argv by injecting --max-turns or --resume.
+            return
 
         if executor in {"claude", "hermes"}:
             resources = extensions.get(RESOURCE_EXTENSION_KEY)
