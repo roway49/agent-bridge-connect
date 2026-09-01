@@ -469,13 +469,13 @@ Executor 拒绝必须在同 session、同 request Approve 后精确执行。
   permissions turn/session 响应（原 ID；amendments/cancel 不可选）；Claude 只信任 SDK
   `can_use_tool`：deny → `PermissionResultDeny`、once → `PermissionResultAllow`
   （原始 input、无 updated_permissions）、session → 仅当 callback suggestions 是完整
-  destination=session bundle（无 persistent destination、无 setMode bypassPermissions）时
-  原样返回该 bundle，绝不生成规则；Hermes 保留 ACP request/session/tool-call/options 并
+  allow-rule bundle（无 persistent destination、无 setMode bypassPermissions）时，将其未决
+  destination 机械绑定为 session 并原样保留规则内容，绝不生成 matcher；Hermes 保留 ACP request/session/tool-call/options 并
   回传选中的原 optionId（order/label 无关），移除 allow_once-only 限制。
-- 动态弹窗（macOS/CLI 同一 Runner API）：一个绝对 deadline 覆盖 View Details / Deny /
-  Choose Permission / 原生选项选择 / 确认与 Back；无 allow default；close/timeout 恰好
-  发送一次 exact denial。详情使用 redacted native metadata 并说明 persistent choices
-  audit-only、不含 full。
+- 动态弹窗（macOS/CLI 同一 Runner API）：一级固定 View Details / Deny / Approve，
+  Approve 只进入二级 Back / Once / This Session；只有 Deny、Once、This Session 携带
+  exact native handle 并回传，View Details、Approve、Back 仅导航、零回执。一个绝对
+  deadline 覆盖两级交互；无 allow default；close/timeout 恰好发送一次 exact denial。
 - Legacy matcher 退役：`session_tool_rules.py` 收缩为 tombstone
   （`legacy_session_tool_rule_removed`），matcher 语法/rule API/lifecycle/Runner rule
   routing/Claude synthesized rules/Hermes one-shot 常量/Codex session-decision 禁止全部移除；

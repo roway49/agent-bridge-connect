@@ -14,6 +14,7 @@ from .approval import (
     APPROVAL_SCOPE,
     approval_public_projection_v2,
     build_approval_receipt,
+    build_approval_receipt_v2,
     normalize_reason_summary,
     record_approval_decision,
     sanitize_reason_detail,
@@ -2139,20 +2140,43 @@ class TaskService:
         )
         clean_reason_detail = sanitize_reason_detail(reason_detail)
 
-        receipt = build_approval_receipt(
-            task_id=task_id,
-            executor_run_id=normalized_run_id,
-            executor=normalized_executor,
-            session_id=official_session_id,
-            request_id=clean_request_id,
-            request_fingerprint=clean_fingerprint,
-            kind="permission",
-            operation=clean_operation,
-            summary=str(redact_secrets(clean_summary)),
-            reason_summary=clean_reason_summary,
-            reason_detail=clean_reason_detail,
-            scope=APPROVAL_SCOPE,
-        )
+        if offered_choices:
+            native_authority = dict(authority or {})
+            receipt = build_approval_receipt_v2(
+                task_id=task_id,
+                executor_run_id=normalized_run_id,
+                executor=normalized_executor,
+                session_id=official_session_id,
+                request_id=clean_request_id,
+                request_fingerprint=clean_fingerprint,
+                operation=clean_operation,
+                summary=str(redact_secrets(clean_summary)),
+                reason_summary=clean_reason_summary,
+                reason_detail=clean_reason_detail,
+                authority_protocol=str(native_authority.get("protocol") or ""),
+                authority_protocol_version=int(
+                    native_authority.get("protocol_version") or 0
+                ),
+                authority_method=str(native_authority.get("method") or ""),
+                broker_request_id=clean_request_id,
+                native_item_id=str(tool_use_id or "").strip(),
+                offered_choices=[dict(choice) for choice in offered_choices],
+            )
+        else:
+            receipt = build_approval_receipt(
+                task_id=task_id,
+                executor_run_id=normalized_run_id,
+                executor=normalized_executor,
+                session_id=official_session_id,
+                request_id=clean_request_id,
+                request_fingerprint=clean_fingerprint,
+                kind="permission",
+                operation=clean_operation,
+                summary=str(redact_secrets(clean_summary)),
+                reason_summary=clean_reason_summary,
+                reason_detail=clean_reason_detail,
+                scope=APPROVAL_SCOPE,
+            )
 
         step_id = blocked_step_id or _first_incomplete_step_id(task.steps)
         if step_id is None:
@@ -2200,8 +2224,8 @@ class TaskService:
         # request rejects flattened approve/deny.
         if offered_choices:
             request["approval_version"] = 2
-            request["authority"] = dict(authority or {})
-            request["choices"] = [dict(choice) for choice in offered_choices]
+            request["authority"] = dict(receipt["authority"])
+            request["choices"] = [dict(choice) for choice in receipt["choices"]]
 
         extensions = dict(task.extensions or {})
         previous = extensions.get("agentbc.input")

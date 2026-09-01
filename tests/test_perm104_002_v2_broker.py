@@ -319,6 +319,20 @@ class ClaudeExactAdapterTests(unittest.TestCase):
             }
         ]
         self.assertIsNotNone(transport.validate_session_bundle(valid))
+        # The CLI may leave destination unset until the user chooses scope.
+        # AgentBC may bind that exact suggested rule to the live session, but
+        # must not infer or rewrite the matcher itself.
+        undecided_scope = [
+            {
+                "type": "addRules",
+                "behavior": "allow",
+                "rules": [{"tool_name": "Bash", "rule_content": "echo *"}],
+            }
+        ]
+        normalized = transport.validate_session_bundle(undecided_scope)
+        self.assertIsNotNone(normalized)
+        self.assertEqual(normalized[0]["destination"], "session")
+        self.assertEqual(normalized[0]["rules"], undecided_scope[0]["rules"])
         # Persistent destination rejected.
         persistent = [
             {

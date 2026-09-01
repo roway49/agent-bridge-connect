@@ -163,7 +163,10 @@ class ResourceDecisionDialogTests(unittest.TestCase):
             timed_out.details,
             {"action": "deny", "decision_source": "timeout"},
         )
-        self.assertIn('buttons {"Deny", "Approve"}', run.call_args.kwargs["input"])
+        self.assertIn(
+            'buttons {"View Details", "Deny", "Approve"}',
+            run.call_args.kwargs["input"],
+        )
         self.assertNotIn('"Later"', run.call_args.kwargs["input"])
 
         with mock.patch("agent_bridge_connect.notifiers.dialog.subprocess.run") as run:

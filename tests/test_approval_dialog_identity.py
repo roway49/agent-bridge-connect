@@ -497,29 +497,70 @@ class DecisionSemanticsUnchangedTests(unittest.TestCase):
             ],
         }
         with mock.patch.object(notifier, "_run_script") as run:
-            run.side_effect = ["Choose Permission", "Next", "Next", "Select"]
+            run.side_effect = ["Approve", "This Session"]
             result = notifier.send(payload)
 
         self.assertEqual(result.details["action"], "permission_option")
         self.assertEqual(result.details["option_handle"], "opt-session")
         decision_script = run.call_args_list[0].args[2]
         self.assertIn(
-            'buttons {"View Details", "Deny", "Choose Permission"}',
+            'buttons {"View Details", "Deny", "Approve"}',
             decision_script,
         )
-        self.assertNotIn('"Approve"', decision_script)
         self.assertIn(
-            'buttons {"Back", "Select", "Next"}',
+            'buttons {"Back", "Once", "This Session"}',
             run.call_args_list[1].args[2],
-        )
-        self.assertIn(
-            'buttons {"Previous", "Select", "Next"}',
-            run.call_args_list[2].args[2],
         )
         for call in run.call_args_list:
             script = call.args[2]
             button_clause = script.split("buttons {", 1)[1].split("}", 1)[0]
             self.assertLessEqual(len(button_clause.split(", ")), 3)
+
+    def test_native_deny_returns_the_exact_deny_handle(self) -> None:
+        notifier = DialogNotifier()
+        payload = {
+            "event_type": "task.input_required",
+            "input_type": "permission",
+            "reason_summary": "Native request",
+            "reason_detail": "Details",
+            "deadline_at": "2099-01-01T00:00:00Z",
+            "native_options": [
+                {"handle": "opt-deny", "kind": "deny", "label": "Deny"},
+                {"handle": "opt-once", "kind": "once", "label": "Once"},
+            ],
+        }
+        with mock.patch.object(notifier, "_run_script", return_value="Deny"):
+            result = notifier.send(payload)
+        self.assertEqual(result.details["action"], "permission_option")
+        self.assertEqual(result.details["option_handle"], "opt-deny")
+
+    def test_view_details_approve_and_back_are_navigation_only(self) -> None:
+        notifier = DialogNotifier()
+        payload = {
+            "event_type": "task.input_required",
+            "input_type": "permission",
+            "reason_summary": "Native request",
+            "reason_detail": "Bounded native details",
+            "deadline_at": "2099-01-01T00:00:00Z",
+            "native_options": [
+                {"handle": "opt-deny", "kind": "deny", "label": "Deny"},
+                {"handle": "opt-once", "kind": "once", "label": "Once"},
+                {"handle": "opt-session", "kind": "session", "label": "Session"},
+            ],
+        }
+        with mock.patch.object(notifier, "_run_script") as run:
+            run.side_effect = [
+                "View Details",
+                "Back",
+                "Approve",
+                "Back",
+                "Approve",
+                "Once",
+            ]
+            result = notifier.send(payload)
+        self.assertEqual(len(run.call_args_list), 6)
+        self.assertEqual(result.details["action"], "permission_option")
+        self.assertEqual(result.details["option_handle"], "opt-once")
 
 
 if __name__ == "__main__":

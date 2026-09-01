@@ -262,6 +262,53 @@ class ApprovalServiceFlowTests(unittest.TestCase):
         self.assertEqual(input_request["scope"], APPROVAL_SCOPE)
         self.assertEqual(input_request["request_id"], "approval-request-1")
 
+    def test_v2_block_persists_matching_v2_receipt_and_accepts_handle(self) -> None:
+        task_id, session_id = self._started_task()
+        result = self.service.block_task_for_approval(
+            task_id,
+            executor_run_id=RUN_ID,
+            session_id=session_id,
+            request_id="approval-request-v2",
+            request_fingerprint="fp-" + "a" * 40,
+            executor="claude",
+            operation="Bash",
+            tool_use_id="tool-use-v2",
+            offered_choices=[
+                {"native_option_id": "deny", "kind": "deny", "label": "Deny"},
+                {
+                    "native_option_id": "allow_once",
+                    "kind": "once",
+                    "label": "Approve once",
+                },
+            ],
+            authority={
+                "executor": "claude",
+                "protocol": "claude_agent_sdk",
+                "protocol_version": 1,
+                "method": "sdk.can_use_tool",
+            },
+        )
+        self.assertTrue(result["ok"])
+        task = self.service.get_task(task_id)
+        receipt = task.extensions[APPROVAL_EXTENSION_KEY]
+        request = task.extensions["agentbc.input"]
+        self.assertEqual(receipt["version"], 2)
+        self.assertEqual(request["approval_version"], 2)
+        self.assertEqual(request["choices"], receipt["choices"])
+
+        once = next(choice for choice in receipt["choices"] if choice["kind"] == "once")
+        response = self.service.respond_to_input(
+            task_id,
+            request["input_id"],
+            response_type="permission_option",
+            message=once["handle"],
+        )
+        self.assertEqual(response["approval_decision"], "permission_option")
+        answered = self.service.get_task(task_id)
+        selected = answered.extensions[APPROVAL_EXTENSION_KEY]["selection"]
+        self.assertEqual(selected["kind"], "once")
+        self.assertEqual(selected["handle"], once["handle"])
+
     def test_approve_does_not_issue_grant_and_keeps_effective_mode(self) -> None:
         task_id, session_id = self._started_task()
         self.service.block_task_for_approval(

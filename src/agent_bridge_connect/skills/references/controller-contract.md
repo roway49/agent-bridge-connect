@@ -75,11 +75,14 @@ AgentBC never treats approval prose as a valid completion marker.
 Native permission requests are persisted as `agentbc.approval` v2 receipts: Core offers exactly the
 choices the executor itself offered (Codex `accept`/`acceptForSession`/`decline` or permissions
 turn/session responses on the original ID; Claude `deny`/`allow_once`/`allow_session` where the SDK
-callback's own suggestions form a fully valid `destination=session` bundle; Hermes the exact offered
+callback's own rule suggestions can be mechanically bound to `destination=session`; Hermes the exact offered
 ACP optionIds). Core never infers a permission category and never converts matchers. Each choice
-carries an opaque handle bound to that exact request; the user selects one via the dialog's
-Choose Permission picker or `agentbc task respond <task-id> --input <input-id> --permission-option
-<handle>`. A v2 request rejects flattened `--approve`/`--deny` with
+carries an opaque handle bound to that exact request. The native dialog's first level is exactly
+`View Details` / `Deny` / `Approve`; `Approve` opens a second level with `Back` / `Once` /
+`This Session`. Only `Deny`, `Once`, and `This Session` return a native choice handle;
+`View Details`, `Approve`, and `Back` are navigation only and never answer the request. The CLI
+equivalent is `agentbc task respond <task-id> --input <input-id> --permission-option <handle>`.
+A v2 request rejects flattened `--approve`/`--deny` with
 `native_permission_choice_required`. An identical replay is idempotent; a conflicting or
 cross-request handle is rejected. Responses never create a grant, worker, continuation, or mode
 change, and `full` never appears in the choice popup. Persistent/always choices are audit-only in

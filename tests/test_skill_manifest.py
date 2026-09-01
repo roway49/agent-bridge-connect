@@ -164,7 +164,7 @@ class SkillManifestTests(unittest.TestCase):
         self.assertEqual(set(fingerprints), {"codex", "claude", "hermes"})
         self.assertEqual(
             fingerprints["codex"]["files"]["references/controller-contract.md"],
-            "7a7ba3c68dc868e9475d6b97b537cf94bd6ac82674a93ace7b9c04e512512c2e",
+            "4fa6d01aeb66d05df356cd1b9d10bbedde9227d726cb427cd94f439070ee73b1",
         )
         # SKILL.md and the steps YAML reference are byte-identical to 1.0.2a1.
         self.assertEqual(
