@@ -62,7 +62,7 @@ class ClaudeExtraPackagingTests(unittest.TestCase):
 
         projection = _claude_sdk_capability_projection({"executors": {"claude": {}}})
         self.assertFalse(projection["supported"])
-        self.assertEqual(projection["status"], "permission_transport_unsupported")
+        self.assertEqual(projection["status"], "permission_protocol_unavailable")
         rendered = repr(projection)
         self.assertNotIn("/", rendered)
         self.assertNotIn("token", rendered.lower())

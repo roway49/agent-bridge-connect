@@ -322,10 +322,20 @@ Executor 拒绝必须在同 session、同 request Approve 后精确执行。
   其他 ref 稳定 blocked；sandbox-exec 不可用时启动前返回 `host_containment_unliftable`，不弹窗、
   不消费 grant；Git metadata 不进入 Executor 内层 sandbox（--add-dir/allowWrite 同 outer 根），
   Claude 内层保持 sandbox.enabled/failIfUnavailable 与 Edit deny；
-- Claude 按 fixture 接入 MCP permission-tool / stdio can_use_tool+control_response 能力矩阵
-  （`permission_control.json` 已登记 matrix manifest），未知版本组合返回
-  `permission_transport_unsupported`；worker 按矩阵选择 control path 并保留同进程
-  Approve/Deny 与 transport-death 失效语义；
+- Claude 历史上曾按 fixture 接入 MCP permission-tool / stdio can_use_tool+control_response
+  版本能力矩阵；该准入路径已于 2026-09-01 清退，fixture 仅保留为历史回归证据，不再决定
+  生产支持范围。worker 现在按原生协议结构选择 control path，并保留同进程 Approve/Deny 与
+  transport-death 失效语义；
+- 2026-09-01 `A7XB-001` 回归证明上述“未知版本 fail-closed”属于错误准入策略：配置从
+  Claude `2.1.233` 更新至接口兼容的 `2.1.247` 后，任务在进程启动前被版本表秒拒绝，原生
+  `can_use_tool` 根本没有机会产生。现已清退 CLI/SDK 版本白名单与 `--version` 准入；版本、
+  发行方和绝对路径只作为诊断/身份记录。生产准入改为机械检查 SDK 协议成员
+  （`ClaudeSDKClient.options`、`ClaudeAgentOptions.can_use_tool/cli_path/cwd/permission_mode/hooks`、
+  `ToolPermissionContext.tool_use_id/suggestions`、Allow/Deny/PermissionUpdate 精确返回形状）；
+  协议结构兼容的官方升级与 fork 默认支持，只有真实接口缺失、握手失败或运行中 transport
+  丢失才分别返回 `permission_protocol_shape_unsupported`、
+  `permission_protocol_handshake_failed`、`permission_transport_lost`。原生结构化事件仍是唯一
+  审批权威，文本、stderr、callback 与退出码仍不得创建审批；
 - Hermes canary：Agent callback / stderr / 退出码只作为诊断（`record_agent_callback` 仅持久化
   completion intent），不能创建 input/grant；本任务真机执行中两次 python3/pip 探测被 Hermes
   终端审批门以超时 fail-closed 拒绝，未产生任何 grant/input/continuation，证明 Hermes 不存在

@@ -27,6 +27,9 @@ from agent_bridge_connect.permission_runtime import (
     PERMISSION_ACTION_ALREADY_BLOCKED,
     PERMISSION_BLOCK_EVIDENCE_UNAVAILABLE,
     PERMISSION_ESCALATION_INEFFECTIVE,
+    PERMISSION_PROTOCOL_HANDSHAKE_FAILED,
+    PERMISSION_PROTOCOL_SHAPE_UNSUPPORTED,
+    PERMISSION_PROTOCOL_UNAVAILABLE,
     PERMISSION_RUNTIME_BLOCK_CODES,
     PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE,
     PERMISSION_RUNTIME_DOMAINS,
@@ -35,6 +38,7 @@ from agent_bridge_connect.permission_runtime import (
     PERMISSION_RUNTIME_STATES,
     PERMISSION_RUNTIME_VERSION,
     PERMISSION_TRANSPORT_UNSUPPORTED,
+    PERMISSION_TRANSPORT_LOST,
     action_fingerprint,
     activate_permission_runtime_record,
     authorize_permission_runtime_record,
@@ -188,12 +192,16 @@ class PermissionRuntimeRecordTests(unittest.TestCase):
                 _base_record(), code="not-a-stable-code", domain="host_containment"
             )
 
-    def test_all_seven_stable_codes_are_frozen(self) -> None:
+    def test_stable_codes_include_protocol_failures(self) -> None:
         self.assertEqual(
             PERMISSION_RUNTIME_BLOCK_CODES,
             {
                 PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE,
                 PERMISSION_TRANSPORT_UNSUPPORTED,
+                PERMISSION_PROTOCOL_UNAVAILABLE,
+                PERMISSION_PROTOCOL_SHAPE_UNSUPPORTED,
+                PERMISSION_PROTOCOL_HANDSHAKE_FAILED,
+                PERMISSION_TRANSPORT_LOST,
                 PERMISSION_ESCALATION_INEFFECTIVE,
                 PERMISSION_ACTION_ALREADY_BLOCKED,
                 LINKED_WORKTREE_CAPABILITY_INVALID,
@@ -1078,7 +1086,7 @@ class ClaudeWorkerTransportGateTests(unittest.TestCase):
 
         self.assertFalse(_claude_control_required({"extensions": {}}))
 
-    def test_start_control_refuses_unproven_matrix(self) -> None:
+    def test_start_control_does_not_reject_unknown_cli_version(self) -> None:
         from agent_bridge_connect.executors.claude import ClaudeExecutor
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -1098,7 +1106,8 @@ class ClaudeWorkerTransportGateTests(unittest.TestCase):
             }
             result = executor.start_control(packet)
             self.assertFalse(result.ok)
-            self.assertIn("permission_transport_unsupported", result.message)
+            self.assertNotIn("permission_transport_unsupported", result.message)
+            self.assertIn("approval_control_invalid", result.message)
 
     def test_control_command_never_carries_broker_value(self) -> None:
         from agent_bridge_connect.executors.claude import ClaudeExecutor

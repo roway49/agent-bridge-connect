@@ -584,7 +584,7 @@ class ClaudeExecutor(CLIExecutorBase):
 
         PERM-104-002: the worker selects the control path from the fixture
         matrix; the only proven path is the official Claude Agent SDK
-        ``can_use_tool`` transport bound to the exact probed tuple.  The SDK
+        ``can_use_tool`` transport selected by its protocol capability.  The SDK
         client lives on a dedicated worker event-loop/thread, so polling can
         expose ``input_required`` without ending the process/session.  The
         raw ``ClaudePermissionPromptBroker``, self-authored broker shell
@@ -634,17 +634,16 @@ class ClaudeExecutor(CLIExecutorBase):
             self._close_run_lease(run_id)
             return StartResult(ok=False, run_id="", message=str(exc))
 
-        # PERM-104-002: the control path comes from the frozen matrix only.
-        # The live --help probe is recorded as evidence; it can never widen
-        # the matrix by itself.  Every Runner-managed task selects the SDK
+        # PERM-104-002: CLI versions are diagnostic only.  Every
+        # Runner-managed task selects the SDK protocol transport and the
+        # environment gate mechanically checks the required interface;
         # transport — explicit/inherited full and temporary-full runs never
         # fall back to the ordinary raw CLI path (GGQN-001 correction).
         if task_packet.get("runner_authorization_required") is True:
-            live_prompt_tool = self.supports_permission_prompt_tool()
             try:
                 control_path = select_claude_control_path(
                     parse_claude_version(self._version),
-                    live_prompt_tool,
+                    None,
                 )
             except ABCError as exc:
                 self._close_run_lease(run_id)
@@ -655,21 +654,21 @@ class ClaudeExecutor(CLIExecutorBase):
                     "control_started": True,
                     "control_response": CLAUDE_STDIO_CONTROL_RESPONSE,
                     "init_receipt": CLAUDE_INIT_RECEIPT_KIND,
-                    "live_probe_prompt_tool": live_prompt_tool,
+                    "legacy_prompt_tool_probe": "disabled",
                 }
             )
         else:
             control_path = ""
 
         if control_path != "sdk_control_transport":
-            # No proven control path for this tuple: fail closed before any
+            # No compatible native control path: fail closed before any
             # session starts.  The raw broker is never a production fallback.
             self._close_run_lease(run_id)
             return StartResult(
                 ok=False,
                 run_id="",
-                message="permission_transport_unsupported: no live-proven "
-                "Claude permission control path exists for this version",
+                message="permission_protocol_unavailable: Claude native "
+                "permission protocol is unavailable",
             )
 
         try:
@@ -1395,7 +1394,7 @@ class ClaudeExecutor(CLIExecutorBase):
         execution_session_id: str,
         sdk_facts: dict[str, str],
     ) -> Any:
-        """Build official ClaudeAgentOptions frozen to the probed tuple.
+        """Build official ClaudeAgentOptions for the validated protocol.
 
         Frozen semantics (PERM-104-002, corrected in GGQN-001): safe/inherit
         bases keep the SDK default mode so ``can_use_tool`` fires for

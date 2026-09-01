@@ -53,7 +53,6 @@ from .protocol import ABCError
 from .permission_transport import (
     CONTROL_PATH_SDK_TRANSPORT,
     assert_claude_sdk_environment,
-    parse_claude_version,
     select_claude_control_path,
 )
 from .session import SessionRecoveryRequired, control_root_for_task
@@ -3246,32 +3245,14 @@ class RunnerState:
             sdk_facts = assert_claude_sdk_environment(expected_executable)
         except ABCError as exc:
             raise RunnerError(f"{exc.code}: {exc}") from exc
-        try:
-            version_result = subprocess.run(
-                [str(expected_executable), "--version"],
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=10,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        # CLI version output is diagnostic only.  The SDK environment check
+        # above mechanically validates the native permission protocol shape;
+        # compatible releases and forks must not be rejected by a version
+        # allowlist or by a missing/non-standard ``--version`` string.
+        selected_path = select_claude_control_path(None, None)
+        if selected_path != CONTROL_PATH_SDK_TRANSPORT:
             raise RunnerError(
-                "permission_transport_unsupported: Claude version probe failed"
-            ) from exc
-        version = parse_claude_version(
-            f"{version_result.stdout}\n{version_result.stderr}"
-        )
-        try:
-            selected_path = select_claude_control_path(version, None)
-        except ABCError as exc:
-            raise RunnerError(f"{exc.code}: {exc}") from exc
-        if (
-            version_result.returncode != 0
-            or selected_path != CONTROL_PATH_SDK_TRANSPORT
-        ):
-            raise RunnerError(
-                "permission_transport_unsupported: configured Claude does not "
-                "support SDK control"
+                "permission_protocol_unavailable: Claude SDK control is unavailable"
             )
 
         extensions = persisted_task.get("extensions")

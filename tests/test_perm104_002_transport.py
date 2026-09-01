@@ -1,16 +1,8 @@
-"""PERM-104-002: executor permission control-path capability matrix tests.
+"""PERM-104-002 executor-native protocol capability tests.
 
-E52M-003 review contract: the declared 2.1.226/2.1.233 MCP/stdio capabilities
-were withdrawn because no live fixture proved them.  PERM-104-002 re-admitted
-exactly one control path — the official Claude Agent SDK ``can_use_tool``
-transport — for exactly one version (2.1.233) from the isolated live probe of
-2026-08-29 (tests/fixtures/executor_runtime/matrix/claude/
-live_probe_sdk_2026-08-29).  The matrix therefore has exactly one entry, the
-MCP permission-prompt path stays unproven for every version, and every other
-version/transport combination still fails closed with
-``permission_transport_unsupported``.  The live probe of the installed
-production binary (2.1.247) is recorded as evidence; its ``--help`` does not
-list ``--permission-prompt-tool``.
+CLI and SDK versions are diagnostic only.  Compatible releases and forks are
+admitted by the mechanical SDK protocol shape; missing protocol members fail
+closed without version allowlists or text matching.
 """
 
 from __future__ import annotations
@@ -36,13 +28,13 @@ from agent_bridge_connect.permission_transport import (
     CONTROL_PATH_SDK_TRANSPORT,
     CONTROL_PATH_STDIO_CAN_USE_TOOL,
     KNOWN_CLAUDE_VERSIONS,
-    SDK_CLAUDE_DEPENDENCY_MISMATCH,
     SDK_CLAUDE_DEPENDENCY_MISSING,
     assert_claude_sdk_environment,
     assert_git_metadata_not_in_add_dir,
     assert_inner_sandbox_within_outer,
     claude_control_path_capability,
     claude_inner_sandbox_contract,
+    claude_sdk_protocol_capability,
     parse_claude_version,
     probe_claude_permission_prompt_tool,
     select_claude_control_path,
@@ -62,46 +54,28 @@ class ClaudeControlPathCapabilityTests(unittest.TestCase):
         self.assertIsNone(parse_claude_version("not-a-version"))
         self.assertIsNone(parse_claude_version(None))
 
-    def test_matrix_admits_only_the_probed_sdk_tuple(self) -> None:
-        # PERM-104-002: exactly one live-proven entry exists - the official
-        # SDK can_use_tool transport on the probed 2.1.233 tuple.
-        self.assertEqual(KNOWN_CLAUDE_VERSIONS, frozenset({"2.1.233"}))
-        capability = claude_control_path_capability("2.1.233")
-        self.assertTrue(capability["sdk_control_transport"])
-        self.assertFalse(capability["mcp_permission_tool"])
-        self.assertEqual(capability["sdk_version"], "0.2.142")
-        self.assertEqual(capability["sdk_platform"], "macOS arm64")
-
-    def test_every_version_fails_closed(self) -> None:
-        # Every version without its own live proof fails closed; only the
-        # probed 2.1.233 SDK tuple is admitted.
+    def test_no_version_allowlist_controls_admission(self) -> None:
+        self.assertEqual(KNOWN_CLAUDE_VERSIONS, frozenset())
         for version in ("2.1.226", "2.1.247", "9.9.9", "", None):
             with self.subTest(version=version):
-                with self.assertRaises(ABCError) as raised:
-                    claude_control_path_capability(version)
-                self.assertEqual(
-                    raised.exception.code, PERMISSION_TRANSPORT_UNSUPPORTED
-                )
+                capability = claude_control_path_capability(version)
+                self.assertTrue(capability["sdk_control_transport"])
+                self.assertTrue(capability["version_is_diagnostic"])
+                self.assertFalse(capability["mcp_permission_tool"])
 
-    def test_worker_selects_only_the_sdk_transport(self) -> None:
-        # The SDK path is the only selectable control path, and only for the
-        # probed version; the MCP prompt-tool probe can never enable a path.
-        self.assertEqual(
-            select_claude_control_path("2.1.233", False),
-            CONTROL_PATH_SDK_TRANSPORT,
-        )
-        self.assertEqual(
-            select_claude_control_path("2.1.233", True),
-            CONTROL_PATH_SDK_TRANSPORT,
-        )
-        for version in ("2.1.226", "2.1.247", "9.9.9"):
+    def test_worker_selects_sdk_transport_independent_of_version(self) -> None:
+        for version in ("2.1.226", "2.1.233", "2.1.247", "9.9.9", "", None):
             for probe in (True, False, None):
                 with self.subTest(version=version, probe=probe):
-                    with self.assertRaises(ABCError) as raised:
-                        select_claude_control_path(version, probe)
                     self.assertEqual(
-                        raised.exception.code, PERMISSION_TRANSPORT_UNSUPPORTED
+                        select_claude_control_path(version, probe),
+                        CONTROL_PATH_SDK_TRANSPORT,
                     )
+
+    def test_installed_sdk_protocol_shape_is_supported(self) -> None:
+        capability = claude_sdk_protocol_capability()
+        self.assertTrue(capability["available"])
+        self.assertEqual(capability["protocol"], "sdk.can_use_tool")
 
     def test_live_probe_gate_rejects_help_without_the_flag(self) -> None:
         # The real production-host probe: the installed 2.1.247 help does not
@@ -257,7 +231,7 @@ class TransportDomainConsistencyTests(unittest.TestCase):
 
 
 class ClaudeSdkEnvironmentGateTests(unittest.TestCase):
-    """The SDK transport fails closed off the exact probed tuple."""
+    """The SDK transport gates protocol shape, not version strings."""
 
     def test_environment_gate_passes_on_this_host(self) -> None:
         try:
@@ -267,9 +241,10 @@ class ClaudeSdkEnvironmentGateTests(unittest.TestCase):
         if sys.platform != "darwin" or platform_module.machine() != "arm64":
             self.skipTest("probed tuple is macOS arm64 only")
         facts = assert_claude_sdk_environment(
-            "/Users/wangroway/.local/share/claude/versions/2.1.233"
+            "/Users/wangroway/.local/share/claude/versions/2.1.247"
         )
-        self.assertEqual(facts["sdk_version"], CLAUDE_SDK_PINNED_VERSION)
+        self.assertTrue(facts["sdk_version"])
+        self.assertEqual(facts["protocol"], "sdk.can_use_tool")
         self.assertEqual(facts["platform"], "macOS arm64")
 
     def test_environment_gate_requires_absolute_configured_cli(self) -> None:
@@ -302,19 +277,36 @@ class ClaudeSdkEnvironmentGateTests(unittest.TestCase):
             )
         del fake
 
-    def test_mismatched_sdk_version_fails_closed(self) -> None:
+    def test_sdk_version_is_not_an_admission_key(self) -> None:
         from agent_bridge_connect import permission_transport
 
-        fake = types.ModuleType("claude_agent_sdk")
-        fake.__version__ = "0.2.999"  # type: ignore[attr-defined]
-        with mock.patch.dict(sys.modules, {"claude_agent_sdk": fake}):
+        import claude_agent_sdk
+
+        with mock.patch.object(claude_agent_sdk, "__version__", "999.0-fork"):
+            capability = permission_transport.claude_sdk_protocol_capability()
+        self.assertTrue(capability["available"])
+        self.assertEqual(capability["sdk_version"], "999.0-fork")
+
+    def test_missing_protocol_member_fails_by_shape_not_version(self) -> None:
+        from agent_bridge_connect import permission_transport
+        import claude_agent_sdk
+
+        class IncompatibleOptions:
+            def __init__(self, cli_path: str | None = None) -> None:
+                self.cli_path = cli_path
+
+        with mock.patch.object(
+            claude_agent_sdk, "ClaudeAgentOptions", IncompatibleOptions
+        ):
             with self.assertRaises(ABCError) as raised:
-                permission_transport.assert_claude_sdk_environment(
-                    "/usr/bin/claude"
-                )
-            self.assertEqual(
-                raised.exception.code, SDK_CLAUDE_DEPENDENCY_MISMATCH
-            )
+                permission_transport.claude_sdk_protocol_capability()
+        self.assertEqual(
+            raised.exception.code, "permission_protocol_shape_unsupported"
+        )
+        self.assertIn(
+            "ClaudeAgentOptions.can_use_tool",
+            raised.exception.details["missing_members"],
+        )
 
 
 if __name__ == "__main__":

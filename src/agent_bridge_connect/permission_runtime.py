@@ -72,6 +72,10 @@ HIERARCHY_STATUSES = frozenset({"ok", "blocked", "not_applicable"})
 # Stable PERM-104-002 error codes.
 PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE = "permission_runtime_capability_unavailable"
 PERMISSION_TRANSPORT_UNSUPPORTED = "permission_transport_unsupported"
+PERMISSION_PROTOCOL_UNAVAILABLE = "permission_protocol_unavailable"
+PERMISSION_PROTOCOL_SHAPE_UNSUPPORTED = "permission_protocol_shape_unsupported"
+PERMISSION_PROTOCOL_HANDSHAKE_FAILED = "permission_protocol_handshake_failed"
+PERMISSION_TRANSPORT_LOST = "permission_transport_lost"
 PERMISSION_ESCALATION_INEFFECTIVE = "permission_escalation_ineffective"
 PERMISSION_ACTION_ALREADY_BLOCKED = "permission_action_already_blocked"
 LINKED_WORKTREE_CAPABILITY_INVALID = "linked_worktree_capability_invalid"
@@ -82,6 +86,10 @@ PERMISSION_RUNTIME_BLOCK_CODES = frozenset(
     {
         PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE,
         PERMISSION_TRANSPORT_UNSUPPORTED,
+        PERMISSION_PROTOCOL_UNAVAILABLE,
+        PERMISSION_PROTOCOL_SHAPE_UNSUPPORTED,
+        PERMISSION_PROTOCOL_HANDSHAKE_FAILED,
+        PERMISSION_TRANSPORT_LOST,
         PERMISSION_ESCALATION_INEFFECTIVE,
         PERMISSION_ACTION_ALREADY_BLOCKED,
         LINKED_WORKTREE_CAPABILITY_INVALID,
@@ -1113,7 +1121,11 @@ __all__ = [
     "PERMISSION_RUNTIME_SOURCES",
     "PERMISSION_RUNTIME_STATES",
     "PERMISSION_RUNTIME_VERSION",
+    "PERMISSION_PROTOCOL_HANDSHAKE_FAILED",
+    "PERMISSION_PROTOCOL_SHAPE_UNSUPPORTED",
+    "PERMISSION_PROTOCOL_UNAVAILABLE",
     "PERMISSION_TRANSPORT_UNSUPPORTED",
+    "PERMISSION_TRANSPORT_LOST",
     "action_fingerprint",
     "activate_permission_runtime_record",
     "authorize_permission_runtime_record",

@@ -1495,21 +1495,9 @@ def _collect_permission_runtime(
 
 
 def _collect_claude_sdk_capability(config: dict[str, Any] | None) -> dict[str, str]:
-    """PERM-104-002: fail-closed doctor check for the probed SDK tuple.
-
-    The Claude SDK permission transport is supported only on the exact
-    probed tuple (macOS arm64, claude-agent-sdk 0.2.142, the configured
-    absolute Claude CLI 2.1.233).  Missing/mismatched/unsupported/failed
-    environments are doctor ``warning`` checks with a stable code and a
-    remediation hint — they never crash doctor and never widen capability.
-    A configuration that does not use the Claude executor at all keeps the
-    ``healthy`` baseline: the transport is optional and its absence is only
-    a warning when the user actually configured Claude.
-    """
+    """Check the executor-native SDK protocol, independent of versions."""
     from .permission_transport import (
-        CLAUDE_SDK_PINNED_VERSION,
         assert_claude_sdk_environment,
-        current_platform,
     )
     from .protocol import ABCError
 
@@ -1528,8 +1516,7 @@ def _collect_claude_sdk_capability(config: dict[str, Any] | None) -> dict[str, s
             "status": "healthy",
             "message": (
                 "The Claude executor is not configured; the optional SDK "
-                "permission transport is not applicable (transport stays "
-                "permission_transport_unsupported if Claude is added)."
+                "permission protocol is not applicable."
             ),
         }
     try:
@@ -1540,7 +1527,7 @@ def _collect_claude_sdk_capability(config: dict[str, Any] | None) -> dict[str, s
             "status": "warning",
             "message": (
                 f"Claude SDK transport unsupported ({exc.code}); the "
-                "permission matrix fails closed to permission_transport_unsupported."
+                "native permission protocol handshake failed."
             ),
         }
     except Exception:  # noqa: BLE001 - a probe failure must never crash doctor.
@@ -1549,15 +1536,14 @@ def _collect_claude_sdk_capability(config: dict[str, Any] | None) -> dict[str, s
             "status": "warning",
             "message": (
                 "The Claude SDK environment probe failed; the permission "
-                "matrix fails closed to permission_transport_unsupported."
+                "protocol handshake failed."
             ),
         }
     return {
         "id": "permission.claude_sdk",
         "status": "healthy",
         "message": (
-            "The Claude SDK permission transport matches the probed tuple "
-            f"({CLAUDE_SDK_PINNED_VERSION} on {current_platform()})."
+            "The Claude SDK exposes the required native permission protocol."
         ),
     }
 
@@ -1566,17 +1552,13 @@ def _claude_sdk_capability_projection(
     config: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Redacted public projection of the Claude SDK transport capability."""
-    from .permission_transport import (
-        CLAUDE_SDK_PINNED_VERSION,
-        CLAUDE_SDK_PLATFORM,
-        assert_claude_sdk_environment,
-    )
+    from .permission_transport import assert_claude_sdk_environment
+    from .protocol import ABCError
 
     projection: dict[str, Any] = {
-        "probed_sdk_version": CLAUDE_SDK_PINNED_VERSION,
-        "probed_platform": CLAUDE_SDK_PLATFORM,
+        "selection": "protocol_capability",
         "supported": False,
-        "status": "permission_transport_unsupported",
+        "status": "permission_protocol_unavailable",
     }
     executors = (config or {}).get("executors")
     claude_config = (
@@ -1588,11 +1570,17 @@ def _claude_sdk_capability_projection(
     if not configured_command:
         return projection
     try:
-        assert_claude_sdk_environment(configured_command)
+        facts = assert_claude_sdk_environment(configured_command)
+    except ABCError as exc:
+        projection["status"] = exc.code
+        return projection
     except Exception:  # noqa: BLE001 - fail closed, redacted.
+        projection["status"] = "permission_protocol_handshake_failed"
         return projection
     projection["supported"] = True
     projection["status"] = "healthy"
+    projection["protocol"] = facts.get("protocol", "sdk.can_use_tool")
+    projection["sdk_version"] = facts.get("sdk_version", "unknown")
     return projection
 
 

@@ -1236,14 +1236,13 @@ def build_sdk_options(
 
 
 def sdk_transport_available() -> bool:
-    """Return whether the probed SDK tuple is importable in this process."""
+    """Return whether the compatible SDK protocol is available."""
     try:
-        # A PATH-less structural check: the environment gate needs a real
-        # configured path, so availability here means the package imports
-        # at the pinned version on this platform.
-        import claude_agent_sdk as sdk  # noqa: F401
+        from agent_bridge_connect.permission_transport import (
+            claude_sdk_protocol_capability,
+        )
 
-        return str(getattr(sdk, "__version__", "") or "") == "0.2.142"
+        return bool(claude_sdk_protocol_capability()["available"])
     except Exception:  # noqa: BLE001 - availability probes never raise.
         return False
 
