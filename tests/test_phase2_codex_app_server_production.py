@@ -979,6 +979,101 @@ class RunnerCapabilityValidationTests(unittest.TestCase):
             "thread-native-1",
         )
 
+    def test_v2_option_handle_crosses_runner_client_message_envelope(self) -> None:
+        service = TaskService(
+            self.board,
+            config={"workspace_root": str(self.root), "permission_mode": "inherit"},
+        )
+        task = service.create_task(
+            "native v2 response bridge",
+            "codex",
+            [{"id": 1, "description": "request one action"}],
+            customer_dir=True,
+            customer_path=self.root,
+            permission_mode="inherit",
+        )
+        run_id = "codex-native-v2-run-1"
+        session_id = "thread-native-v2-1"
+        service.start_task_run(task.id, "codex")
+        service.record_executor_run_started(task.id, run_id)
+        receipt = {
+            "version": 1,
+            "executor": "codex",
+            "session_id": session_id,
+            "resumed": False,
+            "persistence": "persistent",
+            "source": "jsonl_thread_started",
+        }
+        plane = ApprovalControlPlane(
+            control_root_for_task(task.id, board_root=self.board),
+            task_id=task.id,
+            executor_run_id=run_id,
+            session_id=session_id,
+        )
+        plane.record_session_started(receipt)
+        event = plane.request_approval(
+            {
+                "jsonrpc": "2.0",
+                "id": 88,
+                "method": "item/commandExecution/requestApproval",
+                "params": {
+                    "threadId": session_id,
+                    "turnId": "turn-native-v2-1",
+                    "itemId": "item-native-v2-1",
+                    "command": ["printf", "ok"],
+                },
+                "approval_version": 2,
+                "authority": {
+                    "executor": "codex",
+                    "protocol": "codex_app_server",
+                    "protocol_version": 2,
+                    "method": "item/commandExecution/requestApproval",
+                },
+                "offered_choices": [
+                    {"native_option_id": "decline", "kind": "deny", "label": "Deny"},
+                    {"native_option_id": "accept", "kind": "once", "label": "Once"},
+                ],
+            }
+        )
+        pending = plane.status()["pending_request"]
+        blocked = service.block_task_for_approval(
+            task.id,
+            executor_run_id=run_id,
+            session_id=session_id,
+            request_id="88",
+            request_fingerprint=str(event["request_fingerprint"]),
+            executor="codex",
+            operation="command",
+            execution_session=receipt,
+            tool_use_id="item-native-v2-1",
+            offered_choices=list(pending["offered_choices"]),
+            authority=dict(pending["authority"]),
+        )
+        waiting = service.get_task(task.id).extensions["agentbc.input"]
+        once_handle = next(
+            choice["handle"] for choice in waiting["choices"] if choice["kind"] == "once"
+        )
+
+        result = self.state.respond_and_dispatch(
+            {
+                "task_id": task.id,
+                "input_id": blocked["input_id"],
+                "response_type": "permission_option",
+                # This is the exact stable RunnerClient envelope used by the
+                # dialog responder: the handle is carried in message.
+                "message": once_handle,
+                "board_root": str(self.board),
+                "config_path": "",
+                "interval_s": 0.01,
+            }
+        )
+
+        self.assertEqual(result["permission_choice"]["handle"], once_handle)
+        self.assertTrue(result["same_session"])
+        self.assertFalse(result["dispatch_required"])
+        response = plane.wait_for_decision("88", 0.1)
+        self.assertEqual(response["decision"], "accept")
+
     def _packet(
         self,
         *,

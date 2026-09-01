@@ -2081,7 +2081,14 @@ class RunnerState:
             )
             # PERM-104-002 v2: the CLI may answer with an executor-native
             # choice handle instead of the flattened --approve/--deny.
+            response_type = str(request.get("response_type") or "").strip()
             permission_option = str(request.get("permission_option") or "").strip()
+            if not permission_option and response_type == "permission_option":
+                # RunnerClient.respond_task transports every response through
+                # the stable response_type/message pair.  Normalize the opaque
+                # v2 handle here before recording the answer and replying to
+                # the same live executor control plane.
+                permission_option = str(request.get("message") or "").strip()
             if permission_option and native_approval is None:
                 raise RunnerError(
                     "permission_option_invalid: --permission-option applies "
@@ -2099,7 +2106,7 @@ class RunnerState:
                     result = service.respond_to_input(
                         task_id,
                         str(request.get("input_id") or ""),
-                        response_type=str(request.get("response_type") or ""),
+                        response_type=response_type,
                         message=str(request.get("message") or ""),
                     )
             except ABCError as exc:
