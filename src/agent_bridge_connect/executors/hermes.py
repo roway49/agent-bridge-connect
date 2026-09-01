@@ -393,6 +393,17 @@ class HermesExecutor(CLIExecutorBase):
             return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
 
         if self.transport == "acp":
+            if self._acp_transport_override is None:
+                capability = self.acp_capability()
+                if not capability.get("ok"):
+                    return StartResult(
+                        ok=False,
+                        run_id="",
+                        message=(
+                            "permission_transport_unsupported: Hermes ACP protocol "
+                            f"probe failed: {capability.get('reason') or 'unavailable'}"
+                        ),
+                    )
             return self._start_with_acp(task_packet, root, run_id, permission)
 
         if self._should_use_runner():
@@ -765,6 +776,7 @@ class HermesExecutor(CLIExecutorBase):
             "cancelled": False,
         }
         self._acp_runs[run_id] = record
+        self._store_run(run_id, root, None, "acp")
         worker = threading.Thread(
             target=self._run_acp_session,
             args=(run_id,),
@@ -1140,6 +1152,12 @@ class HermesExecutor(CLIExecutorBase):
         """Return metadata suitable for extensions.executor.hermes."""
         if not self._version and self.agent_bin is not None:
             self.probe()
+        active_transport = self.transport
+        if self._last_run_id is not None:
+            active_transport = str(
+                self._run_metadata.get(self._last_run_id, {}).get("transport")
+                or active_transport
+            )
         metadata: dict[str, Any] = {
             "version": self._version,
             "runtime": "cli",
@@ -1153,7 +1171,7 @@ class HermesExecutor(CLIExecutorBase):
             "model": self.model,
             "max_turns": self.max_turns,
             "auth_owner": "hermes_cli",
-            "transport": self.transport,
+            "transport": active_transport,
             "permission": (
                 permission_record_from_extensions(
                     self._task_packets.get(self._last_run_id, {}).get("extensions")
@@ -1168,6 +1186,14 @@ class HermesExecutor(CLIExecutorBase):
             if isinstance(last_run.get("iteration"), dict):
                 metadata["iteration"] = last_run["iteration"]
         acp = self.acp_capability()
+        acp_state = "unavailable"
+        if acp.get("ok"):
+            acp_state = "available"
+        if active_transport == "acp":
+            active_run = self._acp_runs.get(str(self._last_run_id or ""), {})
+            acp_state = "bound" if active_run.get("session_id") else "starting"
+        elif self._last_run_id is not None:
+            acp_state = "not_active"
         metadata["acp"] = {
             "transport": TRANSPORT_HERMES_ACP,
             "capability_id": HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID,
@@ -1180,7 +1206,7 @@ class HermesExecutor(CLIExecutorBase):
                 # Task 6 binds the exact session-level capability at ACP
                 # session init: only allow_once/deny outcomes are exposed to
                 # AgentBC through the frozen approval receipt and ControlPlane.
-                "state": "bound",
+                "state": acp_state,
                 "capability_id": HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID,
                 "decisions": ["allow_once", "deny"],
             },

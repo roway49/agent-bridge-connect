@@ -401,7 +401,7 @@ class IdempotentCodexSkillTests(unittest.TestCase):
 
 
 class SetupModeTests(unittest.TestCase):
-    def test_hermes_setup_enables_visible_runner_output(self):
+    def test_hermes_setup_uses_native_acp_permission_transport(self):
         from agent_bridge_connect.setup import _executor_config_for
 
         config = _executor_config_for(
@@ -414,7 +414,7 @@ class SetupModeTests(unittest.TestCase):
                 "version": "test",
             }
         )
-        self.assertEqual(config["transport"], "runner")
+        self.assertEqual(config["transport"], "acp")
         self.assertFalse(config["quiet"])
 
     def test_claude_executor_config_defaults_to_safe_l1_runner(self):

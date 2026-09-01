@@ -1192,7 +1192,11 @@ def _executor_config_for(agent: dict[str, Any]) -> dict[str, Any]:
         "version": agent["version"],
     }
     if agent["name"] == "hermes":
-        result["transport"] = "runner"
+        # Hermes native permission requests exist only on the documented ACP
+        # session transport.  The legacy ``hermes chat`` Runner path cannot
+        # emit ``session/request_permission`` and must not be the setup
+        # default for an approval-capable installation.
+        result["transport"] = "acp"
         result["quiet"] = False
     if agent["name"] == "claude":
         result["transport"] = "runner"

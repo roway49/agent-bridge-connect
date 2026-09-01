@@ -584,6 +584,12 @@ class HermesAcpExecutorTests(unittest.TestCase):
         )
         self.assertEqual(result.result["execution_session"]["session_id"], FAKE_SESSION_ID)
         self.assertFalse(result.result["execution_session"]["resumed"])
+        hermes = result.result["extensions"]["executor"]["hermes"]
+        self.assertEqual(hermes["transport"], "acp")
+        self.assertEqual(
+            hermes["acp"]["request_permission"]["state"],
+            "bound",
+        )
 
     def test_deny_maps_to_cancelled(self) -> None:
         fake = FakeAcpTransport(self.board, self.task_id)

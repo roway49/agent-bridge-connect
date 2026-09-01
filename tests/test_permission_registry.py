@@ -635,7 +635,7 @@ class HermesExecutorACPMetadataTests(unittest.TestCase):
         self.assertEqual(acp["capability_id"], HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID)
         self.assertTrue(acp["check"]["ok"])
         self.assertEqual(acp["check"]["version"], "0.20.1")
-        self.assertEqual(acp["request_permission"]["state"], "bound")
+        self.assertEqual(acp["request_permission"]["state"], "available")
         self.assertEqual(acp["request_permission"]["decisions"], ["allow_once", "deny"])
         self.assertEqual(
             acp["request_permission"]["capability_id"],
@@ -643,6 +643,15 @@ class HermesExecutorACPMetadataTests(unittest.TestCase):
         )
         # No run yet: no permission_capability metadata.
         self.assertNotIn("permission_capability", details)
+
+    def test_runner_metadata_does_not_claim_acp_is_bound(self) -> None:
+        from agent_bridge_connect.executors.hermes import HermesExecutor
+
+        executor = HermesExecutor(command=str(self.fake_hermes), transport="runner")
+        executor._store_run("runner-run", self.root, 0, "runner")
+        details = executor.get_extensions()["executor"]["hermes"]
+        self.assertEqual(details["transport"], "runner")
+        self.assertEqual(details["acp"]["request_permission"]["state"], "not_active")
 
     def test_get_extensions_records_full_mode_audit(self) -> None:
         from agent_bridge_connect.executors.hermes import HermesExecutor
