@@ -93,6 +93,7 @@ PHASE6_AUTHORIZATION_EXTENSION_KEYS = (
     PHASE6_LINEAGE_EXTENSION_KEY,
 )
 _EXECUTOR_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$")
+_RUNNER_IPC_CHANNEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 CLAUDE_SDK_CONTROL_AUTHORIZATION = "claude_sdk_control_v1"
 
 _EXECUTOR_COMMAND_RULES: dict[str, dict[str, Any]] = {
@@ -711,6 +712,9 @@ class RunnerClient:
         self.spool_root = Path(spool_root or default_runner_spool()).expanduser()
         self.token_path = Path(token_path or (self.spool_root / "token")).expanduser()
         self.timeout_s = timeout_s
+        self.channel = str(os.environ.get("AGENTBC_RUNNER_CHANNEL") or "").strip()
+        if self.channel and not _RUNNER_IPC_CHANNEL_RE.fullmatch(self.channel):
+            raise RunnerError("runner IPC channel is invalid")
 
     def health(self) -> dict[str, Any]:
         return self._request({"op": "health"})
@@ -1040,6 +1044,9 @@ class RunnerClient:
             raise RunnerError(f"runner token unavailable: {exc}") from exc
         requests_dir = self.spool_root / "requests"
         responses_dir = self.spool_root / "responses"
+        if self.channel:
+            requests_dir = requests_dir / self.channel
+            responses_dir = responses_dir / self.channel
         if not requests_dir.is_dir() or not responses_dir.is_dir():
             raise RunnerError("runner spool is unavailable")
         request_id = uuid.uuid4().hex
@@ -1093,6 +1100,9 @@ class RunnerState:
         }
         self.executable_sources = dict(executable_sources or {})
         self.enable_task_dashboard = bool(enable_task_dashboard)
+        # RunnerService replaces this with its exact configured spool.  The
+        # default keeps direct RunnerState tests and embedded uses coherent.
+        self.spool_root = default_runner_spool().expanduser().resolve()
         self.runs: dict[str, dict[str, Any]] = {}
         self.lock = threading.RLock()
         from .config import DEFAULT_BOARD_ROOT
@@ -1592,24 +1602,21 @@ class RunnerState:
             },
         )
         # PERM-104-002 runtime capability closure: a concrete ``full`` base
-        # must be proven effective in the frozen PathPlan, not just declared.
-        # The Runner realpath-validates every task root under its lock,
-        # pins any linked-worktree Git metadata, preflights host containment
-        # (no dialog, no grant consumption) and persists an
-        # ``agentbc.permission_runtime`` v1 record.
+        # must be bound to the frozen task, PathPlan and exact executor
+        # command, not merely declared.  It is intentionally not nested in a
+        # second host sandbox: full must preserve the executor's documented
+        # non-interactive capability and complete without approval dialogs.
         #
         # Review fixes (E52M-002):
         # * explicit full, temporary (one-shot grant) full and inherited full
-        #   get the identical pre-start treatment - containment is decided
-        #   here, before the worker process exists, so a grant is never
-        #   consumed by a worker that was started outside the profile.  The
-        #   three sources differ only in ``selection_source``.
+        #   get identical pre-start authorization.  The three sources differ
+        #   only in ``selection_source``.
         # * ``chain_head_id`` is read from ``agentbc.lineage`` (falling back
         #   to the task id itself only when the extension is absent).
         # * the lifecycle is wired for production: the record is persisted
         #   as ``prepared``, moved to ``authorized`` once the grant (if any)
         #   has been consumed and the worker run is bound, ``activated``
-        #   only after the process is actually spawned inside the profile,
+        #   only after the Runner-authorized process is actually spawned,
         #   and verified by the worker when its structured run completes.
         #   Any failure before activation moves the record to ``blocked``
         #   with a stable code - a prepared record can never activate.
@@ -1618,7 +1625,6 @@ class RunnerState:
         runtime_authorized: dict[str, Any] | None = None
         profile_digest = ""
         from .permission_runtime import (
-            HOST_CONTAINMENT_UNLIFTABLE,
             PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE,
             PERMISSION_RUNTIME_EXTENSION_KEY,
             activate_permission_runtime_record,
@@ -1629,21 +1635,12 @@ class RunnerState:
             path_plan_digest,
             runtime_source_for_permission,
         )
-        from .seatbelt import (
-            canonical_task_files,
-            canonical_task_roots,
-            preflight_host_containment,
-            task_temp_root,
-            validate_linked_worktree,
-        )
-
         # An issued one-shot grant is already an authoritative selection of
         # ``full`` for the next Executor run, even though it must remain
-        # unconsumed until the contained Adapter presents its exact run ID to
-        # Runner authorization.  Use that frozen selection to prepare the
-        # outer capability before the Worker starts; otherwise temporary full
-        # would launch an uncontained safe/inherit Worker and only become full
-        # later inside the process.
+        # unconsumed until the Adapter presents its exact run ID to Runner
+        # authorization.  Use that frozen selection before the Worker starts;
+        # otherwise temporary full would begin as safe/inherit and change mode
+        # only after execution had already started.
         try:
             pending_grant = permission_grant_from_extensions(
                 task_model.extensions,
@@ -1705,39 +1702,15 @@ class RunnerState:
                 ).strip()
                 plan_digest = path_plan_digest(workspace_values)
                 profile_digest = host_profile_digest_fn()
-                with self.lock:
-                    real_roots = canonical_task_roots(workspace_values)
-                    linked_worktree = validate_linked_worktree(workspace)
-                    # PERM-104-002 review fix (E52M-003): every concrete full
-                    # Worker enters task-scoped Seatbelt containment - a plain
-                    # repository or directory is contained with the frozen
-                    # task roots only; a linked worktree additionally pins its
-                    # exact Git metadata.  Containment is no longer reserved
-                    # for linked worktrees, and a receipt can never claim
-                    # ``activated`` for an uncontained plain project.
-                    preflight_host_containment(require_expansion=True)
-                    agentbc_root = str(
-                        (workspace_values or {}).get("agentbc_root") or ""
-                    ).strip()
-                    task_temp = task_temp_root(
-                        (
-                            Path(agentbc_root).expanduser() / "record"
-                            if agentbc_root
-                            else self.state_root / "task-temp"
-                        ),
-                        task_id,
-                    )
-                    containment = {
-                        "task_id": task_id,
-                        "board_root": str(board),
-                        "writable_roots": [str(root) for root in real_roots]
-                        + [str(task_temp)],
-                        "writable_files": [
-                            str(path) for path in canonical_task_files(workspace_values)
-                        ],
-                        "task_temp_root": str(task_temp),
-                        "linked_worktree": linked_worktree,
-                    }
+                # Concrete ``full`` means the executor's strongest documented
+                # non-interactive mode can actually run unattended.  Wrapping
+                # that worker in a second task-scoped Seatbelt blocked the
+                # executor's own state, network, IPC and Git operations, which
+                # made ``full`` less capable than normal execution.  Runner
+                # still validates task identity, the frozen PathPlan and the
+                # exact executor command, but host containment is not a gate
+                # for concrete full.  Safe/inherit behavior is unchanged.
+                containment = None
                 runtime_record = build_permission_runtime_record(
                     task_id=task_id,
                     chain_head_id=chain_head_id,
@@ -1829,15 +1802,14 @@ class RunnerState:
                 containment=containment,
             )
         except Exception as exc:
-            # Fail closed: a spawned-or-not record must never pretend the
-            # capability became effective.  No dialog, no grant consumption
-            # beyond what dispatch already did; the stable code is surfaced.
+            # A worker that did not spawn never activated its full mapping.
+            # Preserve that lifecycle fact without turning it into an approval.
             if runtime_authorized is not None:
                 try:
                     blocked = block_permission_runtime_record(
                         runtime_authorized,
-                        code=HOST_CONTAINMENT_UNLIFTABLE,
-                        domain="host_containment",
+                        code=PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE,
+                        domain="agentbc_policy",
                     )
                     task["extensions"][PERMISSION_RUNTIME_EXTENSION_KEY] = blocked
                     TaskStore(board).write_task(task_id, task)
@@ -1853,8 +1825,8 @@ class RunnerState:
             raise
         if runtime_authorized is not None:
             try:
-                # ``activated`` only after the process exists inside the same
-                # host profile that was digested at preparation time.
+                # ``activated`` only after the Runner-authorized worker exists.
+                # Concrete full is intentionally not nested in host Seatbelt.
                 activated = activate_permission_runtime_record(
                     runtime_authorized,
                     host_profile_digest=profile_digest,
@@ -2682,6 +2654,7 @@ class RunnerState:
         wrapped_command = command
         profile_path: Path | None = None
         environment: dict[str, str] | None = None
+        runner_ipc_channel = ""
         containment_lock_held = False
         if containment is not None:
             # PERM-104-002: launch the worker inside a Runner-owned,
@@ -2722,10 +2695,24 @@ class RunnerState:
                 if task_temp_root_text:
                     temp_root = Path(task_temp_root_text).expanduser().resolve()
                     temp_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+                runner_ipc_channel = str(
+                    containment.get("runner_ipc_channel") or ""
+                ).strip()
+                ipc_roots: list[Path] = []
+                if runner_ipc_channel:
+                    if not _RUNNER_IPC_CHANNEL_RE.fullmatch(runner_ipc_channel):
+                        raise RunnerError("runner IPC channel is invalid")
+                    for kind in ("requests", "responses"):
+                        channel_root = (
+                            self.spool_root / kind / runner_ipc_channel
+                        ).resolve()
+                        channel_root.mkdir(parents=True, exist_ok=False, mode=0o700)
+                        ipc_roots.append(channel_root)
                 profile_text = build_seatbelt_profile(
                     writable_roots=[
                         *containment.get("writable_roots", []),
                         run_dir,
+                        *ipc_roots,
                     ],
                     writable_files=containment.get("writable_files", []),
                     linked_worktree=containment.get("linked_worktree"),
@@ -2736,12 +2723,16 @@ class RunnerState:
                     profile_text,
                     profile_dir,
                 )
-                if task_temp_root_text:
+                if task_temp_root_text or runner_ipc_channel:
                     # E52M-003 review fix: /private/tmp and /var/folders are no
                     # longer writable.  The contained worker stages scratch data
                     # in its canonical task-scoped temp root via TMPDIR.
                     environment = dict(os.environ)
-                    environment["TMPDIR"] = task_temp_root_text
+                    if task_temp_root_text:
+                        environment["TMPDIR"] = task_temp_root_text
+                    if runner_ipc_channel:
+                        environment["AGENTBC_RUNNER_SPOOL"] = str(self.spool_root)
+                        environment["AGENTBC_RUNNER_CHANNEL"] = runner_ipc_channel
             except Exception:
                 containment_lock_held = False
                 self.lock.release()
@@ -2752,6 +2743,8 @@ class RunnerState:
                         profile_path.unlink(missing_ok=True)
                     except OSError:
                         pass
+                if runner_ipc_channel:
+                    self._cleanup_runner_ipc_channel(runner_ipc_channel)
                 raise
         try:
             process = subprocess.Popen(
@@ -2771,6 +2764,8 @@ class RunnerState:
             if containment_lock_held:
                 containment_lock_held = False
                 self.lock.release()
+            if runner_ipc_channel:
+                self._cleanup_runner_ipc_channel(runner_ipc_channel)
             raise
         record: dict[str, Any] = {
             "run_id": run_id,
@@ -2791,6 +2786,7 @@ class RunnerState:
             "profile_path": (
                 str(profile_path) if profile_path is not None else ""
             ),
+            "runner_ipc_channel": runner_ipc_channel,
             "process": process,
         }
         try:
@@ -2806,6 +2802,17 @@ class RunnerState:
             daemon=True,
         ).start()
         return self.status(run_id)
+
+    def _cleanup_runner_ipc_channel(self, channel: str) -> None:
+        """Remove only empty directories owned by one completed worker run."""
+        if not _RUNNER_IPC_CHANNEL_RE.fullmatch(str(channel or "")):
+            return
+        for kind in ("requests", "responses", "processing"):
+            path = self.spool_root / kind / channel
+            try:
+                path.rmdir()
+            except OSError:
+                pass
 
     def status(self, run_id: str) -> dict[str, Any]:
         with self.lock:
@@ -3684,8 +3691,11 @@ class RunnerState:
                 except OSError:
                     pass
                 record["profile_path"] = None
+            runner_ipc_channel = str(record.get("runner_ipc_channel") or "")
             self._write_metadata(record)
             reconciliation = dict(record)
+        if runner_ipc_channel:
+            self._cleanup_runner_ipc_channel(runner_ipc_channel)
         self._reconcile_worker_exit(reconciliation)
 
     def _reconcile_worker_start_failure(
@@ -3867,6 +3877,7 @@ class RunnerService:
         self.spool_root = spool_root.expanduser().resolve()
         self.token_path = token_path.expanduser().resolve()
         self.runner_state = state
+        self.runner_state.spool_root = self.spool_root
         self.interval_s = max(interval_s, 0.01)
         self.requests_dir = self.spool_root / "requests"
         self.responses_dir = self.spool_root / "responses"
@@ -3909,8 +3920,22 @@ class RunnerService:
             self.runner_state.maintain_session_cleanup()
             self._last_maintenance_at = now
         handled = False
-        for request_path in sorted(self.requests_dir.glob("*.json")):
-            processing_path = self.processing_dir / request_path.name
+        for request_path in sorted(self.requests_dir.glob("**/*.json")):
+            relative = request_path.relative_to(self.requests_dir)
+            if len(relative.parts) == 1:
+                channel = ""
+            elif (
+                len(relative.parts) == 2
+                and _RUNNER_IPC_CHANNEL_RE.fullmatch(relative.parts[0])
+            ):
+                channel = relative.parts[0]
+            else:
+                continue
+            processing_dir = (
+                self.processing_dir / channel if channel else self.processing_dir
+            )
+            processing_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            processing_path = processing_dir / request_path.name
             try:
                 request_path.replace(processing_path)
             except FileNotFoundError:
@@ -3931,8 +3956,13 @@ class RunnerService:
                 response = _dispatch_request(self.runner_state, request)
             except (ABCError, RunnerError, OSError, ValueError, json.JSONDecodeError) as exc:
                 response = {"ok": False, "error": str(exc)}
-            self._write_response(request_id, response)
+            self._write_response(request_id, response, channel=channel)
             processing_path.unlink(missing_ok=True)
+            if channel:
+                try:
+                    processing_dir.rmdir()
+                except OSError:
+                    pass
         return handled
 
     def shutdown(self) -> None:
@@ -3963,9 +3993,17 @@ class RunnerService:
             return False
         return bool(current_token) and hmac.compare_digest(current_token, self.runner_token)
 
-    def _write_response(self, request_id: str, response: dict[str, Any]) -> None:
-        path = self.responses_dir / f"{request_id}.json"
-        temporary = self.responses_dir / f".{request_id}.tmp"
+    def _write_response(
+        self,
+        request_id: str,
+        response: dict[str, Any],
+        *,
+        channel: str = "",
+    ) -> None:
+        response_dir = self.responses_dir / channel if channel else self.responses_dir
+        response_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path = response_dir / f"{request_id}.json"
+        temporary = response_dir / f".{request_id}.tmp"
         temporary.write_text(json.dumps(response, ensure_ascii=False), encoding="utf-8")
         os.chmod(temporary, 0o600)
         temporary.replace(path)

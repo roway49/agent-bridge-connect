@@ -206,6 +206,82 @@ class RunnerStateTests(unittest.TestCase):
 
         self.assertEqual(client.token_path, self.root / "custom-spool" / "token")
 
+    def test_runner_client_private_channel_round_trip(self):
+        from agent_bridge_connect.runner import RunnerClient, RunnerService
+
+        spool = self.root / "channel-spool"
+        service = RunnerService(spool, spool / "token", self.state, interval_s=0.01)
+        channel = "runner-worker-private-1"
+        (spool / "requests" / channel).mkdir()
+        (spool / "responses" / channel).mkdir()
+        thread = threading.Thread(target=service.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "AGENTBC_RUNNER_SPOOL": str(spool),
+                    "AGENTBC_RUNNER_CHANNEL": channel,
+                },
+            ):
+                result = RunnerClient(timeout_s=1.0).health()
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["status"], "ready")
+            self.assertEqual(list((spool / "requests").glob("*.json")), [])
+            self.assertEqual(list((spool / "responses").glob("*.json")), [])
+        finally:
+            service.shutdown()
+            thread.join(timeout=1.0)
+
+    def test_contained_spawn_exports_private_runner_ipc_channel(self):
+        channel = "runner-worker-contained-1"
+        spool = self.root / "contained-spool"
+        self.state.spool_root = spool.resolve()
+        captured: dict[str, str] = {}
+
+        def fake_launch(command, _cwd, profile_text, profile_dir):
+            captured["profile"] = profile_text
+            profile_path = Path(profile_dir) / "task-test.sb"
+            profile_path.parent.mkdir(parents=True, exist_ok=True)
+            profile_path.write_text(profile_text, encoding="utf-8")
+            return command, profile_path
+
+        with (
+            mock.patch(
+                "agent_bridge_connect.seatbelt.seatbelt_available",
+                return_value=True,
+            ),
+            mock.patch(
+                "agent_bridge_connect.seatbelt.launch_with_seatbelt",
+                side_effect=fake_launch,
+            ),
+        ):
+            result = self.state._spawn_process(
+                "worker:codex",
+                [
+                    "/bin/sh",
+                    "-c",
+                    'printf "%s|%s" "$AGENTBC_RUNNER_SPOOL" "$AGENTBC_RUNNER_CHANNEL"',
+                ],
+                self.root,
+                "runner-worker",
+                containment={
+                    "writable_roots": [str(self.root)],
+                    "task_temp_root": str(self.root / "task-temp"),
+                    "runner_ipc_channel": channel,
+                },
+            )
+        terminal = self._wait_terminal(result["run_id"])
+        self.assertEqual(terminal["status"], "completed", terminal.get("stderr"))
+        self.assertEqual(terminal["stdout"], f"{spool.resolve()}|{channel}")
+        requests = (spool / "requests" / channel).resolve()
+        responses = (spool / "responses" / channel).resolve()
+        self.assertIn(f'(allow file-write* (subpath "{requests}"))', captured["profile"])
+        self.assertIn(f'(allow file-write* (subpath "{responses}"))', captured["profile"])
+        self.assertNotIn(f'(allow file-write* (subpath "{spool.resolve()}"))', captured["profile"])
+        self.assertFalse(requests.exists())
+        self.assertFalse(responses.exists())
+
     def test_runner_service_rejects_second_instance_for_same_spool(self):
         from agent_bridge_connect.runner import RunnerError, RunnerService
 

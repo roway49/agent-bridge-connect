@@ -2453,6 +2453,40 @@ class Phase10dIntegrationTests(unittest.TestCase):
         events = self.service.store.read_events(self.task.id)
         self.assertEqual(events[-1]["event_type"], "task.requeued")
 
+    def test_requeue_clears_run_without_an_official_session_receipt(self):
+        from agent_bridge_connect.execution_policy import SESSION_EXTENSION_KEY
+
+        task = self.service.create_task(
+            "retry pre-session failure",
+            "codex",
+            [{"id": 1, "description": "run"}],
+            customer_dir=False,
+            permission_mode="full",
+        )
+        pending = dict(task.extensions[SESSION_EXTENSION_KEY])
+        pending["session_state"] = "pending"
+        pending["session_id"] = ""
+        pending["run_ids"] = ["codex-pre-session-failure"]
+        task.extensions = dict(task.extensions)
+        task.extensions[SESSION_EXTENSION_KEY] = pending
+        self.service.store.write_task(task.id, task.to_dict())
+        self.service.mark_task_needs_recovery(
+            task.id, "executor_start_failed", "pre-session failure"
+        )
+
+        requeued = self.service.requeue_task(task.id)
+
+        session = requeued.extensions[SESSION_EXTENSION_KEY]
+        self.assertEqual(session["session_state"], "pending")
+        self.assertEqual(session["session_id"], "")
+        self.assertEqual(session["run_ids"], [])
+        self.assertEqual(session["resume_count"], 0)
+        events = self.service.store.read_events(task.id)
+        self.assertEqual(
+            events[-1]["event_type"], "executor.unbound_session_runs_cleared"
+        )
+        self.assertEqual(events[-1]["cleared_run_count"], 1)
+
     def test_needs_recovery_report_requires_recovery(self):
         from agent_bridge_connect.reports import generate_report
 
