@@ -43,6 +43,12 @@ AgentBC accepts exactly `inherit`, `safe`, and `full` task permission selectors:
 - `safe` is the explicit conservative task base and preserves established executor approval behavior.
 - `full` is the explicit audited non-escalatable task base for the installed executor's strongest documented noninteractive access. Warn before selecting it.
 
+Hermes uses two permission-dependent runtime modes. `inherit` and `safe` run
+through native ACP so a blocked action can produce an exact interactive
+permission request. `full` runs through the non-interactive
+`hermes chat --yolo` transport so the task can finish without ACP edit
+prompts. The Runner and task path policy remain in force in both modes.
+
 First-time setup defaults to `inherit`; an existing configured default is preserved. Legacy tasks
 that have no persisted permission extension still fail closed to `safe`.
 

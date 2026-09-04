@@ -80,18 +80,6 @@ _HERMES_INITIALIZING_LINE_RE = re.compile(
 _ACP_COMPLETED_STOP_REASONS = frozenset({"end_turn", "success", "completed"})
 
 
-def hermes_acp_yolo_env() -> dict[str, str]:
-    """Subprocess-scoped ``HERMES_YOLO_MODE=1`` override for Hermes full mode.
-
-    Returns a fresh environment mapping that MUST only be applied to the
-    spawned Hermes ACP subprocess environment.  It never mutates the user's
-    global environment.  The Runner control loop applies it per subprocess
-    and records the :func:`permission_audit` payload; AgentBC only freezes
-    the capability here (``transport=hermes-acp``).
-    """
-    return {"HERMES_YOLO_MODE": "1"}
-
-
 class HermesExecutor(CLIExecutorBase):
     """L2 executor using the Hermes CLI in headless chat mode."""
 
@@ -392,7 +380,18 @@ class HermesExecutor(CLIExecutorBase):
         except ABCError as exc:
             return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
 
-        if self.transport == "acp":
+        frozen_transport = _hermes_transport_from_permission(permission)
+        # ``direct`` and ``runner`` are retained as explicit legacy/test
+        # transports.  Production setup selects ACP; there the frozen task
+        # mode performs the full/non-full split below.
+        if self.transport in {"direct", "runner"}:
+            frozen_transport = "direct"
+        # Hermes deliberately has two production runtime modes.  Native ACP
+        # remains the interactive permission channel for inherit/safe.  Full
+        # runs through the headless chat CLI with --yolo, because ACP edit
+        # approvals are a separate subsystem and cannot be bypassed by the
+        # generic HERMES_YOLO_MODE command policy.
+        if frozen_transport == TRANSPORT_HERMES_ACP:
             if self._acp_transport_override is None:
                 capability = self.acp_capability()
                 if not capability.get("ok"):
@@ -1449,6 +1448,18 @@ def _execution_session_receipt(
         "persistence": "persistent",
         "source": "stderr_receipt",
     }
+
+
+def _hermes_transport_from_permission(permission: dict[str, Any]) -> str:
+    """Select Hermes' runtime mode from the task's frozen permission mode.
+
+    The mode, not a historical transport projection, is authoritative.  This
+    lets active full snapshots created before the split use the corrected
+    zero-prompt CLI path while inherit/safe continue to use native ACP.
+    """
+
+    mode = str(permission.get("effective_mode") or "inherit").strip().lower()
+    return "direct" if mode == "full" else TRANSPORT_HERMES_ACP
 
 
 def _workspace_root(task_packet: dict[str, Any]) -> Path | None:

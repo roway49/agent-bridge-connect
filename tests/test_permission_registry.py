@@ -4,9 +4,8 @@ Covers the ``agentbc.permission`` v2 record contract, the resolution
 priority (task override > handoff snapshot > config > legacy safe), the
 dual-read unified permission setting, the same-source setup/config
 transaction, the three-executor x three-mode capability mapping and probes
-(including ``permission_capability_unsupported``), and the frozen Hermes ACP
-capability (``transport=hermes-acp``, ``session/request_permission``,
-subprocess-scoped ``HERMES_YOLO_MODE=1``).
+(including ``permission_capability_unsupported``), and the frozen Hermes
+transport split (ACP for inherit/safe, headless ``chat --yolo`` for full).
 """
 
 from __future__ import annotations
@@ -38,8 +37,8 @@ from agent_bridge_connect.permission_modes import (
 from agent_bridge_connect.permission_registry import (
     GLOBAL_PERMISSION_SETTING,
     HERMES_ACP_CHECK_CAPABILITY_ID,
-    HERMES_ACP_FULL_YOLO_ENV_CAPABILITY_ID,
     HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID,
+    HERMES_CLI_FULL_YOLO_CAPABILITY_ID,
     LEGACY_PERMISSION_SETTING,
     PERMISSION_SCHEMA_VERSION,
     RESOLUTION_PRIORITY,
@@ -417,7 +416,7 @@ class ExecutorCapabilityMappingTests(unittest.TestCase):
             ),
             ("hermes", "inherit"): ([], "hermes.acp.inherit"),
             ("hermes", "safe"): ([], HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID),
-            ("hermes", "full"): ([], HERMES_ACP_FULL_YOLO_ENV_CAPABILITY_ID),
+            ("hermes", "full"): (["--yolo"], HERMES_CLI_FULL_YOLO_CAPABILITY_ID),
         }
         for (executor, mode), (args, capability_id) in expectations.items():
             with self.subTest(executor=executor, mode=mode):
@@ -430,16 +429,12 @@ class ExecutorCapabilityMappingTests(unittest.TestCase):
                 else:
                     self.assertFalse(entry["overrides_native"])
 
-    def test_hermes_full_env_is_subprocess_scoped_and_auditable(self) -> None:
+    def test_hermes_full_uses_headless_chat_yolo_transport(self) -> None:
         entry = executor_permission_mapping("hermes", "full")
-        self.assertEqual(entry["transport"], TRANSPORT_HERMES_ACP)
-        self.assertEqual(entry["env"], {"HERMES_YOLO_MODE": "1"})
-        self.assertEqual(entry["args"], [])
-        # The frozen direct transport keeps its documented flag.
+        self.assertEqual(entry["transport"], "direct")
+        self.assertEqual(entry["env"], {})
+        self.assertEqual(entry["args"], ["--yolo"])
         self.assertEqual(entry["direct_args"], ["--yolo"])
-        from agent_bridge_connect.executors.hermes import hermes_acp_yolo_env
-
-        self.assertEqual(hermes_acp_yolo_env(), {"HERMES_YOLO_MODE": "1"})
 
     def test_hermes_safe_never_impersonates_with_safe_mode_or_accept_hooks(self) -> None:
         entry = executor_permission_mapping("hermes", "safe")
@@ -456,7 +451,7 @@ class ExecutorCapabilityMappingTests(unittest.TestCase):
         for executor, mode, expected in (
             ("codex", "safe", ["--sandbox", "workspace-write"]),
             ("claude", "full", ["--dangerously-skip-permissions"]),
-            ("hermes", "full", []),
+            ("hermes", "full", ["--yolo"]),
             ("hermes", "safe", []),
         ):
             with self.subTest(executor=executor, mode=mode):
@@ -487,7 +482,7 @@ class ExecutorCapabilityMappingTests(unittest.TestCase):
         view = permission_mapping_view("full")
         self.assertEqual(set(view), {"codex", "claude", "hermes"})
         self.assertEqual(view["codex"]["mode"], "full")
-        self.assertEqual(view["hermes"]["transport"], TRANSPORT_HERMES_ACP)
+        self.assertEqual(view["hermes"]["transport"], "direct")
 
 
 class HermesACPCapabilityProbeTests(unittest.TestCase):
@@ -529,11 +524,12 @@ class HermesACPCapabilityProbeTests(unittest.TestCase):
         self.assertNotEqual(details["permission_mode"], "inherit")
         self.assertNotEqual(details["permission_mode"], "full")
 
-    def test_acp_probe_missing_executable_fails_closed(self) -> None:
+    def test_full_cli_probe_missing_executable_fails_closed(self) -> None:
         with self.assertRaises(ABCError) as raised:
             probe_executor_capability("hermes", "full", None)
         self.assertEqual(raised.exception.code, "permission_capability_unsupported")
-        self.assertEqual(raised.exception.details["reason"], "executable_not_found")
+        self.assertEqual(raised.exception.details["executor"], "hermes")
+        self.assertEqual(raised.exception.details["permission_mode"], "full")
 
     def test_probe_only_uses_official_acp_cli_never_scans_sessions(self) -> None:
         """The probe never touches Hermes private session storage or logs."""
@@ -581,14 +577,14 @@ class PermissionAuditPayloadTests(unittest.TestCase):
         payload = build_permission_audit_payload(record, executor="hermes")
         self.assertEqual(payload["version"], PERMISSION_SCHEMA_VERSION)
         self.assertEqual(payload["executor"], "hermes")
-        self.assertEqual(payload["transport"], TRANSPORT_HERMES_ACP)
+        self.assertEqual(payload["transport"], "direct")
         self.assertEqual(payload["mode"], "full")
         self.assertEqual(payload["selection_source"], "explicit_task")
         self.assertEqual(
-            payload["capability_id"], HERMES_ACP_FULL_YOLO_ENV_CAPABILITY_ID
+            payload["capability_id"], HERMES_CLI_FULL_YOLO_CAPABILITY_ID
         )
-        self.assertEqual(payload["permission_args"], [])
-        self.assertEqual(payload["env"], {"HERMES_YOLO_MODE": "1"})
+        self.assertEqual(payload["permission_args"], ["--yolo"])
+        self.assertEqual(payload["env"], {})
         self.assertIsNone(payload["decisions"])
         serialized = json.dumps(payload)
         for forbidden in ("prompt", "token", "argv", "output", "session"):
@@ -664,13 +660,13 @@ class HermesExecutorACPMetadataTests(unittest.TestCase):
         executor._run_metadata["full-run"] = {"run_id": "full-run"}
         details = executor.get_extensions()["executor"]["hermes"]
         capability = details["permission_capability"]
-        self.assertEqual(capability["transport"], TRANSPORT_HERMES_ACP)
-        self.assertEqual(capability["capability_id"], HERMES_ACP_FULL_YOLO_ENV_CAPABILITY_ID)
-        self.assertEqual(capability["env"], {"HERMES_YOLO_MODE": "1"})
+        self.assertEqual(capability["transport"], "direct")
+        self.assertEqual(capability["capability_id"], HERMES_CLI_FULL_YOLO_CAPABILITY_ID)
+        self.assertEqual(capability["env"], {})
         audit = details["permission_audit"]
         self.assertEqual(audit["mode"], "full")
-        self.assertEqual(audit["permission_args"], [])
-        self.assertEqual(audit["env"], {"HERMES_YOLO_MODE": "1"})
+        self.assertEqual(audit["permission_args"], ["--yolo"])
+        self.assertEqual(audit["env"], {})
         # The frozen task record itself is never mutated by run metadata.
         self.assertEqual(
             executor._task_packets["full-run"]["extensions"][PERMISSION_EXTENSION_KEY][
@@ -696,9 +692,9 @@ class PermissionsStatusPayloadTests(unittest.TestCase):
         self.assertEqual(payload["configured_mode"], "full")
         self.assertEqual(payload["setting_path"], GLOBAL_PERMISSION_SETTING)
         self.assertFalse(payload["legacy_setting_present"])
-        self.assertEqual(
-            payload["mapping"]["hermes"]["env"], {"HERMES_YOLO_MODE": "1"}
-        )
+        self.assertEqual(payload["mapping"]["hermes"]["transport"], "direct")
+        self.assertEqual(payload["mapping"]["hermes"]["args"], ["--yolo"])
+        self.assertEqual(payload["mapping"]["hermes"]["env"], {})
         self.assertEqual(
             payload["mapping"]["claude"]["args"], ["--dangerously-skip-permissions"]
         )

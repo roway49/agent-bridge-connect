@@ -8,9 +8,13 @@
   },
   "raw_request_payload_retained": false,
   "surface": "decisions",
-  "yolo_mode": {
+  "full_mode": {
     "audit": "the capability freeze is recorded in the permission_audit payload",
-    "env": "HERMES_YOLO_MODE=1",
-    "scope": "spawned ACP subprocess only"
+    "permission_flag": "--yolo",
+    "transport": "cli_chat_single_query"
+  },
+  "non_full_mode": {
+    "modes": ["inherit", "safe"],
+    "transport": "acp"
   }
 }
