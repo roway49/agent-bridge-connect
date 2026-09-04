@@ -775,8 +775,12 @@ class PermissionRuntimeHermesCanaryTests(unittest.TestCase):
 
 
 class DispatchContainmentTests(unittest.TestCase):
-    """E52M-003 review fixes 1+2: dispatch contains every concrete full
-    worker (plain repos included) and never deletes active profiles."""
+    """Concrete full prioritizes unattended executor completion.
+
+    Seatbelt remains independently tested for explicitly contained workflows,
+    but it is not imposed on a full worker because that second sandbox can
+    block the executor's own runtime and contradict full semantics.
+    """
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -808,15 +812,7 @@ class DispatchContainmentTests(unittest.TestCase):
         )
         return created
 
-    def _assert_dispatch_blocked_without_sandbox_exec(self, executor: str, mode: str):
-        """Concrete full dispatch fails closed when sandbox-exec is missing.
-
-        This proves containment is unconditional for plain projects: the
-        pre-start check no longer keys off linked_worktree, so a plain repo
-        cannot dispatch an uncontained full worker.
-        """
-        from agent_bridge_connect.runner import RunnerError
-
+    def _assert_full_dispatch_does_not_require_sandbox_exec(self, executor: str):
         fake = self.root / f"fake-{executor}"
         fake.write_text(
             "#!/bin/sh\n"
@@ -827,26 +823,36 @@ class DispatchContainmentTests(unittest.TestCase):
         fake.chmod(fake.stat().st_mode | 0o100)
         service_config = {"workspace_root": str(self.root)}
         service = TaskService(self.board, config=service_config)
-        self._full_task(executor, service)
+        created = self._full_task(executor, service)
         state = self._runner({executor: fake})
         if not state.allowed_executables:
             self.skipTest("executor resolution unavailable")
-        with mock.patch(
-            "agent_bridge_connect.seatbelt.seatbelt_available", return_value=False
-        ):
-            with self.assertRaises(RunnerError) as raised:
-                state.dispatch_worker(
-                    service.list_tasks(status="pending")[0].id,
-                    executor,
-                    str(self.board),
-                    "",
-                    0.2,
-                    False,
-                )
-        self.assertIn("host_containment_unliftable", str(raised.exception))
+        fake_run = {
+            "ok": True,
+            "run_id": "mock-full",
+            "pid": 1,
+            "status": "running",
+        }
+        from agent_bridge_connect.runner import RunnerState
 
-    def test_plain_project_full_dispatch_fails_closed_without_sandbox_exec(self) -> None:
-        self._assert_dispatch_blocked_without_sandbox_exec("hermes", "full")
+        with (
+            mock.patch.object(
+                RunnerState, "_spawn_process", return_value=fake_run
+            ) as spawn,
+            mock.patch(
+                "agent_bridge_connect.seatbelt.preflight_host_containment"
+            ) as preflight,
+        ):
+            result = state.dispatch_worker(
+                created.id, executor, str(self.board), "", 0.2, False
+            )
+        self.assertEqual(result["dispatch_status"], "accepted")
+        preflight.assert_not_called()
+        _args, kwargs = spawn.call_args
+        self.assertIsNone(kwargs.get("containment"))
+
+    def test_plain_project_full_dispatch_does_not_require_sandbox_exec(self) -> None:
+        self._assert_full_dispatch_does_not_require_sandbox_exec("hermes")
 
     def test_safe_dispatch_unaffected_by_containment_preflight(self) -> None:
         # A safe task dispatches without containment (mocked spawn), proving
