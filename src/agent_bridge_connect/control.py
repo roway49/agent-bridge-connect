@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import select
 import subprocess
 import threading
@@ -19,7 +20,11 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterator
 
-from .approval import compute_request_fingerprint
+from .approval import (
+    APPROVAL_V3_ELEVATION_MODE,
+    APPROVAL_V3_SCOPE,
+    compute_request_fingerprint,
+)
 from .permission_runtime import (
     PERMISSION_BLOCK_EVIDENCE_UNAVAILABLE,
     PERMISSION_RUNTIME_DOMAINS,
@@ -55,6 +60,7 @@ APPROVAL_METHODS = {
 # matching.
 APPROVAL_V2_ERROR_CHOICE_REQUIRED = "native_permission_choice_required"
 CODEX_SCHEMA_SESSION_DECISIONS = frozenset({"acceptForSession"})
+_SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class ControlPlaneError(RuntimeError):
@@ -152,6 +158,10 @@ class ApprovalRequest:
     offered_choices: tuple[dict[str, Any], ...] = ()
     native_event: str = ""
     authority: dict[str, Any] = field(default_factory=dict)
+    elevation_mode: str = ""
+    path_plan_digest: str = ""
+    containment_profile_digest: str = ""
+    preflight: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         value: dict[str, Any] = {
@@ -163,7 +173,11 @@ class ApprovalRequest:
             "kind": self.kind,
             "operation": self.operation,
             "summary": self.summary,
-            "scope": "single_action",
+            "scope": (
+                APPROVAL_V3_SCOPE
+                if self.approval_version == 3
+                else "single_action"
+            ),
             "thread_id": self.thread_id,
             "turn_id": self.turn_id,
             "item_id": self.item_id,
@@ -190,6 +204,24 @@ class ApprovalRequest:
             # respond path can dispatch the executor-native payload shape
             # (e.g. Hermes ACP outcome vs Codex decision).
             value["authority"] = _bounded_json(dict(self.authority or {}))
+        elif self.approval_version == 3:
+            value.update(
+                {
+                    "approval_version": 3,
+                    "elevation_mode": self.elevation_mode
+                    or APPROVAL_V3_ELEVATION_MODE,
+                    "path_plan_digest": self.path_plan_digest,
+                    "containment_profile_digest": self.containment_profile_digest,
+                    "authority": _bounded_json(dict(self.authority or {})),
+                    "preflight": {
+                        "status": str(self.preflight.get("status") or "passed"),
+                        "mode": str(
+                            self.preflight.get("mode")
+                            or APPROVAL_V3_ELEVATION_MODE
+                        ),
+                    },
+                }
+            )
         return value
 
 
@@ -199,6 +231,7 @@ def normalize_approval_request(
     task_id: str,
     executor_run_id: str,
     session_id: str,
+    executor: str = "codex",
 ) -> ApprovalRequest:
     """Normalize one official App Server approval request without raw content."""
     if not isinstance(message, dict):
@@ -245,6 +278,144 @@ def normalize_approval_request(
     native_domain = _bounded_text(agentbc.get("escalation_domain"), 120)
     native_profile = _bounded_text(agentbc.get("host_profile_digest"), 160)
     native_control_path = _bounded_text(agentbc.get("control_path"), 160)
+    # PERM-104-001 v3: a trusted structured native block may request one
+    # contained-full elevation.  It carries no choices; all human decisions
+    # are represented by the single top-level Approve Full / Deny dialog.
+    requested_scope = str(message.get("scope") or "").strip()
+    requested_mode = str(message.get("elevation_mode") or "").strip()
+    is_v3 = (
+        message.get("approval_version") == 3
+        or requested_scope == APPROVAL_V3_SCOPE
+        or requested_mode == APPROVAL_V3_ELEVATION_MODE
+    )
+    authority: dict[str, Any] = (
+        dict(message.get("authority"))
+        if isinstance(message.get("authority"), dict)
+        else {}
+    )
+    if is_v3:
+        if requested_scope != APPROVAL_V3_SCOPE:
+            raise ControlPlaneError(
+                "approval_scope_invalid",
+                "A v3 elevation request must use the task_elevation scope.",
+            )
+        if requested_mode != APPROVAL_V3_ELEVATION_MODE:
+            raise ControlPlaneError(
+                "approval_elevation_mode_invalid",
+                "A v3 elevation request must use contained_full mode.",
+            )
+        if message.get("offered_choices") is not None:
+            raise ControlPlaneError(
+                "approval_legacy_field_rejected",
+                "A v3 elevation request cannot carry native once/session choices.",
+            )
+        authority_executor = str(authority.get("executor") or "").strip().lower()
+        if authority_executor != str(executor or "").strip().lower():
+            raise ControlPlaneError(
+                "approval_authority_invalid",
+                "A v3 elevation authority must match the active executor.",
+            )
+        protocol = str(authority.get("protocol") or "").strip()
+        method = str(authority.get("method") or "").strip()
+        protocol_version = authority.get("protocol_version")
+        if (
+            not protocol
+            or not method
+            or isinstance(protocol_version, bool)
+            or not isinstance(protocol_version, int)
+        ):
+            raise ControlPlaneError(
+                "approval_authority_invalid",
+                "A v3 elevation request requires mechanical authority facts.",
+            )
+        native_event = _bounded_text(
+            message.get("native_event") or agentbc.get("native_event"), 512
+        )
+        if not native_event:
+            raise ControlPlaneError(
+                "approval_authority_invalid",
+                "A v3 elevation request requires the trusted native event shape.",
+            )
+        preflight_value = message.get("preflight")
+        if not isinstance(preflight_value, dict):
+            preflight_value = message.get("full_preflight")
+        if not isinstance(preflight_value, dict):
+            preflight_value = agentbc.get("preflight")
+        preflight_ok = isinstance(preflight_value, dict) and (
+            preflight_value.get("ok") is True
+            or str(preflight_value.get("status") or "").strip().lower()
+            == "passed"
+        )
+        if not preflight_ok:
+            raise ControlPlaneError(
+                "permission_preflight_failed",
+                "A v3 elevation request requires a passed full-capability preflight.",
+            )
+        path_digest = _bounded_text(
+            message.get("path_plan_digest") or agentbc.get("path_plan_digest"),
+            160,
+        )
+        profile_digest = _bounded_text(
+            message.get("containment_profile_digest")
+            or message.get("host_profile_digest")
+            or agentbc.get("containment_profile_digest")
+            or agentbc.get("host_profile_digest"),
+            160,
+        )
+        if not _SHA256_DIGEST_RE.fullmatch(path_digest) or not _SHA256_DIGEST_RE.fullmatch(
+            profile_digest
+        ):
+            raise ControlPlaneError(
+                "approval_scope_invalid",
+                "A v3 elevation request requires frozen PathPlan and containment digests.",
+            )
+        approval_version = 3
+        requested_scope = APPROVAL_V3_SCOPE
+        requested_mode = APPROVAL_V3_ELEVATION_MODE
+        offered_choices: tuple[dict[str, Any], ...] = ()
+        native_tool_use_id = _bounded_text(
+            agentbc.get("tool_use_id") or item_id,
+            512,
+        )
+        return ApprovalRequest(
+            request_id=request_id,
+            request_fingerprint=(
+                native_request_fingerprint
+                if native_request_fingerprint.startswith("fp-")
+                else compute_request_fingerprint(
+                    executor=str(executor or "codex"),
+                    session_id=str(session_id),
+                    tool_name=operation,
+                    tool_input=params,
+                    extra={"method": method},
+                )
+            ),
+            rpc_id=message.get("id"),
+            task_id=str(task_id),
+            executor_run_id=str(executor_run_id),
+            session_id=str(session_id),
+            kind="permission",
+            operation=operation,
+            summary=summary or default_summary,
+            scope=APPROVAL_V3_SCOPE,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            item_id=item_id,
+            tool_name=native_tool_name,
+            tool_use_id=native_tool_use_id,
+            action_fingerprint=native_action_fingerprint,
+            escalation_domain=native_domain,
+            profile_digest=profile_digest,
+            control_path=native_control_path,
+            approval_version=3,
+            native_event=native_event,
+            authority=authority,
+            elevation_mode=APPROVAL_V3_ELEVATION_MODE,
+            path_plan_digest=path_digest,
+            containment_profile_digest=profile_digest,
+            preflight={"status": "passed", "mode": APPROVAL_V3_ELEVATION_MODE},
+        )
+
     # PERM-104-002 v2: executor-supplied native choice set.  The authority
     # block and offered choices are validated structurally here; semantic
     # validation (schema-supported shapes per executor) happens in the
@@ -312,7 +483,7 @@ def normalize_approval_request(
             native_request_fingerprint
             if native_request_fingerprint.startswith("fp-")
             else compute_request_fingerprint(
-                executor="codex",
+                executor=str(executor or "codex"),
                 session_id=str(session_id),
                 tool_name=operation,
                 tool_input=params,
@@ -338,11 +509,7 @@ def normalize_approval_request(
         control_path=native_control_path,
         approval_version=approval_version,
         offered_choices=offered_choices,
-        authority=(
-            dict(message.get("authority"))
-            if isinstance(message.get("authority"), dict)
-            else {}
-        ),
+        authority=authority,
     )
 
 
@@ -785,6 +952,7 @@ class ApprovalControlPlane:
                 task_id=self.task_id,
                 executor_run_id=self.executor_run_id,
                 session_id=exact_session,
+                executor=self.executor,
             )
             if self.executor == "claude":
                 # Claude's SDK callback is the only permission authority for
@@ -1040,12 +1208,21 @@ class ApprovalControlPlane:
                     details={
                         "kind": request.kind,
                         "operation": request.operation,
-                        "scope": "single_action",
+                        "scope": request.scope,
                         "request_fingerprint": request.request_fingerprint,
                         "summary": request.summary,
                         "turn_id": request.turn_id,
                         "item_id": request.item_id,
                         "approval_version": request.approval_version,
+                        **(
+                            {
+                                "elevation_mode": request.elevation_mode,
+                                "path_plan_digest": request.path_plan_digest,
+                                "containment_profile_digest": request.containment_profile_digest,
+                            }
+                            if request.approval_version == 3
+                            else {}
+                        ),
                     },
                 )
             )

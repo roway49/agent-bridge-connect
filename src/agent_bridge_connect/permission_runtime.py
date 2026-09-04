@@ -1,8 +1,9 @@
-"""Authoritative runtime permission capability receipt (PERM-104-002).
+"""Authoritative runtime permission capability receipt (PERM-104-001).
 
-``agentbc.permission_runtime`` v1 unifies the three legitimate ``full``
-paths - explicit task base, one-shot permission grant, and inherited task
-snapshot - into one Runner-owned, task-scoped capability record.  Only this
+``agentbc.permission_runtime`` v1 unifies the legitimate ``full`` paths -
+explicit task base, one-shot permission grant, inherited task snapshot, and
+the task-scoped elevation - into one Runner-owned, task-scoped capability
+record.  Only this
 record may prove that a declared ``full`` base actually became effective for
 one executor run; a selector value, a flag on a command line, or an agent
 self-report is never enough.
@@ -58,7 +59,12 @@ PERMISSION_RUNTIME_STATES = frozenset(
     {"prepared", "authorized", "activated", "verified", "blocked"}
 )
 PERMISSION_RUNTIME_SOURCES = frozenset(
-    {"explicit_task", "one_shot_permission_grant", "inherited_task"}
+    {
+        "explicit_task",
+        "one_shot_permission_grant",
+        "inherited_task",
+        "task_elevation",
+    }
 )
 PERMISSION_RUNTIME_DOMAINS = (
     "executor_policy",
@@ -151,6 +157,7 @@ def build_permission_runtime_record(
     host_profile_digest: str,
     action_fingerprint: str = "",
     operation: str = "",
+    elevation_id: str = "",
     runtime_id: str | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
@@ -180,6 +187,7 @@ def build_permission_runtime_record(
             "permission_source": normalized_source,
             "request_id": "",
             "grant_id": "",
+            "elevation_id": str(elevation_id or "").strip(),
         },
         "scope": {
             "path_plan_digest": path_plan_digest,
@@ -294,13 +302,18 @@ def validate_permission_runtime_record(
                 "permission_runtime_binding_mismatch",
                 f"Permission runtime binding.{field} does not match the expected value",
             )
-    for optional in ("request_id", "grant_id"):
+    for optional in ("request_id", "grant_id", "elevation_id"):
         value_text = str(binding.get(optional) or "").strip()
         if value_text and not _IDENTIFIER_RE.fullmatch(value_text):
             _invalid(
                 "permission_runtime_binding_invalid",
                 f"Permission runtime binding.{optional} must be an opaque identifier",
             )
+    if source == "task_elevation" and not str(binding.get("elevation_id") or "").strip():
+        _invalid(
+            "permission_runtime_binding_invalid",
+            "Task elevation runtime requires the bound elevation_id",
+        )
 
     scope = _require_object(record, "scope")
     path_plan_digest = str(scope.get("path_plan_digest") or "").strip()
@@ -418,6 +431,7 @@ def authorize_permission_runtime_record(
     decision: str,
     request_id: str,
     grant_id: str = "",
+    elevation_id: str = "",
     authorized_at: str | None = None,
 ) -> dict[str, Any]:
     """Move a prepared record to ``authorized`` for an approved decision.
@@ -431,7 +445,13 @@ def authorize_permission_runtime_record(
             "permission_runtime_state_invalid",
             "Only a prepared permission runtime can be authorized",
         )
-    if str(decision or "").strip().lower() != "approve":
+    normalized_decision = str(decision or "").strip().lower()
+    allowed_decision = (
+        normalized_decision == "approve"
+        or normalized_decision == "approve_full"
+        and record["binding"].get("permission_source") == "task_elevation"
+    )
+    if not allowed_decision:
         _invalid(
             "permission_runtime_state_invalid",
             "Permission runtime authorization requires an approve decision",
@@ -440,6 +460,9 @@ def authorize_permission_runtime_record(
     record["state"]["status"] = "authorized"
     record["binding"]["request_id"] = request_id
     record["binding"]["grant_id"] = str(grant_id or "").strip()
+    if elevation_id:
+        _require_identifier(elevation_id, "binding.elevation_id")
+        record["binding"]["elevation_id"] = elevation_id
     record["audit"]["authorized_at"] = authorized_at or _utc_now()
     return validate_permission_runtime_record(record)
 
@@ -491,6 +514,13 @@ def verify_permission_runtime_record(
     executor itself confirmed.
     """
     record = validate_permission_runtime_record(value)
+    if record["state"]["status"] == "verified":
+        if session_id is None or str(record["binding"].get("session_id") or "") == str(session_id).strip():
+            return record
+        raise ABCError(
+            "permission_runtime_binding_mismatch",
+            "Verified permission runtime belongs to another official session",
+        )
     if record["state"]["status"] != "activated":
         _invalid(
             "permission_runtime_state_invalid",

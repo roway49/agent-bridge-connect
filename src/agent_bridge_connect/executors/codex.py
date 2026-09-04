@@ -52,6 +52,10 @@ from agent_bridge_connect.permission_modes import (
     permission_flags,
     permission_record_from_extensions,
 )
+from agent_bridge_connect.permission_elevation import (
+    full_capability_preflight,
+    task_elevation_protocol_enabled,
+)
 from agent_bridge_connect.prompt_contract import (
     PromptPlatformExtras,
     build_prompt_contract,
@@ -1324,23 +1328,60 @@ class CodexExecutor(CLIExecutorBase):
             "item/permissions/requestApproval": "permissions",
         }.get(method, "")
         if operation:
-            message = {
-                **message,
-                "approval_version": 2,
-                "authority": {
-                    "executor": "codex",
-                    "protocol": "codex_app_server",
-                    "protocol_version": 2,
-                    "method": method,
-                },
-                "offered_choices": [
-                    dict(choice)
-                    for choice in codex_offered_choices(
-                        operation,
-                        session_decisions_supported=True,
-                    )
-                ],
+            task_elevation = task_elevation_protocol_enabled(
+                (record.get("task_packet") or {}).get("extensions")
+                if isinstance(record.get("task_packet"), dict)
+                else {}
+            )
+            authority = {
+                "executor": "codex",
+                "protocol": "codex_app_server",
+                "protocol_version": 2,
+                "method": method,
             }
+            if task_elevation:
+                preflight = full_capability_preflight(
+                    record.get("task_packet"),
+                    executor="codex",
+                    executable=self.agent_bin,
+                )
+                if preflight.get("ok") is not True:
+                    raise ControlPlaneError(
+                        "permission_preflight_failed",
+                        "Codex full-capability preflight failed before the elevation UI.",
+                    )
+                identity = message.get("_agentbc") if isinstance(message.get("_agentbc"), dict) else {}
+                message = {
+                    **message,
+                    "approval_version": 3,
+                    "scope": "task_elevation",
+                    "elevation_mode": "contained_full",
+                    "native_event": f"codex_app_server.{method}",
+                    "path_plan_digest": preflight["path_plan_digest"],
+                    "containment_profile_digest": preflight["containment_profile_digest"],
+                    "preflight": preflight,
+                    "authority": authority,
+                    "_agentbc": {
+                        **identity,
+                        "native_event": f"codex_app_server.{method}",
+                        "path_plan_digest": preflight["path_plan_digest"],
+                        "containment_profile_digest": preflight["containment_profile_digest"],
+                        "preflight": preflight,
+                    },
+                }
+            else:
+                message = {
+                    **message,
+                    "approval_version": 2,
+                    "authority": authority,
+                    "offered_choices": [
+                        dict(choice)
+                        for choice in codex_offered_choices(
+                            operation,
+                            session_decisions_supported=True,
+                        )
+                    ],
+                }
         event = plane.request_approval(message)
         request_id = str(event.get("request_id") or "")
         record["events"].append(
@@ -1358,14 +1399,33 @@ class CodexExecutor(CLIExecutorBase):
             "kind": str(event.get("operation") or "permission"),
             "operation": str(event.get("operation") or "permission"),
             "summary": str(event.get("summary") or ""),
-            "scope": "single_action",
+            "scope": str(event.get("scope") or "single_action"),
             "session_id": str(event.get("session_id") or ""),
         }
+        pending_after = plane.status().get("pending_request")
+        if (
+            isinstance(pending_after, dict)
+            and int(pending_after.get("approval_version") or 1) == 3
+        ):
+            approval.update(
+                {
+                    "approval_version": 3,
+                    "elevation_mode": str(
+                        pending_after.get("elevation_mode") or "contained_full"
+                    ),
+                    "path_plan_digest": str(pending_after.get("path_plan_digest") or ""),
+                    "containment_profile_digest": str(
+                        pending_after.get("containment_profile_digest") or ""
+                    ),
+                    "preflight": dict(pending_after.get("preflight") or {}),
+                    "native_event": str(pending_after.get("native_event") or ""),
+                    "authority": dict(pending_after.get("authority") or {}),
+                }
+            )
         # PERM-104-002 v2: the offered native choices ride on the poll result
         # so the CLI worker can persist them on the input request.  The
         # choices come from the CONTROL PLANE's normalized pending request,
         # because that is where the opaque handles are computed and bound.
-        pending_after = plane.status().get("pending_request")
         if (
             isinstance(pending_after, dict)
             and str(pending_after.get("approval_version") or "") == "2"

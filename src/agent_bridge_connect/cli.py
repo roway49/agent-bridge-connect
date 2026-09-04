@@ -263,6 +263,12 @@ def build_parser() -> argparse.ArgumentParser:
     response = task_respond.add_mutually_exclusive_group(required=True)
     response.add_argument("--message")
     response.add_argument("--approve", action="store_true")
+    response.add_argument(
+        "--approve-full",
+        dest="approve_full",
+        action="store_true",
+        help="Approve the single task-scoped contained-full elevation.",
+    )
     response.add_argument("--deny", action="store_true")
     response.add_argument(
         "--permission-option",
@@ -890,6 +896,8 @@ def command_task_respond(args: argparse.Namespace) -> int:
         response_type, message = "permission_option", permission_option
     elif args.message is not None:
         response_type, message = "message", str(args.message)
+    elif getattr(args, "approve_full", False):
+        response_type, message = "approve_full", ""
     elif args.approve:
         response_type, message = "approve", ""
     else:
@@ -1612,11 +1620,23 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 is_native_approval = (
                     poll.status == "input_required"
                     and isinstance(approval_request, dict)
-                    and approval_request.get("scope") == "single_action"
+                    and (
+                        approval_request.get("scope") == "single_action"
+                        or (
+                            int(approval_request.get("approval_version") or 1) == 3
+                            and approval_request.get("scope") == "task_elevation"
+                            and approval_request.get("elevation_mode") == "contained_full"
+                        )
+                    )
                     and bool(str(approval_request.get("request_id") or "").strip())
                 )
                 if is_native_approval:
                     request_id = str(approval_request.get("request_id") or "").strip()
+                    is_task_elevation = (
+                        int(approval_request.get("approval_version") or 1) == 3
+                        and approval_request.get("scope") == "task_elevation"
+                        and approval_request.get("elevation_mode") == "contained_full"
+                    )
                     if request_id not in notified_approval_requests:
                         try:
                             blocked = service.block_task_for_approval(
@@ -1661,7 +1681,29 @@ def command_worker_run(args: argparse.Namespace) -> int:
                                 ),
                                 native_event=str(
                                     approval_request.get("native_event")
-                                    or "claude_sdk_can_use_tool"
+                                    or ("claude_sdk_can_use_tool" if not is_task_elevation else "")
+                                ),
+                                approval_version=(
+                                    3 if is_task_elevation else None
+                                ),
+                                elevation_mode=(
+                                    str(approval_request.get("elevation_mode") or "")
+                                    if is_task_elevation
+                                    else ""
+                                ),
+                                path_plan_digest=str(
+                                    approval_request.get("path_plan_digest") or ""
+                                ),
+                                containment_profile_digest=str(
+                                    approval_request.get("containment_profile_digest")
+                                    or approval_request.get("profile_digest")
+                                    or approval_request.get("host_profile_digest")
+                                    or ""
+                                ),
+                                full_preflight=(
+                                    dict(approval_request.get("preflight") or {})
+                                    if isinstance(approval_request.get("preflight"), dict)
+                                    else None
                                 ),
                                 offered_choices=(
                                     [

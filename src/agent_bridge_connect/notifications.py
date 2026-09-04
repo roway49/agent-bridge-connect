@@ -7,11 +7,13 @@ from typing import Any, Callable
 from .approval import (
     APPROVAL_EXTENSION_KEY,
     APPROVAL_SCOPE,
+    APPROVAL_V3_SCOPE,
     core_bounded_summary_details,
     normalize_reason_summary_details,
     sanitize_reason_detail,
     validate_approval_receipt,
 )
+from .permission_elevation import PERMISSION_ELEVATION_MODE
 from .adapters import DeliveryResult
 from .protocol import ABCError
 from .execution_policy import execution_policy_view
@@ -83,6 +85,12 @@ def notify_input_required(
 ) -> dict[str, Any]:
     """Immediately deliver an actionable, explicitly nonterminal input notice."""
     payload = build_input_required_notification(service, task_id)
+    if (
+        payload.get("input_type") == "permission"
+        and int(payload.get("approval_version") or 1) == 3
+        and payload.get("elevation_mode") == PERMISSION_ELEVATION_MODE
+    ):
+        service.record_task_elevation_notification(task_id)
     file_result = _file_notification(service, payload)
     dialog_result = DialogNotifier().send(payload)
     action = str(dialog_result.details.get("action") or "dismissed")
@@ -108,7 +116,7 @@ def notify_input_required(
     option_handle = str(dialog_result.details.get("option_handle") or "")
     if (
         responder is not None
-        and action in {"message", "approve", "deny"}
+        and action in {"message", "approve", "approve_full", "deny"}
         or (responder is not None and action == "permission_option" and option_handle)
     ):
         try:
@@ -221,7 +229,18 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
     )
     if len(option_descriptions) != len(input_options):
         option_descriptions = []
-    if input_type == "permission" or is_resource_decision:
+    is_task_elevation = (
+        input_type == "permission"
+        and int(request.get("approval_version") or 1) == 3
+        and request.get("scope") == APPROVAL_V3_SCOPE
+        and request.get("elevation_mode") == PERMISSION_ELEVATION_MODE
+    )
+    if is_task_elevation:
+        command = (
+            f"agentbc task respond {task_id} --input {input_id} --approve-full"
+            f" (or --deny)"
+        )
+    elif input_type == "permission" or is_resource_decision:
         command = (
             f"agentbc task respond {task_id} --input {input_id} --approve"
             f" (or --deny)"
@@ -296,7 +315,18 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
             "Why this is blocked:",
             summary,
         ]
-        if input_type == "permission" and is_single_action_approval:
+        if is_task_elevation:
+            body_lines.extend(
+                [
+                    "Requested access: contained full for this Task ID only.",
+                    "Approve Full authorizes this task's frozen PathPlan and contained Runner continuation.",
+                    "The approval remains effective across retry, recovery, and reassignment of this Task ID.",
+                    "A handoff creates a new Task ID and does not inherit this elevation.",
+                    "Deny terminates the task as failed.",
+                    "Choose Approve Full or Deny below.",
+                ]
+            )
+        elif input_type == "permission" and is_single_action_approval:
             operation = compact_notification_text(
                 str(request.get("operation") or ""), 120
             )
@@ -330,7 +360,16 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
     # the input request, so report/status projections of ``agentbc.input`` keep
     # exposing only the short summary by default.
     reason_detail = ""
-    if is_single_action_approval:
+    if is_task_elevation:
+        receipt_value = (task.extensions or {}).get(APPROVAL_EXTENSION_KEY)
+        if isinstance(receipt_value, dict):
+            try:
+                reason_detail = str(
+                    validate_approval_receipt(receipt_value).get("reason_detail") or ""
+                )
+            except ABCError:
+                reason_detail = ""
+    elif is_single_action_approval:
         receipt_value = (task.extensions or {}).get(APPROVAL_EXTENSION_KEY)
         if isinstance(receipt_value, dict):
             try:
@@ -357,7 +396,9 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         identity_blocked_step = compact_notification_text(
             str(request.get("blocked_step_id") or ""), 24
         )
-        if is_single_action_approval:
+        if is_task_elevation:
+            identity_scope = PERMISSION_ELEVATION_MODE
+        elif is_single_action_approval:
             identity_scope = APPROVAL_SCOPE
         elif str(request.get("requested_permission") or "").strip().lower() == "full":
             identity_scope = "full"
@@ -396,6 +437,11 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         "input_options": input_options,
         "input_option_descriptions": option_descriptions,
         "permission_grant": permission_grant,
+        "approval_version": int(request.get("approval_version") or 1),
+        "elevation_mode": (
+            str(request.get("elevation_mode") or "") if is_task_elevation else ""
+        ),
+        "elevation_source": "task_elevation" if is_task_elevation else "",
         # Single-action approval binding: the notification is tied to exactly one
         # native request so a dialog can only Approve/Deny the bound request.
         "approval_request_id": (
@@ -412,7 +458,9 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
             else ""
         ),
         "approval_scope": (
-            str(request.get("scope") or "") if is_single_action_approval else ""
+            str(request.get("scope") or "")
+            if is_single_action_approval or is_task_elevation
+            else ""
         ),
         # Sanitized bounded identity facts rendered deterministically by the
         # macOS decision view.  These are safe public facts (never private paths,
