@@ -1641,6 +1641,10 @@ def command_worker_run(args: argparse.Namespace) -> int:
                         and approval_request.get("scope") == "task_elevation"
                         and approval_request.get("elevation_mode") == "contained_full"
                     )
+                    is_native_live_elevation = (
+                        is_task_elevation
+                        and approval_request.get("native_live_elevation") is True
+                    )
                     if request_id not in notified_approval_requests:
                         try:
                             blocked = service.block_task_for_approval(
@@ -1709,6 +1713,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                                     if isinstance(approval_request.get("preflight"), dict)
                                     else None
                                 ),
+                                native_live_elevation=is_native_live_elevation,
                                 offered_choices=(
                                     [
                                         dict(choice)

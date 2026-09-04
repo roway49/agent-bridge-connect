@@ -162,6 +162,12 @@ class ApprovalRequest:
     path_plan_digest: str = ""
     containment_profile_digest: str = ""
     preflight: dict[str, Any] = field(default_factory=dict)
+    # Claude safe-to-full uses the same v3 envelope for the public input, but
+    # its response is an atomic SDK PermissionResult rather than a task
+    # continuation.  Keep the marker explicit so old task-elevation records
+    # remain readable without ever entering this path accidentally.
+    native_live_elevation: bool = False
+    native_elevation_protocol: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         value: dict[str, Any] = {
@@ -222,6 +228,12 @@ class ApprovalRequest:
                     },
                 }
             )
+            if self.native_live_elevation:
+                value["native_live_elevation"] = True
+                value["native_elevation_protocol"] = (
+                    self.native_elevation_protocol
+                    or "claude.can_use_tool.setMode"
+                )
         return value
 
 
@@ -369,6 +381,35 @@ def normalize_approval_request(
                 "approval_scope_invalid",
                 "A v3 elevation request requires frozen PathPlan and containment digests.",
             )
+        native_live_elevation = message.get("native_live_elevation") is True
+        native_elevation_protocol = _bounded_text(
+            message.get("native_elevation_protocol"), 160
+        )
+        if native_live_elevation:
+            if str(executor or "").strip().lower() != "claude":
+                raise ControlPlaneError(
+                    "approval_authority_invalid",
+                    "Live same-session elevation is only defined for Claude.",
+                )
+            if native_elevation_protocol != "claude.can_use_tool.setMode":
+                raise ControlPlaneError(
+                    "approval_authority_invalid",
+                    "Claude live elevation requires the setMode protocol shape.",
+                )
+            if authority.get("method") != "sdk.can_use_tool":
+                raise ControlPlaneError(
+                    "approval_authority_invalid",
+                    "Claude live elevation requires the native can_use_tool method.",
+                )
+            if authority.get("update") != {
+                "type": "setMode",
+                "mode": "bypassPermissions",
+                "destination": "session",
+            }:
+                raise ControlPlaneError(
+                    "approval_authority_invalid",
+                    "Claude live elevation requires the exact session setMode update.",
+                )
         approval_version = 3
         requested_scope = APPROVAL_V3_SCOPE
         requested_mode = APPROVAL_V3_ELEVATION_MODE
@@ -414,6 +455,8 @@ def normalize_approval_request(
             path_plan_digest=path_digest,
             containment_profile_digest=profile_digest,
             preflight={"status": "passed", "mode": APPROVAL_V3_ELEVATION_MODE},
+            native_live_elevation=native_live_elevation,
+            native_elevation_protocol=native_elevation_protocol,
         )
 
     # PERM-104-002 v2: executor-supplied native choice set.  The authority
@@ -716,6 +759,28 @@ def approval_response_payload_v2(
 def approval_response_payload(request: ApprovalRequest | dict[str, Any], decision: Any) -> dict[str, Any]:
     """Build the schema-compatible one-turn response; never a session grant."""
     selected = normalize_decision(decision)
+    live_elevation = (
+        request.native_live_elevation
+        if isinstance(request, ApprovalRequest)
+        else request.get("native_live_elevation") is True
+    )
+    if live_elevation:
+        # This is a redacted description of the native SDK result.  The live
+        # callback constructs the actual PermissionResult object with the
+        # untouched input; the control plane never persists that input.
+        if selected != "accept":
+            return {"behavior": "deny"}
+        return {
+            "behavior": "allow",
+            "updatedPermissions": [
+                {
+                    "type": "setMode",
+                    "mode": "bypassPermissions",
+                    "destination": "session",
+                }
+            ],
+            "updatedInput": "original_blocked_input",
+        }
     operation = request.operation if isinstance(request, ApprovalRequest) else str(request.get("operation") or "")
     if operation in {"command", "file_change"}:
         return {"decision": selected}

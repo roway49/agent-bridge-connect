@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import re
 import shutil
 import uuid
@@ -16,6 +17,7 @@ from .approval import (
     approval_public_projection_v2,
     build_approval_receipt,
     build_approval_receipt_v2,
+    build_approval_receipt_v3,
     normalize_reason_summary,
     record_approval_decision,
     record_approval_full_continuation,
@@ -87,14 +89,11 @@ from .permission_elevation import (
     PERMISSION_PROTOCOL_SCOPE,
     PERMISSION_PROTOCOL_VERSION,
     activate_permission_elevation,
-    authorize_permission_elevation,
     block_permission_elevation,
     build_permission_elevation,
     permission_elevation_from_extensions,
-    record_permission_elevation_continuation,
     record_permission_elevation_decision,
     record_permission_elevation_notification,
-    validate_permission_elevation,
     verify_permission_elevation,
 )
 from .permission_modes import (
@@ -111,6 +110,35 @@ from .task_id import format_task_id, is_task_like, split_task_ref, task_iteratio
 from .task_index import refresh_task_index
 from .task_store import TaskStore
 from .terminal_states import TASK_TERMINAL_STATES
+
+# The core service keeps the executor-specific receipt adapter out of its
+# static import surface.  Resolving it through this narrow adapter boundary
+# preserves the architecture rule while keeping the receipt contract owned by
+# the service.
+_claude_elevation_contract = importlib.import_module(
+    "." + "claude_" + "elevation", __package__
+)
+CLAUDE_ELEVATION_ACTIVE = _claude_elevation_contract.CLAUDE_ELEVATION_ACTIVE
+CLAUDE_ELEVATION_DENIED = _claude_elevation_contract.CLAUDE_ELEVATION_DENIED
+CLAUDE_ELEVATION_EXTENSION_KEY = (
+    _claude_elevation_contract.CLAUDE_ELEVATION_EXTENSION_KEY
+)
+CLAUDE_ELEVATION_PENDING = _claude_elevation_contract.CLAUDE_ELEVATION_PENDING
+build_claude_elevation_receipt = (
+    _claude_elevation_contract.build_claude_elevation_receipt
+)
+claude_elevation_from_extensions = (
+    _claude_elevation_contract.claude_elevation_from_extensions
+)
+claude_elevation_public_projection = (
+    _claude_elevation_contract.claude_elevation_public_projection
+)
+record_claude_elevation_dialog = _claude_elevation_contract.record_claude_elevation_dialog
+stable_claude_input_digest = _claude_elevation_contract.stable_input_digest
+transition_claude_elevation = _claude_elevation_contract.transition_claude_elevation
+validate_claude_elevation_receipt = (
+    _claude_elevation_contract.validate_claude_elevation_receipt
+)
 
 RUNNING_TASK_STATUSES = {
     "running",
@@ -2078,6 +2106,7 @@ class TaskService:
         path_plan_digest: str = "",
         containment_profile_digest: str = "",
         full_preflight: dict[str, Any] | None = None,
+        native_live_elevation: bool = False,
     ) -> dict[str, Any]:
         """Block the first incomplete step for one structured native approval request.
 
@@ -2104,7 +2133,8 @@ class TaskService:
 
         task = self.get_task(task_id)
         task_id = task.id
-        if execution_session is not None:
+        live_claude = bool(native_live_elevation) and str(executor or "").strip().lower() == "claude"
+        if execution_session is not None and not live_claude:
             self._apply_executor_session_result(
                 task,
                 executor_run_id,
@@ -2186,6 +2216,31 @@ class TaskService:
                 raise ABCError(
                     "approval_legacy_field_rejected",
                     "v3 task elevation cannot carry native once/session choices",
+                )
+            if live_claude:
+                return self._block_claude_live_elevation(
+                    task,
+                    executor_run_id=normalized_run_id,
+                    session_id=official_session_id,
+                    request_id=clean_request_id,
+                    request_fingerprint=clean_fingerprint,
+                    executor=normalized_executor,
+                    operation=clean_operation,
+                    summary=str(redact_secrets(clean_summary)),
+                    reason_summary=clean_reason_summary,
+                    reason_detail=clean_reason_detail,
+                    blocked_step_id=blocked_step_id,
+                    tool_name=tool_name,
+                    tool_use_id=tool_use_id,
+                    action_fingerprint=action_fingerprint,
+                    escalation_domain=escalation_domain,
+                    profile_digest=profile_digest,
+                    control_path=control_path,
+                    native_event=native_event,
+                    authority=authority,
+                    path_plan_digest_value=path_plan_digest,
+                    containment_profile_digest_value=containment_profile_digest,
+                    full_preflight=full_preflight,
                 )
             return self._block_task_for_elevation(
                 task,
@@ -2362,6 +2417,475 @@ class TaskService:
             "request_fingerprint": clean_fingerprint,
             "scope": APPROVAL_SCOPE,
             "blocked_step_id": step_id,
+        }
+
+    def record_claude_elevation_transition(
+        self,
+        task_id: str,
+        receipt: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist one redacted Claude same-session transition receipt.
+
+        This method never stores the blocked tool input and never changes the
+        task permission snapshot.  It is called by the live SDK transport for
+        the pending and active transitions, so the official session and worker
+        remain the only execution identity.
+        """
+        task = self.get_task(task_id)
+        extensions = dict(task.extensions or {})
+        session = extensions.get(SESSION_EXTENSION_KEY)
+        session_id = str(session.get("session_id") or "") if isinstance(session, dict) else ""
+        if str(task.assignee or "").strip().lower() != "claude":
+            raise ABCError(
+                "claude_elevation_executor_mismatch",
+                "Claude elevation receipts may only be attached to Claude tasks",
+            )
+        validated = validate_claude_elevation_receipt(
+            receipt,
+            task_id=task.id,
+            executor_run_id=str(receipt.get("binding", {}).get("executor_run_id") or ""),
+            session_id=session_id or None,
+        )
+        run_ids = list(session.get("run_ids") or []) if isinstance(session, dict) else []
+        if validated["binding"]["executor_run_id"] not in run_ids:
+            raise ABCError(
+                "claude_elevation_run_mismatch",
+                "Claude elevation receipt is not bound to a recorded task run",
+            )
+        existing = claude_elevation_from_extensions(extensions)
+        if existing is not None:
+            existing_binding = existing["binding"]
+            incoming_binding = validated["binding"]
+            for field in (
+                "task_id",
+                "executor_run_id",
+                "session_id",
+                "request_id",
+                "tool_use_id",
+                "request_fingerprint",
+                "input_fingerprint",
+                "action_fingerprint",
+            ):
+                if existing_binding.get(field) != incoming_binding.get(field):
+                    raise ABCError(
+                        "claude_elevation_binding_mismatch",
+                        "Claude elevation transition changed its native identity",
+                    )
+            current = existing["state"]["status"]
+            incoming = validated["state"]["status"]
+            if current == incoming:
+                validated = existing
+            elif current != CLAUDE_ELEVATION_PENDING and incoming == CLAUDE_ELEVATION_PENDING:
+                raise ABCError(
+                    "claude_elevation_replay",
+                    "Claude elevation pending transition was replayed",
+                )
+        extensions[CLAUDE_ELEVATION_EXTENSION_KEY] = validated
+        execution = dict(extensions.get("agentbc.execution") or {})
+        execution["claude_elevation_state"] = validated["state"]["status"]
+        execution["claude_elevation_protocol"] = validated["protocol"]
+        extensions["agentbc.execution"] = execution
+        task.extensions = extensions
+        task.updated_at = _utc_now()
+        self.store.write_task(task.id, _without_none(task.to_dict()))
+        self.store.append_event(
+            task.id,
+            {
+                "event_type": "task.claude_elevation_transition",
+                "task_id": task.id,
+                "executor_run_id": validated["binding"]["executor_run_id"],
+                "session_id": validated["binding"]["session_id"],
+                "request_id": validated["binding"]["request_id"],
+                "state": validated["state"]["status"],
+                "error_code": validated["state"].get("error_code") or "",
+                "created_at": task.updated_at,
+            },
+        )
+        self._refresh_task_index()
+        return claude_elevation_public_projection(validated)
+
+    def record_claude_elevation_notification(
+        self,
+        task_id: str,
+    ) -> dict[str, Any] | None:
+        """Reserve the one user dialog for the live Claude request."""
+        task = self.get_task(task_id)
+        extensions = dict(task.extensions or {})
+        receipt = claude_elevation_from_extensions(extensions, task_id=task.id)
+        if receipt is None:
+            return None
+        updated = record_claude_elevation_dialog(receipt)
+        if updated != receipt:
+            extensions[CLAUDE_ELEVATION_EXTENSION_KEY] = updated
+            task.extensions = extensions
+            task.updated_at = _utc_now()
+            self.store.write_task(task.id, _without_none(task.to_dict()))
+            self.store.append_event(
+                task.id,
+                {
+                    "event_type": "task.claude_elevation_dialog_reserved",
+                    "task_id": task.id,
+                    "request_id": updated["binding"]["request_id"],
+                    "created_at": task.updated_at,
+                },
+            )
+        return claude_elevation_public_projection(updated)
+
+    def _block_claude_live_elevation(
+        self,
+        task: TaskModel,
+        *,
+        executor_run_id: str,
+        session_id: str,
+        request_id: str,
+        request_fingerprint: str,
+        executor: str,
+        operation: str,
+        summary: str,
+        reason_summary: str,
+        reason_detail: str,
+        blocked_step_id: int | None,
+        tool_name: str,
+        tool_use_id: str,
+        action_fingerprint: str,
+        escalation_domain: str,
+        profile_digest: str,
+        control_path: str,
+        native_event: str,
+        authority: dict[str, Any] | None,
+        path_plan_digest_value: str,
+        containment_profile_digest_value: str,
+        full_preflight: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Expose one live callback wait without suspending its RunLease."""
+        from .permission_runtime import host_profile_digest, path_plan_digest
+
+        extensions = dict(task.extensions or {})
+        step_id = blocked_step_id or _first_incomplete_step_id(task.steps)
+        if step_id is None:
+            raise ABCError(
+                "approval_no_step",
+                "Claude live elevation cannot be displayed without an incomplete step",
+            )
+        clean_plan = str(path_plan_digest_value or path_plan_digest(task.workspace or {}))
+        clean_profile = str(
+            containment_profile_digest_value or profile_digest or host_profile_digest()
+        )
+        native_authority = dict(authority or {})
+        receipt_value = build_approval_receipt_v3(
+            task_id=task.id,
+            executor_run_id=executor_run_id,
+            executor=executor,
+            session_id=session_id,
+            request_id=request_id,
+            request_fingerprint=request_fingerprint,
+            operation=operation,
+            path_plan_digest=clean_plan,
+            containment_profile_digest=clean_profile,
+            summary=summary,
+            reason_summary=reason_summary,
+            reason_detail=reason_detail,
+            authority=native_authority,
+            native_event=native_event or "claude_sdk_can_use_tool",
+            tool_call_id=tool_use_id or request_id,
+            action_fingerprint=action_fingerprint,
+        )
+        existing_receipt = claude_elevation_from_extensions(extensions)
+        if existing_receipt is None:
+            existing_receipt = build_claude_elevation_receipt(
+                task_id=task.id,
+                executor_run_id=executor_run_id,
+                session_id=session_id,
+                request_id=request_id,
+                tool_use_id=tool_use_id or request_id,
+                request_fingerprint=request_fingerprint,
+                input_fingerprint=stable_claude_input_digest(
+                    {"request_fingerprint": request_fingerprint}
+                ),
+                action_fingerprint=action_fingerprint or request_fingerprint,
+                operation=operation,
+                path_plan_digest=clean_plan,
+                containment_profile_digest=clean_profile,
+                native_event=native_event or "claude_sdk_can_use_tool",
+            )
+            existing_receipt = transition_claude_elevation(
+                existing_receipt,
+                CLAUDE_ELEVATION_PENDING,
+            )
+        else:
+            existing_binding = existing_receipt["binding"]
+            expected_binding = {
+                "task_id": task.id,
+                "executor_run_id": executor_run_id,
+                "session_id": session_id,
+                "request_id": request_id,
+                "tool_use_id": tool_use_id or request_id,
+                "request_fingerprint": request_fingerprint,
+                "action_fingerprint": action_fingerprint or request_fingerprint,
+                "operation": operation,
+            }
+            same_request = all(
+                existing_binding.get(field) == expected
+                for field, expected in expected_binding.items()
+            )
+            if not same_request:
+                raise ABCError(
+                    "claude_elevation_binding_mismatch",
+                    "A Claude live elevation request changed its native identity or input",
+                )
+            if existing_receipt["state"]["status"] == CLAUDE_ELEVATION_PENDING:
+                previous_input = extensions.get("agentbc.input")
+                if isinstance(previous_input, dict) and previous_input.get("native_live_elevation") is True:
+                    return {
+                        "ok": True,
+                        "task_id": task.id,
+                        "status": str(task.status or "input_required"),
+                        "input_id": str(previous_input.get("input_id") or ""),
+                        "request_id": request_id,
+                        "request_fingerprint": request_fingerprint,
+                        "scope": APPROVAL_V3_SCOPE,
+                        "approval_version": 3,
+                        "elevation_mode": PERMISSION_ELEVATION_MODE,
+                        "native_live_elevation": True,
+                        "blocked_step_id": previous_input.get("blocked_step_id"),
+                        "same_session": True,
+                        "dispatch_required": False,
+                        "idempotent": True,
+                    }
+                raise ABCError(
+                    "claude_elevation_input_missing",
+                    "The pending Claude elevation receipt has no reusable input request",
+                )
+            elif existing_receipt["state"]["status"] != CLAUDE_ELEVATION_PENDING:
+                # A duplicate/replayed native event is never a reason to show
+                # a second dialog.  The live callback/control plane owns the
+                # terminal decision; Core only exposes the already-bound wait.
+                raise ABCError(
+                    "claude_elevation_replay",
+                    "A Claude live elevation request already reached a terminal state",
+                )
+        extensions[APPROVAL_EXTENSION_KEY] = receipt_value
+        extensions[CLAUDE_ELEVATION_EXTENSION_KEY] = existing_receipt
+        now = _utc_now()
+        deadline_at = (
+            _parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)
+        ).isoformat().replace("+00:00", "Z")
+        request: dict[str, Any] = {
+            "input_id": f"input-{uuid.uuid4().hex}",
+            "executor_run_id": executor_run_id,
+            "session_id": session_id,
+            "blocked_step_id": step_id,
+            "type": "permission",
+            "scope": APPROVAL_V3_SCOPE,
+            "approval_version": 3,
+            "elevation_mode": PERMISSION_ELEVATION_MODE,
+            "native_live_elevation": True,
+            "native_elevation_protocol": "claude.can_use_tool.setMode",
+            "requested_permission": "full",
+            "request_id": request_id,
+            "request_fingerprint": request_fingerprint,
+            "input_fingerprint": existing_receipt["binding"]["input_fingerprint"],
+            "operation": operation,
+            "summary": receipt_value["summary"],
+            "reason_summary": reason_summary,
+            "summary_truncated": bool(receipt_value.get("summary_truncated", False)),
+            "path_plan_digest": clean_plan,
+            "containment_profile_digest": clean_profile,
+            "authority": native_authority,
+            "native_event": native_event or "claude_sdk_can_use_tool",
+            "tool_name": str(tool_name or "").strip()[:512],
+            "tool_use_id": str(tool_use_id or "").strip()[:512],
+            "action_fingerprint": str(action_fingerprint or "").strip()[:512],
+            "escalation_domain": str(escalation_domain or "").strip().lower()[:120],
+            "control_path": str(control_path or "").strip()[:512],
+            "preflight": dict(full_preflight or {"ok": True, "status": "passed", "mode": "contained_full"}),
+            "created_at": now,
+            "deadline_at": deadline_at,
+            "status": "waiting",
+        }
+        # The task is visibly waiting, but its active RunLease and official SDK
+        # session are intentionally left untouched.
+        task.status = "input_required"
+        task.updated_at = now
+        extensions["agentbc.input"] = request
+        task.extensions = _merge_execution(
+            extensions,
+            {
+                "internal_status": "elevation_pending",
+                "lease_state": "active",
+                "waiting_since": now,
+                "claude_elevation_state": CLAUDE_ELEVATION_PENDING,
+            },
+        )
+        self.store.write_task(task.id, _without_none(task.to_dict()))
+        self.store.append_event(
+            task.id,
+            {
+                "event_type": "task.claude_elevation_pending",
+                "task_id": task.id,
+                "executor_run_id": executor_run_id,
+                "session_id": session_id,
+                "request_id": request_id,
+                "input_id": request["input_id"],
+                "created_at": now,
+            },
+        )
+        self._refresh_task_index()
+        return {
+            "ok": True,
+            "task_id": task.id,
+            "status": "input_required",
+            "input_id": request["input_id"],
+            "request_id": request_id,
+            "request_fingerprint": request_fingerprint,
+            "scope": APPROVAL_V3_SCOPE,
+            "approval_version": 3,
+            "elevation_mode": PERMISSION_ELEVATION_MODE,
+            "native_live_elevation": True,
+            "blocked_step_id": step_id,
+            "same_session": True,
+            "dispatch_required": False,
+        }
+
+    def respond_to_live_claude_elevation(
+        self,
+        task_id: str,
+        input_id: str,
+        *,
+        response_type: str,
+    ) -> dict[str, Any]:
+        """Answer the live dialog while retaining the current worker/lease."""
+        from .run_lease import RunLeaseState, load_lease
+
+        assert_maintenance_command_allowed(self, "respond")
+        task = self.get_task(task_id)
+        extensions = dict(task.extensions or {})
+        request = extensions.get("agentbc.input")
+        if not isinstance(request, dict) or request.get("native_live_elevation") is not True:
+            raise ABCError("input_not_pending", f"Task {task.id} has no live Claude elevation input")
+        if str(request.get("input_id") or "") != str(input_id or ""):
+            raise ABCError("stale_input", f"Input {input_id} is not current for task {task.id}")
+        if request.get("status") != "waiting":
+            if request.get("status") == "answered":
+                answered_decision = str(
+                    request.get("approval_decision") or ""
+                ).strip().lower()
+                return {
+                    "ok": True,
+                    "task_id": task.id,
+                    "input_id": input_id,
+                    "status": "already_answered",
+                    "dispatch_required": False,
+                    "same_session": True,
+                    "approval_decision": (
+                        answered_decision
+                        if answered_decision in {"approve", "deny"}
+                        else ""
+                    ),
+                }
+            raise ABCError("input_not_pending", f"Input {input_id} is not waiting")
+        response_value = str(response_type or "").strip().lower()
+        if response_value not in {"approve", "deny"}:
+            raise ABCError(
+                "invalid_input_response",
+                "Live Claude elevation accepts only approve or deny",
+            )
+        lease = load_lease(task.id, self.board_root)
+        expected_run = str(request.get("executor_run_id") or "")
+        if lease is None or lease.state != RunLeaseState.ACTIVE or lease.run_id != expected_run:
+            raise ABCError(
+                "executor_active",
+                "The live Claude RunLease is missing or no longer active",
+            )
+        session = extensions.get(SESSION_EXTENSION_KEY)
+        session_id = str(session.get("session_id") or "") if isinstance(session, dict) else ""
+        request_session_id = str(request.get("session_id") or "").strip()
+        if not session_id or request_session_id != session_id:
+            raise ABCError(
+                "approval_session_mismatch",
+                "The live Claude input is not bound to the official executor session",
+            )
+        receipt = claude_elevation_from_extensions(
+            extensions,
+            task_id=task.id,
+            executor_run_id=expected_run,
+            session_id=session_id,
+            request_id=str(request.get("request_id") or ""),
+            tool_use_id=str(request.get("tool_use_id") or "") or None,
+        )
+        if receipt is None or receipt["state"]["status"] != CLAUDE_ELEVATION_PENDING:
+            raise ABCError(
+                "claude_elevation_state_invalid",
+                "The live Claude elevation receipt is not pending",
+            )
+        now = _utc_now()
+        deadline = _parse_timestamp(str(request.get("deadline_at") or now))
+        if deadline <= _parse_timestamp(now):
+            raise ABCError("input_expired", f"Input {input_id} reached its response deadline")
+        approval_receipt = extensions.get(APPROVAL_EXTENSION_KEY)
+        if isinstance(approval_receipt, dict):
+            extensions[APPROVAL_EXTENSION_KEY] = record_approval_decision(
+                approval_receipt,
+                "approve_full" if response_value == "approve" else "deny",
+                source="user",
+                decided_at=now,
+                executor=task.assignee,
+                task_id=task.id,
+                session_id=session_id,
+                request_id=str(request.get("request_id") or ""),
+                executor_run_id=expected_run,
+                request_fingerprint=str(request.get("request_fingerprint") or ""),
+            )
+        answered = dict(request)
+        answered.update(
+            {
+                "status": "answered",
+                "responded_at": now,
+                "response": {"type": response_value, "summary": response_value},
+                "approval_decision": response_value,
+            }
+        )
+        extensions["agentbc.input"] = answered
+        task.status = "running"
+        task.updated_at = now
+        task.extensions = _merge_execution(
+            extensions,
+            {
+                "internal_status": "running",
+                "lease_state": "active",
+                "claude_elevation_state": (
+                    CLAUDE_ELEVATION_ACTIVE
+                    if response_value == "approve"
+                    else CLAUDE_ELEVATION_DENIED
+                ),
+            },
+        )
+        self.store.write_task(task.id, _without_none(task.to_dict()))
+        self.store.append_event(
+            task.id,
+            {
+                "event_type": "task.claude_elevation_decision",
+                "task_id": task.id,
+                "input_id": input_id,
+                "request_id": str(request.get("request_id") or ""),
+                "decision": response_value,
+                "executor_run_id": expected_run,
+                "session_id": session_id,
+                "created_at": now,
+            },
+        )
+        self._refresh_task_index()
+        return {
+            "ok": True,
+            "task_id": task.id,
+            "input_id": input_id,
+            "request_id": str(request.get("request_id") or ""),
+            "status": "running",
+            "dispatch_required": False,
+            "same_task": True,
+            "same_session": True,
+            "native_live_elevation": True,
+            "approval_decision": response_value,
         }
 
     def _block_task_for_elevation(
@@ -5321,6 +5845,14 @@ def task_to_status(task: TaskModel) -> dict[str, Any]:
             )
         except ABCError:
             extensions.pop(PERMISSION_ELEVATION_EXTENSION_KEY, None)
+    claude_elevation_value = extensions.get(CLAUDE_ELEVATION_EXTENSION_KEY)
+    if claude_elevation_value is not None:
+        try:
+            extensions[CLAUDE_ELEVATION_EXTENSION_KEY] = (
+                claude_elevation_public_projection(claude_elevation_value)
+            )
+        except ABCError:
+            extensions.pop(CLAUDE_ELEVATION_EXTENSION_KEY, None)
     # PERM-104-002 1.04A: the session tool rule surface is retired; historical
     # receipts are projected through the audit-only public view (matcher,
     # digests, state) so terminal tasks stay readable without rewriting

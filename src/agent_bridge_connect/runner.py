@@ -57,6 +57,13 @@ from .permission_transport import (
     select_claude_control_path,
 )
 from .session import SessionRecoveryRequired, control_root_for_task
+from .seatbelt import (
+    canonical_task_files,
+    canonical_task_roots,
+    preflight_host_containment,
+    task_temp_root,
+    validate_linked_worktree,
+)
 
 
 MAX_REQUEST_BYTES = 1024 * 1024
@@ -1603,9 +1610,9 @@ class RunnerState:
         )
         # PERM-104-002 runtime capability closure: a concrete ``full`` base
         # must be bound to the frozen task, PathPlan and exact executor
-        # command, not merely declared.  It is intentionally not nested in a
-        # second host sandbox: full must preserve the executor's documented
-        # non-interactive capability and complete without approval dialogs.
+        # command, not merely declared.  The worker is launched with the
+        # Runner-owned task-scoped containment profile so full preserves the
+        # host boundary while remaining non-interactive.
         #
         # Review fixes (E52M-002):
         # * explicit full, temporary (one-shot grant) full and inherited full
@@ -1854,8 +1861,8 @@ class RunnerState:
             raise
         if runtime_authorized is not None:
             try:
-                # ``activated`` only after the Runner-authorized worker exists.
-                # Concrete full is intentionally not nested in host Seatbelt.
+                # ``activated`` only after the Runner-authorized contained
+                # worker exists.
                 activated = activate_permission_runtime_record(
                     runtime_authorized,
                     host_profile_digest=profile_digest,
@@ -2074,10 +2081,20 @@ class RunnerState:
                 else {}
             )
             waiting_input = waiting_extensions.get(PHASE6_INPUT_EXTENSION_KEY)
+            live_native_approval = (
+                waiting_input
+                if isinstance(waiting_input, dict)
+                and waiting_input.get("native_live_elevation") is True
+                and bool(str(waiting_input.get("request_id") or "").strip())
+                else None
+            )
             native_approval = (
                 waiting_input
                 if isinstance(waiting_input, dict)
-                and waiting_input.get("scope") == "single_action"
+                and (
+                    waiting_input.get("scope") == "single_action"
+                    or live_native_approval is not None
+                )
                 and bool(str(waiting_input.get("request_id") or "").strip())
                 else None
             )
@@ -2097,7 +2114,17 @@ class RunnerState:
                     "only to native single-action permission requests"
                 )
             try:
-                if permission_option:
+                if live_native_approval is not None:
+                    if permission_option:
+                        raise RunnerError(
+                            "permission_option_invalid: live Claude elevation accepts only approve or deny"
+                        )
+                    result = service.respond_to_live_claude_elevation(
+                        task_id,
+                        str(request.get("input_id") or ""),
+                        response_type=response_type,
+                    )
+                elif permission_option:
                     result = service.respond_to_input(
                         task_id,
                         str(request.get("input_id") or ""),

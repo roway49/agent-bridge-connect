@@ -15,6 +15,7 @@ from .approval import (
 )
 from .permission_elevation import PERMISSION_ELEVATION_MODE
 from .adapters import DeliveryResult
+from .claude_elevation import CLAUDE_ELEVATION_EXTENSION_KEY
 from .protocol import ABCError
 from .execution_policy import execution_policy_view
 from .notifiers.dialog import DialogNotifier
@@ -85,14 +86,41 @@ def notify_input_required(
 ) -> dict[str, Any]:
     """Immediately deliver an actionable, explicitly nonterminal input notice."""
     payload = build_input_required_notification(service, task_id)
-    if (
+    live_dialog_already_reserved = False
+    if payload.get("native_live_elevation") is True:
+        existing_task = service.get_task(task_id)
+        existing_extensions = (
+            existing_task.extensions
+            if isinstance(existing_task.extensions, dict)
+            else {}
+        )
+        existing_receipt = existing_extensions.get(CLAUDE_ELEVATION_EXTENSION_KEY)
+        existing_cardinality = (
+            existing_receipt.get("cardinality")
+            if isinstance(existing_receipt, dict)
+            else None
+        )
+        live_dialog_already_reserved = (
+            isinstance(existing_cardinality, dict)
+            and existing_cardinality.get("dialogs") == 1
+        )
+        service.record_claude_elevation_notification(task_id)
+    elif (
         payload.get("input_type") == "permission"
         and int(payload.get("approval_version") or 1) == 3
         and payload.get("elevation_mode") == PERMISSION_ELEVATION_MODE
     ):
         service.record_task_elevation_notification(task_id)
     file_result = _file_notification(service, payload)
-    dialog_result = DialogNotifier().send(payload)
+    if live_dialog_already_reserved:
+        dialog_result = DeliveryResult(
+            True,
+            "live Claude elevation dialog already delivered",
+            "dialog:task.input_required",
+            {"action": "already_delivered"},
+        )
+    else:
+        dialog_result = DialogNotifier().send(payload)
     action = str(dialog_result.details.get("action") or "dismissed")
     decision_source = str(dialog_result.details.get("decision_source") or "")
     service.store.append_event(
@@ -235,7 +263,13 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         and request.get("scope") == APPROVAL_V3_SCOPE
         and request.get("elevation_mode") == PERMISSION_ELEVATION_MODE
     )
-    if is_task_elevation:
+    is_native_live_elevation = is_task_elevation and request.get("native_live_elevation") is True
+    if is_native_live_elevation:
+        command = (
+            f"agentbc task respond {task_id} --input {input_id} --approve"
+            f" (or --deny)"
+        )
+    elif is_task_elevation:
         command = (
             f"agentbc task respond {task_id} --input {input_id} --approve-full"
             f" (or --deny)"
@@ -315,7 +349,17 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
             "Why this is blocked:",
             summary,
         ]
-        if is_task_elevation:
+        if is_native_live_elevation:
+            body_lines.extend(
+                [
+                    "Requested access: elevate this live Claude session to bypassPermissions.",
+                    "Approve sends one native setMode/bypassPermissions/session response for this exact blocked action.",
+                    "The current task, RunLease, worker, and official Claude session remain unchanged.",
+                    "Deny returns one native PermissionResultDeny and does not change permission mode.",
+                    "Choose Approve or Deny below.",
+                ]
+            )
+        elif is_task_elevation:
             body_lines.extend(
                 [
                     "Requested access: contained full for this Task ID only.",
@@ -441,20 +485,29 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         "elevation_mode": (
             str(request.get("elevation_mode") or "") if is_task_elevation else ""
         ),
-        "elevation_source": "task_elevation" if is_task_elevation else "",
+        "elevation_source": (
+            "claude_native_live" if is_native_live_elevation else
+            "task_elevation" if is_task_elevation else ""
+        ),
+        "native_live_elevation": is_native_live_elevation,
+        "native_elevation_protocol": (
+            str(request.get("native_elevation_protocol") or "")
+            if is_native_live_elevation else ""
+        ),
         # Single-action approval binding: the notification is tied to exactly one
         # native request so a dialog can only Approve/Deny the bound request.
         "approval_request_id": (
-            str(request.get("request_id") or "") if is_single_action_approval else ""
+            str(request.get("request_id") or "")
+            if is_single_action_approval or is_native_live_elevation else ""
         ),
         "approval_request_fingerprint": (
             str(request.get("request_fingerprint") or "")
-            if is_single_action_approval
+            if is_single_action_approval or is_native_live_elevation
             else ""
         ),
         "approval_executor_run_id": (
             str(request.get("executor_run_id") or "")
-            if is_single_action_approval
+            if is_single_action_approval or is_native_live_elevation
             else ""
         ),
         "approval_scope": (

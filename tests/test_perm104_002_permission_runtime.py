@@ -124,7 +124,12 @@ class PermissionRuntimeRecordTests(unittest.TestCase):
     def test_sources_and_states_are_frozen(self) -> None:
         self.assertEqual(
             PERMISSION_RUNTIME_SOURCES,
-            {"explicit_task", "one_shot_permission_grant", "inherited_task"},
+            {
+                "explicit_task",
+                "one_shot_permission_grant",
+                "inherited_task",
+                "task_elevation",
+            },
         )
         self.assertEqual(
             PERMISSION_RUNTIME_STATES,
@@ -775,11 +780,10 @@ class PermissionRuntimeHermesCanaryTests(unittest.TestCase):
 
 
 class DispatchContainmentTests(unittest.TestCase):
-    """Concrete full prioritizes unattended executor completion.
+    """Concrete full retains task-scoped Runner containment.
 
-    Seatbelt remains independently tested for explicitly contained workflows,
-    but it is not imposed on a full worker because that second sandbox can
-    block the executor's own runtime and contradict full semantics.
+    Plain projects and linked worktrees receive the same frozen PathPlan
+    boundary; linked worktrees additionally pin their exact Git metadata.
     """
 
     def setUp(self) -> None:
@@ -839,17 +843,17 @@ class DispatchContainmentTests(unittest.TestCase):
             mock.patch.object(
                 RunnerState, "_spawn_process", return_value=fake_run
             ) as spawn,
-            mock.patch(
-                "agent_bridge_connect.seatbelt.preflight_host_containment"
-            ) as preflight,
+            mock.patch("agent_bridge_connect.seatbelt.preflight_host_containment"),
         ):
             result = state.dispatch_worker(
                 created.id, executor, str(self.board), "", 0.2, False
             )
         self.assertEqual(result["dispatch_status"], "accepted")
-        preflight.assert_not_called()
         _args, kwargs = spawn.call_args
-        self.assertIsNone(kwargs.get("containment"))
+        containment = kwargs.get("containment")
+        self.assertIsInstance(containment, dict)
+        self.assertEqual(containment.get("task_id"), created.id)
+        self.assertEqual(containment.get("board_root"), str(self.board))
 
     def test_plain_project_full_dispatch_does_not_require_sandbox_exec(self) -> None:
         self._assert_full_dispatch_does_not_require_sandbox_exec("hermes")
