@@ -35,16 +35,10 @@
     "-q",
     "{prompt}"
   ],
-  "controlled_environment": {
-    "HERMES_YOLO_MODE": {
-      "never_mutates_global_env": true,
-      "recorded_as": "permission_audit payload",
-      "scope": "spawned ACP subprocess environment only",
-      "value": "1"
-    }
-  },
+  "controlled_environment": {},
   "cwd": "{workspace_root}",
   "machine_readable_receipt_path": "stderr `session_id:` line when -Q is used",
+  "full_permission_flag": "--yolo",
   "surface": "argv_contract",
   "transport_options": [
     "cli_chat_single_query",

@@ -980,6 +980,53 @@ class WorkerResourceBlockTests(unittest.TestCase):
         self.assertEqual(current.errors[-1]["code"], "executor_session_receipt_invalid")
         self.assertNotIn("agentbc.input", current.extensions)
 
+    def test_worker_preserves_pre_session_executor_failure(self) -> None:
+        """A transport failure before session creation keeps its real cause."""
+        from agent_bridge_connect.cli import command_worker_run
+
+        task = self._task()
+        fake_executor = mock.Mock()
+        fake_executor.probe.return_value = ProbeResult(ok=True, message="ok")
+        fake_executor.start.return_value = StartResult(ok=True, run_id="hermes-run-1")
+        fake_executor.poll.return_value = PollResult(
+            status="needs_recovery",
+            progress={"steps_total": 1},
+            result={
+                "failure": {
+                    "kind": "executor_transport_start_failed",
+                    "layer": "executor",
+                    "message": "native transport could not start",
+                    "retryable": True,
+                }
+            },
+        )
+        args = mock.Mock(
+            root=str(self.board),
+            executor="hermes",
+            task_id=task.id,
+            detach=False,
+            monitor=False,
+            config=None,
+            interval=0.1,
+            once=True,
+            runner_authorize=True,
+        )
+        with mock.patch(
+            "agent_bridge_connect.cli.get_executor",
+            return_value=fake_executor,
+        ):
+            code = command_worker_run(args)
+
+        self.assertEqual(code, 1)
+        current = self.service.get_task(task.id)
+        self.assertEqual(current.status, "needs_recovery")
+        self.assertEqual(
+            current.errors[-1]["code"], "executor_transport_start_failed"
+        )
+        self.assertEqual(
+            current.errors[-1]["message"], "native transport could not start"
+        )
+
     def test_worker_fails_closed_when_receipt_mismatch_is_detected(self) -> None:
         from agent_bridge_connect.cli import command_worker_run
 

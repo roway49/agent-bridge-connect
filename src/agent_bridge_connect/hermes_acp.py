@@ -16,9 +16,9 @@ Contract invariants (fail closed):
   frozen ``SessionFirstGate`` before calling :meth:`HermesAcpTransport.prompt`.
 * No private scanning: the transport never reads Hermes databases, logs, or
   process tables, never uses ``--last`` / ``--continue`` / ``--accept-hooks``
-  / ``--yolo`` flags, and never overrides global configuration.  Full mode is
-  expressed exclusively through the registry-frozen subprocess-scoped
-  ``HERMES_YOLO_MODE`` environment on the spawned ACP subprocess.
+  / ``--yolo`` flags, and never overrides global configuration.  ACP is the
+  native interactive permission path for ``inherit`` and ``safe`` tasks;
+  ``full`` tasks use Hermes' separate headless ``chat --yolo`` transport.
 * Strict framing: every stdin/stdout frame must be a JSON object; malformed,
   duplicate, or out-of-order frames fail closed before any unsafe execution.
 * Strict versioning: ``initialize`` must return exactly the supported

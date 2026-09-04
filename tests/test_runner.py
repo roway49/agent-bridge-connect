@@ -66,10 +66,10 @@ class RunnerStateTests(unittest.TestCase):
         return packet
 
     def test_submit_and_poll_to_completion(self):
-        task = self._authorized_task()
+        task = self._authorized_task(mode="full")
         result = self.state.submit(
             "hermes",
-            [str(self.fake_hermes), "chat", "-q", "--max-turns", "90", "hello"],
+            [str(self.fake_hermes), "chat", "--yolo", "-q", "--max-turns", "90", "hello"],
             str(self.root),
             task=task,
         )
@@ -178,13 +178,14 @@ class RunnerStateTests(unittest.TestCase):
             str(self.fake_hermes),
             "sleep",
             "chat",
+            "--yolo",
             "-q",
             "--max-turns",
             "90",
             "hello",
         ]
         result = self.state.submit(
-            "hermes", command, str(self.root), task=self._authorized_task()
+            "hermes", command, str(self.root), task=self._authorized_task(mode="full")
         )
         cancelled = self.state.cancel(result["run_id"])
         self.assertIn(cancelled["status"], {"cancelling", "cancelled"})
@@ -390,10 +391,12 @@ class RunnerStateTests(unittest.TestCase):
                 [{"id": 1, "description": "run in customer project"}],
                 customer_dir=True,
                 customer_path=workspace,
+                permission_mode="full",
             )
             command = [
                 str(self.fake_hermes),
                 "chat",
+                "--yolo",
                 "-q",
                 "--max-turns",
                 "90",
@@ -897,13 +900,14 @@ class RunnerStateTests(unittest.TestCase):
                 [
                     str(self.fake_hermes),
                     "chat",
+                    "--yolo",
                     "-q",
                     "--max-turns",
                     "90",
                     "hello",
                 ],
                 self.root,
-                task=self._authorized_task(),
+                task=self._authorized_task(mode="full"),
             )
             terminal = self._wait_client_terminal(client, submitted["run_id"])
             self.assertEqual(terminal["stdout"], "RUNNER_OK")

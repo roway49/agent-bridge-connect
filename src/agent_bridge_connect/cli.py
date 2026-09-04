@@ -1587,7 +1587,11 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     continue
 
                 execution_session = poll.result.get("execution_session")
-                if manages_executor_session:
+                session_receipt_required = (
+                    execution_session is not None
+                    or poll.status in {"completed", "input_required", "cancelled"}
+                )
+                if manages_executor_session and session_receipt_required:
                     try:
                         execution_session = service.validate_executor_session_result(
                             task.id,
@@ -1613,7 +1617,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                         _request_task_list_refresh_for_service(service)
                         print(f"worker_error: executor session receipt failed for {task.id}: {exc}")
                         return 1
-                else:
+                elif not manages_executor_session:
                     execution_session = None
 
                 approval_request = poll.result.get("approval_request")
@@ -1768,7 +1772,11 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     continue
                 break
 
-            if manages_executor_session:
+            session_receipt_required = (
+                execution_session is not None
+                or poll.status in {"completed", "input_required", "cancelled"}
+            )
+            if manages_executor_session and session_receipt_required:
                 try:
                     execution_session = service.validate_executor_session_result(
                         task.id,
@@ -1794,7 +1802,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     _request_task_list_refresh_for_service(service)
                     print(f"worker_error: executor session receipt failed for {task.id}: {exc}")
                     return 1
-            else:
+            elif not manages_executor_session:
                 execution_session = None
 
             if poll.status not in {"completed", "input_required", "cancelled"}:

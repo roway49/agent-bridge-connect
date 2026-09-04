@@ -323,7 +323,8 @@ class ArgvAndEnvironmentContractTests(unittest.TestCase):
                     text = path.read_text(encoding="utf-8")
                     self.assertIn(flag, text)
         hermes_body = load("hermes", "0.17.0", "argv_contract.json")
-        self.assertIn("HERMES_YOLO_MODE", json.dumps(hermes_body))
+        self.assertEqual(hermes_body["full_permission_flag"], "--yolo")
+        self.assertEqual(hermes_body["controlled_environment"], {})
 
 
 if __name__ == "__main__":

@@ -4110,6 +4110,28 @@ class TaskService:
             raise ABCError("task_leased", f"Cannot requeue task with active run lease: {task_id}")
         now = _utc_now()
         cleanup_task_report_records(task)
+        session = (task.extensions or {}).get(SESSION_EXTENSION_KEY)
+        cleared_unbound_runs: list[str] = []
+        if (
+            isinstance(session, dict)
+            and str(session.get("session_state") or "").strip().lower() == "pending"
+            and not str(session.get("session_id") or "").strip()
+            and isinstance(session.get("run_ids"), list)
+            and session.get("run_ids")
+        ):
+            # A run may be recorded before an Executor emits its official
+            # session receipt.  If that attempt fails, its run ID is execution
+            # history, not proof that a resumable session exists.  Keeping it
+            # here poisons every retry: adapters see a non-empty run list and
+            # demand a session ID that was never created.  Requeue therefore
+            # restores the still-pending session snapshot to a fresh start.
+            # Sessions with an official ID are never changed.
+            cleared_unbound_runs = list(session["run_ids"])
+            reset_session = dict(session)
+            reset_session["run_ids"] = []
+            reset_session["resume_count"] = 0
+            task.extensions = dict(task.extensions or {})
+            task.extensions[SESSION_EXTENSION_KEY] = reset_session
         task.status = "pending"
         task.updated_at = now
         task.extensions = _merge_execution(
@@ -4126,6 +4148,16 @@ class TaskService:
             task_id,
             {"event_type": "task.requeued", "task_id": task_id, "created_at": now},
         )
+        if cleared_unbound_runs:
+            self.store.append_event(
+                task_id,
+                {
+                    "event_type": "executor.unbound_session_runs_cleared",
+                    "task_id": task_id,
+                    "cleared_run_count": len(cleared_unbound_runs),
+                    "created_at": now,
+                },
+            )
         self._refresh_task_index()
         return task
 

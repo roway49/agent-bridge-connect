@@ -485,7 +485,7 @@ class HermesAcpExecutorTests(unittest.TestCase):
         self.board.mkdir()
         self.calls: list[str] = []
 
-    def _packet(self, *, resumed: bool = False) -> dict:
+    def _packet(self, *, resumed: bool = False, mode: str = "safe") -> dict:
         session = build_session_snapshot(
             "hermes",
             retain=False,
@@ -501,7 +501,7 @@ class HermesAcpExecutorTests(unittest.TestCase):
             "workspace": {"root": str(self.root), "project_root": str(self.root)},
             "task_board": {"root": str(self.board)},
             "extensions": {
-                "agentbc.permission": build_permission_record(explicit_mode="safe"),
+                "agentbc.permission": build_permission_record(explicit_mode=mode),
                 "agentbc.session": session,
             },
         }
@@ -590,6 +590,56 @@ class HermesAcpExecutorTests(unittest.TestCase):
             hermes["acp"]["request_permission"]["state"],
             "bound",
         )
+
+    def test_inherit_snapshot_keeps_native_acp_transport(self) -> None:
+        fake = FakeAcpTransport(self.board, self.task_id)
+        executor = self._executor(fake)
+        with (
+            mock.patch.object(executor, "_start_run_lease"),
+            mock.patch.object(executor, "_close_run_lease"),
+        ):
+            started = executor.start(self._packet(mode="inherit"))
+            status = self._wait_status(
+                executor, started.run_id, {"completed", "needs_recovery", "failed"}
+            )
+        self.assertTrue(started.ok)
+        self.assertEqual(status, "completed")
+        self.assertIn("new_session", fake.calls)
+        self.assertIn("prompt", fake.calls)
+
+    def test_full_snapshot_bypasses_acp_and_uses_headless_chat_yolo(self) -> None:
+        fake = FakeAcpTransport(self.board, self.task_id)
+        executor = self._executor(fake)
+        completed = mock.Mock(returncode=0, stdout="no callback", stderr="")
+        packet = self._packet(mode="full")
+        # A pre-split active snapshot may still project Hermes full as ACP;
+        # the frozen full mode itself must select the corrected CLI runtime.
+        packet["extensions"]["agentbc.permission"]["mapping"]["hermes"][
+            "transport"
+        ] = "hermes-acp"
+        with (
+            mock.patch(
+                "agent_bridge_connect.executors.hermes.assert_executor_permission_supported"
+            ),
+            mock.patch.object(executor, "_should_use_runner", return_value=False),
+            mock.patch(
+                "agent_bridge_connect.executors.hermes.subprocess.run",
+                return_value=completed,
+            ) as run,
+            mock.patch.object(executor, "_start_run_lease"),
+            mock.patch.object(executor, "_heartbeat_run"),
+            mock.patch.object(executor, "_close_run_lease"),
+        ):
+            started = executor.start(packet)
+        self.assertTrue(started.ok)
+        commands = [call.args[0] for call in run.call_args_list]
+        command = next(command for command in commands if "chat" in command)
+        self.assertEqual(command[1], "chat")
+        self.assertIn("--yolo", command)
+        self.assertIn("-Q", command)
+        self.assertIn("-q", command)
+        self.assertNotIn("acp", command)
+        self.assertEqual(fake.calls, [])
 
     def test_deny_maps_to_cancelled(self) -> None:
         fake = FakeAcpTransport(self.board, self.task_id)
