@@ -36,8 +36,9 @@ from agent_bridge_connect.hermes_acp import (
     HermesAcpUnsupported,
     approval_outcome_for_decision,
     build_approval_message,
+    decode_permission_request,
     frame_kind,
-    permission_request_options,
+    normalize_permission_options,
     validate_initialize_result,
 )
 from agent_bridge_connect.permission_modes import build_permission_record
@@ -87,7 +88,7 @@ def _permission_frame(
         "params": {
             "sessionId": session_id,
             "toolCall": {
-                "id": tool_call_id,
+                "toolCallId": tool_call_id,
                 "kind": "execute",
                 "title": "run the approved command",
                 "status": "pending",
@@ -164,7 +165,16 @@ class FakeAcpTransport:
         )
         return session_id
 
-    def prompt(self, session_id: str, blocks: list[dict], *, on_permission, timeout_s=None) -> dict:
+    def prompt(
+        self,
+        session_id: str,
+        blocks: list[dict],
+        *,
+        on_permission,
+        timeout_s=None,
+        receive_timeout_s=None,
+        on_progress=None,
+    ) -> dict:
         self.calls.append("prompt")
         self.receipt_before_turn = (
             self.board / ".agentbc-control" / self.task_id / "session_receipt.json"
@@ -178,7 +188,11 @@ class FakeAcpTransport:
         if self.prompt_raises is not None:
             raise self.prompt_raises
         for frame in self.permission_frames:
-            outcome = on_permission(frame)
+            # Mirror the real transport: the permission frame is decoded and
+            # validated against the official session at the wire boundary, so
+            # the bridge receives the normalized request exactly like
+            # production does.
+            outcome = on_permission(decode_permission_request(frame, session_id=session_id))
             self.sent.append({"method": "permission_response", "outcome": outcome})
         return dict(self.prompt_result)
 
@@ -219,31 +233,46 @@ class HermesAcpTransportUnitTests(unittest.TestCase):
     def test_permission_option_surface(self) -> None:
         # PERM-104-002 v2: AgentBC preserves every offered optionId verbatim
         # and no longer requires a one-shot allow_once option.
-        has_selectable, offered = permission_request_options(
+        offered = normalize_permission_options(
             [
-                {"optionId": "allow_once", "kind": "allow_once"},
-                {"optionId": "allow_session", "kind": "allow_always"},
-                {"optionId": "deny", "kind": "reject_once"},
+                {"optionId": "allow_once", "kind": "allow_once", "name": "Allow once"},
+                {"optionId": "allow_session", "kind": "allow_always", "name": "Allow session"},
+                {"optionId": "deny", "kind": "reject_once", "name": "Deny"},
             ]
         )
-        self.assertTrue(has_selectable)
-        self.assertEqual(offered, ["allow_once", "allow_session", "deny"])
+        self.assertEqual(
+            [option.native_option_id for option in offered],
+            ["allow_once", "allow_session", "deny"],
+        )
+        self.assertEqual([option.role for option in offered], ["once", "session", "deny"])
         # A deny-only surface is now valid (selectable) and never rejected
         # for lacking allow_once.
-        has_selectable, offered = permission_request_options(
-            [{"optionId": "deny", "kind": "reject_once"}]
+        deny_only = normalize_permission_options(
+            [{"optionId": "deny", "kind": "reject_once", "name": "Deny"}]
         )
-        self.assertTrue(has_selectable)
-        self.assertEqual(offered, ["deny"])
-        self.assertFalse(permission_request_options(None)[0])
-        self.assertFalse(permission_request_options("nope")[0])
+        self.assertEqual([option.native_option_id for option in deny_only], ["deny"])
+        with self.assertRaises(HermesAcpError):
+            normalize_permission_options(None)
+        with self.assertRaises(HermesAcpError):
+            normalize_permission_options("nope")
 
-    def test_permission_request_validation_fails_closed(self) -> None:
+    def _decode(self, frame, *, session_id=FAKE_SESSION_ID):
+        return decode_permission_request(frame, session_id=session_id)
+
+    def test_permission_request_decodes_canonical_shape(self) -> None:
+        request = self._decode(_permission_frame())
+        self.assertEqual(request.request_id, 100)
+        self.assertEqual(request.session_id, FAKE_SESSION_ID)
+        self.assertEqual(request.tool_call_id, "perm-check-1")
+        self.assertEqual(request.summary, "run the approved command")
+        self.assertEqual(
+            request.offered_option_ids(),
+            ("allow_once", "deny", "allow_session"),
+        )
         message = build_approval_message(
-            _permission_frame(),
+            request,
             task_id="T-1",
             executor_run_id="hermes-run-1",
-            session_id=FAKE_SESSION_ID,
         )
         self.assertEqual(message["id"], 100)
         self.assertEqual(message["params"]["itemId"], "perm-check-1")
@@ -251,19 +280,15 @@ class HermesAcpTransportUnitTests(unittest.TestCase):
 
         # Wrong official session -> identity mismatch.
         with self.assertRaisesRegex(HermesAcpError, "session_mismatch"):
-            build_approval_message(
+            self._decode(
                 _permission_frame(session_id=FAKE_OTHER_SESSION_ID),
-                task_id="T-1",
-                executor_run_id="hermes-run-1",
-                session_id=FAKE_SESSION_ID,
             )
         # v2: a frame without allow_once is accepted; its exact optionIds
         # travel as the offered choice set.
         message_without_once = build_approval_message(
-            _permission_frame(include_allow_once=False),
+            self._decode(_permission_frame(include_allow_once=False)),
             task_id="T-1",
             executor_run_id="hermes-run-1",
-            session_id=FAKE_SESSION_ID,
         )
         self.assertEqual(
             [choice["native_option_id"] for choice in message_without_once["offered_choices"]],
@@ -273,31 +298,51 @@ class HermesAcpTransportUnitTests(unittest.TestCase):
         empty_frame = _permission_frame(include_allow_once=False)
         empty_frame["params"]["options"] = []
         with self.assertRaisesRegex(HermesAcpError, "options_unsupported"):
-            build_approval_message(
-                empty_frame,
-                task_id="T-1",
-                executor_run_id="hermes-run-1",
-                session_id=FAKE_SESSION_ID,
-            )
+            self._decode(empty_frame)
         # Missing tool call -> malformed.
         broken = _permission_frame()
         broken["params"].pop("toolCall")
         with self.assertRaisesRegex(HermesAcpError, "tool_call_missing"):
-            build_approval_message(
-                broken,
-                task_id="T-1",
-                executor_run_id="hermes-run-1",
-                session_id=FAKE_SESSION_ID,
-            )
+            self._decode(broken)
+
+    def test_permission_request_rejects_non_canonical_wire_fields(self) -> None:
+        # The ACP ``ToolCallUpdate`` identity lives at ``toolCall.toolCallId``.
+        # A legacy ``toolCall.id`` is not a canonical field, so guessing which
+        # one wins is never an option.
+        legacy = _permission_frame()
+        legacy["params"]["toolCall"] = {
+            "id": "perm-check-1",
+            "title": "run the approved command",
+        }
+        with self.assertRaisesRegex(HermesAcpError, "mixed_wire_fields"):
+            self._decode(legacy)
+        # A field outside the canonical ToolCallUpdate schema also fails closed.
+        stranger = _permission_frame()
+        stranger["params"]["toolCall"]["arguments"] = {"command": "x"}
+        with self.assertRaisesRegex(HermesAcpError, "unknown_wire_field"):
+            self._decode(stranger)
+        # Mixing canonical and AgentBC-internal snake_case names fails closed.
+        mixed = _permission_frame()
+        mixed["params"]["session_id"] = FAKE_SESSION_ID
+        with self.assertRaisesRegex(HermesAcpError, "mixed_wire_fields"):
+            self._decode(mixed)
 
     def test_approval_outcome_mapping_is_exact(self) -> None:
         self.assertEqual(
             approval_outcome_for_decision("accept"),
-            {"outcome": {"optionId": HERMES_ACP_ALLOW_ONCE_OPTION}},
+            {"outcome": {"outcome": "selected", "optionId": HERMES_ACP_ALLOW_ONCE_OPTION}},
         )
         self.assertEqual(
             approval_outcome_for_decision("decline"),
             {"outcome": {"outcome": HERMES_ACP_DENIED_OUTCOME}},
+        )
+        # A selected native choice returns the exact optionId in the canonical
+        # ``SelectedPermissionOutcome`` shape - the old
+        # ``{"outcome": {"optionId": ...}}`` response is not parseable by the
+        # ACP agent and was silently read as a denial.
+        self.assertEqual(
+            approval_outcome_for_decision({"outcome": {"optionId": "opt-native-42"}}),
+            {"outcome": {"outcome": "selected", "optionId": "opt-native-42"}},
         )
         for invalid in ("allow_session", "allow_always", "deny_always", "maybe", "", None):
             with self.assertRaises(HermesAcpError):
@@ -575,7 +620,7 @@ class HermesAcpExecutorTests(unittest.TestCase):
         )
         self.assertEqual(
             permission_response["outcome"],
-            {"outcome": {"optionId": "allow_once"}},
+            {"outcome": {"outcome": "selected", "optionId": "allow_once"}},
         )
         control_events = result.result["control_events"]
         self.assertEqual(
@@ -623,7 +668,7 @@ class HermesAcpExecutorTests(unittest.TestCase):
         # fallback for decisions recorded without a choice payload).
         self.assertEqual(
             permission_response["outcome"],
-            {"outcome": {"optionId": "deny"}},
+            {"outcome": {"outcome": "selected", "optionId": "deny"}},
         )
 
     def test_explicit_resume_loads_only_persisted_session(self) -> None:

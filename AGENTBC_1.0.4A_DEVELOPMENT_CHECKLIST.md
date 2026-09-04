@@ -519,6 +519,65 @@ Executor 拒绝必须在同 session、同 request Approve 后精确执行。
   `SESSION-104-001` 本节不修改，仍按原有 `SESSION-104-001_CANARY_EVIDENCE.md` 结论处理；
   `PERM-104-002` 继续保持开放。
 
+2026-09-04 `PERM-104-001` Hermes ACP 长任务收口与临时会话清理修复（`agent/claude` 本地提交，未 push）：
+
+- 失败基线 `TJBS-001` 两次失败共用同一官方 session `18a3e156-6aae-4286-b504-4276f90fc5b2`：
+  run 1 `hermes-TJBS-001-46b34d3d` 在模型调用 45.1s + 工具执行仍健康进行时被
+  `hermes_acp_transport_failed`（"receive timed out without a complete frame"，`timeout_is_failure=true`）
+  杀死；run 2 `hermes-TJBS-001-1eb6432e` 返回码 `0`、`stop_reason=end_turn`、`marker_seen=false`，
+  以 `completion_marker_missing` 判为 failed（chat 总结、兼容事件 `task.agent_callback_recorded` 与
+  真实 23-byte `hermes-full-canary.txt` 均存在，但都不能替代 marker）；随后 cleanup 以
+  `hermes_session_delete_invalid_session_id` 拒绝已绑定的官方 receipt，且 `commands.delete=not_requested`。
+- 根因 1（`completion_marker_missing` 的真实原因）：`_collect_message_chunks` 探测
+  `params.sessionUpdate[].message[].content[]`，而 pinned `agent-client-protocol` 的
+  `SessionNotification`/`AgentMessageChunk` 实际序列化为
+  `params.sessionId` + `params.update.sessionUpdate` + 单个 `params.update.content`；
+  `PromptResponse` 只携带 `stopReason`，因此每个真实 turn 的 `message_text()` 都为空，
+  AgentBC 从未收到执行器的真实终答与 FINAL_CALLBACK。
+- 根因 2：`prompt()` 用 30s 的 `rpc_timeout_s` 限制每一帧接收，长模型/工具间隔必然被当作
+  transport 失败；且旧实现 `select` 可读后调用 `TextIOWrapper.readline()`，partial line 会
+  无限期阻塞，deadline 不可靠，`errors="strict"` 还会让 `UnicodeDecodeError` 逃出已分类错误集。
+- 根因 3：`_HERMES_SESSION_ID_RE` 只接受 Hermes CLI 聊天 token（`YYYYMMDD_HHMMSS_<hex>`），
+  而 Hermes ACP session id 是 UUID（`acp_adapter/session.py` `str(uuid.uuid4())`），正是
+  stderr receipt 绑定的形状；清理在 spawn 前就被拒绝。
+- 根因 4：`approval_outcome_for_decision` 返回 `{"outcome":{"optionId":...}}`，缺少 ACP
+  `AllowedOutcome` 的 `selected` 判别字段，agent 无法解析并按 deny 处理。
+- 修复：`session/update` 按规范 wire 形状采集终答（turn-scoped，`session/load` 历史回放与
+  无关 session 不得混入；1 MiB 预算只淘汰最旧文本并报告 truncation，绝不丢弃含 marker 的尾部）；
+  接收路径改为字节级组帧 + 三个相互独立且各自真实的边界（`rpc_timeout_s=30s` 单次握手 RPC、
+  `HERMES_ACP_RECEIVE_TIMEOUT_S=900s` 存活进程静默窗、adapter 端 24h 整体 turn deadline），
+  稳定码 `hermes_acp_rpc_timeout` / `hermes_acp_receive_idle_timeout` / `hermes_acp_prompt_timeout` /
+  `hermes_acp_transport_eof` / `hermes_acp_transport_exited` / `hermes_acp_frame_oversized`；
+  `HermesAcpTimeout` 同时继承 `HermesAcpError` 与 `TimeoutError`，`timeout_is_failure=true`
+  保持真实，超时绝不静默重试或转为成功；RunLease 由 `_RunLeaseHeartbeat`（30s，低于 120s stale 窗）
+  与 `poll()` 对活跃 ACP run 补心跳，仅作存活信号，不改状态、不重试、不代为完成；
+  cleanup `_hermes_session_delete_identifier_error` 只接受两种已文档化的 session id 形状
+  （ACP UUID 与 CLI token），其余空值、选项注入、路径分隔符、>128 字符一律 fail closed，
+  argv 仍严格为 `[hermes,"sessions","delete",<bound id>,"--yes"]`，无法命中 dispatcher 或无关 session。
+- 既有未提交的 `hermes_acp.py` canonical wire 重构逐字段对照 pinned schema 验证后保留
+  （`RequestPermissionRequest`/`ToolCallUpdate`/`PermissionOption` 字段集、typed normalized
+  request、mixed-field 拒绝、无 fuzzy/无版本分支），并修复其不可达死代码与
+  `executors/hermes.py` 迁移缺口（修复前 Hermes executor 根本无法 import）；
+  dialog role 以精确 Hermes `optionId` 为主表，新增 canonical `PermissionOptionKind`
+  （`allow_once`/`reject_once`）仅在 optionId 未知时兜底，persistent scope 永不可操作；
+  fixture 与两个受影响测试模块同步为规范形状。
+- 测试：新增 `tests/test_perm104_001_hermes_longrun.py` 26 项（分片/半行分帧、跨静默窗长间隔、
+  无关 session 隔离、预算尾部保留、hung/eof/exit/整体 deadline 四种真实区分、
+  marker 缺失/重复、同官方 session retry、RunLease 心跳、cleanup 合法/非法/隔离/幂等）；
+  `test_hermes_acp_transport.py` 27 项与 `test_perm104_002_v2_broker.py` 29 项更新为规范 API。
+  全量 unittest 计数与失败集合与未修改 `HEAD` 基线一致（仅缺失可选 `claude` extra、
+  Claude Code 环境变量导致的 2 项、以及与本次无关的 stale containment 断言）；
+  Ruff、compileall、`git diff --check`、`uv build` 全部通过。
+- 真机证据：`PERM-104-001_HERMES_ACP_LONGRUN_EVIDENCE.md`。真实 `hermes acp`（v0.20.6，zai）
+  full-mode canary `CG8D-001`：completed、3/3 steps、`source=executor_final_marker`、
+  `marker_valid=true`、exit 0、wall 2m43s、RunLease 全程心跳后 closed、官方 session
+  `20727e3e-7017-4890-ac5c-37eb0ea03ea4` 绑定并经
+  `hermes sessions delete <uuid> --yes` 实机删除成功（重复执行幂等）。
+  遗留：已部署 1.0.3a2 Runner 仍复现旧缺陷，需重新封包后重跑 canary；Hermes 在
+  `HERMES_YOLO_MODE=1` 下仍对一次 `edit-approval-1` 发出 request（Hermes 侧行为），
+  AgentBC 只做 fail-closed bridge，未加弹窗/未自动应答/未合成完成；
+  `test_issued_grant_prepares_outer_containment_before_worker_spawn` 的 stale 断言仍待更新。
+
 ### 4.5 `FLOW-104-001`：handoff 结构化多 steps
 
 - `agentbc task handoff` 接受与根任务一致的结构化 `steps[].description` 输入；

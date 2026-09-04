@@ -26,6 +26,21 @@ Modes:
 * ``unsupported_options``: the permission request offers only ``deny``.
 * ``wrong_session_permission``: the permission request is bound to a
   different session id than the one that was created.
+* ``long_interval``: stays silent for ``--silence-s`` seconds (longer than the
+  client per-frame bound) in the middle of the turn, then finishes normally.
+  A healthy long model/tool interval must NOT be a transport failure.
+* ``split_frames``: streams the terminal answer as several ``session/update``
+  notifications written byte-by-byte, so the client has to assemble complete
+  frames from partial reads.
+* ``hang``: never emits anything after ``session/new`` and stays alive.
+* ``eof_mid_prompt``: never answers ``session/prompt`` and exits.
+* ``close_stdout``: closes stdout while staying alive (genuine EOF).
+* ``resume_direct``: like ``resume`` but streams the answer without asking
+  for any permission.
+* ``no_marker``: streams an assistant answer without any final callback marker.
+* ``duplicate_marker``: streams the final callback marker twice.
+* ``unrelated_session_update``: emits an ``agent_message_chunk`` bound to a
+  different session id before the real answer.
 
 The fake never reads or writes any Hermes state; it only speaks the protocol.
 """
@@ -33,7 +48,9 @@ The fake never reads or writes any Hermes state; it only speaks the protocol.
 from __future__ import annotations
 
 import json
+import os
 import sys
+import time
 from typing import Any
 
 PERMISSION_ID = 100
@@ -78,6 +95,9 @@ def _options(include_allow_once: bool) -> list[dict[str, str]]:
 
 
 def _permission_frame(session_id: str, include_allow_once: bool = True) -> dict[str, Any]:
+    # Canonical ACP wire shape: ``RequestPermissionRequest`` with
+    # ``sessionId`` + ``toolCall`` (a ``ToolCallUpdate`` keyed by
+    # ``toolCallId``) + ``options[]`` with ``optionId``/``kind``/``name``.
     return {
         "jsonrpc": "2.0",
         "id": PERMISSION_ID,
@@ -85,7 +105,7 @@ def _permission_frame(session_id: str, include_allow_once: bool = True) -> dict[
         "params": {
             "sessionId": session_id,
             "toolCall": {
-                "id": "perm-check-1",
+                "toolCallId": "perm-check-1",
                 "kind": "execute",
                 "title": "run the approved command",
                 "status": "pending",
@@ -97,11 +117,62 @@ def _permission_frame(session_id: str, include_allow_once: bool = True) -> dict[
     }
 
 
+def _session_update(session_id: str, text: str, *, session: str = SESSION_ID) -> dict[str, Any]:
+    """Canonical ``session/update`` notification with one agent message chunk.
+
+    Mirrors the pinned ``agent-client-protocol`` serialisation of
+    ``SessionNotification`` + ``AgentMessageChunk``: ``params.sessionId`` plus
+    ``params.update`` carrying the ``sessionUpdate`` discriminator and a single
+    ``content`` content block.
+    """
+    return {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+            "sessionId": session,
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": text},
+            },
+        },
+    }
+
+
+def _write_raw(text: str) -> None:
+    """Write bytes verbatim, then flush (used to split one frame)."""
+    sys.stdout.buffer.write(text.encode("utf-8"))
+    sys.stdout.buffer.flush()
+
+
 def _prompt_reply(request_id: Any) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "result": {"stopReason": "end_turn"}}
 
 
-def main(mode: str, log_path: str) -> int:
+def _marker(task_id: str) -> str:
+    return (
+        "AGENTBC_FINAL_CALLBACK: "
+        + json.dumps(
+            {
+                "version": 1,
+                "task_id": task_id,
+                "final_state": "completed",
+                "summary": "fake hermes turn completed",
+                "step_results": [
+                    {"id": 1, "status": "done"},
+                    {"id": 2, "status": "done"},
+                    {"id": 3, "status": "done"},
+                ],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    )
+
+
+def main(argv: list[str]) -> int:
+    mode = argv[0]
+    log_path = argv[1]
+    silence_s = float(argv[2]) if len(argv) > 2 else 0.0
     log: list[dict[str, Any]] = []
     request_id = 0
 
@@ -153,6 +224,65 @@ def main(mode: str, log_path: str) -> int:
             if mode == "exit_mid_prompt":
                 _log_line(log_path, {"event": "exit_mid_prompt"})
                 return 0
+            if mode == "hang":
+                # Alive but silent forever: the client must classify this as an
+                # idle timeout, never as a completion.
+                time.sleep(600.0)
+                return 0
+            if mode == "eof_mid_prompt":
+                _log_line(log_path, {"event": "eof_mid_prompt"})
+                return 0
+            if mode == "close_stdout":
+                # Close stdout but keep the process alive: a genuine EOF that
+                # is NOT a process exit.
+                _log_line(log_path, {"event": "close_stdout"})
+                sys.stdout.flush()
+                os.close(1)
+                time.sleep(600.0)
+                return 0
+            if mode == "resume_direct":
+                # Resume path with no permission request at all.
+                _send(_session_update(SESSION_ID, "resumed and finished\n"), log)
+                _send(_session_update(SESSION_ID, _marker("59QH-001")), log)
+                _send(_prompt_reply(request_id), log)
+                continue
+            if mode == "long_interval":
+                _send(_session_update(SESSION_ID, "starting the long tool call"), log)
+                time.sleep(silence_s)
+                _send(_session_update(SESSION_ID, "tool call finished"), log)
+                _send(_session_update(SESSION_ID, _marker("59QH-001")), log)
+                _send(_prompt_reply(request_id), log)
+                continue
+            if mode == "split_frames":
+                for chunk in ("Step1 wrote the artifact.\n", "Step2 byte-verified it.\n", "Step3 finishing unattended.\n"):
+                    _send(_session_update(SESSION_ID, chunk), log)
+                _send(_session_update(SESSION_ID, _marker("59QH-001")), log)
+                _send(_prompt_reply(request_id), log)
+                continue
+            if mode == "truncated_marker":
+                # The marker line is split across two frames mid-line, so a
+                # client that truncates or re-frames partial reads loses it.
+                body = "working.\n" + _marker("59QH-001")
+                cut = body.index("step_results")
+                _write_raw(_frame(_session_update(SESSION_ID, body[:cut])))
+                time.sleep(0.05)
+                _write_raw(_frame(_session_update(SESSION_ID, body[cut:])))
+                _send(_prompt_reply(request_id), log)
+                continue
+            if mode == "no_marker":
+                _send(_session_update(SESSION_ID, "task finished without a marker"), log)
+                _send(_prompt_reply(request_id), log)
+                continue
+            if mode == "duplicate_marker":
+                marker = _marker("59QH-001")
+                _send(_session_update(SESSION_ID, marker + "\n" + marker), log)
+                _send(_prompt_reply(request_id), log)
+                continue
+            if mode == "unrelated_session_update":
+                _send(_session_update(SESSION_ID, "stale answer from another session", session=OTHER_SESSION_ID), log)
+                _send(_session_update(SESSION_ID, _marker("59QH-001")), log)
+                _send(_prompt_reply(request_id), log)
+                continue
             if mode in {"happy", "resume", "unsupported_options", "wrong_session_permission"}:
                 _send(_permission_frame(
                     OTHER_SESSION_ID if mode == "wrong_session_permission" else SESSION_ID,
@@ -174,11 +304,11 @@ def main(mode: str, log_path: str) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("usage: hermes_acp_fake_server.py <mode> <log_path>", file=sys.stderr)
+    if len(sys.argv) < 3:
+        print("usage: hermes_acp_fake_server.py <mode> <log_path> [silence_s]", file=sys.stderr)
         sys.exit(2)
     try:
-        sys.exit(main(sys.argv[1], sys.argv[2]))
+        sys.exit(main(sys.argv[1:]))
     except Exception as exc:  # pragma: no cover - failure evidence only
         print(f"fake acp server failed: {exc}", file=sys.stderr)
         sys.exit(1)

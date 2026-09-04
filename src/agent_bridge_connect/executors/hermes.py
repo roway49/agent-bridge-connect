@@ -35,10 +35,10 @@ from agent_bridge_connect.effective_permissions import resolve_effective_permiss
 from agent_bridge_connect.execution_policy import extract_hermes_session_id
 from agent_bridge_connect.hermes_acp import (
     HermesAcpError,
+    HermesAcpPermissionRequest,
     HermesAcpTransport,
     approval_outcome_for_decision,
     build_approval_message,
-    validate_permission_request,
 )
 from agent_bridge_connect.media import task_image_paths
 from agent_bridge_connect.permission_modes import (
@@ -69,6 +69,21 @@ HERMES_SESSION_DELETE_INVALID_SESSION_ID_CODE = "hermes_session_delete_invalid_s
 _HERMES_FROZEN_HELP_FIXTURE = "matrix/hermes/0.17.0/help.txt"
 _HERMES_FROZEN_VERSION = "0.17.0"
 _HERMES_CLEANUP_TIMEOUT_S = 60
+# PERM-104-001: ``hermes sessions delete <session_id>`` takes the exact official
+# session identifier, and Hermes issues TWO documented identifier shapes.  Both
+# are legitimately bound receipts, so both are accepted and nothing else:
+#   * ACP ``session/new`` / ``session/load`` -> a UUID
+#     (``acp_adapter/session.py``: ``str(uuid.uuid4())``), which is the shape the
+#     Hermes ACP stderr receipt binds.  TJBS-001 bound
+#     ``18a3e156-6aae-4286-b504-4276f90fc5b2`` and then cleanup rejected that
+#     exact receipt with ``hermes_session_delete_invalid_session_id`` because
+#     the old check accepted only the CLI token form.
+#   * the Hermes CLI chat session token form (``YYYYMMDD_HHMMSS_<hex>``).
+# Anything that is not one of those exact identifiers - free-form names, fuzzy
+# "id or name" selectors, option-looking tokens - stays rejected.
+_HERMES_ACP_SESSION_ID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 _HERMES_SESSION_ID_RE = re.compile(r"^\d{8}_\d{6}_[0-9a-fA-F]{6,32}$")
 _HERMES_SESSION_ABSENT_RE = re.compile(
     r"(?im)^session.*(?:not found|does not exist)"
@@ -78,6 +93,67 @@ _HERMES_INITIALIZING_LINE_RE = re.compile(
 )
 # ACP ``stopReason`` values that mean the turn ran to a normal completion.
 _ACP_COMPLETED_STOP_REASONS = frozenset({"end_turn", "success", "completed"})
+# ACP run statuses that describe a live run (RunLease heartbeat eligible).
+_ACP_RUNNING_STATUSES = frozenset({"starting", "prompting", "finalizing", "running"})
+# PERM-104-001 heartbeat interval for an in-flight ACP turn.  It stays well
+# under the RunLease staleness window (120s) so a silent multi-minute model or
+# tool interval can never be mistaken for a dead worker.
+_HERMES_ACP_HEARTBEAT_INTERVAL_S = 30.0
+
+
+class _RunLeaseHeartbeat:
+    """Keep one RunLease healthy while a Hermes ACP turn is in flight.
+
+    The ACP worker thread blocks in ``transport.prompt`` for the whole turn and
+    ``poll()`` may not be called for minutes, so a plain daemon timer beats at a
+    fixed interval until the turn ends.  ``beat()`` is invoked once per received
+    ACP frame and records a heartbeat at most once per interval, so a fast
+    streaming turn never turns into a heartbeat write storm.  It is a liveness
+    signal only: it never changes run state, never retries and never completes
+    anything.
+    """
+
+    def __init__(self, executor: "HermesExecutor", run_id: str) -> None:
+        self._executor = executor
+        self._run_id = str(run_id)
+        self._interval_s = _HERMES_ACP_HEARTBEAT_INTERVAL_S
+        self._next_beat_at = 0.0
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._stop_event.clear()
+        self._next_beat_at = 0.0
+        self._thread = threading.Thread(
+            target=self._loop,
+            name=f"agentbc-hermes-acp-heartbeat-{self._run_id}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def beat(self) -> None:
+        """Record one liveness beat if the interval has elapsed."""
+        now = time.monotonic()
+        if now < self._next_beat_at:
+            return
+        self._next_beat_at = now + self._interval_s
+        try:
+            self._executor._heartbeat_run(self._run_id)
+        except Exception:  # noqa: BLE001 - heartbeat is never fatal
+            pass
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        thread = self._thread
+        self._thread = None
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+
+    def _loop(self) -> None:
+        while not self._stop_event.wait(self._interval_s):
+            self.beat()
 
 
 def hermes_acp_yolo_env() -> dict[str, str]:
@@ -529,6 +605,11 @@ class HermesExecutor(CLIExecutorBase):
     def poll(self, run_id: str) -> PollResult:
         acp_run = self._acp_runs.get(run_id)
         if acp_run is not None:
+            # PERM-104-001: an in-flight ACP turn is live progress.  Heartbeat
+            # on every poll so the RunLease cannot go stale while a healthy
+            # Hermes turn keeps working past the old receive interval.
+            if str(acp_run.get("status") or "") in _ACP_RUNNING_STATUSES:
+                self._heartbeat_run(run_id)
             return PollResult(
                 status=str(acp_run.get("status") or "running"),
                 progress={
@@ -862,12 +943,27 @@ class HermesExecutor(CLIExecutorBase):
                         "name": resolved.name,
                     }
                 )
-            response = transport.prompt(
-                session_id,
-                blocks,
-                on_permission=lambda frame: self._handle_acp_permission(record, frame),
-                timeout_s=float(self.timeout_s),
-            )
+            record["status"] = "prompting"
+            # PERM-104-001: a healthy Hermes turn runs on a worker thread that
+            # blocks in ``prompt`` for the whole turn, and ``poll()`` may not be
+            # called for minutes.  The RunLease is therefore heartbeated on a
+            # fixed interval for as long as the turn is actually running, so a
+            # long model or tool interval is progress - never a stale lease.
+            heartbeat = _RunLeaseHeartbeat(self, run_id)
+            heartbeat.start()
+            try:
+                response = transport.prompt(
+                    session_id,
+                    blocks,
+                    on_permission=lambda request: self._handle_acp_permission(
+                        record, request
+                    ),
+                    timeout_s=float(self.timeout_s),
+                    on_progress=heartbeat.beat,
+                )
+            finally:
+                heartbeat.stop()
+            record["status"] = "finalizing"
             stop_reason = str(
                 response.get("stopReason") or response.get("stop_reason") or "end_turn"
             )
@@ -960,6 +1056,12 @@ class HermesExecutor(CLIExecutorBase):
                     "message": str(exc),
                     "retryable": True,
                     "timeout_is_failure": isinstance(exc, TimeoutError),
+                    # Bounded, sanitized transport evidence (stable code +
+                    # field-level detail) so a wire-shape mismatch can be
+                    # diagnosed from the task record alone.  Raw frames, raw
+                    # argv, tokens and session content never enter this map.
+                    "code": getattr(exc, "code", ""),
+                    "details": dict(getattr(exc, "details", {}) or {}),
                 }
             result_payload = {
                 "stderr": transport.stderr_evidence() if transport is not None else "",
@@ -982,28 +1084,27 @@ class HermesExecutor(CLIExecutorBase):
     def _handle_acp_permission(
         self,
         record: dict[str, Any],
-        frame: dict[str, Any],
+        request: HermesAcpPermissionRequest,
     ) -> dict[str, Any]:
-        """Bridge one ACP permission request into the frozen ControlPlane.
+        """Bridge one decoded ACP permission request into the ControlPlane.
 
-        Only the exact ``allow_once`` (approve) and ``cancelled`` (deny)
-        outcomes are ever returned.  Duplicate/concurrent requests, requests
-        bound to a different session, unsupported option lists, mismatched
-        identities, and late responses all fail closed into the control
-        plane's recovery state and abort the turn.
+        ``request`` is already the normalized output of
+        :func:`agent_bridge_connect.hermes_acp.decode_permission_request`: the
+        transport validated the canonical wire shape, the official session and
+        the offered option surface before this bridge runs.  Only the exact
+        offered ``optionId`` outcomes are ever returned.  Duplicate/concurrent
+        requests, requests bound to a different session, unsupported option
+        lists, mismatched identities, and late responses all fail closed into
+        the control plane's recovery state and abort the turn.
         """
         plane: ApprovalControlPlane = record["plane"]
         run_id = str(record["run_id"])
         session_id = str(record.get("session_id") or "")
-        request_id, tool_call = validate_permission_request(
-            frame,
-            session_id=session_id,
-        )
+        request_id = request.request_id
         message = build_approval_message(
-            frame,
+            request,
             task_id=str(record["task_packet"].get("task_id") or ""),
             executor_run_id=run_id,
-            session_id=session_id,
         )
         try:
             event = plane.request_approval(message)
@@ -1337,19 +1438,47 @@ def _hermes_cleanup_unsupported() -> SessionCleanupCapability:
     )
 
 
+def _hermes_session_delete_identifier_error(session_id: str) -> str:
+    """Return the stable failure code for an unusable delete identifier.
+
+    The identifier must be the exact officially bound session identifier in one
+    of the two documented Hermes shapes, and it must stay a single shell-less
+    positional argv token (the delete contract is positional).
+    """
+    if not session_id:
+        return HERMES_SESSION_DELETE_MISSING_SESSION_ID_CODE
+    unsafe = (
+        session_id.startswith("-")
+        or len(session_id) > 128
+        or re.search(r"[\s/\\\0]", session_id) is not None
+    )
+    if unsafe:
+        return HERMES_SESSION_DELETE_INVALID_SESSION_ID_CODE
+    documented = (
+        _HERMES_ACP_SESSION_ID_RE.fullmatch(session_id) is not None
+        or _HERMES_SESSION_ID_RE.fullmatch(session_id) is not None
+    )
+    if not documented:
+        return HERMES_SESSION_DELETE_INVALID_SESSION_ID_CODE
+    return ""
+
+
 def _hermes_cleanup_request_error(request: SessionCleanupRequest) -> str:
+    """Validate one delete request against the official ``sessions delete`` contract.
+
+    PERM-104-001: the coordinator always passes the exact officially bound
+    receipt identifier, so this only proves the identifier is a documented Hermes
+    session-id shape.  A run executed over the Hermes ACP transport binds a UUID
+    session id, and the previous CLI-token-only shape check rejected that exact
+    receipt before any deletion could run.
+    """
     if str(request.executor or "").strip().lower() != "hermes":
         return "hermes_cleanup_executor_mismatch"
     if request.retain is not False or request.project_mode != "none":
         return "hermes_cleanup_mode_invalid"
     if request.strategy != "official_session_delete":
         return "hermes_cleanup_strategy_mismatch"
-    session_id = str(request.session_id or "").strip()
-    if not session_id:
-        return HERMES_SESSION_DELETE_MISSING_SESSION_ID_CODE
-    if _HERMES_SESSION_ID_RE.fullmatch(session_id) is None:
-        return HERMES_SESSION_DELETE_INVALID_SESSION_ID_CODE
-    return ""
+    return _hermes_session_delete_identifier_error(str(request.session_id or "").strip())
 
 
 def _version_number_matches(output: str, expected: str) -> bool:
