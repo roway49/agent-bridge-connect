@@ -21,6 +21,7 @@ from agent_bridge_connect.claude_elevation import (
     CLAUDE_ELEVATION_ACTIVE,
     CLAUDE_ELEVATION_BLOCKED,
     CLAUDE_ELEVATION_DENIED,
+    CLAUDE_ELEVATION_RESPONSE_READY,
     stable_input_digest,
 )
 from agent_bridge_connect.claude_sdk_transport import (
@@ -64,8 +65,9 @@ class _CaptureTransport:
 class _FakeClaudeCliStream:
     """A tiny official-shaped stream that honors the returned setMode update."""
 
-    def __init__(self, callback) -> None:
+    def __init__(self, callback, event_sink) -> None:
         self.callback = callback
+        self.event_sink = event_sink
         self.callback_count = 0
         self.permission_mode = "default"
         self.completed: list[str] = []
@@ -87,6 +89,11 @@ class _FakeClaudeCliStream:
         for update in getattr(first, "updated_permissions", None) or []:
             if update.to_dict() == SDK_SESSION_MODE_UPDATE:
                 self.permission_mode = "bypassPermissions"
+        self.event_sink.capture_tool_event(
+            event="PostToolUse",
+            tool_use_id="stream-read-1",
+            tool_name="Read",
+        )
         for tool_name in ("Read", "Write", "Edit", "Bash"):
             # A real Claude CLI stops asking once the returned session update
             # takes effect.  These heterogeneous actions are therefore stream
@@ -241,7 +248,7 @@ class ClaudeSameSessionElevationTransportTests(unittest.TestCase):
         )
         receipt = transport.elevation_receipt
         self.assertIsNotNone(receipt)
-        self.assertEqual(receipt["state"], CLAUDE_ELEVATION_ACTIVE)
+        self.assertEqual(receipt["state"], CLAUDE_ELEVATION_RESPONSE_READY)
         self.assertEqual(receipt["session_id"], self.session_id)
         self.assertEqual(receipt["request_id"], pending["request_id"])
         self.assertEqual(receipt["tool_use_id"], "tool-write-1")
@@ -251,6 +258,16 @@ class ClaudeSameSessionElevationTransportTests(unittest.TestCase):
         self.assertEqual(receipt["cardinality"]["set_mode_updates"], 1)
         self.assertEqual(len(receipt["transition_history"]), 2)
         self.assertNotIn("sensitive input", json.dumps(receipt))
+
+        transport.capture_tool_event(
+            event="PostToolUse",
+            tool_use_id="tool-write-1",
+            tool_name="Write",
+            session_id=self.session_id,
+        )
+        receipt = transport.elevation_receipt
+        self.assertEqual(receipt["state"], CLAUDE_ELEVATION_ACTIVE)
+        self.assertEqual(len(receipt["transition_history"]), 3)
 
     def test_deny_is_native_deny_without_update_or_mode_change(self) -> None:
         transport = self._transport()
@@ -287,6 +304,10 @@ class ClaudeSameSessionElevationTransportTests(unittest.TestCase):
                 )
             )
             self.assertEqual(first.behavior, "allow")
+            self.assertEqual(
+                transport.elevation_receipt["state"],
+                CLAUDE_ELEVATION_RESPONSE_READY,
+            )
             second = asyncio.run(
                 transport.can_use_tool(
                     "Edit",
@@ -480,7 +501,7 @@ class ClaudeSameSessionElevationTransportTests(unittest.TestCase):
         transport = self._transport()
 
         async def scenario() -> _FakeClaudeCliStream:
-            stream = _FakeClaudeCliStream(transport.can_use_tool)
+            stream = _FakeClaudeCliStream(transport.can_use_tool, transport)
             run_task = asyncio.create_task(stream.run())
             pending = await self._wait_pending()
             await asyncio.to_thread(
@@ -499,6 +520,7 @@ class ClaudeSameSessionElevationTransportTests(unittest.TestCase):
         self.assertEqual(stream.permission_mode, "bypassPermissions")
         self.assertEqual(stream.completed, ["Read", "Write", "Edit", "Bash"])
         self.assertEqual(transport.session_id, self.session_id)
+        self.assertEqual(transport.elevation_receipt["state"], CLAUDE_ELEVATION_ACTIVE)
 
     def test_protocol_admission_is_shape_based_and_rejects_unsupported_shape_once(self) -> None:
         old = claude_control_path_capability("0.0.1")

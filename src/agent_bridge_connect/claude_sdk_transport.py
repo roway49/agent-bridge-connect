@@ -78,6 +78,7 @@ from agent_bridge_connect.claude_elevation import (
     CLAUDE_ELEVATION_BLOCKED,
     CLAUDE_ELEVATION_DENIED,
     CLAUDE_ELEVATION_PENDING,
+    CLAUDE_ELEVATION_RESPONSE_READY,
     CLAUDE_ELEVATION_SAFE_DEFAULT,
     build_claude_elevation_receipt,
     claude_elevation_public_projection,
@@ -474,7 +475,10 @@ class ClaudeSDKControlTransport:
             # ControlPlane, notification layer, or any continuation path.
             with self._pending_lock:
                 elevation_state = self._elevation_state
-            if elevation_state == CLAUDE_ELEVATION_ACTIVE:
+            if elevation_state in {
+                CLAUDE_ELEVATION_RESPONSE_READY,
+                CLAUDE_ELEVATION_ACTIVE,
+            }:
                 return self._elevation_anomaly_result()
             if elevation_state in {CLAUDE_ELEVATION_BLOCKED, CLAUDE_ELEVATION_DENIED}:
                 return self._deny_result(
@@ -912,6 +916,7 @@ class ClaudeSDKControlTransport:
                 # PostToolUse success may verify the runtime receipt.
                 with self._pending_lock:
                     self._verification_anchor = tool_use_id
+                    self._anchor_mode = "approved_tool_use"
                     self._anchor_action_fingerprint = action_fingerprint_value
                     self._anchor_escalation_domain = self.escalation_domain
                     self._anchor_profile_digest = self.host_profile_digest
@@ -932,7 +937,7 @@ class ClaudeSDKControlTransport:
                             pass
                         raise
                     self._record_elevation_transition(
-                        CLAUDE_ELEVATION_ACTIVE,
+                        CLAUDE_ELEVATION_RESPONSE_READY,
                         decision="approve",
                         source="user",
                     )
@@ -990,7 +995,10 @@ class ClaudeSDKControlTransport:
         with self._pending_lock:
             active = str(self._active_request_id or "")
             elevation_state = self._elevation_state
-        if self.safe_to_full and elevation_state == CLAUDE_ELEVATION_PENDING:
+        if self.safe_to_full and elevation_state in {
+            CLAUDE_ELEVATION_PENDING,
+            CLAUDE_ELEVATION_RESPONSE_READY,
+        }:
             try:
                 self._record_elevation_transition(
                     CLAUDE_ELEVATION_BLOCKED,
@@ -1117,6 +1125,24 @@ class ClaudeSDKControlTransport:
                 "in_run_window": in_window,
             }
             self._tool_events.append(record)
+        if self.safe_to_full:
+            with self._pending_lock:
+                state = self._elevation_state
+                anchor = self._verification_anchor
+            exact_anchor = (
+                bool(anchor)
+                and record["tool_use_id"] == anchor
+                and record["session_id"] == self.session_id
+                and record["in_run_window"] is True
+            )
+            if state == CLAUDE_ELEVATION_RESPONSE_READY and exact_anchor:
+                if normalized_event == "PostToolUse":
+                    self._record_elevation_transition(CLAUDE_ELEVATION_ACTIVE)
+                elif normalized_event == "PostToolUseFailure":
+                    self._record_elevation_transition(
+                        CLAUDE_ELEVATION_BLOCKED,
+                        error_code="claude_elevation_approved_action_failed",
+                    )
         return {"accepted": True, "sequence": record["sequence"]}
 
     def declare_run_authorization(

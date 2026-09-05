@@ -85,7 +85,7 @@ def _permission_frame(session_id: str, include_allow_once: bool = True) -> dict[
         "params": {
             "sessionId": session_id,
             "toolCall": {
-                "id": "perm-check-1",
+                "toolCallId": "perm-check-1",
                 "kind": "execute",
                 "title": "run the approved command",
                 "status": "pending",

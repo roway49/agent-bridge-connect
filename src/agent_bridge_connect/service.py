@@ -2854,7 +2854,7 @@ class TaskService:
                 "internal_status": "running",
                 "lease_state": "active",
                 "claude_elevation_state": (
-                    CLAUDE_ELEVATION_ACTIVE
+                    CLAUDE_ELEVATION_PENDING
                     if response_value == "approve"
                     else CLAUDE_ELEVATION_DENIED
                 ),

@@ -1,7 +1,7 @@
 # PERM-104-001 / RM7A-001 evidence
 
-Date: 2026-09-05  
-Project/artifact root: `/Users/wangroway/hermes-team/codex/AgentBC_Temp/agent-worktrees/codex`  
+Date: 2026-09-05
+Project/artifact root: `/Users/wangroway/hermes-team/codex/AgentBC_Temp/agent-worktrees/codex`
 Branch: `agent/codex`
 
 ## 1. Starting state and safe reconciliation
@@ -34,7 +34,7 @@ durable receipt and Core routing in
 | Approve wire | One official `PermissionResultAllow` carries the unchanged original `updatedInput` plus exactly `PermissionUpdate(type="setMode", mode="bypassPermissions", destination="session")`. |
 | Deny wire | One official `PermissionResultDeny`; no `updatedPermissions` and no mode change. |
 | Same execution | The live worker, RunLease and official session remain unchanged; no worker, CLI continuation, new session, matcher, category, session-rule bundle or generated grant is created. |
-| Lifecycle | Durable receipt records `safe/default -> elevation_pending -> bypassPermissions_active` with one request, one dialog, one human decision and one setMode update. |
+| Lifecycle | Durable receipt records `safe/default -> elevation_pending -> set_mode_response_ready -> bypassPermissions_active`; active requires the exact approved tool-use's structured `PostToolUse` success. |
 | Replay/failure | A repeated post-activation callback records one `claude_full_mode_ineffective` anomaly and denies without another popup or grant. Rejected setMode construction, transport loss, unsupported protocol shape and identity mismatch fail closed. |
 | Containment | Runner PathPlan, preflight and host-containment/profile digests remain bound; the early executor-run registration closes the callback-vs-RunLease receipt race. |
 
@@ -92,4 +92,3 @@ Additional gates:
 - The evidence file is committed as the final local evidence commit after
   the implementation commit; no push was performed.
 - The final handoff verifies `git status --short` is empty.
-

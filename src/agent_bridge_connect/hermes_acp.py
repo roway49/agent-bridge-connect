@@ -131,6 +131,27 @@ def _tool_call_identifier(value: Any) -> str:
     return normalized
 
 
+def _extract_tool_call_identifier(tool_call: dict[str, Any]) -> str:
+    """Resolve the official ACP ID while keeping strict identifier checks.
+
+    ACP JSON uses ``toolCallId``.  ``tool_call_id`` is the Python model alias
+    and ``id`` is retained for older captured fixtures.  Multiple aliases are
+    accepted only when they agree exactly, preventing ambiguous approvals.
+    """
+    values = [
+        str(tool_call.get(key) or "").strip()
+        for key in ("toolCallId", "tool_call_id", "id")
+        if tool_call.get(key) is not None
+    ]
+    nonempty = [value for value in values if value]
+    if len(set(nonempty)) > 1:
+        raise HermesAcpError(
+            "hermes_acp_tool_call_id_mismatch",
+            "ACP tool-call identifier aliases disagree.",
+        )
+    return _tool_call_identifier(nonempty[0] if nonempty else "")
+
+
 def validate_initialize_result(result: Any) -> int:
     """Validate the ``initialize`` response, fail closed on version drift."""
     if not isinstance(result, dict):
@@ -289,7 +310,7 @@ def validate_permission_request(
             "hermes_acp_permission_tool_call_missing",
             "ACP permission request has no tool call details.",
         )
-    _tool_call_identifier(tool_call.get("id") or tool_call.get("tool_call_id"))
+    _extract_tool_call_identifier(tool_call)
     # PERM-104-002 v2: the exact offered option shapes are validated here.
     # A request whose options list cannot express any usable choice fails
     # closed; the allow_once-only restriction is retired.
@@ -344,7 +365,7 @@ def build_approval_message(
         "params": {
             "threadId": str(session_id).strip(),
             "turnId": "",
-            "itemId": _tool_call_identifier(tool_call.get("id") or tool_call.get("tool_call_id")),
+            "itemId": _extract_tool_call_identifier(tool_call),
             "reason": summary,
         },
         "_agentbc": {

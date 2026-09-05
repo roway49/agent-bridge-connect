@@ -87,7 +87,7 @@ def _permission_frame(
         "params": {
             "sessionId": session_id,
             "toolCall": {
-                "id": tool_call_id,
+                "toolCallId": tool_call_id,
                 "kind": "execute",
                 "title": "run the approved command",
                 "status": "pending",
@@ -248,6 +248,29 @@ class HermesAcpTransportUnitTests(unittest.TestCase):
         self.assertEqual(message["id"], 100)
         self.assertEqual(message["params"]["itemId"], "perm-check-1")
         self.assertEqual(message["params"]["threadId"], FAKE_SESSION_ID)
+
+        python_alias = _permission_frame()
+        tool_call = python_alias["params"]["toolCall"]
+        tool_call["tool_call_id"] = tool_call.pop("toolCallId")
+        self.assertEqual(
+            build_approval_message(
+                python_alias,
+                task_id="T-1",
+                executor_run_id="hermes-run-1",
+                session_id=FAKE_SESSION_ID,
+            )["params"]["itemId"],
+            "perm-check-1",
+        )
+
+        conflicting_aliases = _permission_frame()
+        conflicting_aliases["params"]["toolCall"]["id"] = "different-call"
+        with self.assertRaisesRegex(HermesAcpError, "tool_call_id_mismatch"):
+            build_approval_message(
+                conflicting_aliases,
+                task_id="T-1",
+                executor_run_id="hermes-run-1",
+                session_id=FAKE_SESSION_ID,
+            )
 
         # Wrong official session -> identity mismatch.
         with self.assertRaisesRegex(HermesAcpError, "session_mismatch"):

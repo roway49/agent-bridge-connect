@@ -240,7 +240,8 @@ native Deny 后伪造 full callback、transport lost、Runner 重启和 UI/CLI �
 
 - Claude safe/default 任务从 SDK `permission_mode=default` 开始；首个可信 `can_use_tool` 事件绑定
   task、run、官方 session、request/tool-use ID、request/action fingerprint 与精确 input digest，并在
-  Core 持久化脱敏 `safe/default → elevation_pending → bypassPermissions_active` 收据。Runner 在 SDK
+  Core 持久化脱敏 `safe/default → elevation_pending → set_mode_response_ready →
+  bypassPermissions_active` 收据；只有同一 tool-use 的结构化 `PostToolUse` 成功才能进入 active。Runner 在 SDK
   callback 可能抢先到达前先登记该 run，避免 receipt/run 竞态；PathPlan 与宿主 containment digest
   保持冻结。
 - 唯一 Approve 返回官方 `PermissionResultAllow(updated_input=原始 input,
@@ -249,7 +250,7 @@ native Deny 后伪造 full callback、transport lost、Runner 重启和 UI/CLI �
   `PermissionResultDeny`。两条路径均不创建 matcher、category、session-rule、grant、worker、CLI
   continuation 或新 session；显式 full 仍直接映射 `bypassPermissions` 并保持非交互启动。
 - DialogNotifier/notification 服务通过 durable cardinality 只允许一个 input、一个 dialog、一个决策；
-  activation 后再次收到 `can_use_tool` 只记录一次 `claude_full_mode_ineffective` 并 fail closed，
+  setMode 响应准备后再次收到 `can_use_tool` 只记录一次 `claude_full_mode_ineffective` 并 fail closed，
   不重新弹窗或授权。能力准入检查 SDK protocol shape 与可序列化 setMode，不检查 Claude 版本表，
   因而同形兼容 fork 可被接纳，缺失 shape、transport 丢失或 setMode 构造失败均停止。
 - 自动化覆盖安装 SDK 的 exact wire serializer、Deny/no-update、重复/并发回放、同 lease/session、

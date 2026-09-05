@@ -28,6 +28,7 @@ CLAUDE_ELEVATION_DESTINATION = "session"
 
 CLAUDE_ELEVATION_SAFE_DEFAULT = "safe/default"
 CLAUDE_ELEVATION_PENDING = "elevation_pending"
+CLAUDE_ELEVATION_RESPONSE_READY = "set_mode_response_ready"
 CLAUDE_ELEVATION_ACTIVE = "bypassPermissions_active"
 CLAUDE_ELEVATION_DENIED = "denied"
 CLAUDE_ELEVATION_BLOCKED = "blocked"
@@ -35,6 +36,7 @@ CLAUDE_ELEVATION_STATES = frozenset(
     {
         CLAUDE_ELEVATION_SAFE_DEFAULT,
         CLAUDE_ELEVATION_PENDING,
+        CLAUDE_ELEVATION_RESPONSE_READY,
         CLAUDE_ELEVATION_ACTIVE,
         CLAUDE_ELEVATION_DENIED,
         CLAUDE_ELEVATION_BLOCKED,
@@ -149,10 +151,12 @@ def transition_claude_elevation(
         return receipt
     allowed = {
         CLAUDE_ELEVATION_PENDING: {CLAUDE_ELEVATION_SAFE_DEFAULT},
-        CLAUDE_ELEVATION_ACTIVE: {CLAUDE_ELEVATION_PENDING},
+        CLAUDE_ELEVATION_RESPONSE_READY: {CLAUDE_ELEVATION_PENDING},
+        CLAUDE_ELEVATION_ACTIVE: {CLAUDE_ELEVATION_RESPONSE_READY},
         CLAUDE_ELEVATION_DENIED: {CLAUDE_ELEVATION_PENDING},
         CLAUDE_ELEVATION_BLOCKED: {
             CLAUDE_ELEVATION_PENDING,
+            CLAUDE_ELEVATION_RESPONSE_READY,
             CLAUDE_ELEVATION_ACTIVE,
             CLAUDE_ELEVATION_DENIED,
         },
@@ -176,7 +180,7 @@ def transition_claude_elevation(
             "at": stamp,
         }
         receipt["cardinality"]["human_decisions"] = 1
-    if target == CLAUDE_ELEVATION_ACTIVE:
+    if target == CLAUDE_ELEVATION_RESPONSE_READY:
         receipt["cardinality"]["set_mode_updates"] = 1
     if target == CLAUDE_ELEVATION_BLOCKED:
         receipt["cardinality"]["protocol_anomalies"] = 1
@@ -314,16 +318,30 @@ def validate_claude_elevation_receipt(
     if authority.get("update") != "PermissionUpdate.setMode":
         _invalid("claude_elevation_authority_invalid", "Claude elevation update authority is invalid")
     history = receipt.get("transition_history")
-    if not isinstance(history, list) or len(history) > 3:
+    if not isinstance(history, list) or len(history) > 4:
         _invalid("claude_elevation_transition_invalid", "Claude elevation transition history is invalid")
     previous = CLAUDE_ELEVATION_SAFE_DEFAULT
     for item in history:
-        if not isinstance(item, dict) or item.get("from") != previous or item.get("to") not in {
-            CLAUDE_ELEVATION_PENDING,
-            CLAUDE_ELEVATION_ACTIVE,
-            CLAUDE_ELEVATION_DENIED,
-            CLAUDE_ELEVATION_BLOCKED,
-        }:
+        next_state = item.get("to") if isinstance(item, dict) else None
+        allowed_next = {
+            CLAUDE_ELEVATION_SAFE_DEFAULT: {CLAUDE_ELEVATION_PENDING},
+            CLAUDE_ELEVATION_PENDING: {
+                CLAUDE_ELEVATION_RESPONSE_READY,
+                CLAUDE_ELEVATION_DENIED,
+                CLAUDE_ELEVATION_BLOCKED,
+            },
+            CLAUDE_ELEVATION_RESPONSE_READY: {
+                CLAUDE_ELEVATION_ACTIVE,
+                CLAUDE_ELEVATION_BLOCKED,
+            },
+            CLAUDE_ELEVATION_ACTIVE: {CLAUDE_ELEVATION_BLOCKED},
+            CLAUDE_ELEVATION_DENIED: {CLAUDE_ELEVATION_BLOCKED},
+        }
+        if (
+            not isinstance(item, dict)
+            or item.get("from") != previous
+            or next_state not in allowed_next.get(previous, set())
+        ):
             _invalid("claude_elevation_transition_invalid", "Claude elevation transition history is not monotonic")
         previous = str(item["to"])
     if history and previous != state.get("status"):
@@ -337,8 +355,11 @@ def validate_claude_elevation_receipt(
     decision_type = str(decision.get("type") or "")
     if decision_type and decision_type not in {"approve", "deny"}:
         _invalid("claude_elevation_decision_invalid", "Claude elevation decision must be approve or deny")
-    if state.get("status") == CLAUDE_ELEVATION_ACTIVE and decision_type != "approve":
-        _invalid("claude_elevation_state_invalid", "Active Claude elevation requires approve")
+    if state.get("status") in {
+        CLAUDE_ELEVATION_RESPONSE_READY,
+        CLAUDE_ELEVATION_ACTIVE,
+    } and decision_type != "approve":
+        _invalid("claude_elevation_state_invalid", "Claude elevation response/activation requires approve")
     if state.get("status") == CLAUDE_ELEVATION_DENIED and decision_type != "deny":
         _invalid("claude_elevation_state_invalid", "Denied Claude elevation requires deny")
     if decision_type and not _IDENTIFIER_RE.fullmatch(str(decision.get("source") or "")):
@@ -360,7 +381,10 @@ def validate_claude_elevation_receipt(
         _invalid("claude_elevation_cardinality_invalid", "Claude elevation decision cardinality is inconsistent")
     expected_set_mode_updates = (
         1
-        if state.get("status") == CLAUDE_ELEVATION_ACTIVE
+        if state.get("status") in {
+            CLAUDE_ELEVATION_RESPONSE_READY,
+            CLAUDE_ELEVATION_ACTIVE,
+        }
         or (state.get("status") == CLAUDE_ELEVATION_BLOCKED and decision_type == "approve")
         else 0
     )
@@ -414,6 +438,7 @@ __all__ = [
     "CLAUDE_ELEVATION_MODE_FROM",
     "CLAUDE_ELEVATION_MODE_TO",
     "CLAUDE_ELEVATION_PENDING",
+    "CLAUDE_ELEVATION_RESPONSE_READY",
     "CLAUDE_ELEVATION_PROTOCOL",
     "CLAUDE_ELEVATION_RECEIPT_VERSION",
     "CLAUDE_ELEVATION_SAFE_DEFAULT",
