@@ -627,6 +627,10 @@ class ClaudeExecutor(CLIExecutorBase):
         ) or f"claude-{task_packet.get('task_id', 'unknown')}-{uuid.uuid4().hex[:8]}"
         self._task_packets[run_id] = dict(task_packet)
         self._start_run_lease(task_packet, run_id, "claude")
+        # Permission/grant binding is evaluated against the pre-registration
+        # snapshot.  In particular, a temporary-full grant is bound to the
+        # immediately preceding blocked run; appending the continuation run
+        # first would make that grant look stale.
         try:
             permission = resolve_effective_permission(
                 task_packet,
@@ -639,6 +643,45 @@ class ClaudeExecutor(CLIExecutorBase):
         except ABCError as exc:
             self._close_run_lease(run_id)
             return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
+        board_root = (
+            task_packet.get("task_board") or {}
+        ).get("root") or _workspace_root(task_packet)
+        # The SDK path must authorize the exact persisted session snapshot.
+        # Register the unique run id first, reload through TaskService, and
+        # replace both the local packet and packet registry before any SDK
+        # setup can compare execution policy.
+        if execution_session is not None:
+            from agent_bridge_connect.service import TaskService
+
+            task_id = str(task_packet.get("task_id") or "")
+            try:
+                service = TaskService(
+                    board_root,
+                    config={"_runner_worker": True},
+                )
+                service.record_executor_run_started(task_id, run_id)
+            except (ABCError, OSError, ValueError) as exc:
+                self._task_packets.pop(run_id, None)
+                self._close_run_lease(run_id)
+                return StartResult(
+                    ok=False,
+                    run_id="",
+                    message=f"executor_session_run_registration_failed: {exc}",
+                )
+            try:
+                persisted_task = service.get_task(task_id)
+                refreshed_packet = dict(task_packet)
+                refreshed_packet["extensions"] = dict(persisted_task.extensions or {})
+                task_packet = refreshed_packet
+                self._task_packets[run_id] = dict(task_packet)
+            except (ABCError, OSError, ValueError) as exc:
+                self._task_packets.pop(run_id, None)
+                self._close_run_lease(run_id)
+                return StartResult(
+                    ok=False,
+                    run_id="",
+                    message=f"executor_session_snapshot_reload_failed: {exc}",
+                )
         try:
             assert_executor_permission_supported(
                 "claude", permission["effective_mode"], self.agent_bin
@@ -697,32 +740,6 @@ class ClaudeExecutor(CLIExecutorBase):
         execution_session_id = (
             str(execution_session["session_id"]) if execution_session is not None else ""
         )
-        board_root = (
-            task_packet.get("task_board") or {}
-        ).get("root") or _workspace_root(task_packet)
-        # Register the authoritative run before the SDK worker can invoke
-        # can_use_tool.  The CLI performs the same operation after ``start``
-        # returns for compatibility, but the native callback is allowed to
-        # arrive immediately; the durable task session must already contain
-        # this run id when the first redacted elevation receipt is persisted.
-        if execution_session is not None:
-            try:
-                from agent_bridge_connect.service import TaskService
-
-                TaskService(
-                    board_root,
-                    config={"_runner_worker": True},
-                ).record_executor_run_started(
-                    str(task_packet.get("task_id") or ""),
-                    run_id,
-                )
-            except (ABCError, OSError) as exc:
-                self._close_run_lease(run_id)
-                return StartResult(
-                    ok=False,
-                    run_id="",
-                    message=f"executor_session_run_registration_failed: {exc}",
-                )
         try:
             plane = self._control_plane_for_run(
                 task_packet,
@@ -889,16 +906,18 @@ class ClaudeExecutor(CLIExecutorBase):
         # receipt gate.  This is setup only: no query is submitted here and
         # no can_use_tool callback can run until the background session thread
         # starts with the already-bound options.
+        # ``_build_sdk_options_for_task`` wires the callback sink from
+        # ``self._transport``.  Point it at the not-yet-started transport now;
+        # construction is local setup and cannot submit an SDK query.
+        self._transport = transport
         try:
-            transport.start()
-            self._transport = transport
+            options = self._build_sdk_options_for_task(
+                task_packet,
+                execution_root,
+                execution_session_id,
+                sdk_facts,
+            )
             if task_packet.get("runner_authorization_required") is True:
-                options = self._build_sdk_options_for_task(
-                    task_packet,
-                    execution_root,
-                    execution_session_id,
-                    sdk_facts,
-                )
                 RunnerClient().authorize_transport(
                     "claude",
                     CLAUDE_SDK_CONTROL_AUTHORIZATION,
@@ -913,14 +932,24 @@ class ClaudeExecutor(CLIExecutorBase):
                     ),
                     executor_run_id=run_id,
                 )
-            else:
-                options = self._build_sdk_options_for_task(
-                    task_packet,
-                    execution_root,
-                    execution_session_id,
-                    sdk_facts,
-                )
         except (ClaudeSDKTransportError, OSError, RunnerError, ImportError) as exc:
+            if self._transport is transport:
+                self._transport = None
+            self._task_packets.pop(run_id, None)
+            self._close_run_lease(run_id)
+            return StartResult(
+                ok=False,
+                run_id="",
+                message=f"claude_sdk_control_setup_failed: {exc}",
+            )
+
+        # Runner authorization is complete before the SDK transport creates a
+        # worker loop.  Starting the transport here is still setup only; the
+        # SDK query is submitted later by ``_run_sdk_session``.
+        try:
+            transport.start()
+            self._transport = transport
+        except (ClaudeSDKTransportError, OSError, ImportError) as exc:
             try:
                 transport.record_transport_death("control setup failed before SDK query")
             except Exception:  # noqa: BLE001 - original setup failure is retained.

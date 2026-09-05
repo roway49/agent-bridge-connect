@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import functools
 import hashlib
 import importlib
 import re
 import shutil
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -21,6 +23,7 @@ from .approval import (
     normalize_reason_summary,
     record_approval_decision,
     record_approval_full_continuation,
+    record_approval_notification,
     sanitize_reason_detail,
     validate_approval_receipt,
 )
@@ -165,6 +168,26 @@ DELETE_ELIGIBLE_STATUSES = {"completed", "failed", "cancelled", "rejected"}
 DEFAULT_INPUT_WAIT_SECONDS = 24 * 60 * 60
 PERMISSION_DIALOG_TIMEOUT_RESPONSE = "agentbc_permission_dialog_timeout"
 PERMISSION_DIALOG_CLOSED_RESPONSE = "agentbc_permission_dialog_closed"
+
+_TASK_ELEVATION_WRITE_LOCK = threading.RLock()
+
+
+def _serialize_task_elevation_write(function: Any) -> Any:
+    """Serialize in-process approval writes across TaskService instances.
+
+    Runner and adapter workers use separate ``TaskService`` objects while they
+    share one task store.  The durable file writes are atomic, but a
+    read/validate/write sequence still needs one process-wide critical section
+    to make duplicate native requests and notification reservations converge
+    on a single v3 receipt.
+    """
+
+    @functools.wraps(function)
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        with _TASK_ELEVATION_WRITE_LOCK:
+            return function(*args, **kwargs)
+
+    return wrapped
 
 
 @dataclass(frozen=True)
@@ -643,6 +666,7 @@ class TaskService:
         self._refresh_task_index()
         return lease
 
+    @_serialize_task_elevation_write
     def record_executor_run_started(self, task_id: str, run_id: str) -> dict[str, Any]:
         """Append one executor run and freeze whether it is a session resume."""
         task = self.get_task(task_id)
@@ -697,6 +721,56 @@ class TaskService:
             "resumed": resumed,
             "session_state": session.get("session_state"),
         }
+
+    @_serialize_task_elevation_write
+    def record_executor_session_started(
+        self,
+        task_id: str,
+        run_id: str,
+        receipt: Any,
+    ) -> dict[str, Any]:
+        """Persist an official executor session before its first turn.
+
+        Session-first adapters must bind the protocol-issued session ID to the
+        already-recorded executor run before a native permission event can be
+        converted into a task input.  This is deliberately separate from
+        ``record_executor_run_started``: the run ID is known before ACP
+        session creation, while the official session receipt only exists after
+        ``session/new`` or ``session/load`` succeeds.
+        """
+        task = self.get_task(task_id)
+        validated = self._validated_executor_session(task, run_id, receipt)
+        existing = (task.extensions or {}).get(SESSION_EXTENSION_KEY)
+        if isinstance(existing, dict) and (
+            str(existing.get("session_id") or "").strip()
+            == str(validated.get("session_id") or "").strip()
+            and existing.get("official_receipt_bound") is True
+            and str(existing.get("receipt_source") or "")
+            == str(validated.get("source") or "")
+        ):
+            # A worker restart may replay the same official binding. Keep it
+            # as a no-op so one native session cannot look like two sessions,
+            # and never regress a later input_required/terminal session state
+            # back to active.
+            return validated
+        self._apply_executor_session_result(task, run_id, receipt, "active")
+        task.updated_at = _utc_now()
+        self.store.write_task(task.id, _without_none(task.to_dict()))
+        self.store.append_event(
+            task.id,
+            {
+                "event_type": "executor.session_started",
+                "task_id": task.id,
+                "executor": task.assignee,
+                "executor_run_id": str(run_id or "").strip(),
+                "session_id": str(receipt.get("session_id") or "")
+                if isinstance(receipt, dict)
+                else "",
+                "created_at": task.updated_at,
+            },
+        )
+        self._refresh_task_index()
+        return dict(receipt)
 
     def validate_executor_session_result(
         self,
@@ -2077,6 +2151,7 @@ class TaskService:
             "exhaustion_count": resources["exhaustion_count"],
         }
 
+    @_serialize_task_elevation_write
     def block_task_for_approval(
         self,
         task_id: str,
@@ -2984,6 +3059,11 @@ class TaskService:
                 int(previous_input.get("approval_version") or 1) == 3
                 and str(previous_input.get("request_id") or "") == request_id
             ):
+                if str(previous_input.get("request_fingerprint") or "") != request_fingerprint:
+                    raise ABCError(
+                        "permission_elevation_binding_mismatch",
+                        "A replayed task elevation request changed its native fingerprint",
+                    )
                 return {
                     "ok": True,
                     "task_id": task_id,
@@ -3099,6 +3179,7 @@ class TaskService:
             "approval_version": 3,
             "elevation_mode": PERMISSION_ELEVATION_MODE,
             "requested_permission": "full",
+            "session_id": session_id,
             "request_id": request_id,
             "request_fingerprint": request_fingerprint,
             "operation": operation,
@@ -3201,6 +3282,7 @@ class TaskService:
             **kwargs,
         )
 
+    @_serialize_task_elevation_write
     def record_task_elevation_notification(self, task_id: str) -> dict[str, Any] | None:
         """Persist the single notification reservation for a v3 wait."""
         task = self.get_task(task_id)
@@ -3209,13 +3291,44 @@ class TaskService:
         if value is None:
             return None
         updated = record_permission_elevation_notification(value)
-        if updated != value:
+        approval_value = extensions.get(APPROVAL_EXTENSION_KEY)
+        updated_approval = approval_value
+        if isinstance(approval_value, dict) and approval_value.get("version") == 3:
+            updated_approval = record_approval_notification(approval_value)
+        if updated != value or updated_approval != approval_value:
             extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = updated
+            if updated_approval is not None:
+                extensions[APPROVAL_EXTENSION_KEY] = updated_approval
             task.extensions = extensions
             task.updated_at = _utc_now()
             self.store.write_task(task.id, _without_none(task.to_dict()))
+            self.store.append_event(
+                task.id,
+                {
+                    "event_type": "task.permission_elevation_notification_reserved",
+                    "task_id": task.id,
+                    "request_id": str(value["binding"].get("request_id") or ""),
+                    "created_at": task.updated_at,
+                },
+            )
         return updated
 
+    def reserve_task_elevation_notification(
+        self,
+        task_id: str,
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Reserve the v3 notice and report whether this caller won it."""
+        with _TASK_ELEVATION_WRITE_LOCK:
+            task = self.get_task(task_id)
+            extensions = dict(task.extensions or {})
+            value = permission_elevation_from_extensions(extensions, task_id=task.id)
+            if value is None:
+                return None, False
+            already_reserved = value["cardinality"].get("notifications") == 1
+            updated = self.record_task_elevation_notification(task_id)
+            return updated, not already_reserved
+
+    @_serialize_task_elevation_write
     def activate_task_elevation(
         self,
         task_id: str,
@@ -3270,6 +3383,49 @@ class TaskService:
                 "Activation containment profile does not match the approved elevation",
             )
         runtime = permission_runtime_from_extensions(extensions)
+        if runtime is not None:
+            runtime_binding = runtime.get("binding") or {}
+            runtime_state = str((runtime.get("state") or {}).get("status") or "")
+            # Runner prepares the outer worker capability before the adapter
+            # has an official Hermes session or continuation run ID.  The
+            # approved child must replace that placeholder with the exact
+            # adapter run/session before the full transport starts; otherwise
+            # final verification would be bound to the outer worker instead
+            # of the official resumed session.
+            runtime_needs_child_binding = (
+                str(runtime_binding.get("executor_run_id") or "") != str(executor_run_id)
+                or str(runtime_binding.get("session_id") or "") != str(session_id)
+            )
+            if runtime_needs_child_binding:
+                if runtime_state == "verified":
+                    raise ABCError(
+                        "permission_elevation_replay",
+                        "A verified task elevation cannot be rebound to another continuation",
+                    )
+                try:
+                    chain = self.resolve_chain(task.id)
+                    chain_head_id = chain.chain_root_task_id or task.id
+                    runtime = build_permission_runtime_record(
+                        task_id=task.id,
+                        chain_head_id=chain_head_id,
+                        executor=task.assignee,
+                        executor_run_id=executor_run_id,
+                        session_id=session_id,
+                        permission_source="task_elevation",
+                        path_plan_digest=plan_digest,
+                        host_profile_digest=profile_digest,
+                        action_fingerprint=str(
+                            (elevation.get("provenance") or {}).get("action_fingerprint") or ""
+                        ),
+                        operation=str(elevation.get("operation") or ""),
+                        elevation_id=str(elevation.get("elevation_id") or ""),
+                    )
+                except (ABCError, OSError) as exc:
+                    raise ABCError(
+                        "permission_elevation_runtime_unavailable",
+                        "Task elevation runtime receipt could not be rebound to the continuation",
+                        {"reason_code": getattr(exc, "code", "runtime_unavailable")},
+                    ) from exc
         if runtime is None:
             try:
                 chain = self.resolve_chain(task.id)

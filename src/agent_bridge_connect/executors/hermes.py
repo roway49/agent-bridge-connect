@@ -21,6 +21,7 @@ from agent_bridge_connect.adapters import (
     SessionCleanupResult,
     StartResult,
 )
+from agent_bridge_connect.approval import compute_request_fingerprint
 from agent_bridge_connect.control import ApprovalControlPlane, ControlPlaneError
 from agent_bridge_connect.execution_contract import (
     CallbackValidation,
@@ -35,9 +36,11 @@ from agent_bridge_connect.effective_permissions import resolve_effective_permiss
 from agent_bridge_connect.execution_policy import extract_hermes_session_id
 from agent_bridge_connect.hermes_acp import (
     HermesAcpError,
+    HermesAcpElevationRequired,
     HermesAcpTransport,
     approval_outcome_for_decision,
     build_approval_message,
+    permission_summary,
     validate_permission_request,
 )
 from agent_bridge_connect.media import task_image_paths
@@ -45,6 +48,10 @@ from agent_bridge_connect.permission_modes import (
     assert_executor_permission_supported,
     permission_flags,
     permission_record_from_extensions,
+)
+from agent_bridge_connect.permission_elevation import (
+    full_capability_preflight,
+    task_elevation_protocol_enabled,
 )
 from agent_bridge_connect.permission_registry import (
     HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID,
@@ -409,9 +416,15 @@ class HermesExecutor(CLIExecutorBase):
                     )
             return self._start_with_acp(task_packet, root, run_id, permission)
 
-        if self._should_use_runner():
+        if (
+            self._should_use_runner()
+            and task_packet.get("runner_authorization_required") is not True
+        ):
             return self._start_with_runner(task_packet, root, run_id, permission)
-        if self.transport == "runner":
+        if (
+            self.transport == "runner"
+            and task_packet.get("runner_authorization_required") is not True
+        ):
             return StartResult(ok=False, run_id="", message="AgentBC Runner unavailable")
 
         self._task_packets[run_id] = dict(task_packet)
@@ -506,6 +519,7 @@ class HermesExecutor(CLIExecutorBase):
         )
         result: dict[str, Any] = {
             "stdout": stdout,
+            "final_text": final_response,
             "stderr": stderr,
             "returncode": completed.returncode,
             "summary": summary,
@@ -612,6 +626,7 @@ class HermesExecutor(CLIExecutorBase):
         )
         result_payload: dict[str, Any] = {
             "stdout": stdout,
+            "final_text": final_response,
             "stderr": stderr,
             "returncode": returncode,
             "summary": summary,
@@ -732,6 +747,40 @@ class HermesExecutor(CLIExecutorBase):
         resumed, explicit_session_id = _task_resume_session(task_packet)
         self._task_packets[run_id] = dict(task_packet)
         self._start_run_lease(task_packet, run_id, "hermes")
+        if task_elevation_protocol_enabled(
+            task_packet.get("extensions")
+            if isinstance(task_packet.get("extensions"), dict)
+            else {}
+        ):
+            # ACP can emit a permission request before ``start`` returns to
+            # the Runner worker.  Register and reload the run now so the v3
+            # task-elevation block is bound to the exact persisted session
+            # snapshot, and the CLI's later registration is idempotent.
+            from agent_bridge_connect.service import TaskService
+
+            task_id = str(task_packet.get("task_id") or "")
+            board_root = (
+                task_packet.get("task_board") or {}
+            ).get("root") or root
+            try:
+                service = TaskService(
+                    board_root,
+                    config={"_runner_worker": True},
+                )
+                service.record_executor_run_started(task_id, run_id)
+                persisted_task = service.get_task(task_id)
+                refreshed_packet = dict(task_packet)
+                refreshed_packet["extensions"] = dict(persisted_task.extensions or {})
+                task_packet = refreshed_packet
+                self._task_packets[run_id] = dict(task_packet)
+            except (ABCError, OSError) as exc:
+                self._task_packets.pop(run_id, None)
+                self._close_run_lease(run_id)
+                return StartResult(
+                    ok=False,
+                    run_id="",
+                    message=f"executor_session_snapshot_refresh_failed: {exc}",
+                )
         try:
             plane = self._control_plane_for_run(
                 task_packet,
@@ -844,6 +893,29 @@ class HermesExecutor(CLIExecutorBase):
             session_event = plane.record_session_started(receipt)
             record["execution_session"] = receipt
             record["session_id"] = session_id
+            if task_elevation_protocol_enabled(
+                record["task_packet"].get("extensions")
+                if isinstance(record["task_packet"].get("extensions"), dict)
+                else {}
+            ):
+                # The v3 task-elevation receipt must bind to the official ACP
+                # session in the real TaskStore before the first native
+                # request can become authority evidence.  The run ID was
+                # registered in ``_start_with_acp`` before session creation;
+                # this call only persists the protocol-issued session snapshot.
+                from agent_bridge_connect.service import TaskService
+
+                board_root = (
+                    record["task_packet"].get("task_board") or {}
+                ).get("root") or record.get("root")
+                TaskService(
+                    board_root,
+                    config={"_runner_worker": True},
+                ).record_executor_session_started(
+                    str(record["task_packet"].get("task_id") or ""),
+                    run_id,
+                    receipt,
+                )
             record["events"].append(
                 {
                     "event_type": "session_started",
@@ -896,6 +968,7 @@ class HermesExecutor(CLIExecutorBase):
             status = terminal.status
             result_payload: dict[str, Any] = {
                 "stdout": assistant_text,
+                "final_text": final_response,
                 "stderr": stderr,
                 "returncode": 0,
                 "summary": summary,
@@ -923,6 +996,23 @@ class HermesExecutor(CLIExecutorBase):
                     "stop_reason": stop_reason,
                 },
                 result=result_payload,
+            )
+            self._close_run_lease(run_id)
+        except HermesAcpElevationRequired as exc:
+            # A v3 task-elevation request is already durable in TaskService.
+            # It is intentionally not answered on the native ACP stream and
+            # the original worker/lease ends deterministically.  The Runner
+            # exposes the persisted input for the one human decision.
+            record["ready"].set()
+            record["result"] = dict(exc.approval_request)
+            record["result"].setdefault("execution_session", record.get("execution_session"))
+            record["result"].setdefault("control_events", plane.events())
+            record["result"].setdefault("extensions", self.get_extensions())
+            record["status"] = "input_required"
+            self._runs[run_id] = PollResult(
+                status="input_required",
+                progress={"events_seen": len(record["events"])},
+                result=dict(record["result"]),
             )
             self._close_run_lease(run_id)
         except (
@@ -978,6 +1068,7 @@ class HermesExecutor(CLIExecutorBase):
                 progress={"events_seen": len(record["events"])},
                 result=result_payload,
             )
+            self._close_run_lease(run_id)
         finally:
             if transport is not None:
                 transport.close()
@@ -998,6 +1089,12 @@ class HermesExecutor(CLIExecutorBase):
         plane: ApprovalControlPlane = record["plane"]
         run_id = str(record["run_id"])
         session_id = str(record.get("session_id") or "")
+        if task_elevation_protocol_enabled(
+            record["task_packet"].get("extensions")
+            if isinstance(record["task_packet"].get("extensions"), dict)
+            else {}
+        ):
+            return self._handle_task_elevation_permission(record, frame)
         request_id, tool_call = validate_permission_request(
             frame,
             session_id=session_id,
@@ -1099,6 +1196,133 @@ class HermesExecutor(CLIExecutorBase):
         )
         return outcome
 
+    def _handle_task_elevation_permission(
+        self,
+        record: dict[str, Any],
+        frame: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist one native Hermes request as a contained-full task wait.
+
+        The ACP request is authority evidence only.  No ``allow_once`` or
+        native permission response is produced for a v3 task; approval is a
+        separate Core decision which dispatches one Runner-owned full
+        continuation after the original ACP worker has ended.
+        """
+        from agent_bridge_connect.permission_elevation import PERMISSION_ELEVATION_MODE
+        from agent_bridge_connect.service import TaskService
+
+        task_packet = record["task_packet"]
+        run_id = str(record["run_id"] or "")
+        session_id = str(record.get("session_id") or "").strip()
+        request_id_value, tool_call = validate_permission_request(
+            frame,
+            session_id=session_id,
+        )
+        request_id = str(request_id_value).strip()
+        params = frame.get("params") if isinstance(frame.get("params"), dict) else {}
+        operation = str(
+            tool_call.get("kind") or tool_call.get("title") or "permission"
+        ).strip()
+        tool_call_id = str(
+            tool_call.get("toolCallId")
+            or tool_call.get("tool_call_id")
+            or tool_call.get("id")
+            or ""
+        ).strip()
+        native_event = "hermes_acp.session/request_permission"
+        request_fingerprint = compute_request_fingerprint(
+            executor="hermes",
+            session_id=session_id,
+            tool_name=operation,
+            tool_input=params,
+            extra={"method": "session/request_permission"},
+        )
+        action_fingerprint = compute_request_fingerprint(
+            executor="hermes",
+            session_id=session_id,
+            tool_name=operation,
+            tool_input=tool_call,
+        )
+        preflight = full_capability_preflight(
+            task_packet,
+            executor="hermes",
+            executable=self.agent_bin,
+        )
+        if preflight.get("ok") is not True:
+            raise HermesAcpError(
+                "hermes_acp_full_preflight_failed",
+                "Hermes contained-full capability preflight failed.",
+                {"reason_code": str(preflight.get("code") or "capability_unavailable")},
+            )
+        authority = {
+            "executor": "hermes",
+            "protocol": "hermes_acp",
+            "protocol_version": 1,
+            "method": "session/request_permission",
+        }
+        board_root = (
+            task_packet.get("task_board") or {}
+        ).get("root") or record.get("root")
+        service = TaskService(
+            board_root,
+            config={"_runner_worker": True},
+        )
+        task_id = str(task_packet.get("task_id") or "")
+        blocked = service.block_task_for_elevation(
+            task_id,
+            executor_run_id=run_id,
+            session_id=session_id,
+            request_id=request_id,
+            request_fingerprint=request_fingerprint,
+            executor="hermes",
+            operation=operation,
+            summary=permission_summary(tool_call),
+            reason=permission_summary(tool_call),
+            reason_detail="",
+            execution_session=record.get("execution_session"),
+            tool_name=operation,
+            tool_use_id=tool_call_id,
+            action_fingerprint=action_fingerprint,
+            escalation_domain="hermes_acp",
+            profile_digest=str(preflight.get("containment_profile_digest") or ""),
+            control_path=TRANSPORT_HERMES_ACP,
+            native_event=native_event,
+            authority=authority,
+            path_plan_digest=str(preflight.get("path_plan_digest") or ""),
+            containment_profile_digest=str(
+                preflight.get("containment_profile_digest") or ""
+            ),
+            full_preflight=preflight,
+        )
+        persisted = service.get_task(task_id)
+        request = (persisted.extensions or {}).get("agentbc.input")
+        if not isinstance(request, dict) or request.get("status") != "waiting":
+            raise HermesAcpError(
+                "hermes_acp_task_elevation_persistence_failed",
+                "Hermes task elevation did not leave one waiting v3 input.",
+            )
+        approval_request = dict(request)
+        approval_request["session_id"] = session_id
+        approval_request["requested_permission"] = "full"
+        approval_request["elevation_mode"] = PERMISSION_ELEVATION_MODE
+        approval_request["native_event"] = native_event
+        record["events"].append(
+            {
+                "event_type": "task_elevation_requested",
+                "source": "agentbc.service",
+                "sequence": len(record["events"]) + 1,
+                "payload": {
+                    **dict(blocked),
+                    "request_id": request_id,
+                    "request_fingerprint": request_fingerprint,
+                    "native_event": native_event,
+                },
+            }
+        )
+        # The caller raises this marker through ``prompt`` so the fake/real ACP
+        # transport cannot answer the original permission request.
+        raise HermesAcpElevationRequired(approval_request)
+
     def _should_use_runner(self) -> bool:
         if self.transport == "direct":
             return False
@@ -1183,6 +1407,24 @@ class HermesExecutor(CLIExecutorBase):
                 else None
             ),
         }
+        task_elevation = task_elevation_protocol_enabled(
+            self._task_packets.get(self._last_run_id, {}).get("extensions")
+            if self._last_run_id is not None
+            else {}
+        )
+        if task_elevation and isinstance(metadata.get("permission"), dict):
+            permission_metadata = dict(metadata["permission"])
+            raw_mapping = permission_metadata.get("mapping")
+            if isinstance(raw_mapping, dict):
+                mapping = {
+                    key: dict(value) if isinstance(value, dict) else value
+                    for key, value in raw_mapping.items()
+                }
+                hermes_mapping = mapping.get("hermes")
+                if isinstance(hermes_mapping, dict):
+                    hermes_mapping["decisions"] = ["approve_full", "deny"]
+                permission_metadata["mapping"] = mapping
+            metadata["permission"] = permission_metadata
         if self._last_run_id is not None:
             last_run = self._run_metadata[self._last_run_id]
             metadata["last_run"] = last_run
@@ -1206,12 +1448,17 @@ class HermesExecutor(CLIExecutorBase):
                 "version": acp.get("version"),
             },
             "request_permission": {
-                # Task 6 binds the exact session-level capability at ACP
-                # session init: only allow_once/deny outcomes are exposed to
-                # AgentBC through the frozen approval receipt and ControlPlane.
+                # Historical hand-built packets retain the v2 compatibility
+                # surface.  Normal TaskService packets use the v3 cutover:
+                # the native event is authority only and the human decision
+                # is the separate contained-full task elevation.
                 "state": acp_state,
                 "capability_id": HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID,
-                "decisions": ["allow_once", "deny"],
+                "decisions": (
+                    ["approve_full", "deny"]
+                    if task_elevation
+                    else ["allow_once", "deny"]
+                ),
             },
         }
         permission = metadata.get("permission")
@@ -1219,6 +1466,9 @@ class HermesExecutor(CLIExecutorBase):
             mode = permission.get("effective_mode")
             if isinstance(mode, str):
                 mapping = executor_permission_mapping("hermes", mode)
+                if task_elevation:
+                    mapping = dict(mapping)
+                    mapping["decisions"] = ["approve_full", "deny"]
                 metadata["permission_capability"] = mapping
                 if mode == "full":
                     metadata["permission_audit"] = build_permission_audit_payload(

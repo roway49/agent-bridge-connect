@@ -704,14 +704,23 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
     def test_hermes_runner_transport_keeps_adapter_run_id(self) -> None:
         _service, packet, _source, session_id = self._grant_packet("hermes")
         executor = HermesExecutor(command=str(self.binaries["hermes"]), transport="runner")
-        executor._runner_client.health = mock.Mock(return_value={"executors": ["hermes"]})
-
-        def submit(*_args, **kwargs):
-            return {"run_id": kwargs["executor_run_id"], "pid": 123}
-
-        executor._runner_client.submit = mock.Mock(side_effect=submit)
+        executor._runner_client.authorize_command = mock.Mock(return_value={"ok": True})
+        callback = (
+            'AGENTBC_FINAL_CALLBACK: {"version":1,"task_id":"'
+            + packet["task_id"]
+            + '","final_state":"completed","summary":"done",'
+            '"step_results":[{"id":1,"status":"done"}]}'
+        )
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=callback,
+            stderr="",
+        )
         with (
             mock.patch.object(executor, "_start_run_lease"),
+            mock.patch.object(executor, "_heartbeat_run"),
+            mock.patch.object(executor, "_close_run_lease"),
             mock.patch.object(
                 executor,
                 "_store_run",
@@ -719,16 +728,30 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
             mock.patch(
                 "agent_bridge_connect.executors.hermes.assert_executor_permission_supported"
             ),
+            mock.patch(
+                "agent_bridge_connect.executors.hermes.subprocess.run",
+                return_value=completed,
+            ) as run,
         ):
             started = executor.start(packet)
         self.assertTrue(started.ok, started.message)
         self.assertEqual(
-            executor._runner_client.submit.call_args.kwargs["executor_run_id"],
+            executor._runner_client.authorize_command.call_args.kwargs[
+                "executor_run_id"
+            ],
             started.run_id,
         )
-        command = executor._runner_client.submit.call_args.args[1]
+        command = next(
+            call.args[0]
+            for call in run.call_args_list
+            if "chat" in call.args[0]
+        )
         self.assertIn("--yolo", command)
         self.assertEqual(command[command.index("--resume") + 1], session_id)
+        # This packet is already executing inside the Runner-owned worker.
+        # The adapter authorizes its exact argv but must not recursively submit
+        # another worker, which would lose the preallocated continuation ID.
+        self.assertNotIn(started.run_id, executor._runner_runs)
 
     def test_runner_client_transports_executor_run_id_internally(self) -> None:
         client = RunnerClient(spool_root=self.root / "spool")

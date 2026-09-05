@@ -559,10 +559,14 @@ def permission_elevation_public_projection(value: Any) -> dict[str, Any]:
         "version": PERMISSION_ELEVATION_VERSION,
         "mode": PERMISSION_ELEVATION_MODE,
         "source": PERMISSION_ELEVATION_SOURCE,
+        "requested_permission": "full",
         "state": record["state"]["status"],
         "path_plan_digest": record["binding"]["path_plan_digest"],
         "containment_profile_digest": record["containment"]["profile_digest"],
         "cardinality": dict(record["cardinality"]),
+        "authority": dict(record["authority"]),
+        "native_event": str((record.get("provenance") or {}).get("native_event") or ""),
+        "request_fingerprint": str(record["binding"].get("request_fingerprint") or ""),
         "created_at": record["created_at"],
     }
     if record["decision"]["type"]:

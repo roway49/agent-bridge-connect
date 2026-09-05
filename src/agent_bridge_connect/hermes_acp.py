@@ -23,12 +23,15 @@ Contract invariants (fail closed):
   duplicate, or out-of-order frames fail closed before any unsafe execution.
 * Strict versioning: ``initialize`` must return exactly the supported
   protocol version (``1``); anything else is ``hermes_acp_unsupported_version``.
-* Strict permission surface: the bridge exposes **only** ``allow_once`` and
-  ``deny`` (``cancelled``) outcomes to AgentBC.  Requests whose option list
-  cannot express a one-time approval, requests for a different session,
-  duplicate/concurrent requests, mismatched identities, and late responses
-  fail closed.  ``allow_session``, ``allow_always`` and ``deny_always`` are
-  never selected and never returned.
+* Strict permission surface: historical v1/v2 compatibility frames expose
+  only ``allow_once`` and ``deny`` (``cancelled``) outcomes.  A normal v3
+  task-elevation frame is authority only: the adapter persists one
+  ``approve_full``/``deny`` decision request and raises its contained-full
+  handoff signal without answering the native ACP request.  Requests whose
+  option list cannot express the declared surface, requests for a different
+  session, duplicate/concurrent requests, mismatched identities, and late
+  responses fail closed.  ``allow_session``, ``allow_always`` and
+  ``deny_always`` are never selected and never returned.
 * Transport death (broken pipe, process exit, EOF, timeout) surfaces as an
   explicit failure so the adapter can enter ``needs_recovery``; nothing is
   retried silently.
@@ -95,6 +98,17 @@ class HermesAcpError(RuntimeError):
         # The stable code prefixes the human message so failure evidence and
         # audit trails always carry the exact fail-closed reason.
         return f"{self.code}: {super().__str__()}"
+
+
+class HermesAcpElevationRequired(HermesAcpError):
+    """Signal a persisted v3 task elevation without answering ACP inline."""
+
+    def __init__(self, approval_request: dict[str, Any]) -> None:
+        self.approval_request = dict(approval_request)
+        super().__init__(
+            "hermes_acp_task_elevation_required",
+            "Hermes ACP task elevation was persisted; the original worker must end.",
+        )
 
 
 class HermesAcpUnsupported(HermesAcpError):
@@ -921,6 +935,7 @@ __all__ = [
     "HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID",
     "HERMES_ACP_RPC_TIMEOUT_S",
     "HermesAcpError",
+    "HermesAcpElevationRequired",
     "HermesAcpTransport",
     "HermesAcpUnsupported",
     "approval_outcome_for_decision",

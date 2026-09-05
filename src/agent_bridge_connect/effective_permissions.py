@@ -54,7 +54,11 @@ def resolve_effective_permission(
     extensions = extensions if isinstance(extensions, dict) else {}
     base = permission_record_from_extensions(extensions, allow_legacy=True)
     elevation = permission_elevation_from_extensions(extensions)
-    if elevation is not None and elevation["state"]["status"] in {"active", "verified"}:
+    if elevation is not None and elevation["state"]["status"] in {
+        "approved",
+        "active",
+        "verified",
+    }:
         if not trusted_runner_managed:
             raise ABCError(
                 "permission_elevation_runner_context_required",

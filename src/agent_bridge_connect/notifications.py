@@ -13,7 +13,10 @@ from .approval import (
     sanitize_reason_detail,
     validate_approval_receipt,
 )
-from .permission_elevation import PERMISSION_ELEVATION_MODE
+from .permission_elevation import (
+    PERMISSION_ELEVATION_EXTENSION_KEY,
+    PERMISSION_ELEVATION_MODE,
+)
 from .adapters import DeliveryResult
 from .claude_elevation import CLAUDE_ELEVATION_EXTENSION_KEY
 from .protocol import ABCError
@@ -87,6 +90,7 @@ def notify_input_required(
     """Immediately deliver an actionable, explicitly nonterminal input notice."""
     payload = build_input_required_notification(service, task_id)
     live_dialog_already_reserved = False
+    task_elevation_dialog_already_reserved = False
     if payload.get("native_live_elevation") is True:
         existing_task = service.get_task(task_id)
         existing_extensions = (
@@ -110,12 +114,39 @@ def notify_input_required(
         and int(payload.get("approval_version") or 1) == 3
         and payload.get("elevation_mode") == PERMISSION_ELEVATION_MODE
     ):
-        service.record_task_elevation_notification(task_id)
+        reserve = getattr(service, "reserve_task_elevation_notification", None)
+        if callable(reserve):
+            _receipt, newly_reserved = reserve(task_id)
+            task_elevation_dialog_already_reserved = not newly_reserved
+        else:
+            # Compatibility for narrow test doubles and historical service
+            # facades that predate the atomic reservation helper.
+            existing_task = service.get_task(task_id)
+            existing_extensions = (
+                existing_task.extensions
+                if isinstance(existing_task.extensions, dict)
+                else {}
+            )
+            existing_receipt = existing_extensions.get(PERMISSION_ELEVATION_EXTENSION_KEY)
+            existing_cardinality = (
+                existing_receipt.get("cardinality")
+                if isinstance(existing_receipt, dict)
+                else None
+            )
+            task_elevation_dialog_already_reserved = (
+                isinstance(existing_cardinality, dict)
+                and existing_cardinality.get("notifications") == 1
+            )
+            service.record_task_elevation_notification(task_id)
     file_result = _file_notification(service, payload)
-    if live_dialog_already_reserved:
+    if live_dialog_already_reserved or task_elevation_dialog_already_reserved:
         dialog_result = DeliveryResult(
             True,
-            "live Claude elevation dialog already delivered",
+            (
+                "live Claude elevation dialog already delivered"
+                if live_dialog_already_reserved
+                else "Hermes task elevation notification already delivered"
+            ),
             "dialog:task.input_required",
             {"action": "already_delivered"},
         )

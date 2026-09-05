@@ -1176,6 +1176,7 @@ def build_approval_receipt_v3(
         "operation": operation,
         "scope": APPROVAL_V3_SCOPE,
         "elevation_mode": APPROVAL_V3_ELEVATION_MODE,
+        "requested_permission": "full",
         "summary": "",
         "path_plan_digest": path_plan_digest,
         "containment_profile_digest": clean_profile_digest,
@@ -1271,6 +1272,11 @@ def validate_approval_receipt_v3(
         _invalid(
             "approval_elevation_mode_invalid",
             "Approval v3 must request contained_full elevation",
+        )
+    if receipt.get("requested_permission") != "full":
+        _invalid(
+            "approval_permission_invalid",
+            "Approval v3 must request full permission",
         )
     for field in (
         "task_id",
@@ -1488,6 +1494,7 @@ def approval_public_projection_v3(value: Any) -> dict[str, Any]:
         "executor": receipt["executor"],
         "operation": receipt["operation"],
         "elevation_mode": APPROVAL_V3_ELEVATION_MODE,
+        "requested_permission": "full",
         "summary": receipt["summary"],
         "summary_truncated": bool(receipt.get("summary_truncated", False)),
         "state": receipt["state"]["status"],
@@ -1496,6 +1503,11 @@ def approval_public_projection_v3(value: Any) -> dict[str, Any]:
         "containment_profile_digest": receipt["containment_profile_digest"],
         "created_at": receipt["created_at"],
         "cardinality": dict(receipt["cardinality"]),
+        "authority": dict(receipt["authority"]),
+        "native_event": str(
+            (receipt.get("provenance") or {}).get("native_event") or ""
+        ),
+        "request_fingerprint": receipt["request_fingerprint"],
     }
     if receipt.get("reason_summary"):
         projection["reason_summary"] = receipt["reason_summary"]

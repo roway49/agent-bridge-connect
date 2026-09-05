@@ -41,12 +41,14 @@ from agent_bridge_connect.hermes_acp import (
     validate_initialize_result,
 )
 from agent_bridge_connect.permission_modes import build_permission_record
+from agent_bridge_connect.permission_runtime import host_profile_digest, path_plan_digest
 from agent_bridge_connect.permission_registry import (
     HERMES_ACP_ALLOWED_DECISIONS,
     HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID,
     probe_executor_capability,
 )
 from agent_bridge_connect.session import control_root_for_task
+from agent_bridge_connect.service import TaskService
 
 FAKE_SERVER = (
     Path(__file__).parent
@@ -557,6 +559,118 @@ class HermesAcpExecutorTests(unittest.TestCase):
             executor="hermes",
             create=False,
         )
+
+    def _v3_packet(self) -> tuple[TaskService, dict]:
+        service = TaskService(
+            self.board,
+            config={
+                "workspace_root": str(self.root / "workspace"),
+                "sessions": {"retain_executor_sessions": True},
+            },
+        )
+        task = service.create_task(
+            "Hermes ACP v3 task elevation",
+            "hermes",
+            [{"id": 1, "description": "request one contained-full elevation"}],
+            customer_dir=True,
+            customer_path=self.root,
+            permission_mode="safe",
+        )
+        service.start_task_run(task.id, "hermes")
+        packet = service.store.read_task(task.id)
+        packet["task_id"] = task.id
+        packet["task_board"] = {"root": str(self.board)}
+        packet["runner_authorization_required"] = True
+        packet["_agentbc_executor_run_id"] = f"hermes-{task.id}-initial"
+        return service, packet
+
+    def _start_v3_permission_wait(
+        self,
+    ) -> tuple[TaskService, dict, FakeAcpTransport, HermesExecutor, str]:
+        service, packet = self._v3_packet()
+        fake = FakeAcpTransport(self.board, packet["task_id"])
+        fake.permission_frames = [_permission_frame()]
+        executor = self._executor(fake)
+        preflight = {
+            "ok": True,
+            "status": "passed",
+            "mode": "contained_full",
+            "path_plan_digest": path_plan_digest(packet["workspace"]),
+            "containment_profile_digest": host_profile_digest(),
+        }
+        with (
+            mock.patch.object(executor, "_start_run_lease"),
+            mock.patch.object(executor, "_close_run_lease") as close_lease,
+            mock.patch.object(
+                executor._runner_client,
+                "authorize_command",
+                return_value={"ok": True},
+            ),
+            mock.patch(
+                "agent_bridge_connect.executors.hermes.assert_executor_permission_supported"
+            ),
+            mock.patch(
+                "agent_bridge_connect.executors.hermes.full_capability_preflight",
+                return_value=preflight,
+            ),
+        ):
+            started = executor.start(packet)
+            status = self._wait_status(executor, started.run_id, {"input_required"})
+        self.assertTrue(started.ok, started.message)
+        self.assertEqual(status, "input_required")
+        self.assertTrue(close_lease.called)
+        return service, packet, fake, executor, started.run_id
+
+    def test_v3_native_request_persists_one_full_elevation_and_ends_acp(self) -> None:
+        service, packet, fake, executor, run_id = self._start_v3_permission_wait()
+        self.assertTrue(fake.closed)
+        self.assertFalse(
+            any(item.get("method") == "permission_response" for item in fake.sent)
+        )
+        persisted = service.get_task(packet["task_id"])
+        request = persisted.extensions["agentbc.input"]
+        self.assertEqual(request["approval_version"], 3)
+        self.assertEqual(request["scope"], "task_elevation")
+        self.assertEqual(request["requested_permission"], "full")
+        self.assertEqual(
+            request["native_event"],
+            "hermes_acp.session/request_permission",
+        )
+        self.assertEqual(
+            persisted.extensions["agentbc.session"]["session_id"],
+            FAKE_SESSION_ID,
+        )
+        receipt = executor.poll(run_id).result["execution_session"]
+        events_before = service.store.read_events(packet["task_id"])
+        service.record_executor_session_started(packet["task_id"], run_id, receipt)
+        self.assertEqual(
+            service.store.read_events(packet["task_id"]),
+            events_before,
+        )
+        answered = service.respond_to_input(
+            packet["task_id"],
+            request["input_id"],
+            response_type="approve_full",
+        )
+        self.assertTrue(answered["dispatch_required"])
+        self.assertTrue(answered["same_session"])
+        elevation = service.get_task(packet["task_id"]).extensions[
+            "agentbc.permission_elevation"
+        ]
+        self.assertEqual(elevation["state"]["status"], "approved")
+        self.assertEqual(elevation["cardinality"]["human_decisions"], 1)
+
+    def test_v3_deny_is_terminal_and_dispatches_no_continuation(self) -> None:
+        service, packet, _fake, _executor, _run_id = self._start_v3_permission_wait()
+        request = service.get_task(packet["task_id"]).extensions["agentbc.input"]
+        answered = service.respond_to_input(
+            packet["task_id"],
+            request["input_id"],
+            response_type="deny",
+        )
+        self.assertFalse(answered["dispatch_required"])
+        self.assertTrue(answered["permission_denied"])
+        self.assertEqual(service.get_task(packet["task_id"]).status, "failed")
 
     def test_session_first_receipt_before_prompt_and_allow_once(self) -> None:
         fake = FakeAcpTransport(self.board, self.task_id)
