@@ -62,6 +62,7 @@ APPROVAL_REASON_DETAIL_LIMIT = 2000
 SUMMARY_ELLIPSIS = "…"
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$")
+_NATIVE_EVENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$")
 _OPERATION_RE = re.compile(r"^[^\x00-\x1f]{1,120}$")
 _FORBIDDEN_FIELD_PARTS = frozenset(
     {
@@ -1322,8 +1323,14 @@ def validate_approval_receipt_v3(
     provenance = receipt.get("provenance")
     if not isinstance(provenance, dict):
         _invalid("approval_provenance_invalid", "Approval v3 requires native provenance")
-    for field in ("native_event", "tool_call_id"):
-        _require_identifier(str(provenance.get(field) or ""), f"provenance.{field}")
+    _require_native_event(
+        str(provenance.get("native_event") or ""),
+        "provenance.native_event",
+    )
+    _require_identifier(
+        str(provenance.get("tool_call_id") or ""),
+        "provenance.tool_call_id",
+    )
     action_fingerprint_value = str(provenance.get("action_fingerprint") or "")
     if action_fingerprint_value and not _IDENTIFIER_RE.fullmatch(action_fingerprint_value):
         _invalid("approval_provenance_invalid", "provenance.action_fingerprint is invalid")
@@ -1749,6 +1756,25 @@ def _require_identifier(value: Any, field: str) -> str:
         _invalid(
             "approval_invalid",
             f"Approval receipt {field} must be a non-empty opaque identifier",
+        )
+    return value
+
+
+def _require_native_event(value: Any, field: str) -> str:
+    """Validate an opaque protocol event name without treating it as a path.
+
+    Native protocol methods such as Codex App Server
+    ``item/commandExecution/requestApproval`` legitimately contain slashes.
+    They are receipt data only and are never used as filesystem identifiers.
+    """
+    if (
+        not isinstance(value, str)
+        or value != value.strip()
+        or not _NATIVE_EVENT_RE.fullmatch(value)
+    ):
+        _invalid(
+            "approval_invalid",
+            f"Approval receipt {field} must be a non-empty native event identifier",
         )
     return value
 

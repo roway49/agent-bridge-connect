@@ -57,6 +57,7 @@ PERMISSION_ELEVATION_BLOCK_CODES = frozenset(
 PERMISSION_ELEVATION_FILENAME = "permission_elevation.json"
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$")
+_NATIVE_EVENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _OPERATION_RE = re.compile(r"^[^\x00-\x1f]{1,120}$")
 _FORBIDDEN_FIELD_PARTS = frozenset(
@@ -234,8 +235,14 @@ def validate_permission_elevation(
             _invalid("permission_elevation_binding_mismatch", f"binding.{field} does not match the expected value")
 
     provenance = _require_object(record, "provenance")
-    for field in ("native_event", "tool_call_id"):
-        _require_identifier(provenance.get(field), f"provenance.{field}")
+    _require_native_event(
+        provenance.get("native_event"),
+        "provenance.native_event",
+    )
+    _require_identifier(
+        provenance.get("tool_call_id"),
+        "provenance.tool_call_id",
+    )
     action_fingerprint_value = str(provenance.get("action_fingerprint") or "")
     if action_fingerprint_value and not _IDENTIFIER_RE.fullmatch(action_fingerprint_value):
         _invalid("permission_elevation_provenance_invalid", "provenance.action_fingerprint is invalid")
@@ -622,6 +629,19 @@ def _require_object(parent: dict[str, Any], field: str) -> dict[str, Any]:
 def _require_identifier(value: Any, field: str) -> str:
     if not isinstance(value, str) or value != value.strip() or not _IDENTIFIER_RE.fullmatch(value):
         _invalid("permission_elevation_binding_invalid", f"Permission elevation {field} must be an opaque identifier")
+    return value
+
+
+def _require_native_event(value: Any, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or value != value.strip()
+        or not _NATIVE_EVENT_RE.fullmatch(value)
+    ):
+        _invalid(
+            "permission_elevation_binding_invalid",
+            f"Permission elevation {field} must be a native event identifier",
+        )
     return value
 
 
