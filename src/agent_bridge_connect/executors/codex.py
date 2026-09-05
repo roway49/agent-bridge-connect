@@ -524,7 +524,11 @@ class CodexExecutor(CLIExecutorBase):
         if self._uses_app_server_transport(task_packet):
             return self._start_app_server(task_packet, root)
 
-        run_id = f"codex-{task_packet.get('task_id', 'unknown')}-{uuid.uuid4().hex[:8]}"
+        run_id = (
+            str(task_packet.get("_agentbc_executor_run_id") or "").strip()
+            if task_packet.get("runner_authorization_required") is True
+            else ""
+        ) or f"codex-{task_packet.get('task_id', 'unknown')}-{uuid.uuid4().hex[:8]}"
         self._task_packets[run_id] = dict(task_packet)
         self._start_run_lease(task_packet, run_id, "codex")
         prompt = _build_prompt(task_packet)
@@ -892,7 +896,11 @@ class CodexExecutor(CLIExecutorBase):
         return [str(self.agent_bin), "app-server", "--stdio"]
 
     def _start_app_server(self, task_packet: dict[str, Any], root: Path) -> StartResult:
-        run_id = f"codex-{task_packet.get('task_id', 'unknown')}-{uuid.uuid4().hex[:8]}"
+        run_id = (
+            str(task_packet.get("_agentbc_executor_run_id") or "").strip()
+            if task_packet.get("runner_authorization_required") is True
+            else ""
+        ) or f"codex-{task_packet.get('task_id', 'unknown')}-{uuid.uuid4().hex[:8]}"
         self._task_packets[run_id] = dict(task_packet)
         self._start_run_lease(task_packet, run_id, "codex")
         try:

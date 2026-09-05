@@ -8,6 +8,7 @@ import os
 import signal
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -1529,20 +1530,43 @@ def command_worker_run(args: argparse.Namespace) -> int:
         try:
             service.start_task_run(task.id, args.executor)
             claimed_task = service.get_task(task.id)
-            start = executor.start(
-                {
-                    "task_id": claimed_task.id,
-                    "assignee": claimed_task.assignee,
-                    "title": claimed_task.title,
-                    "steps": claimed_task.steps,
-                    "workspace": _task_workspace(claimed_task, service.board_root, service.config),
-                    "task_board": {"root": str(service.board_root)},
-                    "extensions": claimed_task.extensions,
-                    "runner_authorization_required": (
-                        getattr(args, "runner_authorize", False) is True
-                    ),
-                }
+            preallocated_run_id = ""
+            from .permission_elevation import permission_elevation_from_extensions
+
+            elevation = permission_elevation_from_extensions(
+                claimed_task.extensions or {},
+                task_id=claimed_task.id,
             )
+            if elevation is not None and elevation["state"]["status"] == "approved":
+                if getattr(args, "runner_authorize", False) is not True:
+                    raise ABCError(
+                        "permission_elevation_runner_context_required",
+                        "An approved task elevation requires a Runner-authorized continuation",
+                    )
+                preallocated_run_id = (
+                    f"{args.executor}-{claimed_task.id}-{uuid.uuid4().hex[:8]}"
+                )
+                service.activate_task_elevation(
+                    claimed_task.id,
+                    executor_run_id=preallocated_run_id,
+                    session_id=str(elevation["binding"].get("session_id") or ""),
+                )
+                claimed_task = service.get_task(claimed_task.id)
+            task_packet = {
+                "task_id": claimed_task.id,
+                "assignee": claimed_task.assignee,
+                "title": claimed_task.title,
+                "steps": claimed_task.steps,
+                "workspace": _task_workspace(claimed_task, service.board_root, service.config),
+                "task_board": {"root": str(service.board_root)},
+                "extensions": claimed_task.extensions,
+                "runner_authorization_required": (
+                    getattr(args, "runner_authorize", False) is True
+                ),
+            }
+            if preallocated_run_id:
+                task_packet["_agentbc_executor_run_id"] = preallocated_run_id
+            start = executor.start(task_packet)
             if not start.ok:
                 start_code = (
                     "input_resume_start_failed"
@@ -1765,10 +1789,17 @@ def command_worker_run(args: argparse.Namespace) -> int:
                             interval_s=getattr(args, "interval", 2),
                         )
                         _request_task_list_refresh_for_service(service)
-                        print(
-                            f"input_required: {task.id} "
-                            f"request={blocked.get('request_id', request_id)}"
-                        )
+                    print(
+                        f"input_required: {task.id} "
+                        f"request={blocked.get('request_id', request_id)}"
+                    )
+                    if is_task_elevation and not is_native_live_elevation:
+                        # A contained-full elevation cannot change the active
+                        # Codex/Hermes process policy in place. End this
+                        # Runner-owned worker after persisting the exact native
+                        # receipt; approval dispatches exactly one continuation
+                        # bound to the same official session.
+                        return 0
                     # The App Server thread remains alive while the same native
                     # request waits.  A dialog or CLI response writes the
                     # accept/decline decision through Runner; never finalize or

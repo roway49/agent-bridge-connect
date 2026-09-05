@@ -49,6 +49,7 @@ from .permission_grants import (
     consume_permission_grant,
     permission_grant_from_extensions,
 )
+from .permission_elevation import permission_elevation_from_extensions
 from .permission_registry import TRANSPORT_HERMES_ACP
 from .protocol import ABCError
 from .permission_transport import (
@@ -3247,10 +3248,16 @@ class RunnerState:
                 )
         else:
             try:
+                elevation = permission_elevation_from_extensions(extensions)
+                trusted_elevation = (
+                    elevation is not None
+                    and elevation["state"]["status"] in {"active", "verified"}
+                )
                 effective = resolve_effective_permission(
                     persisted,
                     executor,
                     executor_run_id,
+                    trusted_runner_managed=trusted_elevation,
                 )
             except ABCError as exc:
                 raise RunnerError(f"{exc.code}: {exc}") from exc

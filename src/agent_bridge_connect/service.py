@@ -3846,7 +3846,7 @@ class TaskService:
                 "input_id": current_input_id,
                 "request_id": str(request.get("request_id") or ""),
                 "status": "resuming",
-                "dispatch_required": False,
+                "dispatch_required": True,
                 "approval_decision": "approve_full",
                 "approval_source": elevation_source,
                 "same_session": True,

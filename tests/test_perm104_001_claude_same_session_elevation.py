@@ -669,6 +669,48 @@ class ClaudeSameSessionElevationServiceTests(unittest.TestCase):
             self.session_id,
         )
 
+    def test_non_live_task_elevation_dispatches_one_full_continuation(self) -> None:
+        task = self.service.get_task(self.task.id)
+        plan_digest = path_plan_digest(task.workspace)
+        profile_digest = host_profile_digest()
+        blocked = self.service.block_task_for_approval(
+            self.task.id,
+            executor_run_id=self.run_id,
+            session_id=self.session_id,
+            request_id="approval-service-continuation",
+            request_fingerprint="fp-" + "c" * 40,
+            executor="claude",
+            operation="Bash",
+            summary="Native process requires contained full",
+            tool_use_id="service-tool-continuation",
+            native_event="claude_sdk_can_use_tool",
+            authority={
+                "executor": "claude",
+                "protocol": "claude_agent_sdk",
+                "protocol_version": 1,
+                "method": "sdk.can_use_tool",
+            },
+            approval_version=3,
+            elevation_mode="contained_full",
+            path_plan_digest=plan_digest,
+            containment_profile_digest=profile_digest,
+            full_preflight={"ok": True, "status": "passed", "mode": "contained_full"},
+            native_live_elevation=False,
+        )
+        answered = self.service.respond_to_input(
+            self.task.id,
+            blocked["input_id"],
+            response_type="approve_full",
+        )
+        self.assertTrue(answered["dispatch_required"])
+        self.assertTrue(answered["same_session"])
+        self.assertEqual(answered["status"], "resuming")
+        elevation = self.service.get_task(self.task.id).extensions[
+            "agentbc.permission_elevation"
+        ]
+        self.assertEqual(elevation["state"]["status"], "approved")
+        self.assertEqual(elevation["continuation"]["count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
