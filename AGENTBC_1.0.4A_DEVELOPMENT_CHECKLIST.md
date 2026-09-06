@@ -599,6 +599,76 @@ Executor 拒绝必须在同 session、同 request Approve 后精确执行。
   AgentBC 只做 fail-closed bridge，未加弹窗/未自动应答/未合成完成；
   `test_issued_grant_prepares_outer_containment_before_worker_spawn` 的 stale 断言仍待更新。
 
+2026-09-07 `PERM-104-003` Hermes ACP input-required 终态仲裁修复（`agent/claude` 本地提交，未 push）：
+
+- 失败基线 `Y7SW-001`（failed，`completion_marker_missing`，wall 4m29s）：官方 session
+  `7dc9f492-45b0-4982-bc74-3ec077e064d4`、run `hermes-Y7SW-001-f52a2998`。2026-09-06
+  `14:45:35.644129Z` session 绑定；`14:48:46.879459Z` Step 1 probe 文件 A/B 已建并校验；
+  `14:49:54.215089Z` `agentbc.approval` 创建；`14:49:54.215654Z`
+  `task.permission_elevation_required`（`input_id=input-bef11a564a844f49b8e3d4e8e558ab64`、
+  `request_id=0`、`tool_use_id=perm-check-1`、`native_event=hermes_acp.session/request_permission`、
+  `request_fingerprint=fp-479973bfca7f07638abb0627ff5643dbe513ff11`、scope `task_elevation`、
+  mode `full`），`agentbc.input.status=waiting` 且 cardinality `notifications=0`、
+  `human_decisions=0`；`14:49:56.117113Z` 同一 run 却以 `completion_marker_missing`
+  （"Executor exited without a valid AGENTBC_FINAL_CALLBACK"）判为 failed，`14:49:58Z`
+  还补发了一条 `task.failed` 终态通知。RunLease `closed`、waiting 仅 2s，elevation state
+  停留在 `prepared`，从未进入可仲裁的 suspended-for-elevation。
+- 根因（ arbitration 缺口，非 authority 缺口）：worker 的 poll 循环只把
+  `poll.status == "input_required"` 且 poll result 携带 `approval_request` 的情况当作权限等待；
+  一旦 Hermes ACP turn 在 adapter 落盘 waiting input 之后才结束（transport close、
+  `stopReason`、空 final text、无 callback），worker 拿到的是终态/失败 poll，直接进入
+  通用 callback 校验与 `finalize_task_from_executor_exit`，从而以 `completion_marker_missing`
+  覆盖了已 durably waiting 的 v3 input。TaskService 才是 v3 唯一权威，worker 从未重读。
+- 修复 1（adapter 原子落盘 + latch）：`_handle_task_elevation_permission` 改为消费 canonical
+  typed `HermesAcpPermissionRequest`（不再触碰 raw frame、不做 prose 分类），先机械校验
+  request↔official session 绑定，再 `block_task_for_elevation` 落盘，并**重读** TaskService 确认
+  `agentbc.input.status == "waiting"` 后才抛 `HermesAcpElevationRequired`；`_run_acp_session`
+  捕获后一次性发布 `PollResult(status="input_required")`（含 `approval_request`、官方
+  `execution_session`、`executor_run_id`、`elevation_state=suspended_for_elevation`），
+  先 latch 再发布，随后仅关闭原 ACP transport/run lease。新增
+  `_elevation_latch` / `_latch_elevation_result` / `_latched_result` / `_set_acp_run_status`：
+  latch 后的 `input_required` 是该 run 唯一可发布结果，后续 `stopReason`、空 final text、
+  return code、callback 解析、transport close、重复 poll、线程收尾一律 no-op。
+  v2 `single_action` 仍走 control-plane suspend 路径，不占用 v3 latch。
+- 修复 2（worker 仲裁）：`_waiting_task_elevation_input` 从 TaskService 重读并机械校验
+  task/run/session/request 绑定（scope `task_elevation`、`approval_version==3`、
+  `elevation_mode==contained_full`、run 与 session 一致）；`_arbitrate_waiting_task_elevation`
+  在**每个** Hermes 终态 poll 之后、通用 callback 校验/失败 finalization 之前调用，命中时
+  恰好投递一次 input-required 通知（复用 `notify_input_required` 的原子 v3 reservation）、
+  请求 task-list 刷新、仅清理过期 execution-run 指针并 `return 0`；不 mark failed、不写终态
+  失败通知、不触发 terminal cleanup、也不要求被中断的安全 ACP turn 产出 callback。
+  通知幂等由 store reservation 与 `notified_approval_requests` 双重保证，重启/重放收敛为一条。
+- 修复 3（transport 收敛确定性）：`_read_available` 在 EOF 时对进程做有界 reap 等待
+  （`_HERMES_ACP_REAP_WAIT_S=2s`），使 `hermes_acp_transport_exited` 与
+  `hermes_acp_transport_eof` 的分类不再依赖父子进程的时序竞争。
+- 合并：`private/integration`（`55d862d`）与 `agent/claude` 在 `8aea853` 后分叉，按
+  non-destructive normal merge 合入 `agent/claude`，保留双方语义——`agent/claude` 的
+  canonical ACP wire 边界（typed request、mixed-field/unknown-field 拒绝）作为唯一 raw-frame
+  读取点，`private/integration` 的 v3 task-elevation 面（`HermesAcpElevationRequired`、
+  `_handle_task_elevation_permission`、Runner contained-full wiring、Seatbelt profile、
+  `clear_execution_run_references`、`task_elevation_approval` 仲裁）建立其上。历史未重写、
+  未 reset、未 push。`hermes_session_delete_invalid_session_id` 是独立缺陷，本变更不改其行为，
+  只保留 `test_original_run_lease_is_closed_and_no_terminal_cleanup_runs` 证明等待期零 terminal
+  cleanup，因此该缺陷不可能改变任务结果。
+- 测试：新增 `tests/test_perm104_003_input_terminal_arbitration.py` 13 项，全部基于真实
+  `TaskStore` 与异步 Hermes ACP 时序（fake adapter 在 `start` 内按生产顺序登记 run、绑定官方
+  session、落盘 waiting elevation，随后 poll 直接返回终态失败）：
+  Y7SW race（`completion_marker_missing` 下 `input_required` 存活、恰一条通知、无 `task.failed`、
+  run 指针已清理）、worker 重启/重放通知幂等、原 RunLease closed 且零 terminal cleanup、
+  Approve 恰一次 full continuation 且同 official session（`full_continuations=0`、无 grant）、
+  同一 binding 重放幂等、Deny 零 continuation、无等待输入的对照用例仍判
+  `completion_marker_missing`、跨 run 等待不仲裁本 run、latch 对重复 poll/transport close/迟到
+  stopReason 稳定、native stream 零 `permission_response` 且 close 恰一次、
+  `_hermes_transport_from_permission` full→headless direct / inherit|safe→ACP、
+  重复 native event 不得创建第二个 waiting input、指纹漂移与并发等待 fail closed。
+  将 `_arbitrate_waiting_task_elevation` 置为 no-op 后 7/13 失败，证明回归覆盖有效。
+- 门禁：`ruff check .` 通过；`PYTHONPYCACHEPREFIX` 隔离的 `compileall -q src tests` 通过；
+  `git diff --check` 干净；`python -m build` 产出 `agentbc-1.0.3a2` sdist+wheel。
+  全量 unittest 1781 项（3 failures / 35 errors / 6 skipped），失败集合与本轮改动前的合并基线
+  **逐项一致**（差异全部来自本环境缺失可选依赖 `claude_agent_sdk` 的 Claude SDK 传输门禁测试，
+  以及 2 项与权限无关的 CLI 文本/会话来源断言）；相对未合并 `agent/claude` HEAD（4F/27E）仅新增
+  private/integration 引入的同因 SDK 依赖测试，无本轮引入的新失败。
+
 ### 4.5 `FLOW-104-001`：handoff 结构化多 steps
 
 - `agentbc task handoff` 接受与根任务一致的结构化 `steps[].description` 输入；

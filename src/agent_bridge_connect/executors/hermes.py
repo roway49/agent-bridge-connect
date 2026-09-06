@@ -1087,7 +1087,11 @@ class HermesExecutor(CLIExecutorBase):
                         "name": resolved.name,
                     }
                 )
-            record["status"] = "prompting"
+            self._set_acp_run_status(
+                run_id,
+                "prompting",
+                record=record,
+            )
             # PERM-104-001: a healthy Hermes turn runs on a worker thread that
             # blocks in ``prompt`` for the whole turn, and ``poll()`` may not be
             # called for minutes.  The RunLease is therefore heartbeated on a
@@ -1107,7 +1111,11 @@ class HermesExecutor(CLIExecutorBase):
                 )
             finally:
                 heartbeat.stop()
-            record["status"] = "finalizing"
+            self._set_acp_run_status(
+                run_id,
+                "finalizing",
+                record=record,
+            )
             stop_reason = str(
                 response.get("stopReason") or response.get("stop_reason") or "end_turn"
             )
@@ -1192,9 +1200,8 @@ class HermesExecutor(CLIExecutorBase):
             )
             record["result"] = dict(approval_request)
             record["status"] = "input_required"
-            record["elevation_latched"] = True
-            # Latch first, then publish: once the latch exists every later
-            # publication path is a no-op.
+            # Latch first: once the latch exists every later publication path
+            # is a no-op, including this run's own terminal publication.
             self._latch_elevation_result(run_id, elevation_result)
             self._set_acp_run_status(
                 run_id,
