@@ -1,7 +1,7 @@
 # AgentBC 1.0.4A 需求开发清单
 
 > 制定日期：2026-08-26
-> 状态：持续开发与回归中；`SESSION-104-001` 保持已通过，`PERM-104-002` 仍开放，当前主线为 Claude SDK native approval fail-closed 与生命周期回归
+> 状态：持续开发与回归中；`SESSION-104-001` 保持已通过，`PERM-104-001` 的 Claude 同会话 safe-to-full 自动化门禁已完成，`PERM-104-002` 仍开放
 > 目标版本：AgentBC `1.0.4A` / Python `1.0.4a1`
 > 来源基线：`private/integration@01f3ce1`
 > 已发布基线：`v1.0.3A2@62757a4`；公开 Formula 收口 `public/main@87c4bca`
@@ -55,7 +55,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | --- | --- | --- | --- | --- |
 | `PROTO-104-001` | P0 / fixture matrix 已完成（2026-08-27）；production collaboration_spawn wiring 待回归（2026-08-28） | 上游 CLI version/help/argv/event 漂移只能靠临时补测试 | 三 Executor 完整版本化 fixture、capability matrix 和未知组合 fail-closed；生产派生会话接线需通过版本 fixture + live probe 双门 | 无 |
 | `ARCH-104-001` | P1 / 按域执行 | Service、Runner、CLI、approval、notification 责任仍集中 | 每个功能项先完成对应窄模块机械拆分，公共 API/CLI/磁盘行为不变 | `PROTO-104-001` |
-| `PERM-104-001` | P0 | native Deny 后 Agent 仍可用 Prompt/callback 请求 full 并启动第二 worker | 审批渠道和 fallback 完全由可信 transport event 与 Core policy 决定 | permission fixtures；对应 ARCH slice |
+| `PERM-104-001` | P0 / 实现与自动化门禁完成（2026-09-05） | native Deny 后 Agent 仍可用 Prompt/callback 请求 full 并启动第二 worker | Claude safe/default 的首个结构化 `can_use_tool` 事件只产生一次同会话输入；Approve 原子返回原始 input + `setMode/bypassPermissions/session`，Deny 无 mode change；重复事件 fail closed | `RM7A-001` artifact evidence；`tests/test_perm104_001_claude_same_session_elevation.py`；`PERM-104-002` 的部署后 full canary 仍独立开放 |
 | `PERM-104-002` | P0-Blocker / 仍开放（RAXT-001，2026-08-31） | Claude native request 曾在 session receipt 建立前失败，后续 callback/full popup/worker crash 不能证明 native approval 成功；同一不可升级阻塞还可能重复请求 | 已补 session-first、native single_action 权威绑定、callback fail-closed、Runner contained cleanup 与回归；仍需 deployed explicit/temporary/inherited full 真机 canary 和 `PERM-104-002-R1` 详情回归，未通过前不得关闭 | `PERM-104-001` |
 | `FLOW-104-002` | P0 | report/record 超限可跳过终态通知和 cleanup receipt | terminal、report、notification、cleanup 独立且可重放，通知不被报告失败吞掉 | terminal fixtures；对应 ARCH slice |
 | `FLOW-104-001` | P1 | handoff 只能声明一个 step，自由文本多步骤直到 callback 才失败 | handoff 原生结构化 steps、dispatch 前预检、严格 callback 一致性 | schema fixtures；对应 ARCH slice |
@@ -235,6 +235,27 @@ Core 只依据受支持 Adapter 的可信结构化 permission-block event 创建
 
 回归矩阵至少包含 Approve→Deny→Approve、重复/乱序响应、跨 task/run/session、过期 request、
 native Deny 后伪造 full callback、transport lost、Runner 重启和 UI/CLI 双入口。
+
+2026-09-05 `PERM-104-001 / RM7A-001` Claude same-session safe-to-full 收口：
+
+- Claude safe/default 任务从 SDK `permission_mode=default` 开始；首个可信 `can_use_tool` 事件绑定
+  task、run、官方 session、request/tool-use ID、request/action fingerprint 与精确 input digest，并在
+  Core 持久化脱敏 `safe/default → elevation_pending → set_mode_response_ready →
+  bypassPermissions_active` 收据；只有同一 tool-use 的结构化 `PostToolUse` 成功才能进入 active。Runner 在 SDK
+  callback 可能抢先到达前先登记该 run，避免 receipt/run 竞态；PathPlan 与宿主 containment digest
+  保持冻结。
+- 唯一 Approve 返回官方 `PermissionResultAllow(updated_input=原始 input,
+  updated_permissions=[PermissionUpdate(type="setMode", mode="bypassPermissions",
+  destination="session")])`，同一个控制响应同时放行原动作并切换同一 live session；Deny 只返回
+  `PermissionResultDeny`。两条路径均不创建 matcher、category、session-rule、grant、worker、CLI
+  continuation 或新 session；显式 full 仍直接映射 `bypassPermissions` 并保持非交互启动。
+- DialogNotifier/notification 服务通过 durable cardinality 只允许一个 input、一个 dialog、一个决策；
+  setMode 响应准备后再次收到 `can_use_tool` 只记录一次 `claude_full_mode_ineffective` 并 fail closed，
+  不重新弹窗或授权。能力准入检查 SDK protocol shape 与可序列化 setMode，不检查 Claude 版本表，
+  因而同形兼容 fork 可被接纳，缺失 shape、transport 丢失或 setMode 构造失败均停止。
+- 自动化覆盖安装 SDK 的 exact wire serializer、Deny/no-update、重复/并发回放、同 lease/session、
+  one-dialog delivery、异构 Read/Write/Edit/Bash fake stream、shape-only admission、rejected setMode
+  与 transport loss；可复验证据见 artifact root 的 `PERM-104-001_RM7A-001_EVIDENCE.md`。
 
 ### 4.4 `PERM-104-002`：阻塞来源域、不可升级动作与 full 闭环
 

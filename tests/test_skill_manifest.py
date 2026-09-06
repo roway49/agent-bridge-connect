@@ -159,12 +159,12 @@ class SkillManifestTests(unittest.TestCase):
         )
 
     def test_managed_103a2_fingerprints_match_current_package(self):
-        """PERM-104-002 9ZEV-001: the current release fingerprint is frozen."""
+        """The current managed-package fingerprint is frozen."""
         fingerprints = MANAGED_SKILL_FINGERPRINTS["1.0.3a2"]
         self.assertEqual(set(fingerprints), {"codex", "claude", "hermes"})
         self.assertEqual(
             fingerprints["codex"]["files"]["references/controller-contract.md"],
-            "4fa6d01aeb66d05df356cd1b9d10bbedde9227d726cb427cd94f439070ee73b1",
+            "e536fd77704db1e74462e0c333c5dc372f00e4818987817f4c5e3643df1cac44",
         )
         # SKILL.md and the steps YAML reference are byte-identical to 1.0.2a1.
         self.assertEqual(
@@ -210,8 +210,8 @@ class SkillManifestTests(unittest.TestCase):
         (root / ".agentbc-skill.json").write_bytes(serialize_skill_manifest(manifest))
 
     def _write_real_102a1_package(self, platform: str, root: Path) -> None:
-        # PERM-104-002 9ZEV-001: the current package is now 1.0.3a2, so the
-        # genuine intact-older-package fixture reconstructs 1.0.2a1 from the
+        # The current package is 1.0.3a2, so the genuine intact-older-package
+        # fixture reconstructs 1.0.2a1 from the
         # FROZEN per-file fingerprints instead of the current templates
         # (whose controller contract changed in this release).
         from agent_bridge_connect.skill_packages import (

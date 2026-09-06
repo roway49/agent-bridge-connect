@@ -49,6 +49,7 @@ from .permission_grants import (
     consume_permission_grant,
     permission_grant_from_extensions,
 )
+from .permission_elevation import permission_elevation_from_extensions
 from .permission_registry import TRANSPORT_HERMES_ACP
 from .protocol import ABCError
 from .permission_transport import (
@@ -57,6 +58,13 @@ from .permission_transport import (
     select_claude_control_path,
 )
 from .session import SessionRecoveryRequired, control_root_for_task
+from .seatbelt import (
+    canonical_task_files,
+    canonical_task_roots,
+    preflight_host_containment,
+    task_temp_root,
+    validate_linked_worktree,
+)
 
 
 MAX_REQUEST_BYTES = 1024 * 1024
@@ -1571,9 +1579,36 @@ class RunnerState:
             allowed_config_root = (Path.home() / ".abc").resolve()
             if not _is_within(config, allowed_config_root):
                 raise RunnerError("worker config is outside ~/.abc")
-        self._validate_executor_config(executor, config)
-        permission = permission_record_from_extensions(task_model.extensions, allow_legacy=False)
         worker_run_id = f"runner-worker-{uuid.uuid4().hex[:12]}"
+        self._validate_executor_config(executor, config)
+        elevation = permission_elevation_from_extensions(task_model.extensions)
+        elevation_status = (
+            str(elevation["state"].get("status") or "")
+            if isinstance(elevation, dict)
+            else ""
+        )
+        if elevation_status in {"approved", "active", "verified"}:
+            try:
+                permission = resolve_effective_permission(
+                    task,
+                    executor,
+                    worker_run_id,
+                    trusted_runner_managed=True,
+                )
+            except ABCError as exc:
+                self._reconcile_worker_start_failure(
+                    board,
+                    task_id,
+                    executor,
+                    worker_run_id,
+                    f"{exc.code}: {exc}",
+                )
+                raise RunnerError(f"{exc.code}: {exc}") from exc
+        else:
+            permission = permission_record_from_extensions(
+                task_model.extensions,
+                allow_legacy=False,
+            )
         try:
             assert_executor_permission_supported(
                 executor,
@@ -1603,9 +1638,9 @@ class RunnerState:
         )
         # PERM-104-002 runtime capability closure: a concrete ``full`` base
         # must be bound to the frozen task, PathPlan and exact executor
-        # command, not merely declared.  It is intentionally not nested in a
-        # second host sandbox: full must preserve the executor's documented
-        # non-interactive capability and complete without approval dialogs.
+        # command, not merely declared.  The worker is launched with the
+        # Runner-owned task-scoped containment profile so full preserves the
+        # host boundary while remaining non-interactive.
         #
         # Review fixes (E52M-002):
         # * explicit full, temporary (one-shot grant) full and inherited full
@@ -1702,15 +1737,44 @@ class RunnerState:
                 ).strip()
                 plan_digest = path_plan_digest(workspace_values)
                 profile_digest = host_profile_digest_fn()
-                # Concrete ``full`` means the executor's strongest documented
-                # non-interactive mode can actually run unattended.  Wrapping
-                # that worker in a second task-scoped Seatbelt blocked the
-                # executor's own state, network, IPC and Git operations, which
-                # made ``full`` less capable than normal execution.  Runner
-                # still validates task identity, the frozen PathPlan and the
-                # exact executor command, but host containment is not a gate
-                # for concrete full.  Safe/inherit behavior is unchanged.
-                containment = None
+                with self.lock:
+                    real_roots = canonical_task_roots(workspace_values)
+                    linked_worktree = validate_linked_worktree(workspace)
+                    # PERM-104-002 review fix (E52M-003): every concrete full
+                    # Worker enters task-scoped Seatbelt containment - a plain
+                    # repository or directory is contained with the frozen
+                    # task roots only; a linked worktree additionally pins its
+                    # exact Git metadata.  Containment is no longer reserved
+                    # for linked worktrees, and a receipt can never claim
+                    # ``activated`` for an uncontained plain project.
+                    preflight_host_containment(require_expansion=True)
+                    agentbc_root = str(
+                        (workspace_values or {}).get("agentbc_root") or ""
+                    ).strip()
+                    task_temp = task_temp_root(
+                        (
+                            Path(agentbc_root).expanduser() / "record"
+                            if agentbc_root
+                            else self.state_root / "task-temp"
+                        ),
+                        task_id,
+                    )
+                    containment = {
+                        "task_id": task_id,
+                        "board_root": str(board),
+                        # A concrete-full worker receives one private Runner
+                        # IPC channel.  This is required for it to submit the
+                        # authorized Executor run without gaining write access
+                        # to another task's requests or responses.
+                        "runner_ipc_channel": worker_run_id,
+                        "writable_roots": [str(root) for root in real_roots]
+                        + [str(task_temp)],
+                        "writable_files": [
+                            str(path) for path in canonical_task_files(workspace_values)
+                        ],
+                        "task_temp_root": str(task_temp),
+                        "linked_worktree": linked_worktree,
+                    }
                 runtime_record = build_permission_runtime_record(
                     task_id=task_id,
                     chain_head_id=chain_head_id,
@@ -1825,8 +1889,8 @@ class RunnerState:
             raise
         if runtime_authorized is not None:
             try:
-                # ``activated`` only after the Runner-authorized worker exists.
-                # Concrete full is intentionally not nested in host Seatbelt.
+                # ``activated`` only after the Runner-authorized contained
+                # worker exists.
                 activated = activate_permission_runtime_record(
                     runtime_authorized,
                     host_profile_digest=profile_digest,
@@ -2045,10 +2109,30 @@ class RunnerState:
                 else {}
             )
             waiting_input = waiting_extensions.get(PHASE6_INPUT_EXTENSION_KEY)
+            live_native_approval = (
+                waiting_input
+                if isinstance(waiting_input, dict)
+                and waiting_input.get("native_live_elevation") is True
+                and bool(str(waiting_input.get("request_id") or "").strip())
+                else None
+            )
             native_approval = (
                 waiting_input
                 if isinstance(waiting_input, dict)
-                and waiting_input.get("scope") == "single_action"
+                and (
+                    waiting_input.get("scope") == "single_action"
+                    or live_native_approval is not None
+                )
+                and bool(str(waiting_input.get("request_id") or "").strip())
+                else None
+            )
+            task_elevation_approval = (
+                waiting_input
+                if isinstance(waiting_input, dict)
+                and waiting_input.get("type") == "permission"
+                and waiting_input.get("scope") == "task_elevation"
+                and int(waiting_input.get("approval_version") or 1) == 3
+                and waiting_input.get("elevation_mode") == "contained_full"
                 and bool(str(waiting_input.get("request_id") or "").strip())
                 else None
             )
@@ -2068,7 +2152,17 @@ class RunnerState:
                     "only to native single-action permission requests"
                 )
             try:
-                if permission_option:
+                if live_native_approval is not None:
+                    if permission_option:
+                        raise RunnerError(
+                            "permission_option_invalid: live Claude elevation accepts only approve or deny"
+                        )
+                    result = service.respond_to_live_claude_elevation(
+                        task_id,
+                        str(request.get("input_id") or ""),
+                        response_type=response_type,
+                    )
+                elif permission_option:
                     result = service.respond_to_input(
                         task_id,
                         str(request.get("input_id") or ""),
@@ -2084,7 +2178,29 @@ class RunnerState:
                     )
             except ABCError as exc:
                 raise RunnerError(f"{exc.code}: {exc}") from exc
-            if native_approval is not None:
+            if task_elevation_approval is not None:
+                # v3 task elevation is a durable Core decision.  The original
+                # ACP worker has already ended, so never send this answer back
+                # as a native allow_once/grant response.  Approve falls through
+                # to one Runner-owned full continuation; deny is terminal.
+                if not result.get("dispatch_required"):
+                    if result.get("permission_denied"):
+                        failure = result.get("failure") or {}
+                        failure_message = str(
+                            failure.get("message")
+                            or "User denied contained-full task elevation"
+                        )
+                        write_report_files(task_id, board)
+                        notify_terminal(
+                            service,
+                            task_id,
+                            "task.failed",
+                            "error",
+                            failure_message,
+                        )
+                        self._refresh_task_list_dashboard(board)
+                    return result
+            elif native_approval is not None:
                 resumed_task = service.get_task(task_id)
                 resumed_extensions = (
                     resumed_task.extensions
@@ -3191,10 +3307,17 @@ class RunnerState:
                 )
         else:
             try:
+                elevation = permission_elevation_from_extensions(extensions)
+                trusted_elevation = (
+                    elevation is not None
+                    and elevation["state"]["status"]
+                    in {"approved", "active", "verified"}
+                )
                 effective = resolve_effective_permission(
                     persisted,
                     executor,
                     executor_run_id,
+                    trusted_runner_managed=trusted_elevation,
                 )
             except ABCError as exc:
                 raise RunnerError(f"{exc.code}: {exc}") from exc
@@ -3759,6 +3882,22 @@ class RunnerState:
             execution = dict((task.extensions or {}).get("agentbc.execution") or {})
             worker_run_id = str(execution.get("worker_run_id") or "").strip()
             if worker_run_id != str(record.get("run_id") or "").strip():
+                self._refresh_worker_board_index(board)
+                return
+            waiting_input = (task.extensions or {}).get("agentbc.input")
+            if (
+                task.status == "input_required"
+                and isinstance(waiting_input, dict)
+                and waiting_input.get("status") == "waiting"
+                and int(waiting_input.get("approval_version") or 1) == 3
+                and waiting_input.get("scope") == "task_elevation"
+                and waiting_input.get("elevation_mode") == "contained_full"
+            ):
+                # The original ACP worker is expected to exit after the v3
+                # request is durably persisted.  This is not a lost worker or
+                # a recovery condition; only its stale execution pointers are
+                # removed so one later approval can dispatch the continuation.
+                service.clear_execution_run_references(task_id)
                 self._refresh_worker_board_index(board)
                 return
             if task.status in {

@@ -73,6 +73,18 @@ from agent_bridge_connect.control import (
     ApprovalControlPlane,
     ControlPlaneError,
 )
+from agent_bridge_connect.claude_elevation import (
+    CLAUDE_ELEVATION_ACTIVE,
+    CLAUDE_ELEVATION_BLOCKED,
+    CLAUDE_ELEVATION_DENIED,
+    CLAUDE_ELEVATION_PENDING,
+    CLAUDE_ELEVATION_RESPONSE_READY,
+    CLAUDE_ELEVATION_SAFE_DEFAULT,
+    build_claude_elevation_receipt,
+    claude_elevation_public_projection,
+    stable_input_digest,
+    transition_claude_elevation,
+)
 from agent_bridge_connect.session import SessionRecoveryRequired
 
 # The frozen mapping from the AgentBC full-mode contract flag to the official
@@ -208,6 +220,11 @@ class ClaudeSDKControlTransport:
         escalation_domain: str = "",
         host_profile_digest: str = "",
         grant_revoke_callback: GrantRevokeCallback | None = None,
+        safe_to_full: bool = False,
+        path_plan_digest: str = "",
+        containment_profile_digest: str = "",
+        full_preflight: dict[str, Any] | None = None,
+        transition_receipt_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.plane = plane
         self.task_id = str(task_id or "").strip()
@@ -217,6 +234,17 @@ class ClaudeSDKControlTransport:
         self.approval_timeout_s = max(float(approval_timeout_s), 0.1)
         self.escalation_domain = str(escalation_domain or "").strip().lower()
         self.host_profile_digest = str(host_profile_digest or "").strip()
+        # PERM-104-001: this opt-in is set only by the production Claude task
+        # path after the task's protocol marker and full preflight have passed.
+        # Historical direct transport callers retain the v2 compatibility
+        # broker until they explicitly select the live setMode protocol.
+        self.safe_to_full = bool(safe_to_full and self.executor == "claude")
+        self.path_plan_digest = str(path_plan_digest or "").strip()
+        self.containment_profile_digest = str(
+            containment_profile_digest or host_profile_digest or ""
+        ).strip()
+        self.full_preflight = dict(full_preflight or {})
+        self._transition_receipt_callback = transition_receipt_callback
         if self.executor == "claude":
             # The production executor supplies these frozen facts.  Direct
             # transport callers still receive the same bounded defaults so a
@@ -287,6 +315,11 @@ class ClaudeSDKControlTransport:
         # PostToolUse events observed inside this exact run window are
         # eligible (a replayed foreign event fails closed).
         self._stream_consumed = threading.Event()
+        # Same-session safe-to-full state.  Once active, every later native
+        # callback is a protocol anomaly and cannot open another request.
+        self._elevation_state = CLAUDE_ELEVATION_SAFE_DEFAULT
+        self._elevation_receipt: dict[str, Any] | None = None
+        self._elevation_anomaly_recorded = False
 
     # ── worker event-loop lifecycle ────────────────────────────────────────
 
@@ -435,6 +468,22 @@ class ClaudeSDKControlTransport:
 
         tool_use_id = str(getattr(context, "tool_use_id", "") or "").strip()
         tool = str(tool_name or "").strip() or "unknown"
+        if self.safe_to_full:
+            # The first approved callback atomically changes the live SDK
+            # session.  A later callback is proof that the official setMode
+            # update was ineffective; it is denied once and never reaches the
+            # ControlPlane, notification layer, or any continuation path.
+            with self._pending_lock:
+                elevation_state = self._elevation_state
+            if elevation_state in {
+                CLAUDE_ELEVATION_RESPONSE_READY,
+                CLAUDE_ELEVATION_ACTIVE,
+            }:
+                return self._elevation_anomaly_result()
+            if elevation_state in {CLAUDE_ELEVATION_BLOCKED, CLAUDE_ELEVATION_DENIED}:
+                return self._deny_result(
+                    "The Claude session is fail-closed after its elevation decision."
+                )
         if not tool_use_id:
             # The SDK wire guarantees a non-empty tool_use_id for
             # can_use_tool; absence means the request is not trustworthy.
@@ -469,10 +518,13 @@ class ClaudeSDKControlTransport:
         finally:
             with self._pending_lock:
                 self._pending_tool_use_ids.discard(tool_use_id)
+                request_id = ""
                 if self._active_request == tool_use_id:
+                    request_id = self._active_request_id
                     self._active_request = ""
                     self._active_request_id = ""
-                self._pending_session_suggestions.pop(self._active_request_id, None)
+                if request_id:
+                    self._pending_session_suggestions.pop(request_id, None)
 
     def _deny_result(self, message: str) -> Any:
         from claude_agent_sdk import PermissionResultDeny
@@ -483,6 +535,124 @@ class ClaudeSDKControlTransport:
         from claude_agent_sdk import PermissionResultAllow
 
         return PermissionResultAllow(updated_input=dict(original_input or {}))
+
+    def _set_mode_update(self) -> Any:
+        """Construct and verify the exact official session-scoped update."""
+        from claude_agent_sdk import PermissionUpdate
+
+        update = PermissionUpdate(
+            type="setMode",
+            mode="bypassPermissions",
+            destination="session",
+        )
+        serializer = getattr(update, "to_dict", None)
+        raw = serializer() if callable(serializer) else _permission_update_to_dict(update)
+        expected = SDK_SESSION_MODE_UPDATE
+        if not isinstance(raw, dict) or any(raw.get(key) != value for key, value in expected.items()):
+            raise ClaudeSDKTransportError(
+                "claude_sdk_set_mode_rejected",
+                "The official Claude SDK rejected the session-scoped bypass update shape.",
+            )
+        return update
+
+    def _allow_safe_to_full_result(self, original_input: dict[str, Any]) -> Any:
+        """Return one atomic allow + session-scoped mode update."""
+        from claude_agent_sdk import PermissionResultAllow
+
+        return PermissionResultAllow(
+            updated_input=dict(original_input or {}),
+            updated_permissions=[self._set_mode_update()],
+        )
+
+    def _elevation_anomaly_result(self) -> Any:
+        """Record one post-activation anomaly and return a native deny."""
+        with self._pending_lock:
+            if self._elevation_anomaly_recorded:
+                return self._deny_result(
+                    "The Claude session is fail-closed after elevation "
+                    "(claude_full_mode_ineffective)."
+                )
+            self._elevation_anomaly_recorded = True
+            receipt = self._elevation_receipt
+            if receipt is not None:
+                try:
+                    updated = transition_claude_elevation(
+                        receipt,
+                        CLAUDE_ELEVATION_BLOCKED,
+                        error_code="claude_full_mode_ineffective",
+                    )
+                except Exception:
+                    updated = None
+                if updated is not None:
+                    self._elevation_receipt = updated
+                    self._elevation_state = CLAUDE_ELEVATION_BLOCKED
+        if receipt is not None and updated is not None:
+            try:
+                self._publish_elevation_receipt(updated)
+            except Exception:
+                # The native deny remains the safe outcome even if the
+                # diagnostic receipt sink is unavailable.
+                pass
+        return self._deny_result(
+            "The Claude session did not honor its session elevation "
+            "(claude_full_mode_ineffective)."
+        )
+
+    def _publish_elevation_receipt(self, receipt: dict[str, Any]) -> None:
+        callback = self._transition_receipt_callback
+        if callback is not None:
+            callback(dict(receipt))
+
+    def _record_elevation_transition(
+        self,
+        target_state: str,
+        *,
+        decision: str = "",
+        source: str = "",
+        error_code: str = "",
+        request_id: str = "",
+        tool_use_id: str = "",
+        request_fingerprint: str = "",
+        input_fingerprint: str = "",
+        action_fingerprint: str = "",
+        operation: str = "",
+    ) -> dict[str, Any]:
+        with self._pending_lock:
+            if self._elevation_receipt is None:
+                self._elevation_receipt = build_claude_elevation_receipt(
+                    task_id=self.task_id,
+                    executor_run_id=self.run_id,
+                    session_id=self.session_id,
+                    request_id=request_id,
+                    tool_use_id=tool_use_id,
+                    request_fingerprint=request_fingerprint,
+                    input_fingerprint=input_fingerprint,
+                    action_fingerprint=action_fingerprint,
+                    operation=operation,
+                    path_plan_digest=self.path_plan_digest
+                    or stable_input_digest("path-plan-unavailable"),
+                    containment_profile_digest=self.containment_profile_digest
+                    or stable_input_digest("containment-profile-unavailable"),
+                )
+            updated = transition_claude_elevation(
+                self._elevation_receipt,
+                target_state,
+                decision=decision,
+                source=source,
+                error_code=error_code,
+            )
+            self._elevation_receipt = updated
+            self._elevation_state = str(updated["state"]["status"])
+        try:
+            self._publish_elevation_receipt(updated)
+        except Exception as exc:
+            with self._pending_lock:
+                self._elevation_state = CLAUDE_ELEVATION_BLOCKED
+            raise ClaudeSDKTransportError(
+                "claude_elevation_receipt_persist_failed",
+                "Claude elevation transition receipt could not be persisted.",
+            ) from exc
+        return updated
 
     def validate_session_bundle(
         self, suggestions: Any
@@ -587,15 +757,6 @@ class ClaudeSDKControlTransport:
         with self._pending_lock:
             if self._active_request == tool_use_id:
                 self._active_request_id = request_id
-        # PERM-104-002 v2: capture the callback's own suggestions verbatim.
-        # The session choice is offered ONLY when the current suggestions are
-        # a fully valid destination=session bundle; persistent/unknown shapes
-        # never widen the offered choice set.
-        raw_suggestions = getattr(context, "suggestions", None)
-        session_bundle = self.validate_session_bundle(raw_suggestions)
-        with self._pending_lock:
-            if session_bundle is not None:
-                self._pending_session_suggestions[request_id] = raw_suggestions
         fingerprint = compute_request_fingerprint(
             executor=self.executor,
             session_id=self.session_id,
@@ -614,45 +775,115 @@ class ClaudeSDKControlTransport:
             tool_input=tool_input,
         )
         summary = core_bounded_summary(executor=self.executor, operation=tool)
-        offered = claude_offered_choices(session_bundle_supported=session_bundle is not None)
-        message = {
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": "item/commandExecution/requestApproval",
-            "params": {
-                "threadId": self.session_id,
-                "turnId": "",
-                "itemId": tool_use_id,
-                "reason": summary,
-            },
-            # Identity fields are top level so ``normalize_approval_request``
-            # reads them directly; the nested ``_agentbc`` block stays for
-            # wire-level diagnostics only.
-            "_agentbc": {
-                "task_id": self.task_id,
-                "executor_run_id": self.run_id,
-                "tool_use_id": tool_use_id,
-                "request_id": request_id,
-                "tool_name": tool,
-                "request_fingerprint": fingerprint,
-                "action_fingerprint": action_fingerprint_value,
-                "control_path": control_path,
+        if self.safe_to_full:
+            # PERM-104-001: this is a single Approve/Deny request.  The
+            # callback's suggestions are intentionally not inspected: the
+            # official setMode update below is the complete native response.
+            preflight = dict(self.full_preflight or {})
+            preflight.setdefault("ok", True)
+            preflight.setdefault("status", "passed")
+            preflight.setdefault("mode", "contained_full")
+            native_protocol = "claude.can_use_tool.setMode"
+            message = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "item/commandExecution/requestApproval",
+                "params": {
+                    "threadId": self.session_id,
+                    "turnId": "",
+                    "itemId": tool_use_id,
+                    "reason": summary,
+                },
+                "_agentbc": {
+                    "task_id": self.task_id,
+                    "executor_run_id": self.run_id,
+                    "tool_use_id": tool_use_id,
+                    "request_id": request_id,
+                    "tool_name": tool,
+                    "request_fingerprint": fingerprint,
+                    "action_fingerprint": action_fingerprint_value,
+                    "control_path": control_path,
+                    "native_event": "claude_sdk_can_use_tool",
+                    "escalation_domain": self.escalation_domain,
+                    "host_profile_digest": self.host_profile_digest,
+                    "path_plan_digest": self.path_plan_digest,
+                    "containment_profile_digest": self.containment_profile_digest,
+                },
                 "escalation_domain": self.escalation_domain,
                 "host_profile_digest": self.host_profile_digest,
-            },
-            "escalation_domain": self.escalation_domain,
-            "host_profile_digest": self.host_profile_digest,
-            # PERM-104-002 v2: the executor-native choice set.  Core offers
-            # exactly these choices; no permission category is inferred.
-            "approval_version": 2,
-            "authority": {
-                "executor": self.executor,
-                "protocol": "claude_agent_sdk",
-                "protocol_version": 1,
-                "method": "sdk.can_use_tool",
-            },
-            "offered_choices": [dict(choice) for choice in offered],
-        }
+                "approval_version": 3,
+                "scope": "task_elevation",
+                "elevation_mode": "contained_full",
+                "native_live_elevation": True,
+                "native_elevation_protocol": native_protocol,
+                "native_event": "claude_sdk_can_use_tool",
+                "path_plan_digest": self.path_plan_digest
+                or stable_input_digest("path-plan-unavailable"),
+                "containment_profile_digest": self.containment_profile_digest
+                or stable_input_digest("containment-profile-unavailable"),
+                "preflight": preflight,
+                "authority": {
+                    "executor": self.executor,
+                    "protocol": "claude_agent_sdk",
+                    "protocol_version": 1,
+                    "method": "sdk.can_use_tool",
+                    "update": {
+                        "type": "setMode",
+                        "mode": "bypassPermissions",
+                        "destination": "session",
+                    },
+                },
+            }
+            self._record_elevation_transition(
+                CLAUDE_ELEVATION_PENDING,
+                request_id=request_id,
+                tool_use_id=tool_use_id,
+                request_fingerprint=fingerprint,
+                input_fingerprint=stable_input_digest(tool_input),
+                action_fingerprint=action_fingerprint_value,
+                operation=tool,
+            )
+        else:
+            # PERM-104-002 v2 compatibility for historical direct callers.
+            raw_suggestions = getattr(context, "suggestions", None)
+            session_bundle = self.validate_session_bundle(raw_suggestions)
+            with self._pending_lock:
+                if session_bundle is not None:
+                    self._pending_session_suggestions[request_id] = raw_suggestions
+            offered = claude_offered_choices(session_bundle_supported=session_bundle is not None)
+            message = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "item/commandExecution/requestApproval",
+                "params": {
+                    "threadId": self.session_id,
+                    "turnId": "",
+                    "itemId": tool_use_id,
+                    "reason": summary,
+                },
+                "_agentbc": {
+                    "task_id": self.task_id,
+                    "executor_run_id": self.run_id,
+                    "tool_use_id": tool_use_id,
+                    "request_id": request_id,
+                    "tool_name": tool,
+                    "request_fingerprint": fingerprint,
+                    "action_fingerprint": action_fingerprint_value,
+                    "control_path": control_path,
+                    "escalation_domain": self.escalation_domain,
+                    "host_profile_digest": self.host_profile_digest,
+                },
+                "escalation_domain": self.escalation_domain,
+                "host_profile_digest": self.host_profile_digest,
+                "approval_version": 2,
+                "authority": {
+                    "executor": self.executor,
+                    "protocol": "claude_agent_sdk",
+                    "protocol_version": 1,
+                    "method": "sdk.can_use_tool",
+                },
+                "offered_choices": [dict(choice) for choice in offered],
+            }
         try:
             event = await asyncio.to_thread(self.plane.request_approval, message)
             event_request_id = str(event.get("request_id") or "")
@@ -685,9 +916,32 @@ class ClaudeSDKControlTransport:
                 # PostToolUse success may verify the runtime receipt.
                 with self._pending_lock:
                     self._verification_anchor = tool_use_id
+                    self._anchor_mode = "approved_tool_use"
                     self._anchor_action_fingerprint = action_fingerprint_value
                     self._anchor_escalation_domain = self.escalation_domain
                     self._anchor_profile_digest = self.host_profile_digest
+                if self.safe_to_full:
+                    # The one SDK PermissionResult carries both the original
+                    # blocked input and the exact session-scoped setMode
+                    # update.  No session-rule bundle or continuation exists
+                    # on this path.
+                    try:
+                        native_result = self._allow_safe_to_full_result(tool_input)
+                    except ClaudeSDKTransportError as exc:
+                        try:
+                            self._record_elevation_transition(
+                                CLAUDE_ELEVATION_BLOCKED,
+                                error_code=exc.code,
+                            )
+                        except ClaudeSDKTransportError:
+                            pass
+                        raise
+                    self._record_elevation_transition(
+                        CLAUDE_ELEVATION_RESPONSE_READY,
+                        decision="approve",
+                        source="user",
+                    )
+                    return native_result
                 # PERM-104-002 v2: the exact selected native choice decides
                 # the response shape.  once -> original input, no
                 # updated_permissions; session -> EXACTLY the callback's own
@@ -713,9 +967,13 @@ class ClaudeSDKControlTransport:
                         )
                     return self._session_bundle_allow_result(tool_input, bundle)
                 return self._allow_result(tool_input)
-            return self._deny_result(
-                "The user denied this action through AgentBC."
-            )
+            if self.safe_to_full:
+                self._record_elevation_transition(
+                    CLAUDE_ELEVATION_DENIED,
+                    decision="deny",
+                    source="user",
+                )
+            return self._deny_result("The user denied this action through AgentBC.")
         except (ControlPlaneError, SessionRecoveryRequired) as exc:
             raise ClaudeSDKTransportError(
                 getattr(exc, "code", "claude_sdk_approval_rejected"),
@@ -736,6 +994,20 @@ class ClaudeSDKControlTransport:
         """
         with self._pending_lock:
             active = str(self._active_request_id or "")
+            elevation_state = self._elevation_state
+        if self.safe_to_full and elevation_state in {
+            CLAUDE_ELEVATION_PENDING,
+            CLAUDE_ELEVATION_RESPONSE_READY,
+        }:
+            try:
+                self._record_elevation_transition(
+                    CLAUDE_ELEVATION_BLOCKED,
+                    error_code="claude_sdk_transport_lost",
+                )
+            except ClaudeSDKTransportError:
+                # The control-plane invalidation below is still required; the
+                # missing receipt sink is itself fail-closed diagnostic state.
+                pass
         if not active:
             pending = self.plane.status().get("pending_request")
             if isinstance(pending, dict) and pending.get("status") == "pending":
@@ -748,6 +1020,12 @@ class ClaudeSDKControlTransport:
 
     def status(self) -> dict[str, Any]:
         """Redacted diagnostics for projections (no tool input, no argv)."""
+        with self._pending_lock:
+            elevation_receipt = (
+                claude_elevation_public_projection(self._elevation_receipt)
+                if self._elevation_receipt is not None
+                else None
+            )
         return {
             "transport": "claude_sdk_control_transport",
             "run_id": self.run_id,
@@ -760,7 +1038,19 @@ class ClaudeSDKControlTransport:
                 else None
             ),
             "approval_timeout_s": self.approval_timeout_s,
+            "safe_to_full": self.safe_to_full,
+            "elevation_state": self._elevation_state,
+            "elevation_anomaly_recorded": self._elevation_anomaly_recorded,
+            "elevation_receipt": elevation_receipt,
         }
+
+    @property
+    def elevation_receipt(self) -> dict[str, Any] | None:
+        """Return the redacted same-session transition receipt, if created."""
+        with self._pending_lock:
+            if self._elevation_receipt is None:
+                return None
+            return claude_elevation_public_projection(self._elevation_receipt)
 
     # ── structured tool-event capture (verification evidence) ─────────────
 
@@ -835,6 +1125,24 @@ class ClaudeSDKControlTransport:
                 "in_run_window": in_window,
             }
             self._tool_events.append(record)
+        if self.safe_to_full:
+            with self._pending_lock:
+                state = self._elevation_state
+                anchor = self._verification_anchor
+            exact_anchor = (
+                bool(anchor)
+                and record["tool_use_id"] == anchor
+                and record["session_id"] == self.session_id
+                and record["in_run_window"] is True
+            )
+            if state == CLAUDE_ELEVATION_RESPONSE_READY and exact_anchor:
+                if normalized_event == "PostToolUse":
+                    self._record_elevation_transition(CLAUDE_ELEVATION_ACTIVE)
+                elif normalized_event == "PostToolUseFailure":
+                    self._record_elevation_transition(
+                        CLAUDE_ELEVATION_BLOCKED,
+                        error_code="claude_elevation_approved_action_failed",
+                    )
         return {"accepted": True, "sequence": record["sequence"]}
 
     def declare_run_authorization(

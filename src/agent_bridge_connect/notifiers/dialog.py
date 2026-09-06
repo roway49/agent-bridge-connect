@@ -45,6 +45,14 @@ class DialogNotifier:
             input_options = ()
         dialog_timeout_s = self.input_timeout_s if event_type == _INPUT_EVENT else self.timeout_s
         if event_type == _INPUT_EVENT and input_type == "permission":
+            if clean.get("native_live_elevation") is True:
+                return self._send_live_claude_elevation_dialog(
+                    clean, title, dialog_timeout_s
+                )
+            if int(clean.get("approval_version") or 1) == 3 and str(
+                clean.get("elevation_mode") or ""
+            ).strip().lower() == "contained_full":
+                return self._send_task_elevation_dialog(clean, title, dialog_timeout_s)
             return self._send_permission_dialog(clean, title, dialog_timeout_s)
         script = self._dialog_script(event_type, input_type, dialog_timeout_s)
         try:
@@ -513,6 +521,195 @@ class DialogNotifier:
             message,
             f"dialog:{_INPUT_EVENT}",
             {"action": "deny", "decision_source": decision_source},
+        )
+
+    def _send_task_elevation_dialog(
+        self,
+        clean: dict,
+        title: str,
+        dialog_timeout_s: int,
+    ) -> DeliveryResult:
+        """Show the v3 View Details / Deny / Approve Full decision view.
+
+        The detail view is read-only navigation.  It has no permission
+        option, no native grant, and no response receipt; only the first-level
+        Deny or Approve Full button returns an actionable decision.
+        """
+        summary = str(clean.get("reason_summary") or clean.get("message") or "").strip()
+        detail = str(clean.get("reason_detail") or summary).strip()
+        deadline_at = str(clean.get("deadline_at") or "")
+        identity_task_id = str(clean.get("identity_task_id") or clean.get("task_id") or "").strip()
+        identity_title = str(clean.get("identity_task_title") or "").strip()
+        identity_executor = str(clean.get("identity_executor") or "unknown").strip()
+        identity_blocked_step = str(clean.get("identity_blocked_step") or "").strip()
+        identity_lines = [
+            line
+            for line in (
+                f"Task: {identity_task_id}" if identity_task_id else "",
+                f"Title: {identity_title}" if identity_title else "",
+                f"Blocked step: {identity_blocked_step}" if identity_blocked_step else "",
+                "Permission scope: contained_full",
+                f"Executor: {identity_executor}",
+            )
+            if line
+        ]
+        decision_body = "\n".join([*identity_lines, "", summary])
+        while True:
+            give_up_s = self._permission_give_up_seconds(deadline_at, dialog_timeout_s)
+            if give_up_s <= 0:
+                return self._elevation_denial_result(
+                    "permission dialog timed out; request denied", "timeout"
+                )
+            result = self._run_script(
+                title,
+                decision_body,
+                self._task_elevation_decision_script(give_up_s),
+                give_up_s,
+            )
+            if result is None:
+                return self._elevation_denial_result(
+                    "permission dialog closed; request denied", "dialog_closed"
+                )
+            if result == "timed_out":
+                return self._elevation_denial_result(
+                    "permission dialog timed out; request denied", "timeout"
+                )
+            if isinstance(result, DeliveryResult):
+                return result
+            button = str(result).strip()
+            if button == "Approve Full":
+                return DeliveryResult(
+                    True,
+                    "dialog shown; button=Approve Full; gave_up=false",
+                    f"dialog:{_INPUT_EVENT}",
+                    {"action": "approve_full", "decision_source": "user"},
+                )
+            if button == "Deny":
+                return self._elevation_denial_result(
+                    "dialog shown; button=Deny; gave_up=false", "user"
+                )
+            # View Details is deliberately UI-only.  Back re-opens the same
+            # first-level dialog and emits no control-plane input.
+            detail_give_up_s = self._permission_give_up_seconds(
+                deadline_at, dialog_timeout_s
+            )
+            if detail_give_up_s <= 0:
+                return self._elevation_denial_result(
+                    "permission detail timed out; request denied", "timeout"
+                )
+            detail_result = self._run_script(
+                title,
+                detail,
+                self._permission_detail_script(detail_give_up_s),
+                detail_give_up_s,
+            )
+            if detail_result == "timed_out":
+                return self._elevation_denial_result(
+                    "permission detail timed out; request denied", "timeout"
+                )
+            if detail_result is None:
+                return self._elevation_denial_result(
+                    "permission detail closed; request denied", "dialog_closed"
+                )
+            if isinstance(detail_result, DeliveryResult):
+                return detail_result
+            if str(detail_result).strip() == "Back":
+                continue
+            return self._elevation_denial_result(
+                "permission detail closed; request denied", "dialog_closed"
+            )
+
+    def _send_live_claude_elevation_dialog(
+        self,
+        clean: dict,
+        title: str,
+        dialog_timeout_s: int,
+    ) -> DeliveryResult:
+        """Show exactly one Approve/Deny dialog for a live Claude callback.
+
+        This view is intentionally not the legacy task-elevation flow: there
+        is no detail loop, full-continuation button, or alternate permission
+        choice.  The returned action is answered against the already-pending
+        native ``can_use_tool`` request by Runner.
+        """
+        summary = str(clean.get("reason_summary") or clean.get("message") or "").strip()
+        identity_lines = [
+            line
+            for line in (
+                f"Task: {str(clean.get('identity_task_id') or clean.get('task_id') or '').strip()}",
+                f"Executor: {str(clean.get('identity_executor') or 'claude').strip()}",
+                f"Blocked step: {str(clean.get('identity_blocked_step') or '').strip()}",
+                "Permission scope: live session elevation",
+            )
+            if line.split(": ", 1)[-1]
+        ]
+        body = "\n".join([*identity_lines, "", summary])
+        give_up_s = self._permission_give_up_seconds(
+            str(clean.get("deadline_at") or ""), dialog_timeout_s
+        )
+        if give_up_s <= 0:
+            return self._elevation_denial_result(
+                "permission dialog timed out; request denied", "timeout"
+            )
+        result = self._run_script(
+            title,
+            body,
+            self._live_claude_elevation_script(give_up_s),
+            give_up_s,
+        )
+        if result is None:
+            return self._elevation_denial_result(
+                "permission dialog closed; request denied", "dialog_closed"
+            )
+        if result == "timed_out":
+            return self._elevation_denial_result(
+                "permission dialog timed out; request denied", "timeout"
+            )
+        if isinstance(result, DeliveryResult):
+            return result
+        button = str(result).strip()
+        if button == "Approve":
+            return DeliveryResult(
+                True,
+                "dialog shown; button=Approve; gave_up=false",
+                f"dialog:{_INPUT_EVENT}",
+                {"action": "approve", "decision_source": "user"},
+            )
+        return self._elevation_denial_result(
+            f"dialog shown; button={button or 'unknown'}; gave_up=false",
+            "user" if button == "Deny" else "fail_closed",
+        )
+
+    def _live_claude_elevation_script(self, give_up_s: int) -> str:
+        """Return the one native live-elevation dialog's fixed button set."""
+        return (
+            "on run argv\n"
+            "  set dialogResult to display dialog (item 2 of argv) "
+            'with title (item 1 of argv) buttons {"Deny", "Approve"} '
+            f'default button "Deny" giving up after {give_up_s} with icon caution\n'
+            '  return "button returned:" & (button returned of dialogResult) & linefeed & '
+            '"gave up:" & ((gave up of dialogResult) as text)\n'
+            "end run\n"
+        )
+
+    def _task_elevation_decision_script(self, give_up_s: int) -> str:
+        """Return the exact v3 first-level button set."""
+        return (
+            "on run argv\n"
+            "  set dialogResult to display dialog (item 2 of argv) "
+            'with title (item 1 of argv) buttons {"View Details", "Deny", "Approve Full"} '
+            f'default button "Deny" giving up after {give_up_s} with icon caution\n'
+            '  return "button returned:" & (button returned of dialogResult) & linefeed & '
+            '"gave up:" & ((gave up of dialogResult) as text)\n'
+            "end run\n"
+        )
+
+    def _elevation_denial_result(self, message: str, source: str) -> DeliveryResult:
+        return DeliveryResult(
+            True,
+            message,
+            f"dialog:{_INPUT_EVENT}",
+            {"action": "deny", "decision_source": source},
         )
 
     def _permission_detail_script(self, give_up_s: int) -> str:

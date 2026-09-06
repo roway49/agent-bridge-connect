@@ -8,6 +8,7 @@ import os
 import signal
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ from .config import (
 )
 from .executor_registry import get_executor
 from .path_model import DEFAULT_CUSTOMER_PATH, derive_customer_path_plan
+from .permission_elevation import PERMISSION_ELEVATION_MODE
 from .permission_modes import CANONICAL_PERMISSION_MODES, PERMISSION_EXTENSION_KEY
 from .protocol import ABCError
 from .service import TaskService, load_steps, task_to_status
@@ -34,6 +36,19 @@ from .task_id import is_task_like, split_task_ref
 from .terminal_states import TASK_TERMINAL_STATES, terminal_status_label
 
 _TASK_TERMINAL_STATUSES = TASK_TERMINAL_STATES
+# Poll statuses that end an executor run.  Every one of them must be arbitrated
+# against a durably waiting v3 task-elevation input before the worker can treat
+# it as a real terminal outcome (PERM-104-003).
+TERMINAL_POLL_STATUSES = frozenset(
+    {
+        "completed",
+        "cancelled",
+        "input_required",
+        "needs_recovery",
+        "failed",
+        "needs_review",
+    }
+)
 _SHORTHAND_ALIASES = {
     "list": ["task", "list"],
 }
@@ -263,6 +278,12 @@ def build_parser() -> argparse.ArgumentParser:
     response = task_respond.add_mutually_exclusive_group(required=True)
     response.add_argument("--message")
     response.add_argument("--approve", action="store_true")
+    response.add_argument(
+        "--approve-full",
+        dest="approve_full",
+        action="store_true",
+        help="Approve the single task-scoped contained-full elevation.",
+    )
     response.add_argument("--deny", action="store_true")
     response.add_argument(
         "--permission-option",
@@ -890,6 +911,8 @@ def command_task_respond(args: argparse.Namespace) -> int:
         response_type, message = "permission_option", permission_option
     elif args.message is not None:
         response_type, message = "message", str(args.message)
+    elif getattr(args, "approve_full", False):
+        response_type, message = "approve_full", ""
     elif args.approve:
         response_type, message = "approve", ""
     else:
@@ -1521,20 +1544,52 @@ def command_worker_run(args: argparse.Namespace) -> int:
         try:
             service.start_task_run(task.id, args.executor)
             claimed_task = service.get_task(task.id)
-            start = executor.start(
-                {
-                    "task_id": claimed_task.id,
-                    "assignee": claimed_task.assignee,
-                    "title": claimed_task.title,
-                    "steps": claimed_task.steps,
-                    "workspace": _task_workspace(claimed_task, service.board_root, service.config),
-                    "task_board": {"root": str(service.board_root)},
-                    "extensions": claimed_task.extensions,
-                    "runner_authorization_required": (
-                        getattr(args, "runner_authorize", False) is True
-                    ),
-                }
+            preallocated_run_id = ""
+            from .permission_elevation import permission_elevation_from_extensions
+
+            elevation = permission_elevation_from_extensions(
+                claimed_task.extensions or {},
+                task_id=claimed_task.id,
             )
+            if elevation is not None and elevation["state"]["status"] == "approved":
+                if getattr(args, "runner_authorize", False) is not True:
+                    raise ABCError(
+                        "permission_elevation_runner_context_required",
+                        "An approved task elevation requires a Runner-authorized continuation",
+                    )
+                preallocated_run_id = (
+                    f"{args.executor}-{claimed_task.id}-{uuid.uuid4().hex[:8]}"
+                )
+                service.activate_task_elevation(
+                    claimed_task.id,
+                    executor_run_id=preallocated_run_id,
+                    session_id=str(elevation["binding"].get("session_id") or ""),
+                )
+                # Bind the preallocated continuation run before the direct
+                # Hermes ``chat --yolo --resume`` process starts.  The
+                # executor's later idempotent registration is retained for
+                # compatibility, but session-first ordering is authoritative
+                # for the resumed full transport.
+                service.record_executor_run_started(
+                    claimed_task.id,
+                    preallocated_run_id,
+                )
+                claimed_task = service.get_task(claimed_task.id)
+            task_packet = {
+                "task_id": claimed_task.id,
+                "assignee": claimed_task.assignee,
+                "title": claimed_task.title,
+                "steps": claimed_task.steps,
+                "workspace": _task_workspace(claimed_task, service.board_root, service.config),
+                "task_board": {"root": str(service.board_root)},
+                "extensions": claimed_task.extensions,
+                "runner_authorization_required": (
+                    getattr(args, "runner_authorize", False) is True
+                ),
+            }
+            if preallocated_run_id:
+                task_packet["_agentbc_executor_run_id"] = preallocated_run_id
+            start = executor.start(task_packet)
             if not start.ok:
                 start_code = (
                     "input_resume_start_failed"
@@ -1566,17 +1621,48 @@ def command_worker_run(args: argparse.Namespace) -> int:
             execution_session: dict[str, Any] | None = None
             while True:
                 poll = executor.poll(start.run_id)
-                terminal_statuses = {
-                    "completed",
-                    "cancelled",
-                    "input_required",
-                    "needs_recovery",
-                    "failed",
-                    "needs_review",
-                }
-                if poll.status not in terminal_statuses:
+                if poll.status not in TERMINAL_POLL_STATUSES:
                     time.sleep(max(args.interval, 0.1))
                     continue
+
+                # PERM-104-003: after every Hermes terminal-like poll, re-read
+                # TaskService BEFORE generic callback validation or failure
+                # finalization.  A durably waiting v3 task-elevation input is
+                # authoritative over completion_marker_missing: the ACP turn can
+                # end right after the adapter persisted the wait, and that must
+                # surface as exactly one input-required notice, never as a task
+                # failure.
+                poll_approval_request = poll.result.get("approval_request")
+                arbitration_session = (
+                    str(
+                        (poll.result.get("execution_session") or {}).get("session_id")
+                        or ""
+                    ).strip()
+                    if isinstance(poll.result.get("execution_session"), dict)
+                    else ""
+                )
+                if (
+                    args.executor == "hermes"
+                    and _arbitrate_waiting_task_elevation(
+                        service,
+                        task.id,
+                        executor_run_id=start.run_id,
+                        poll_status=poll.status,
+                        approval_request=(
+                            poll_approval_request
+                            if isinstance(poll_approval_request, dict)
+                            else None
+                        ),
+                        notified_request_ids=notified_approval_requests,
+                        config_path=getattr(args, "config", None),
+                        interval_s=getattr(args, "interval", 2),
+                        session_id=arbitration_session,
+                    )
+                ):
+                    # The original ACP turn ended while its v3 elevation waits.
+                    # This worker is done: approval dispatches exactly one full
+                    # continuation, deny terminates.  Never finalize here.
+                    return 0
 
                 execution_session = poll.result.get("execution_session")
                 session_receipt_required = (
@@ -1616,75 +1702,144 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 is_native_approval = (
                     poll.status == "input_required"
                     and isinstance(approval_request, dict)
-                    and approval_request.get("scope") == "single_action"
+                    and (
+                        approval_request.get("scope") == "single_action"
+                        or (
+                            int(approval_request.get("approval_version") or 1) == 3
+                            and approval_request.get("scope") == "task_elevation"
+                            and approval_request.get("elevation_mode") == "contained_full"
+                        )
+                    )
                     and bool(str(approval_request.get("request_id") or "").strip())
                 )
                 if is_native_approval:
                     request_id = str(approval_request.get("request_id") or "").strip()
+                    is_task_elevation = (
+                        int(approval_request.get("approval_version") or 1) == 3
+                        and approval_request.get("scope") == "task_elevation"
+                        and approval_request.get("elevation_mode") == "contained_full"
+                    )
+                    is_native_live_elevation = (
+                        is_task_elevation
+                        and approval_request.get("native_live_elevation") is True
+                    )
                     if request_id not in notified_approval_requests:
                         try:
-                            blocked = service.block_task_for_approval(
-                                task.id,
-                                executor_run_id=start.run_id,
-                                session_id=str(approval_request.get("session_id") or ""),
-                                request_id=request_id,
-                                request_fingerprint=str(
-                                    approval_request.get("request_fingerprint") or ""
-                                ),
-                                executor=args.executor,
-                                operation=str(
-                                    approval_request.get("operation")
-                                    or approval_request.get("kind")
-                                    or "permission"
-                                ),
-                                summary=str(approval_request.get("summary") or ""),
-                                reason=str(approval_request.get("summary") or ""),
-                                reason_detail=str(approval_request.get("summary") or ""),
-                                execution_session=execution_session,
-                                tool_name=str(
-                                    approval_request.get("tool_name") or ""
-                                ),
-                                tool_use_id=str(
-                                    approval_request.get("tool_use_id")
-                                    or approval_request.get("item_id")
-                                    or ""
-                                ),
-                                action_fingerprint=str(
-                                    approval_request.get("action_fingerprint") or ""
-                                ),
-                                escalation_domain=str(
-                                    approval_request.get("escalation_domain") or ""
-                                ),
-                                profile_digest=str(
-                                    approval_request.get("profile_digest")
-                                    or approval_request.get("host_profile_digest")
-                                    or ""
-                                ),
-                                control_path=str(
-                                    approval_request.get("control_path") or ""
-                                ),
-                                native_event=str(
-                                    approval_request.get("native_event")
-                                    or "claude_sdk_can_use_tool"
-                                ),
-                                offered_choices=(
-                                    [
-                                        dict(choice)
-                                        for choice in approval_request.get(
-                                            "offered_choices", []
-                                        )
-                                        if isinstance(choice, dict)
-                                    ]
-                                    if isinstance(approval_request.get("offered_choices"), list)
-                                    and approval_request.get("offered_choices")
-                                    else None
-                                ),
-                                authority=(
-                                    dict(approval_request.get("authority") or {})
-                                    if isinstance(approval_request.get("authority"), dict)
-                                    else None
-                                ),
+                            existing_input = (service.get_task(task.id).extensions or {}).get(
+                                "agentbc.input"
                             )
+                            persisted_v3 = (
+                                is_task_elevation
+                                and isinstance(existing_input, dict)
+                                and existing_input.get("status") == "waiting"
+                                and str(existing_input.get("request_id") or "") == request_id
+                            )
+                            if persisted_v3:
+                                if str(existing_input.get("request_fingerprint") or "") != str(
+                                    approval_request.get("request_fingerprint") or ""
+                                ):
+                                    raise ABCError(
+                                        "permission_elevation_binding_mismatch",
+                                        "The persisted native task-elevation fingerprint changed",
+                                    )
+                                blocked = {
+                                    "ok": True,
+                                    "task_id": task.id,
+                                    "status": "input_required",
+                                    "input_id": str(existing_input.get("input_id") or ""),
+                                    "request_id": request_id,
+                                    "idempotent": True,
+                                }
+                            else:
+                                blocked = service.block_task_for_approval(
+                                    task.id,
+                                    executor_run_id=start.run_id,
+                                    session_id=str(approval_request.get("session_id") or ""),
+                                    request_id=request_id,
+                                    request_fingerprint=str(
+                                        approval_request.get("request_fingerprint") or ""
+                                    ),
+                                    executor=args.executor,
+                                    operation=str(
+                                        approval_request.get("operation")
+                                        or approval_request.get("kind")
+                                        or "permission"
+                                    ),
+                                    summary=str(approval_request.get("summary") or ""),
+                                    reason=str(approval_request.get("summary") or ""),
+                                    reason_detail=(
+                                        ""
+                                        if is_task_elevation
+                                        else str(approval_request.get("summary") or "")
+                                    ),
+                                    execution_session=execution_session,
+                                    tool_name=str(
+                                        approval_request.get("tool_name") or ""
+                                    ),
+                                    tool_use_id=str(
+                                        approval_request.get("tool_use_id")
+                                        or approval_request.get("item_id")
+                                        or ""
+                                    ),
+                                    action_fingerprint=str(
+                                        approval_request.get("action_fingerprint") or ""
+                                    ),
+                                    escalation_domain=str(
+                                        approval_request.get("escalation_domain") or ""
+                                    ),
+                                    profile_digest=str(
+                                        approval_request.get("profile_digest")
+                                        or approval_request.get("host_profile_digest")
+                                        or ""
+                                    ),
+                                    control_path=str(
+                                        approval_request.get("control_path") or ""
+                                    ),
+                                    native_event=str(
+                                        approval_request.get("native_event")
+                                        or ("claude_sdk_can_use_tool" if not is_task_elevation else "")
+                                    ),
+                                    approval_version=(
+                                        3 if is_task_elevation else None
+                                    ),
+                                    elevation_mode=(
+                                        str(approval_request.get("elevation_mode") or "")
+                                        if is_task_elevation
+                                        else ""
+                                    ),
+                                    path_plan_digest=str(
+                                        approval_request.get("path_plan_digest") or ""
+                                    ),
+                                    containment_profile_digest=str(
+                                        approval_request.get("containment_profile_digest")
+                                        or approval_request.get("profile_digest")
+                                        or approval_request.get("host_profile_digest")
+                                        or ""
+                                    ),
+                                    full_preflight=(
+                                        dict(approval_request.get("preflight") or {})
+                                        if isinstance(approval_request.get("preflight"), dict)
+                                        else None
+                                    ),
+                                    native_live_elevation=is_native_live_elevation,
+                                    offered_choices=(
+                                        [
+                                            dict(choice)
+                                            for choice in approval_request.get(
+                                                "offered_choices", []
+                                            )
+                                            if isinstance(choice, dict)
+                                        ]
+                                        if isinstance(approval_request.get("offered_choices"), list)
+                                        and approval_request.get("offered_choices")
+                                        else None
+                                    ),
+                                    authority=(
+                                        dict(approval_request.get("authority") or {})
+                                        if isinstance(approval_request.get("authority"), dict)
+                                        else None
+                                    ),
+                                )
                         except ABCError as exc:
                             recovery_marked = service.mark_task_needs_recovery(
                                 task.id,
@@ -1718,10 +1873,25 @@ def command_worker_run(args: argparse.Namespace) -> int:
                             interval_s=getattr(args, "interval", 2),
                         )
                         _request_task_list_refresh_for_service(service)
-                        print(
-                            f"input_required: {task.id} "
-                            f"request={blocked.get('request_id', request_id)}"
-                        )
+                    print(
+                        f"input_required: {task.id} "
+                        f"request={blocked.get('request_id', request_id)}"
+                    )
+                    if is_task_elevation and not is_native_live_elevation:
+                        # A contained-full elevation cannot change the active
+                        # Codex/Hermes process policy in place. End this
+                        # Runner-owned worker after persisting the exact native
+                        # receipt; approval dispatches exactly one continuation
+                        # bound to the same official session.
+                        try:
+                            service.clear_execution_run_references(task.id)
+                        except (ABCError, OSError):
+                            # Runner reconciliation has the same v3 waiting
+                            # predicate and will clear stale worker pointers
+                            # without converting this expected worker exit to
+                            # needs_recovery.
+                            pass
+                        return 0
                     # The App Server thread remains alive while the same native
                     # request waits.  A dialog or CLI response writes the
                     # accept/decline decision through Runner; never finalize or
@@ -1925,6 +2095,32 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     )
                     current.updated_at = _utc_now_cli()
                     service.store.write_task(current.id, current.to_dict())
+
+                # A v3 Hermes continuation is verified only after the actual
+                # final callback and the official resumed-session receipt have
+                # both passed Core finalization.  Legacy/live Claude records
+                # remain on their existing runtime-only closure path.
+                current = service.get_task(task.id)
+                current_elevation = permission_elevation_from_extensions(
+                    current.extensions or {},
+                    task_id=current.id,
+                )
+                if (
+                    runtime_closure_error == ""
+                    and isinstance(current_elevation, dict)
+                    and current_elevation.get("source") == "task_elevation"
+                    and current_elevation.get("state", {}).get("status") == "active"
+                ):
+                    session_id = (
+                        str(execution_session.get("session_id") or "").strip()
+                        if isinstance(execution_session, dict)
+                        else ""
+                    )
+                    service.verify_task_elevation(
+                        task.id,
+                        executor_run_id=start.run_id,
+                        session_id=session_id,
+                    )
             except ABCError as closure_exc:
                 # E52M-003: a failed closure is never swallowed.  Persist the
                 # blocked state when the record is still writable and fail
@@ -2593,6 +2789,134 @@ def _request_task_list_refresh_for_service(service: TaskService) -> None:
     if bool(getattr(service, "_runner_worker", False)):
         return
     _request_task_list_refresh(service.board_root)
+
+
+def _waiting_task_elevation_input(
+    service: TaskService,
+    task_id: str,
+    *,
+    executor_run_id: str,
+    session_id: str = "",
+    approval_request: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Return the durably waiting v3 task-elevation input for one run.
+
+    TaskService is the only authority for a v3 contained-full elevation.  A
+    Hermes terminal-like poll is never proof that the task finished: the ACP
+    turn can end (transport close, stopReason, empty final text, no callback)
+    right after the adapter persisted one waiting elevation input.  This re-read
+    proves the wait is real and that it is bound to the exact
+    task/executor-run/official-session/request identity before the worker
+    treats it as the reason the run ended.
+    """
+    try:
+        persisted = service.get_task(task_id)
+    except ABCError:
+        return None
+    if str(persisted.status or "") != "input_required":
+        return None
+    waiting = (persisted.extensions or {}).get("agentbc.input")
+    if not isinstance(waiting, dict) or waiting.get("status") != "waiting":
+        return None
+    if int(waiting.get("approval_version") or 1) != 3:
+        return None
+    if waiting.get("scope") != "task_elevation":
+        return None
+    if waiting.get("elevation_mode") != PERMISSION_ELEVATION_MODE:
+        return None
+    if not str(waiting.get("request_id") or "").strip():
+        return None
+    # Binding identity: the waiting input must belong to the run that just
+    # ended.  A different run's wait is someone else's business.
+    persisted_run = str(waiting.get("executor_run_id") or "").strip()
+    if persisted_run and persisted_run != str(executor_run_id or "").strip():
+        return None
+    # Binding identity: the official execution session must agree when both
+    # sides declare one.  A mismatch means the wait predates this run.
+    persisted_session = str(waiting.get("session_id") or "").strip()
+    if (
+        persisted_session
+        and session_id
+        and persisted_session != str(session_id).strip()
+    ):
+        return None
+    request = approval_request if isinstance(approval_request, dict) else None
+    if request is not None:
+        request_id = str(request.get("request_id") or "").strip()
+        if request_id and request_id != str(waiting.get("request_id") or "").strip():
+            return None
+        request_fingerprint = str(request.get("request_fingerprint") or "").strip()
+        if (
+            request_fingerprint
+            and request_fingerprint
+            != str(waiting.get("request_fingerprint") or "").strip()
+        ):
+            return None
+    return waiting
+
+
+def _arbitrate_waiting_task_elevation(
+    service: TaskService,
+    task_id: str,
+    *,
+    executor_run_id: str,
+    poll_status: str,
+    approval_request: dict[str, Any] | None = None,
+    notified_request_ids: set[str] | None = None,
+    config_path: str | Path | None = None,
+    interval_s: float = 2.0,
+    session_id: str = "",
+) -> bool:
+    """Make a persisted waiting input authoritative over a terminal poll.
+
+    Called after every Hermes terminal-like poll and before generic callback
+    validation or failure finalization.  When the exact
+    task/run/session/request identity has a durably waiting v3 elevation input,
+    this delivers exactly one input-required notification, asks the UI to
+    refresh, clears only the stale execution-run pointers needed for the planned
+    continuation, and reports that the worker must end successfully.  The task
+    is never marked failed, no terminal-failure notification is written and no
+    terminal cleanup runs while the wait is live.
+
+    Returns ``True`` when the waiting input arbitrates the run end.
+    """
+    if poll_status not in TERMINAL_POLL_STATUSES:
+        return False
+    waiting = _waiting_task_elevation_input(
+        service,
+        task_id,
+        executor_run_id=executor_run_id,
+        session_id=session_id,
+        approval_request=approval_request,
+    )
+    if waiting is None:
+        return False
+    request_id = str(waiting.get("request_id") or "").strip()
+    already_notified = (
+        notified_request_ids is not None and request_id in notified_request_ids
+    )
+    if not already_notified:
+        # ``notify_input_required`` reserves the single v3 notice atomically, so
+        # a duplicate poll, a restart/replay or a racing worker can only ever
+        # deliver one notification for this waiting input.
+        _notify_input_required(
+            service,
+            task_id,
+            config_path=config_path,
+            interval_s=interval_s,
+        )
+        if notified_request_ids is not None:
+            notified_request_ids.add(request_id)
+    _request_task_list_refresh_for_service(service)
+    try:
+        service.clear_execution_run_references(task_id)
+    except (ABCError, OSError):
+        # Runner reconciliation shares the same v3 waiting predicate and will
+        # clear the stale worker pointers without converting this expected
+        # worker exit into a recovery condition.
+        pass
+    print(f"input_required: {task_id} request={request_id}")
+    return True
 
 
 def _build_notification_payload(

@@ -7,12 +7,18 @@ from typing import Any, Callable
 from .approval import (
     APPROVAL_EXTENSION_KEY,
     APPROVAL_SCOPE,
+    APPROVAL_V3_SCOPE,
     core_bounded_summary_details,
     normalize_reason_summary_details,
     sanitize_reason_detail,
     validate_approval_receipt,
 )
+from .permission_elevation import (
+    PERMISSION_ELEVATION_EXTENSION_KEY,
+    PERMISSION_ELEVATION_MODE,
+)
 from .adapters import DeliveryResult
+from .claude_elevation import CLAUDE_ELEVATION_EXTENSION_KEY
 from .protocol import ABCError
 from .execution_policy import execution_policy_view
 from .notifiers.dialog import DialogNotifier
@@ -83,8 +89,69 @@ def notify_input_required(
 ) -> dict[str, Any]:
     """Immediately deliver an actionable, explicitly nonterminal input notice."""
     payload = build_input_required_notification(service, task_id)
+    live_dialog_already_reserved = False
+    task_elevation_dialog_already_reserved = False
+    if payload.get("native_live_elevation") is True:
+        existing_task = service.get_task(task_id)
+        existing_extensions = (
+            existing_task.extensions
+            if isinstance(existing_task.extensions, dict)
+            else {}
+        )
+        existing_receipt = existing_extensions.get(CLAUDE_ELEVATION_EXTENSION_KEY)
+        existing_cardinality = (
+            existing_receipt.get("cardinality")
+            if isinstance(existing_receipt, dict)
+            else None
+        )
+        live_dialog_already_reserved = (
+            isinstance(existing_cardinality, dict)
+            and existing_cardinality.get("dialogs") == 1
+        )
+        service.record_claude_elevation_notification(task_id)
+    elif (
+        payload.get("input_type") == "permission"
+        and int(payload.get("approval_version") or 1) == 3
+        and payload.get("elevation_mode") == PERMISSION_ELEVATION_MODE
+    ):
+        reserve = getattr(service, "reserve_task_elevation_notification", None)
+        if callable(reserve):
+            _receipt, newly_reserved = reserve(task_id)
+            task_elevation_dialog_already_reserved = not newly_reserved
+        else:
+            # Compatibility for narrow test doubles and historical service
+            # facades that predate the atomic reservation helper.
+            existing_task = service.get_task(task_id)
+            existing_extensions = (
+                existing_task.extensions
+                if isinstance(existing_task.extensions, dict)
+                else {}
+            )
+            existing_receipt = existing_extensions.get(PERMISSION_ELEVATION_EXTENSION_KEY)
+            existing_cardinality = (
+                existing_receipt.get("cardinality")
+                if isinstance(existing_receipt, dict)
+                else None
+            )
+            task_elevation_dialog_already_reserved = (
+                isinstance(existing_cardinality, dict)
+                and existing_cardinality.get("notifications") == 1
+            )
+            service.record_task_elevation_notification(task_id)
     file_result = _file_notification(service, payload)
-    dialog_result = DialogNotifier().send(payload)
+    if live_dialog_already_reserved or task_elevation_dialog_already_reserved:
+        dialog_result = DeliveryResult(
+            True,
+            (
+                "live Claude elevation dialog already delivered"
+                if live_dialog_already_reserved
+                else "Hermes task elevation notification already delivered"
+            ),
+            "dialog:task.input_required",
+            {"action": "already_delivered"},
+        )
+    else:
+        dialog_result = DialogNotifier().send(payload)
     action = str(dialog_result.details.get("action") or "dismissed")
     decision_source = str(dialog_result.details.get("decision_source") or "")
     service.store.append_event(
@@ -108,7 +175,7 @@ def notify_input_required(
     option_handle = str(dialog_result.details.get("option_handle") or "")
     if (
         responder is not None
-        and action in {"message", "approve", "deny"}
+        and action in {"message", "approve", "approve_full", "deny"}
         or (responder is not None and action == "permission_option" and option_handle)
     ):
         try:
@@ -221,7 +288,24 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
     )
     if len(option_descriptions) != len(input_options):
         option_descriptions = []
-    if input_type == "permission" or is_resource_decision:
+    is_task_elevation = (
+        input_type == "permission"
+        and int(request.get("approval_version") or 1) == 3
+        and request.get("scope") == APPROVAL_V3_SCOPE
+        and request.get("elevation_mode") == PERMISSION_ELEVATION_MODE
+    )
+    is_native_live_elevation = is_task_elevation and request.get("native_live_elevation") is True
+    if is_native_live_elevation:
+        command = (
+            f"agentbc task respond {task_id} --input {input_id} --approve"
+            f" (or --deny)"
+        )
+    elif is_task_elevation:
+        command = (
+            f"agentbc task respond {task_id} --input {input_id} --approve-full"
+            f" (or --deny)"
+        )
+    elif input_type == "permission" or is_resource_decision:
         command = (
             f"agentbc task respond {task_id} --input {input_id} --approve"
             f" (or --deny)"
@@ -296,7 +380,28 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
             "Why this is blocked:",
             summary,
         ]
-        if input_type == "permission" and is_single_action_approval:
+        if is_native_live_elevation:
+            body_lines.extend(
+                [
+                    "Requested access: elevate this live Claude session to bypassPermissions.",
+                    "Approve sends one native setMode/bypassPermissions/session response for this exact blocked action.",
+                    "The current task, RunLease, worker, and official Claude session remain unchanged.",
+                    "Deny returns one native PermissionResultDeny and does not change permission mode.",
+                    "Choose Approve or Deny below.",
+                ]
+            )
+        elif is_task_elevation:
+            body_lines.extend(
+                [
+                    "Requested access: contained full for this Task ID only.",
+                    "Approve Full authorizes this task's frozen PathPlan and contained Runner continuation.",
+                    "The approval remains effective across retry, recovery, and reassignment of this Task ID.",
+                    "A handoff creates a new Task ID and does not inherit this elevation.",
+                    "Deny terminates the task as failed.",
+                    "Choose Approve Full or Deny below.",
+                ]
+            )
+        elif input_type == "permission" and is_single_action_approval:
             operation = compact_notification_text(
                 str(request.get("operation") or ""), 120
             )
@@ -330,7 +435,16 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
     # the input request, so report/status projections of ``agentbc.input`` keep
     # exposing only the short summary by default.
     reason_detail = ""
-    if is_single_action_approval:
+    if is_task_elevation:
+        receipt_value = (task.extensions or {}).get(APPROVAL_EXTENSION_KEY)
+        if isinstance(receipt_value, dict):
+            try:
+                reason_detail = str(
+                    validate_approval_receipt(receipt_value).get("reason_detail") or ""
+                )
+            except ABCError:
+                reason_detail = ""
+    elif is_single_action_approval:
         receipt_value = (task.extensions or {}).get(APPROVAL_EXTENSION_KEY)
         if isinstance(receipt_value, dict):
             try:
@@ -357,7 +471,9 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         identity_blocked_step = compact_notification_text(
             str(request.get("blocked_step_id") or ""), 24
         )
-        if is_single_action_approval:
+        if is_task_elevation:
+            identity_scope = PERMISSION_ELEVATION_MODE
+        elif is_single_action_approval:
             identity_scope = APPROVAL_SCOPE
         elif str(request.get("requested_permission") or "").strip().lower() == "full":
             identity_scope = "full"
@@ -396,23 +512,39 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         "input_options": input_options,
         "input_option_descriptions": option_descriptions,
         "permission_grant": permission_grant,
+        "approval_version": int(request.get("approval_version") or 1),
+        "elevation_mode": (
+            str(request.get("elevation_mode") or "") if is_task_elevation else ""
+        ),
+        "elevation_source": (
+            "claude_native_live" if is_native_live_elevation else
+            "task_elevation" if is_task_elevation else ""
+        ),
+        "native_live_elevation": is_native_live_elevation,
+        "native_elevation_protocol": (
+            str(request.get("native_elevation_protocol") or "")
+            if is_native_live_elevation else ""
+        ),
         # Single-action approval binding: the notification is tied to exactly one
         # native request so a dialog can only Approve/Deny the bound request.
         "approval_request_id": (
-            str(request.get("request_id") or "") if is_single_action_approval else ""
+            str(request.get("request_id") or "")
+            if is_single_action_approval or is_native_live_elevation else ""
         ),
         "approval_request_fingerprint": (
             str(request.get("request_fingerprint") or "")
-            if is_single_action_approval
+            if is_single_action_approval or is_native_live_elevation
             else ""
         ),
         "approval_executor_run_id": (
             str(request.get("executor_run_id") or "")
-            if is_single_action_approval
+            if is_single_action_approval or is_native_live_elevation
             else ""
         ),
         "approval_scope": (
-            str(request.get("scope") or "") if is_single_action_approval else ""
+            str(request.get("scope") or "")
+            if is_single_action_approval or is_task_elevation
+            else ""
         ),
         # Sanitized bounded identity facts rendered deterministically by the
         # macOS decision view.  These are safe public facts (never private paths,

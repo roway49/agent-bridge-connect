@@ -16,9 +16,9 @@ Contract invariants (fail closed):
   frozen ``SessionFirstGate`` before calling :meth:`HermesAcpTransport.prompt`.
 * No private scanning: the transport never reads Hermes databases, logs, or
   process tables, never uses ``--last`` / ``--continue`` / ``--accept-hooks``
-  / ``--yolo`` flags, and never overrides global configuration.  Full mode is
-  expressed exclusively through the registry-frozen subprocess-scoped
-  ``HERMES_YOLO_MODE`` environment on the spawned ACP subprocess.
+  / ``--yolo`` flags, and never overrides global configuration.  ACP is the
+  native interactive permission path for ``inherit`` and ``safe`` tasks;
+  ``full`` tasks use Hermes' separate headless ``chat --yolo`` transport.
 * Strict framing: every stdin/stdout frame must be a JSON object; malformed,
   duplicate, or out-of-order frames fail closed before any unsafe execution.
 * Strict versioning: ``initialize`` must return exactly the supported
@@ -50,6 +50,15 @@ Contract invariants (fail closed):
   navigation only and send nothing.  Duplicate/concurrent requests, requests
   for a different official session, mismatched identities, missing choices
   and late responses fail closed.
+* Strict permission surface: historical v1/v2 compatibility frames expose
+  only ``allow_once`` and ``deny`` (``cancelled``) outcomes.  A normal v3
+  task-elevation frame is authority only: the adapter persists one
+  ``approve_full``/``deny`` decision request and raises its contained-full
+  handoff signal (:class:`HermesAcpElevationRequired`) without answering the
+  native ACP request.  Requests whose option list cannot express the declared
+  surface, requests for a different session, duplicate/concurrent requests,
+  mismatched identities, and late responses fail closed.  ``allow_session``,
+  ``allow_always`` and ``deny_always`` are never selected and never returned.
 * Transport death (broken pipe, process exit, EOF, timeout) surfaces as an
   explicit failure so the adapter can enter ``needs_recovery``; nothing is
   retried silently.
@@ -251,6 +260,9 @@ _STDERR_KEEP_BYTES = 8192
 _HERMES_ACP_POLL_SLICE_S = 0.05
 _HERMES_ACP_READ_CHUNK_BYTES = 1_048_576
 _HERMES_ACP_INBOUND_MAX_BYTES = 16_777_216
+# A child that exits closes its stdout first, so EOF can be observed before the
+# parent reaps the process.  This bounded wait keeps "exit" vs "EOF" truthful.
+_HERMES_ACP_REAP_WAIT_S = 2.0
 
 _JSONRPC = "2.0"
 
@@ -272,6 +284,17 @@ class HermesAcpError(RuntimeError):
         # The stable code prefixes the human message so failure evidence and
         # audit trails always carry the exact fail-closed reason.
         return f"{self.code}: {super().__str__()}"
+
+
+class HermesAcpElevationRequired(HermesAcpError):
+    """Signal a persisted v3 task elevation without answering ACP inline."""
+
+    def __init__(self, approval_request: dict[str, Any]) -> None:
+        self.approval_request = dict(approval_request)
+        super().__init__(
+            "hermes_acp_task_elevation_required",
+            "Hermes ACP task elevation was persisted; the original worker must end.",
+        )
 
 
 class HermesAcpUnsupported(HermesAcpError):
@@ -316,6 +339,27 @@ def _tool_call_identifier(value: Any) -> str:
             {"tool_call_id": _bounded_text(value, 80)},
         )
     return normalized
+
+
+def _extract_tool_call_identifier(tool_call: dict[str, Any]) -> str:
+    """Resolve the official ACP ID while keeping strict identifier checks.
+
+    ACP JSON uses ``toolCallId``.  ``tool_call_id`` is the Python model alias
+    and ``id`` is retained for older captured fixtures.  Multiple aliases are
+    accepted only when they agree exactly, preventing ambiguous approvals.
+    """
+    values = [
+        str(tool_call.get(key) or "").strip()
+        for key in ("toolCallId", "tool_call_id", "id")
+        if tool_call.get(key) is not None
+    ]
+    nonempty = [value for value in values if value]
+    if len(set(nonempty)) > 1:
+        raise HermesAcpError(
+            "hermes_acp_tool_call_id_mismatch",
+            "ACP tool-call identifier aliases disagree.",
+        )
+    return _tool_call_identifier(nonempty[0] if nonempty else "")
 
 
 def validate_initialize_result(result: Any) -> int:
@@ -766,6 +810,9 @@ def decode_permission_request(
             "hermes_acp_permission_options_unsupported",
             "ACP permission request offers no options.",
         )
+    # PERM-104-002 v2: the exact offered option shapes are validated here.
+    # A request whose options list cannot express any usable choice fails
+    # closed; the allow_once-only restriction is retired.
     options = normalize_permission_options(params.get(ACP_FIELD_OPTIONS))
     return HermesAcpPermissionRequest(
         request_id=frame["id"],
@@ -1305,8 +1352,15 @@ class HermesAcpTransport:
         if not chunk:
             # EOF.  A process that exits also closes its stdout, so the exit is
             # the stronger truth when it is already reaped; EOF while still
-            # alive is reported as its own failure.
+            # alive is reported as its own failure.  The exit and the EOF are
+            # not atomic from the parent's side, so a short bounded reap wait
+            # keeps the classification deterministic instead of racing.
             exit_code = process.poll()
+            if exit_code is None:
+                try:
+                    exit_code = process.wait(timeout=_HERMES_ACP_REAP_WAIT_S)
+                except subprocess.TimeoutExpired:
+                    exit_code = None
             if exit_code is not None:
                 raise HermesAcpError(
                     "hermes_acp_transport_exited",
@@ -1647,6 +1701,7 @@ __all__ = [
     "HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID",
     "HERMES_ACP_RPC_TIMEOUT_S",
     "HermesAcpError",
+    "HermesAcpElevationRequired",
     "HermesAcpPermissionOption",
     "HermesAcpPermissionRequest",
     "HermesAcpTimeout",

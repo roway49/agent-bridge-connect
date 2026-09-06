@@ -8,6 +8,10 @@ from typing import Any
 
 from .execution_policy import execution_policy_view, public_workspace_view
 from .permission_modes import permission_record_from_extensions
+from .permission_elevation import (
+    permission_elevation_from_extensions,
+    permission_elevation_public_projection,
+)
 from .permission_runtime import (
     permission_runtime_from_extensions,
     permission_runtime_public_projection,
@@ -130,6 +134,12 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         permission_runtime_projection = permission_runtime_public_projection(
             runtime_record
         )
+    permission_elevation_projection = None
+    elevation_record = permission_elevation_from_extensions(extensions)
+    if elevation_record is not None:
+        permission_elevation_projection = permission_elevation_public_projection(
+            elevation_record
+        )
 
     report = {
         "task_id": task.get("id", task_id),
@@ -170,6 +180,7 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "input": input_request,
         "permission": permission,
         "permission_runtime": permission_runtime_projection,
+        "permission_elevation": permission_elevation_projection,
         "execution_policy": execution_policy_view(extensions),
         "run_lease_state": lease_state,
         "time_since_last_heartbeat_s": heartbeat_age,
@@ -227,6 +238,7 @@ def generate_task_brief(task_id: str, board_root: Path) -> dict[str, Any]:
             "interventions": report["interventions"],
             "workspace": report.get("workspace") or {},
             "permission": report.get("permission") or {},
+            "permission_elevation": report.get("permission_elevation") or {},
             "execution_policy": report.get("execution_policy") or {},
         },
         "changed_files": changed_files,
@@ -732,6 +744,23 @@ def _render_report_md(report: dict[str, Any]) -> str:
                 f"- Permission grant issued: `{grant.get('issued_at') or 'none'}`",
                 f"- Permission grant consumed: `{grant.get('consumed_at') or 'none'}`",
                 f"- Permission grant revoked: `{grant.get('revoked_at') or 'none'}`",
+            ]
+        )
+
+    elevation = report.get("permission_elevation") or {}
+    if elevation:
+        lines.extend(
+            [
+                "",
+                "### Task Elevation",
+                f"- Mode: `{elevation.get('mode') or 'none'}`",
+                f"- Source: `{elevation.get('source') or 'none'}`",
+                f"- State: `{elevation.get('state') or 'unknown'}`",
+                f"- Error code: `{elevation.get('error_code') or 'none'}`",
+                f"- Request cardinality: `{(elevation.get('cardinality') or {}).get('permission_requests', 0)}`",
+                f"- Notification cardinality: `{(elevation.get('cardinality') or {}).get('notifications', 0)}`",
+                f"- Human decision cardinality: `{(elevation.get('cardinality') or {}).get('human_decisions', 0)}`",
+                f"- Full continuation cardinality: `{(elevation.get('cardinality') or {}).get('full_continuations', 0)}`",
             ]
         )
 

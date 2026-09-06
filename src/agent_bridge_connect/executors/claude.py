@@ -53,6 +53,10 @@ from agent_bridge_connect.permission_modes import (
     permission_flags,
     permission_record_from_extensions,
 )
+from agent_bridge_connect.permission_elevation import (
+    full_capability_preflight,
+    task_elevation_protocol_enabled,
+)
 from agent_bridge_connect.permission_grants import (
     consume_permission_grant,
     permission_grant_from_extensions,
@@ -63,6 +67,7 @@ from agent_bridge_connect.permission_transport import (
     parse_claude_version,
     select_claude_control_path,
 )
+from agent_bridge_connect.permission_runtime import path_plan_digest
 from agent_bridge_connect.path_model import (
     validate_managed_cleanup_paths,
     validate_path_plan_workspace,
@@ -425,7 +430,11 @@ class ClaudeExecutor(CLIExecutorBase):
         except ABCError as exc:
             return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
 
-        run_id = f"claude-{task_packet.get('task_id', 'unknown')}-{uuid.uuid4().hex[:8]}"
+        run_id = (
+            str(task_packet.get("_agentbc_executor_run_id") or "").strip()
+            if task_packet.get("runner_authorization_required") is True
+            else ""
+        ) or f"claude-{task_packet.get('task_id', 'unknown')}-{uuid.uuid4().hex[:8]}"
         self._task_packets[run_id] = dict(task_packet)
         self._start_run_lease(task_packet, run_id, "claude")
         try:
@@ -611,9 +620,17 @@ class ClaudeExecutor(CLIExecutorBase):
         except ABCError as exc:
             return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
 
-        run_id = f"claude-{task_packet.get('task_id', 'unknown')}-{uuid.uuid4().hex[:8]}"
+        run_id = (
+            str(task_packet.get("_agentbc_executor_run_id") or "").strip()
+            if task_packet.get("runner_authorization_required") is True
+            else ""
+        ) or f"claude-{task_packet.get('task_id', 'unknown')}-{uuid.uuid4().hex[:8]}"
         self._task_packets[run_id] = dict(task_packet)
         self._start_run_lease(task_packet, run_id, "claude")
+        # Permission/grant binding is evaluated against the pre-registration
+        # snapshot.  In particular, a temporary-full grant is bound to the
+        # immediately preceding blocked run; appending the continuation run
+        # first would make that grant look stale.
         try:
             permission = resolve_effective_permission(
                 task_packet,
@@ -626,6 +643,45 @@ class ClaudeExecutor(CLIExecutorBase):
         except ABCError as exc:
             self._close_run_lease(run_id)
             return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
+        board_root = (
+            task_packet.get("task_board") or {}
+        ).get("root") or _workspace_root(task_packet)
+        # The SDK path must authorize the exact persisted session snapshot.
+        # Register the unique run id first, reload through TaskService, and
+        # replace both the local packet and packet registry before any SDK
+        # setup can compare execution policy.
+        if execution_session is not None:
+            from agent_bridge_connect.service import TaskService
+
+            task_id = str(task_packet.get("task_id") or "")
+            try:
+                service = TaskService(
+                    board_root,
+                    config={"_runner_worker": True},
+                )
+                service.record_executor_run_started(task_id, run_id)
+            except (ABCError, OSError, ValueError) as exc:
+                self._task_packets.pop(run_id, None)
+                self._close_run_lease(run_id)
+                return StartResult(
+                    ok=False,
+                    run_id="",
+                    message=f"executor_session_run_registration_failed: {exc}",
+                )
+            try:
+                persisted_task = service.get_task(task_id)
+                refreshed_packet = dict(task_packet)
+                refreshed_packet["extensions"] = dict(persisted_task.extensions or {})
+                task_packet = refreshed_packet
+                self._task_packets[run_id] = dict(task_packet)
+            except (ABCError, OSError, ValueError) as exc:
+                self._task_packets.pop(run_id, None)
+                self._close_run_lease(run_id)
+                return StartResult(
+                    ok=False,
+                    run_id="",
+                    message=f"executor_session_snapshot_reload_failed: {exc}",
+                )
         try:
             assert_executor_permission_supported(
                 "claude", permission["effective_mode"], self.agent_bin
@@ -744,15 +800,44 @@ class ClaudeExecutor(CLIExecutorBase):
         # terminal-state revocation lands through the TaskService store
         # (reload + revoke + write); a failed durable write raises instead of
         # being swallowed, so the run fails closed.
-        board_root = (
-            task_packet.get("task_board") or {}
-        ).get("root") or _workspace_root(task_packet)
+        safe_to_full = self._claude_safe_to_full(task_packet, permission)
+        live_preflight: dict[str, Any] | None = None
+        live_path_digest = ""
+        live_profile_digest = control_context["host_profile_digest"]
+        if safe_to_full:
+            live_preflight = full_capability_preflight(
+                task_packet,
+                executor="claude",
+                executable=self.agent_bin,
+            )
+            if live_preflight.get("ok") is not True:
+                self._close_run_lease(run_id)
+                return StartResult(
+                    ok=False,
+                    run_id="",
+                    message=(
+                        "permission_preflight_failed: Claude safe-to-full "
+                        "capability preflight did not pass"
+                    ),
+                )
+            live_path_digest = str(
+                live_preflight.get("path_plan_digest")
+                or path_plan_digest(task_packet.get("workspace") or {})
+            )
+            live_profile_digest = str(
+                live_preflight.get("containment_profile_digest")
+                or control_context["host_profile_digest"]
+            )
 
         def _durable_grant_revoker(grant: dict[str, Any], code: str) -> None:
             from agent_bridge_connect.service import TaskService
 
             service = TaskService(
-                board_root, config=getattr(self, "_config", None) or {}
+                board_root,
+                config={
+                    **(getattr(self, "_config", None) or {}),
+                    "_runner_worker": True,
+                },
             )
             task_id = str(task_packet.get("task_id") or "")
             revoked_model = service.revoke_permission_grant_for_target_run(
@@ -765,6 +850,20 @@ class ClaudeExecutor(CLIExecutorBase):
                     "durably revoked through the task store.",
                 )
 
+        def _persist_claude_elevation(receipt: dict[str, Any]) -> None:
+            """Persist only the redacted same-session transition receipt."""
+            from agent_bridge_connect.service import TaskService
+
+            service = TaskService(
+                board_root,
+                config={
+                    **(getattr(self, "_config", None) or {}),
+                    "_runner_worker": True,
+                },
+            )
+            task_id = str(task_packet.get("task_id") or "")
+            service.record_claude_elevation_transition(task_id, receipt)
+
         transport = ClaudeSDKControlTransport(
             plane=plane,
             task_id=str(task_packet.get("task_id") or ""),
@@ -775,6 +874,13 @@ class ClaudeExecutor(CLIExecutorBase):
             escalation_domain=control_context["escalation_domain"],
             host_profile_digest=control_context["host_profile_digest"],
             grant_revoke_callback=_durable_grant_revoker,
+            safe_to_full=safe_to_full,
+            path_plan_digest=live_path_digest,
+            containment_profile_digest=live_profile_digest,
+            full_preflight=live_preflight,
+            transition_receipt_callback=(
+                _persist_claude_elevation if safe_to_full else None
+            ),
         )
         # PERM-104-002: a consumed one-shot grant backs exactly this run's
         # temporary full; the transport applies the official session-scoped
@@ -800,16 +906,18 @@ class ClaudeExecutor(CLIExecutorBase):
         # receipt gate.  This is setup only: no query is submitted here and
         # no can_use_tool callback can run until the background session thread
         # starts with the already-bound options.
+        # ``_build_sdk_options_for_task`` wires the callback sink from
+        # ``self._transport``.  Point it at the not-yet-started transport now;
+        # construction is local setup and cannot submit an SDK query.
+        self._transport = transport
         try:
-            transport.start()
-            self._transport = transport
+            options = self._build_sdk_options_for_task(
+                task_packet,
+                execution_root,
+                execution_session_id,
+                sdk_facts,
+            )
             if task_packet.get("runner_authorization_required") is True:
-                options = self._build_sdk_options_for_task(
-                    task_packet,
-                    execution_root,
-                    execution_session_id,
-                    sdk_facts,
-                )
                 RunnerClient().authorize_transport(
                     "claude",
                     CLAUDE_SDK_CONTROL_AUTHORIZATION,
@@ -824,14 +932,24 @@ class ClaudeExecutor(CLIExecutorBase):
                     ),
                     executor_run_id=run_id,
                 )
-            else:
-                options = self._build_sdk_options_for_task(
-                    task_packet,
-                    execution_root,
-                    execution_session_id,
-                    sdk_facts,
-                )
         except (ClaudeSDKTransportError, OSError, RunnerError, ImportError) as exc:
+            if self._transport is transport:
+                self._transport = None
+            self._task_packets.pop(run_id, None)
+            self._close_run_lease(run_id)
+            return StartResult(
+                ok=False,
+                run_id="",
+                message=f"claude_sdk_control_setup_failed: {exc}",
+            )
+
+        # Runner authorization is complete before the SDK transport creates a
+        # worker loop.  Starting the transport here is still setup only; the
+        # SDK query is submitted later by ``_run_sdk_session``.
+        try:
+            transport.start()
+            self._transport = transport
+        except (ClaudeSDKTransportError, OSError, ImportError) as exc:
             try:
                 transport.record_transport_death("control setup failed before SDK query")
             except Exception:  # noqa: BLE001 - original setup failure is retained.
@@ -1155,6 +1273,28 @@ class ClaudeExecutor(CLIExecutorBase):
             and str(permission.get("selection_source") or "").strip()
             in ("explicit_task", "inherited_task")
             and permission.get("temporary") is not True
+        )
+
+    def _claude_safe_to_full(
+        self,
+        task_packet: dict[str, Any],
+        permission: dict[str, Any],
+    ) -> bool:
+        """Select the live atomic path from task protocol shape and mode.
+
+        The task marker is a protocol capability declaration, not a Claude
+        version table.  Concrete full remains the direct noninteractive
+        startup path; only safe/inherit tasks can enter this callback-driven
+        transition.
+        """
+        effective = str(permission.get("effective_mode") or "").strip().lower()
+        extensions = (
+            task_packet.get("extensions")
+            if isinstance(task_packet.get("extensions"), dict)
+            else {}
+        )
+        return effective in {"inherit", "safe"} and task_elevation_protocol_enabled(
+            extensions
         )
 
     def _claude_control_capability_context(

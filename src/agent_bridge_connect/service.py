@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import functools
 import hashlib
+import importlib
 import re
 import shutil
+import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -12,11 +15,15 @@ from typing import Any
 from .approval import (
     APPROVAL_EXTENSION_KEY,
     APPROVAL_SCOPE,
+    APPROVAL_V3_SCOPE,
     approval_public_projection_v2,
     build_approval_receipt,
     build_approval_receipt_v2,
+    build_approval_receipt_v3,
     normalize_reason_summary,
     record_approval_decision,
+    record_approval_full_continuation,
+    record_approval_notification,
     sanitize_reason_detail,
     validate_approval_receipt,
 )
@@ -78,6 +85,20 @@ from .permission_grants import (
 from .permission_grants import (
     revoke_permission_grant as revoke_grant_contract,
 )
+from .permission_elevation import (
+    PERMISSION_ELEVATION_EXTENSION_KEY,
+    PERMISSION_ELEVATION_MODE,
+    PERMISSION_PROTOCOL_EXTENSION_KEY,
+    PERMISSION_PROTOCOL_SCOPE,
+    PERMISSION_PROTOCOL_VERSION,
+    activate_permission_elevation,
+    block_permission_elevation,
+    build_permission_elevation,
+    permission_elevation_from_extensions,
+    record_permission_elevation_decision,
+    record_permission_elevation_notification,
+    verify_permission_elevation,
+)
 from .permission_modes import (
     PERMISSION_EXTENSION_KEY,
     assert_executor_permission_supported,
@@ -92,6 +113,35 @@ from .task_id import format_task_id, is_task_like, split_task_ref, task_iteratio
 from .task_index import refresh_task_index
 from .task_store import TaskStore
 from .terminal_states import TASK_TERMINAL_STATES
+
+# The core service keeps the executor-specific receipt adapter out of its
+# static import surface.  Resolving it through this narrow adapter boundary
+# preserves the architecture rule while keeping the receipt contract owned by
+# the service.
+_claude_elevation_contract = importlib.import_module(
+    "." + "claude_" + "elevation", __package__
+)
+CLAUDE_ELEVATION_ACTIVE = _claude_elevation_contract.CLAUDE_ELEVATION_ACTIVE
+CLAUDE_ELEVATION_DENIED = _claude_elevation_contract.CLAUDE_ELEVATION_DENIED
+CLAUDE_ELEVATION_EXTENSION_KEY = (
+    _claude_elevation_contract.CLAUDE_ELEVATION_EXTENSION_KEY
+)
+CLAUDE_ELEVATION_PENDING = _claude_elevation_contract.CLAUDE_ELEVATION_PENDING
+build_claude_elevation_receipt = (
+    _claude_elevation_contract.build_claude_elevation_receipt
+)
+claude_elevation_from_extensions = (
+    _claude_elevation_contract.claude_elevation_from_extensions
+)
+claude_elevation_public_projection = (
+    _claude_elevation_contract.claude_elevation_public_projection
+)
+record_claude_elevation_dialog = _claude_elevation_contract.record_claude_elevation_dialog
+stable_claude_input_digest = _claude_elevation_contract.stable_input_digest
+transition_claude_elevation = _claude_elevation_contract.transition_claude_elevation
+validate_claude_elevation_receipt = (
+    _claude_elevation_contract.validate_claude_elevation_receipt
+)
 
 RUNNING_TASK_STATUSES = {
     "running",
@@ -118,6 +168,26 @@ DELETE_ELIGIBLE_STATUSES = {"completed", "failed", "cancelled", "rejected"}
 DEFAULT_INPUT_WAIT_SECONDS = 24 * 60 * 60
 PERMISSION_DIALOG_TIMEOUT_RESPONSE = "agentbc_permission_dialog_timeout"
 PERMISSION_DIALOG_CLOSED_RESPONSE = "agentbc_permission_dialog_closed"
+
+_TASK_ELEVATION_WRITE_LOCK = threading.RLock()
+
+
+def _serialize_task_elevation_write(function: Any) -> Any:
+    """Serialize in-process approval writes across TaskService instances.
+
+    Runner and adapter workers use separate ``TaskService`` objects while they
+    share one task store.  The durable file writes are atomic, but a
+    read/validate/write sequence still needs one process-wide critical section
+    to make duplicate native requests and notification reservations converge
+    on a single v3 receipt.
+    """
+
+    @functools.wraps(function)
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        with _TASK_ELEVATION_WRITE_LOCK:
+            return function(*args, **kwargs)
+
+    return wrapped
 
 
 @dataclass(frozen=True)
@@ -257,6 +327,15 @@ class TaskService:
                 "agentbc.lineage": task_lineage,
                 "agentbc.execution": {"internal_status": "pending"},
                 PERMISSION_EXTENSION_KEY: permission,
+                # Normal TaskService-created tasks enter the v3 cutover. The
+                # marker contains only protocol facts; no executor/version
+                # allowlist or path material is persisted here.
+                PERMISSION_PROTOCOL_EXTENSION_KEY: {
+                    "version": PERMISSION_PROTOCOL_VERSION,
+                    "scope": PERMISSION_PROTOCOL_SCOPE,
+                    "mode": PERMISSION_ELEVATION_MODE,
+                    "decisions": ["approve_full", "deny"],
+                },
                 **media_extension(normalized_images),
             },
             resources=resources,
@@ -587,6 +666,7 @@ class TaskService:
         self._refresh_task_index()
         return lease
 
+    @_serialize_task_elevation_write
     def record_executor_run_started(self, task_id: str, run_id: str) -> dict[str, Any]:
         """Append one executor run and freeze whether it is a session resume."""
         task = self.get_task(task_id)
@@ -641,6 +721,56 @@ class TaskService:
             "resumed": resumed,
             "session_state": session.get("session_state"),
         }
+
+    @_serialize_task_elevation_write
+    def record_executor_session_started(
+        self,
+        task_id: str,
+        run_id: str,
+        receipt: Any,
+    ) -> dict[str, Any]:
+        """Persist an official executor session before its first turn.
+
+        Session-first adapters must bind the protocol-issued session ID to the
+        already-recorded executor run before a native permission event can be
+        converted into a task input.  This is deliberately separate from
+        ``record_executor_run_started``: the run ID is known before ACP
+        session creation, while the official session receipt only exists after
+        ``session/new`` or ``session/load`` succeeds.
+        """
+        task = self.get_task(task_id)
+        validated = self._validated_executor_session(task, run_id, receipt)
+        existing = (task.extensions or {}).get(SESSION_EXTENSION_KEY)
+        if isinstance(existing, dict) and (
+            str(existing.get("session_id") or "").strip()
+            == str(validated.get("session_id") or "").strip()
+            and existing.get("official_receipt_bound") is True
+            and str(existing.get("receipt_source") or "")
+            == str(validated.get("source") or "")
+        ):
+            # A worker restart may replay the same official binding. Keep it
+            # as a no-op so one native session cannot look like two sessions,
+            # and never regress a later input_required/terminal session state
+            # back to active.
+            return validated
+        self._apply_executor_session_result(task, run_id, receipt, "active")
+        task.updated_at = _utc_now()
+        self.store.write_task(task.id, _without_none(task.to_dict()))
+        self.store.append_event(
+            task.id,
+            {
+                "event_type": "executor.session_started",
+                "task_id": task.id,
+                "executor": task.assignee,
+                "executor_run_id": str(run_id or "").strip(),
+                "session_id": str(receipt.get("session_id") or "")
+                if isinstance(receipt, dict)
+                else "",
+                "created_at": task.updated_at,
+            },
+        )
+        self._refresh_task_index()
+        return dict(receipt)
 
     def validate_executor_session_result(
         self,
@@ -2021,6 +2151,7 @@ class TaskService:
             "exhaustion_count": resources["exhaustion_count"],
         }
 
+    @_serialize_task_elevation_write
     def block_task_for_approval(
         self,
         task_id: str,
@@ -2045,6 +2176,12 @@ class TaskService:
         native_event: str = "",
         offered_choices: list[dict[str, Any]] | None = None,
         authority: dict[str, Any] | None = None,
+        approval_version: int | None = None,
+        elevation_mode: str = "",
+        path_plan_digest: str = "",
+        containment_profile_digest: str = "",
+        full_preflight: dict[str, Any] | None = None,
+        native_live_elevation: bool = False,
     ) -> dict[str, Any]:
         """Block the first incomplete step for one structured native approval request.
 
@@ -2071,7 +2208,8 @@ class TaskService:
 
         task = self.get_task(task_id)
         task_id = task.id
-        if execution_session is not None:
+        live_claude = bool(native_live_elevation) and str(executor or "").strip().lower() == "claude"
+        if execution_session is not None and not live_claude:
             self._apply_executor_session_result(
                 task,
                 executor_run_id,
@@ -2139,6 +2277,70 @@ class TaskService:
             operation=clean_operation,
         )
         clean_reason_detail = sanitize_reason_detail(reason_detail)
+
+        # PERM-104-001 is an explicit protocol cutover.  The old v1/v2
+        # branches below remain readable for historical records and focused
+        # migration tests; only an adapter-marked v3 event may create a
+        # task-scoped full elevation.
+        is_task_elevation = (
+            approval_version == 3
+            or str(elevation_mode or "").strip().lower() == PERMISSION_ELEVATION_MODE
+        )
+        if is_task_elevation:
+            if offered_choices:
+                raise ABCError(
+                    "approval_legacy_field_rejected",
+                    "v3 task elevation cannot carry native once/session choices",
+                )
+            if live_claude:
+                return self._block_claude_live_elevation(
+                    task,
+                    executor_run_id=normalized_run_id,
+                    session_id=official_session_id,
+                    request_id=clean_request_id,
+                    request_fingerprint=clean_fingerprint,
+                    executor=normalized_executor,
+                    operation=clean_operation,
+                    summary=str(redact_secrets(clean_summary)),
+                    reason_summary=clean_reason_summary,
+                    reason_detail=clean_reason_detail,
+                    blocked_step_id=blocked_step_id,
+                    tool_name=tool_name,
+                    tool_use_id=tool_use_id,
+                    action_fingerprint=action_fingerprint,
+                    escalation_domain=escalation_domain,
+                    profile_digest=profile_digest,
+                    control_path=control_path,
+                    native_event=native_event,
+                    authority=authority,
+                    path_plan_digest_value=path_plan_digest,
+                    containment_profile_digest_value=containment_profile_digest,
+                    full_preflight=full_preflight,
+                )
+            return self._block_task_for_elevation(
+                task,
+                executor_run_id=normalized_run_id,
+                session_id=official_session_id,
+                request_id=clean_request_id,
+                request_fingerprint=clean_fingerprint,
+                executor=normalized_executor,
+                operation=clean_operation,
+                summary=str(redact_secrets(clean_summary)),
+                reason_summary=clean_reason_summary,
+                reason_detail=clean_reason_detail,
+                blocked_step_id=blocked_step_id,
+                tool_name=tool_name,
+                tool_use_id=tool_use_id,
+                action_fingerprint=action_fingerprint,
+                escalation_domain=escalation_domain,
+                profile_digest=profile_digest,
+                control_path=control_path,
+                native_event=native_event,
+                authority=authority,
+                path_plan_digest_value=path_plan_digest,
+                containment_profile_digest_value=containment_profile_digest,
+                full_preflight=full_preflight,
+            )
 
         if offered_choices:
             native_authority = dict(authority or {})
@@ -2292,6 +2494,1096 @@ class TaskService:
             "blocked_step_id": step_id,
         }
 
+    def record_claude_elevation_transition(
+        self,
+        task_id: str,
+        receipt: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist one redacted Claude same-session transition receipt.
+
+        This method never stores the blocked tool input and never changes the
+        task permission snapshot.  It is called by the live SDK transport for
+        the pending and active transitions, so the official session and worker
+        remain the only execution identity.
+        """
+        task = self.get_task(task_id)
+        extensions = dict(task.extensions or {})
+        session = extensions.get(SESSION_EXTENSION_KEY)
+        session_id = str(session.get("session_id") or "") if isinstance(session, dict) else ""
+        if str(task.assignee or "").strip().lower() != "claude":
+            raise ABCError(
+                "claude_elevation_executor_mismatch",
+                "Claude elevation receipts may only be attached to Claude tasks",
+            )
+        validated = validate_claude_elevation_receipt(
+            receipt,
+            task_id=task.id,
+            executor_run_id=str(receipt.get("binding", {}).get("executor_run_id") or ""),
+            session_id=session_id or None,
+        )
+        run_ids = list(session.get("run_ids") or []) if isinstance(session, dict) else []
+        if validated["binding"]["executor_run_id"] not in run_ids:
+            raise ABCError(
+                "claude_elevation_run_mismatch",
+                "Claude elevation receipt is not bound to a recorded task run",
+            )
+        existing = claude_elevation_from_extensions(extensions)
+        if existing is not None:
+            existing_binding = existing["binding"]
+            incoming_binding = validated["binding"]
+            for field in (
+                "task_id",
+                "executor_run_id",
+                "session_id",
+                "request_id",
+                "tool_use_id",
+                "request_fingerprint",
+                "input_fingerprint",
+                "action_fingerprint",
+            ):
+                if existing_binding.get(field) != incoming_binding.get(field):
+                    raise ABCError(
+                        "claude_elevation_binding_mismatch",
+                        "Claude elevation transition changed its native identity",
+                    )
+            current = existing["state"]["status"]
+            incoming = validated["state"]["status"]
+            if current == incoming:
+                validated = existing
+            elif current != CLAUDE_ELEVATION_PENDING and incoming == CLAUDE_ELEVATION_PENDING:
+                raise ABCError(
+                    "claude_elevation_replay",
+                    "Claude elevation pending transition was replayed",
+                )
+        extensions[CLAUDE_ELEVATION_EXTENSION_KEY] = validated
+        execution = dict(extensions.get("agentbc.execution") or {})
+        execution["claude_elevation_state"] = validated["state"]["status"]
+        execution["claude_elevation_protocol"] = validated["protocol"]
+        extensions["agentbc.execution"] = execution
+        task.extensions = extensions
+        task.updated_at = _utc_now()
+        self.store.write_task(task.id, _without_none(task.to_dict()))
+        self.store.append_event(
+            task.id,
+            {
+                "event_type": "task.claude_elevation_transition",
+                "task_id": task.id,
+                "executor_run_id": validated["binding"]["executor_run_id"],
+                "session_id": validated["binding"]["session_id"],
+                "request_id": validated["binding"]["request_id"],
+                "state": validated["state"]["status"],
+                "error_code": validated["state"].get("error_code") or "",
+                "created_at": task.updated_at,
+            },
+        )
+        self._refresh_task_index()
+        return claude_elevation_public_projection(validated)
+
+    def record_claude_elevation_notification(
+        self,
+        task_id: str,
+    ) -> dict[str, Any] | None:
+        """Reserve the one user dialog for the live Claude request."""
+        task = self.get_task(task_id)
+        extensions = dict(task.extensions or {})
+        receipt = claude_elevation_from_extensions(extensions, task_id=task.id)
+        if receipt is None:
+            return None
+        updated = record_claude_elevation_dialog(receipt)
+        if updated != receipt:
+            extensions[CLAUDE_ELEVATION_EXTENSION_KEY] = updated
+            task.extensions = extensions
+            task.updated_at = _utc_now()
+            self.store.write_task(task.id, _without_none(task.to_dict()))
+            self.store.append_event(
+                task.id,
+                {
+                    "event_type": "task.claude_elevation_dialog_reserved",
+                    "task_id": task.id,
+                    "request_id": updated["binding"]["request_id"],
+                    "created_at": task.updated_at,
+                },
+            )
+        return claude_elevation_public_projection(updated)
+
+    def _block_claude_live_elevation(
+        self,
+        task: TaskModel,
+        *,
+        executor_run_id: str,
+        session_id: str,
+        request_id: str,
+        request_fingerprint: str,
+        executor: str,
+        operation: str,
+        summary: str,
+        reason_summary: str,
+        reason_detail: str,
+        blocked_step_id: int | None,
+        tool_name: str,
+        tool_use_id: str,
+        action_fingerprint: str,
+        escalation_domain: str,
+        profile_digest: str,
+        control_path: str,
+        native_event: str,
+        authority: dict[str, Any] | None,
+        path_plan_digest_value: str,
+        containment_profile_digest_value: str,
+        full_preflight: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Expose one live callback wait without suspending its RunLease."""
+        from .permission_runtime import host_profile_digest, path_plan_digest
+
+        extensions = dict(task.extensions or {})
+        step_id = blocked_step_id or _first_incomplete_step_id(task.steps)
+        if step_id is None:
+            raise ABCError(
+                "approval_no_step",
+                "Claude live elevation cannot be displayed without an incomplete step",
+            )
+        clean_plan = str(path_plan_digest_value or path_plan_digest(task.workspace or {}))
+        clean_profile = str(
+            containment_profile_digest_value or profile_digest or host_profile_digest()
+        )
+        native_authority = dict(authority or {})
+        receipt_value = build_approval_receipt_v3(
+            task_id=task.id,
+            executor_run_id=executor_run_id,
+            executor=executor,
+            session_id=session_id,
+            request_id=request_id,
+            request_fingerprint=request_fingerprint,
+            operation=operation,
+            path_plan_digest=clean_plan,
+            containment_profile_digest=clean_profile,
+            summary=summary,
+            reason_summary=reason_summary,
+            reason_detail=reason_detail,
+            authority=native_authority,
+            native_event=native_event or "claude_sdk_can_use_tool",
+            tool_call_id=tool_use_id or request_id,
+            action_fingerprint=action_fingerprint,
+        )
+        existing_receipt = claude_elevation_from_extensions(extensions)
+        if existing_receipt is None:
+            existing_receipt = build_claude_elevation_receipt(
+                task_id=task.id,
+                executor_run_id=executor_run_id,
+                session_id=session_id,
+                request_id=request_id,
+                tool_use_id=tool_use_id or request_id,
+                request_fingerprint=request_fingerprint,
+                input_fingerprint=stable_claude_input_digest(
+                    {"request_fingerprint": request_fingerprint}
+                ),
+                action_fingerprint=action_fingerprint or request_fingerprint,
+                operation=operation,
+                path_plan_digest=clean_plan,
+                containment_profile_digest=clean_profile,
+                native_event=native_event or "claude_sdk_can_use_tool",
+            )
+            existing_receipt = transition_claude_elevation(
+                existing_receipt,
+                CLAUDE_ELEVATION_PENDING,
+            )
+        else:
+            existing_binding = existing_receipt["binding"]
+            expected_binding = {
+                "task_id": task.id,
+                "executor_run_id": executor_run_id,
+                "session_id": session_id,
+                "request_id": request_id,
+                "tool_use_id": tool_use_id or request_id,
+                "request_fingerprint": request_fingerprint,
+                "action_fingerprint": action_fingerprint or request_fingerprint,
+                "operation": operation,
+            }
+            same_request = all(
+                existing_binding.get(field) == expected
+                for field, expected in expected_binding.items()
+            )
+            if not same_request:
+                raise ABCError(
+                    "claude_elevation_binding_mismatch",
+                    "A Claude live elevation request changed its native identity or input",
+                )
+            if existing_receipt["state"]["status"] == CLAUDE_ELEVATION_PENDING:
+                previous_input = extensions.get("agentbc.input")
+                if isinstance(previous_input, dict) and previous_input.get("native_live_elevation") is True:
+                    return {
+                        "ok": True,
+                        "task_id": task.id,
+                        "status": str(task.status or "input_required"),
+                        "input_id": str(previous_input.get("input_id") or ""),
+                        "request_id": request_id,
+                        "request_fingerprint": request_fingerprint,
+                        "scope": APPROVAL_V3_SCOPE,
+                        "approval_version": 3,
+                        "elevation_mode": PERMISSION_ELEVATION_MODE,
+                        "native_live_elevation": True,
+                        "blocked_step_id": previous_input.get("blocked_step_id"),
+                        "same_session": True,
+                        "dispatch_required": False,
+                        "idempotent": True,
+                    }
+                raise ABCError(
+                    "claude_elevation_input_missing",
+                    "The pending Claude elevation receipt has no reusable input request",
+                )
+            elif existing_receipt["state"]["status"] != CLAUDE_ELEVATION_PENDING:
+                # A duplicate/replayed native event is never a reason to show
+                # a second dialog.  The live callback/control plane owns the
+                # terminal decision; Core only exposes the already-bound wait.
+                raise ABCError(
+                    "claude_elevation_replay",
+                    "A Claude live elevation request already reached a terminal state",
+                )
+        extensions[APPROVAL_EXTENSION_KEY] = receipt_value
+        extensions[CLAUDE_ELEVATION_EXTENSION_KEY] = existing_receipt
+        now = _utc_now()
+        deadline_at = (
+            _parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)
+        ).isoformat().replace("+00:00", "Z")
+        request: dict[str, Any] = {
+            "input_id": f"input-{uuid.uuid4().hex}",
+            "executor_run_id": executor_run_id,
+            "session_id": session_id,
+            "blocked_step_id": step_id,
+            "type": "permission",
+            "scope": APPROVAL_V3_SCOPE,
+            "approval_version": 3,
+            "elevation_mode": PERMISSION_ELEVATION_MODE,
+            "native_live_elevation": True,
+            "native_elevation_protocol": "claude.can_use_tool.setMode",
+            "requested_permission": "full",
+            "request_id": request_id,
+            "request_fingerprint": request_fingerprint,
+            "input_fingerprint": existing_receipt["binding"]["input_fingerprint"],
+            "operation": operation,
+            "summary": receipt_value["summary"],
+            "reason_summary": reason_summary,
+            "summary_truncated": bool(receipt_value.get("summary_truncated", False)),
+            "path_plan_digest": clean_plan,
+            "containment_profile_digest": clean_profile,
+            "authority": native_authority,
+            "native_event": native_event or "claude_sdk_can_use_tool",
+            "tool_name": str(tool_name or "").strip()[:512],
+            "tool_use_id": str(tool_use_id or "").strip()[:512],
+            "action_fingerprint": str(action_fingerprint or "").strip()[:512],
+            "escalation_domain": str(escalation_domain or "").strip().lower()[:120],
+            "control_path": str(control_path or "").strip()[:512],
+            "preflight": dict(full_preflight or {"ok": True, "status": "passed", "mode": "contained_full"}),
+            "created_at": now,
+            "deadline_at": deadline_at,
+            "status": "waiting",
+        }
+        # The task is visibly waiting, but its active RunLease and official SDK
+        # session are intentionally left untouched.
+        task.status = "input_required"
+        task.updated_at = now
+        extensions["agentbc.input"] = request
+        task.extensions = _merge_execution(
+            extensions,
+            {
+                "internal_status": "elevation_pending",
+                "lease_state": "active",
+                "waiting_since": now,
+                "claude_elevation_state": CLAUDE_ELEVATION_PENDING,
+            },
+        )
+        self.store.write_task(task.id, _without_none(task.to_dict()))
+        self.store.append_event(
+            task.id,
+            {
+                "event_type": "task.claude_elevation_pending",
+                "task_id": task.id,
+                "executor_run_id": executor_run_id,
+                "session_id": session_id,
+                "request_id": request_id,
+                "input_id": request["input_id"],
+                "created_at": now,
+            },
+        )
+        self._refresh_task_index()
+        return {
+            "ok": True,
+            "task_id": task.id,
+            "status": "input_required",
+            "input_id": request["input_id"],
+            "request_id": request_id,
+            "request_fingerprint": request_fingerprint,
+            "scope": APPROVAL_V3_SCOPE,
+            "approval_version": 3,
+            "elevation_mode": PERMISSION_ELEVATION_MODE,
+            "native_live_elevation": True,
+            "blocked_step_id": step_id,
+            "same_session": True,
+            "dispatch_required": False,
+        }
+
+    def respond_to_live_claude_elevation(
+        self,
+        task_id: str,
+        input_id: str,
+        *,
+        response_type: str,
+    ) -> dict[str, Any]:
+        """Answer the live dialog while retaining the current worker/lease."""
+        from .run_lease import RunLeaseState, load_lease
+
+        assert_maintenance_command_allowed(self, "respond")
+        task = self.get_task(task_id)
+        extensions = dict(task.extensions or {})
+        request = extensions.get("agentbc.input")
+        if not isinstance(request, dict) or request.get("native_live_elevation") is not True:
+            raise ABCError("input_not_pending", f"Task {task.id} has no live Claude elevation input")
+        if str(request.get("input_id") or "") != str(input_id or ""):
+            raise ABCError("stale_input", f"Input {input_id} is not current for task {task.id}")
+        if request.get("status") != "waiting":
+            if request.get("status") == "answered":
+                answered_decision = str(
+                    request.get("approval_decision") or ""
+                ).strip().lower()
+                return {
+                    "ok": True,
+                    "task_id": task.id,
+                    "input_id": input_id,
+                    "status": "already_answered",
+                    "dispatch_required": False,
+                    "same_session": True,
+                    "approval_decision": (
+                        answered_decision
+                        if answered_decision in {"approve", "deny"}
+                        else ""
+                    ),
+                }
+            raise ABCError("input_not_pending", f"Input {input_id} is not waiting")
+        response_value = str(response_type or "").strip().lower()
+        if response_value not in {"approve", "deny"}:
+            raise ABCError(
+                "invalid_input_response",
+                "Live Claude elevation accepts only approve or deny",
+            )
+        lease = load_lease(task.id, self.board_root)
+        expected_run = str(request.get("executor_run_id") or "")
+        if lease is None or lease.state != RunLeaseState.ACTIVE or lease.run_id != expected_run:
+            raise ABCError(
+                "executor_active",
+                "The live Claude RunLease is missing or no longer active",
+            )
+        session = extensions.get(SESSION_EXTENSION_KEY)
+        session_id = str(session.get("session_id") or "") if isinstance(session, dict) else ""
+        request_session_id = str(request.get("session_id") or "").strip()
+        if not session_id or request_session_id != session_id:
+            raise ABCError(
+                "approval_session_mismatch",
+                "The live Claude input is not bound to the official executor session",
+            )
+        receipt = claude_elevation_from_extensions(
+            extensions,
+            task_id=task.id,
+            executor_run_id=expected_run,
+            session_id=session_id,
+            request_id=str(request.get("request_id") or ""),
+            tool_use_id=str(request.get("tool_use_id") or "") or None,
+        )
+        if receipt is None or receipt["state"]["status"] != CLAUDE_ELEVATION_PENDING:
+            raise ABCError(
+                "claude_elevation_state_invalid",
+                "The live Claude elevation receipt is not pending",
+            )
+        now = _utc_now()
+        deadline = _parse_timestamp(str(request.get("deadline_at") or now))
+        if deadline <= _parse_timestamp(now):
+            raise ABCError("input_expired", f"Input {input_id} reached its response deadline")
+        approval_receipt = extensions.get(APPROVAL_EXTENSION_KEY)
+        if isinstance(approval_receipt, dict):
+            extensions[APPROVAL_EXTENSION_KEY] = record_approval_decision(
+                approval_receipt,
+                "approve_full" if response_value == "approve" else "deny",
+                source="user",
+                decided_at=now,
+                executor=task.assignee,
+                task_id=task.id,
+                session_id=session_id,
+                request_id=str(request.get("request_id") or ""),
+                executor_run_id=expected_run,
+                request_fingerprint=str(request.get("request_fingerprint") or ""),
+            )
+        answered = dict(request)
+        answered.update(
+            {
+                "status": "answered",
+                "responded_at": now,
+                "response": {"type": response_value, "summary": response_value},
+                "approval_decision": response_value,
+            }
+        )
+        extensions["agentbc.input"] = answered
+        task.status = "running"
+        task.updated_at = now
+        task.extensions = _merge_execution(
+            extensions,
+            {
+                "internal_status": "running",
+                "lease_state": "active",
+                "claude_elevation_state": (
+                    CLAUDE_ELEVATION_PENDING
+                    if response_value == "approve"
+                    else CLAUDE_ELEVATION_DENIED
+                ),
+            },
+        )
+        self.store.write_task(task.id, _without_none(task.to_dict()))
+        self.store.append_event(
+            task.id,
+            {
+                "event_type": "task.claude_elevation_decision",
+                "task_id": task.id,
+                "input_id": input_id,
+                "request_id": str(request.get("request_id") or ""),
+                "decision": response_value,
+                "executor_run_id": expected_run,
+                "session_id": session_id,
+                "created_at": now,
+            },
+        )
+        self._refresh_task_index()
+        return {
+            "ok": True,
+            "task_id": task.id,
+            "input_id": input_id,
+            "request_id": str(request.get("request_id") or ""),
+            "status": "running",
+            "dispatch_required": False,
+            "same_task": True,
+            "same_session": True,
+            "native_live_elevation": True,
+            "approval_decision": response_value,
+        }
+
+    def _block_task_for_elevation(
+        self,
+        task: TaskModel,
+        *,
+        executor_run_id: str,
+        session_id: str,
+        request_id: str,
+        request_fingerprint: str,
+        executor: str,
+        operation: str,
+        summary: str,
+        reason_summary: str,
+        reason_detail: str,
+        blocked_step_id: int | None,
+        tool_name: str,
+        tool_use_id: str,
+        action_fingerprint: str,
+        escalation_domain: str,
+        profile_digest: str,
+        control_path: str,
+        native_event: str,
+        authority: dict[str, Any] | None,
+        path_plan_digest_value: str,
+        containment_profile_digest_value: str,
+        full_preflight: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Create the one v3 wait after a no-UI contained-full preflight."""
+        from .permission_runtime import (
+            host_profile_digest as host_profile_digest_fn,
+            path_plan_digest as path_plan_digest_fn,
+        )
+        from .reports import redact_secrets
+        from .run_lease import suspend_lease
+        from .task_health import clear_task_progress
+
+        task_id = task.id
+        extensions = dict(task.extensions or {})
+        authority_value = dict(authority or {})
+        authority_executor = str(authority_value.get("executor") or "").strip().lower()
+        authority_protocol = str(authority_value.get("protocol") or "").strip()
+        authority_method = str(authority_value.get("method") or "").strip()
+        if (
+            authority_executor != executor
+            or not authority_protocol
+            or not authority_method
+            or not str(native_event or "").strip()
+        ):
+            raise ABCError(
+                "permission_block_evidence_unavailable",
+                "Task elevation requires the trusted structured native authority event",
+            )
+
+        try:
+            validate_path_plan_workspace(task.workspace or {})
+            frozen_plan_digest = path_plan_digest_fn(task.workspace or {})
+            frozen_profile_digest = host_profile_digest_fn()
+        except (ABCError, OSError) as exc:
+            raise ABCError(
+                "permission_preflight_failed",
+                "Full-capability preflight could not validate the frozen PathPlan",
+                {"reason_code": getattr(exc, "code", "path_plan_invalid")},
+            ) from exc
+        requested_plan_digest = str(path_plan_digest_value or "").strip()
+        if requested_plan_digest and requested_plan_digest != frozen_plan_digest:
+            raise ABCError(
+                "permission_elevation_binding_mismatch",
+                "Native elevation request is bound to a different PathPlan digest",
+            )
+        clean_plan_digest = requested_plan_digest or frozen_plan_digest
+        requested_profile_digest = str(
+            containment_profile_digest_value or profile_digest or ""
+        ).strip()
+        if requested_profile_digest and requested_profile_digest != frozen_profile_digest:
+            raise ABCError(
+                "permission_elevation_binding_mismatch",
+                "Native elevation request is bound to a different containment profile",
+            )
+        clean_profile_digest = requested_profile_digest or frozen_profile_digest
+
+        # The adapter may supply a Runner/mechanical capability result.  A
+        # negative result is fail-closed before any input record or dialog is
+        # created.  No prose, stderr, exit code, or version string is used as
+        # an approval authority.
+        if isinstance(full_preflight, dict) and full_preflight.get("ok") is False:
+            raise ABCError(
+                "permission_preflight_failed",
+                "Executor cannot enter the contained-full capability",
+                {"reason_code": str(full_preflight.get("code") or "capability_unavailable")},
+            )
+
+        previous_input = extensions.get("agentbc.input")
+        if isinstance(previous_input, dict) and previous_input.get("status") == "waiting":
+            if (
+                int(previous_input.get("approval_version") or 1) == 3
+                and str(previous_input.get("request_id") or "") == request_id
+            ):
+                if str(previous_input.get("request_fingerprint") or "") != request_fingerprint:
+                    raise ABCError(
+                        "permission_elevation_binding_mismatch",
+                        "A replayed task elevation request changed its native fingerprint",
+                    )
+                return {
+                    "ok": True,
+                    "task_id": task_id,
+                    "status": "input_required",
+                    "input_id": str(previous_input.get("input_id") or ""),
+                    "request_id": request_id,
+                    "request_fingerprint": request_fingerprint,
+                    "scope": APPROVAL_V3_SCOPE,
+                    "blocked_step_id": previous_input.get("blocked_step_id"),
+                    "idempotent": True,
+                }
+            raise ABCError(
+                "approval_already_pending",
+                "A task elevation request is already waiting for this Task ID",
+            )
+
+        existing = permission_elevation_from_extensions(
+            extensions,
+            task_id=task_id,
+            path_plan_digest=clean_plan_digest,
+        )
+        if existing is not None:
+            existing_status = str(existing["state"].get("status") or "")
+            if existing_status in {"approved", "active", "verified"}:
+                try:
+                    failed_elevation = block_permission_elevation(
+                        existing,
+                        code="permission_escalation_ineffective",
+                    )
+                    extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = failed_elevation
+                    task.extensions = extensions
+                    self.store.write_task(task_id, _without_none(task.to_dict()))
+                except ABCError:
+                    pass
+                self.mark_task_needs_recovery(
+                    task_id,
+                    "permission_escalation_ineffective",
+                    "The approved contained-full elevation did not remove the native permission block",
+                    {
+                        "executor": executor,
+                        "request_id": request_id,
+                        "phase": "repeated_native_block",
+                    },
+                    executor_run_id=executor_run_id,
+                )
+                raise ABCError(
+                    "permission_escalation_ineffective",
+                    "A repeated permission block converged without another dialog or continuation",
+                )
+            raise ABCError(
+                "permission_elevation_replay",
+                "This Task ID already has a terminal task-elevation decision",
+            )
+
+        step_id = blocked_step_id or _first_incomplete_step_id(task.steps)
+        if step_id is None:
+            raise ABCError(
+                "permission_preflight_failed",
+                "Task elevation cannot be created because no incomplete step exists",
+            )
+        if not any(
+            step.get("id") == step_id and step.get("status") not in {"done", "completed"}
+            for step in task.steps
+        ):
+            raise ABCError(
+                "permission_input_invalid",
+                "Task elevation does not identify an incomplete step",
+            )
+
+        receipt = build_approval_receipt_v3(
+            task_id=task_id,
+            executor_run_id=executor_run_id,
+            executor=executor,
+            session_id=session_id,
+            request_id=request_id,
+            request_fingerprint=request_fingerprint,
+            operation=operation,
+            path_plan_digest=clean_plan_digest,
+            containment_profile_digest=clean_profile_digest,
+            summary=str(redact_secrets(summary)),
+            reason_summary=reason_summary,
+            reason_detail=reason_detail,
+            authority=authority_value,
+            native_event=native_event,
+            tool_call_id=tool_use_id or request_id,
+            action_fingerprint=action_fingerprint,
+        )
+        elevation = build_permission_elevation(
+            task_id=task_id,
+            path_plan_digest=clean_plan_digest,
+            executor=executor,
+            executor_run_id=executor_run_id,
+            session_id=session_id,
+            request_id=request_id,
+            request_fingerprint=request_fingerprint,
+            containment_profile_digest=clean_profile_digest,
+            operation=operation,
+            native_event=native_event,
+            tool_call_id=tool_use_id or request_id,
+            action_fingerprint=action_fingerprint,
+            authority=authority_value,
+        )
+        now = _utc_now()
+        deadline_at = (
+            _parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)
+        ).isoformat().replace("+00:00", "Z")
+        request: dict[str, Any] = {
+            "input_id": f"input-{uuid.uuid4().hex}",
+            "executor_run_id": executor_run_id,
+            "blocked_step_id": step_id,
+            "type": "permission",
+            "scope": APPROVAL_V3_SCOPE,
+            "approval_version": 3,
+            "elevation_mode": PERMISSION_ELEVATION_MODE,
+            "requested_permission": "full",
+            "session_id": session_id,
+            "request_id": request_id,
+            "request_fingerprint": request_fingerprint,
+            "operation": operation,
+            "summary": receipt["summary"],
+            "reason_summary": reason_summary,
+            "summary_truncated": bool(receipt.get("summary_truncated", False)),
+            "path_plan_digest": clean_plan_digest,
+            "containment_profile_digest": clean_profile_digest,
+            "authority": authority_value,
+            "native_event": str(native_event).strip()[:512],
+            "tool_name": str(tool_name or "").strip()[:512],
+            "tool_use_id": str(tool_use_id or "").strip()[:512],
+            "action_fingerprint": str(action_fingerprint or "").strip()[:512],
+            "escalation_domain": str(escalation_domain or "").strip().lower()[:120],
+            "control_path": str(control_path or "").strip()[:512],
+            "preflight": {
+                "status": "passed",
+                "mode": PERMISSION_ELEVATION_MODE,
+                "path_plan_digest": clean_plan_digest,
+                "containment_profile_digest": clean_profile_digest,
+            },
+            "created_at": now,
+            "deadline_at": deadline_at,
+            "status": "waiting",
+        }
+        history = list(extensions.get("agentbc.input_history") or [])
+        if isinstance(previous_input, dict):
+            history.append(previous_input)
+        task.status = "input_required"
+        task.updated_at = now
+        task.steps = [_resource_block_step(step, step_id) for step in task.steps]
+        extensions[APPROVAL_EXTENSION_KEY] = receipt
+        extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = elevation
+        extensions = self._record_run_interval(task_id, extensions)
+        extensions.pop("agentbc.completion_intent", None)
+        extensions.pop("agentbc.final_callback", None)
+        extensions["agentbc.input"] = request
+        if history:
+            extensions["agentbc.input_history"] = history
+        task.extensions = _merge_execution(
+            extensions,
+            {
+                "internal_status": "waiting",
+                "lease_state": "suspended",
+                "waiting_since": now,
+                "permission_elevation_mode": PERMISSION_ELEVATION_MODE,
+                "permission_elevation_source": "task_elevation",
+                "permission_elevation_state": "prepared",
+            },
+        )
+        self._release_lease(task_id)
+        self.store.write_task(task_id, _without_none(task.to_dict()))
+        suspend_lease(
+            task_id,
+            self.board_root,
+            executor_run_id=executor_run_id,
+            executor_id=task.assignee,
+            work_dir=str(
+                (task.workspace or {}).get("project_root")
+                or (task.workspace or {}).get("root")
+                or self.board_root
+            ),
+        )
+        clear_task_progress(task)
+        self.store.append_event(
+            task_id,
+            {
+                "event_type": "task.permission_elevation_required",
+                "task_id": task_id,
+                "created_at": now,
+                "input_id": request["input_id"],
+                "request_id": request_id,
+                "blocked_step_id": step_id,
+                "scope": APPROVAL_V3_SCOPE,
+                "mode": PERMISSION_ELEVATION_MODE,
+                "source": "task_elevation",
+            },
+        )
+        self._refresh_task_index()
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "status": "input_required",
+            "input_id": request["input_id"],
+            "request_id": request_id,
+            "request_fingerprint": request_fingerprint,
+            "scope": APPROVAL_V3_SCOPE,
+            "approval_version": 3,
+            "elevation_mode": PERMISSION_ELEVATION_MODE,
+            "blocked_step_id": step_id,
+            "preflight": "passed",
+        }
+
+    def block_task_for_elevation(self, task_id: str, **kwargs: Any) -> dict[str, Any]:
+        """Public explicit v3 entry point; native adapters use this contract."""
+        return self.block_task_for_approval(
+            task_id,
+            approval_version=3,
+            elevation_mode=PERMISSION_ELEVATION_MODE,
+            **kwargs,
+        )
+
+    @_serialize_task_elevation_write
+    def record_task_elevation_notification(self, task_id: str) -> dict[str, Any] | None:
+        """Persist the single notification reservation for a v3 wait."""
+        task = self.get_task(task_id)
+        extensions = dict(task.extensions or {})
+        value = permission_elevation_from_extensions(extensions, task_id=task.id)
+        if value is None:
+            return None
+        updated = record_permission_elevation_notification(value)
+        approval_value = extensions.get(APPROVAL_EXTENSION_KEY)
+        updated_approval = approval_value
+        if isinstance(approval_value, dict) and approval_value.get("version") == 3:
+            updated_approval = record_approval_notification(approval_value)
+        if updated != value or updated_approval != approval_value:
+            extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = updated
+            if updated_approval is not None:
+                extensions[APPROVAL_EXTENSION_KEY] = updated_approval
+            task.extensions = extensions
+            task.updated_at = _utc_now()
+            self.store.write_task(task.id, _without_none(task.to_dict()))
+            self.store.append_event(
+                task.id,
+                {
+                    "event_type": "task.permission_elevation_notification_reserved",
+                    "task_id": task.id,
+                    "request_id": str(value["binding"].get("request_id") or ""),
+                    "created_at": task.updated_at,
+                },
+            )
+        return updated
+
+    def reserve_task_elevation_notification(
+        self,
+        task_id: str,
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Reserve the v3 notice and report whether this caller won it."""
+        with _TASK_ELEVATION_WRITE_LOCK:
+            task = self.get_task(task_id)
+            extensions = dict(task.extensions or {})
+            value = permission_elevation_from_extensions(extensions, task_id=task.id)
+            if value is None:
+                return None, False
+            already_reserved = value["cardinality"].get("notifications") == 1
+            updated = self.record_task_elevation_notification(task_id)
+            return updated, not already_reserved
+
+    @_serialize_task_elevation_write
+    def activate_task_elevation(
+        self,
+        task_id: str,
+        *,
+        executor_run_id: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Activate one approved elevation from authoritative Runner facts."""
+        from .permission_runtime import (
+            activate_permission_runtime_record,
+            authorize_permission_runtime_record,
+            build_permission_runtime_record,
+            host_profile_digest,
+            path_plan_digest,
+            permission_runtime_from_extensions,
+        )
+
+        task = self.get_task(task_id)
+        extensions = dict(task.extensions or {})
+        elevation = permission_elevation_from_extensions(
+            extensions,
+            task_id=task.id,
+        )
+        if elevation is None:
+            raise ABCError(
+                "permission_elevation_missing",
+                "Cannot activate a task elevation without its durable receipt",
+            )
+        if elevation["state"]["status"] == "approved":
+            activated_elevation = activate_permission_elevation(
+                elevation,
+                executor_run_id=executor_run_id,
+                session_id=session_id,
+            )
+        elif elevation["state"]["status"] in {"active", "verified"}:
+            activated_elevation = elevation
+        else:
+            raise ABCError(
+                "permission_elevation_state_invalid",
+                "Only an approved task elevation can be activated",
+            )
+        plan_digest = path_plan_digest(task.workspace or {})
+        if plan_digest != str(elevation["binding"].get("path_plan_digest") or ""):
+            raise ABCError(
+                "permission_elevation_binding_mismatch",
+                "Activation PathPlan digest does not match the approved elevation",
+            )
+        profile_digest = host_profile_digest()
+        if profile_digest != str(elevation["containment"].get("profile_digest") or ""):
+            raise ABCError(
+                "permission_elevation_binding_mismatch",
+                "Activation containment profile does not match the approved elevation",
+            )
+        runtime = permission_runtime_from_extensions(extensions)
+        if runtime is not None:
+            runtime_binding = runtime.get("binding") or {}
+            runtime_state = str((runtime.get("state") or {}).get("status") or "")
+            # Runner prepares the outer worker capability before the adapter
+            # has an official Hermes session or continuation run ID.  The
+            # approved child must replace that placeholder with the exact
+            # adapter run/session before the full transport starts; otherwise
+            # final verification would be bound to the outer worker instead
+            # of the official resumed session.
+            runtime_needs_child_binding = (
+                str(runtime_binding.get("executor_run_id") or "") != str(executor_run_id)
+                or str(runtime_binding.get("session_id") or "") != str(session_id)
+            )
+            if runtime_needs_child_binding:
+                if runtime_state == "verified":
+                    raise ABCError(
+                        "permission_elevation_replay",
+                        "A verified task elevation cannot be rebound to another continuation",
+                    )
+                try:
+                    chain = self.resolve_chain(task.id)
+                    chain_head_id = chain.chain_root_task_id or task.id
+                    runtime = build_permission_runtime_record(
+                        task_id=task.id,
+                        chain_head_id=chain_head_id,
+                        executor=task.assignee,
+                        executor_run_id=executor_run_id,
+                        session_id=session_id,
+                        permission_source="task_elevation",
+                        path_plan_digest=plan_digest,
+                        host_profile_digest=profile_digest,
+                        action_fingerprint=str(
+                            (elevation.get("provenance") or {}).get("action_fingerprint") or ""
+                        ),
+                        operation=str(elevation.get("operation") or ""),
+                        elevation_id=str(elevation.get("elevation_id") or ""),
+                    )
+                except (ABCError, OSError) as exc:
+                    raise ABCError(
+                        "permission_elevation_runtime_unavailable",
+                        "Task elevation runtime receipt could not be rebound to the continuation",
+                        {"reason_code": getattr(exc, "code", "runtime_unavailable")},
+                    ) from exc
+        if runtime is None:
+            try:
+                chain = self.resolve_chain(task.id)
+                chain_head_id = chain.chain_root_task_id or task.id
+                runtime = build_permission_runtime_record(
+                    task_id=task.id,
+                    chain_head_id=chain_head_id,
+                    executor=task.assignee,
+                    executor_run_id=executor_run_id,
+                    session_id=session_id,
+                    permission_source="task_elevation",
+                    path_plan_digest=plan_digest,
+                    host_profile_digest=profile_digest,
+                    action_fingerprint=str(
+                        (elevation.get("provenance") or {}).get("action_fingerprint") or ""
+                    ),
+                    operation=str(elevation.get("operation") or ""),
+                    elevation_id=str(elevation.get("elevation_id") or ""),
+                )
+            except (ABCError, OSError) as exc:
+                raise ABCError(
+                    "permission_elevation_runtime_unavailable",
+                    "Task elevation runtime receipt could not be prepared",
+                    {"reason_code": getattr(exc, "code", "runtime_unavailable")},
+                ) from exc
+        if runtime["binding"].get("permission_source") != "task_elevation":
+            raise ABCError(
+                "permission_elevation_binding_mismatch",
+                "An elevation cannot reuse a legacy runtime capability",
+            )
+        if runtime["state"]["status"] == "prepared":
+            runtime = authorize_permission_runtime_record(
+                runtime,
+                decision="approve_full",
+                request_id=str(elevation["binding"].get("request_id") or ""),
+                elevation_id=str(elevation.get("elevation_id") or ""),
+            )
+            runtime = activate_permission_runtime_record(
+                runtime,
+                host_profile_digest=profile_digest,
+            )
+        elif runtime["state"]["status"] not in {"activated", "verified"}:
+            raise ABCError(
+                "permission_elevation_runtime_invalid",
+                "Task elevation runtime is not activatable",
+            )
+        approval_value = extensions.get(APPROVAL_EXTENSION_KEY)
+        approval = validate_approval_receipt(approval_value)
+        if approval.get("version") == 3 and approval["decision"].get("type") == "approve_full":
+            approval = record_approval_full_continuation(
+                approval,
+                executor_run_id=executor_run_id,
+                session_id=session_id,
+            )
+        extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = activated_elevation
+        extensions[APPROVAL_EXTENSION_KEY] = approval
+        from .permission_runtime import PERMISSION_RUNTIME_EXTENSION_KEY
+
+        extensions[PERMISSION_RUNTIME_EXTENSION_KEY] = runtime
+        task.extensions = _merge_execution(
+            extensions,
+            {
+                "permission_elevation_mode": PERMISSION_ELEVATION_MODE,
+                "permission_elevation_source": "task_elevation",
+                "permission_elevation_state": activated_elevation["state"]["status"],
+                "permission_runtime_state": runtime["state"]["status"],
+            },
+        )
+        task.updated_at = _utc_now()
+        self.store.write_task(task.id, _without_none(task.to_dict()))
+        self.store.append_event(
+            task.id,
+            {
+                "event_type": "task.permission_elevation_activated",
+                "task_id": task.id,
+                "executor": task.assignee,
+                "executor_run_id": executor_run_id,
+                "session_id": session_id,
+                "elevation_id": str(elevation.get("elevation_id") or ""),
+                "created_at": task.updated_at,
+            },
+        )
+        self._refresh_task_index()
+        return {
+            "ok": True,
+            "task_id": task.id,
+            "mode": PERMISSION_ELEVATION_MODE,
+            "source": "task_elevation",
+            "elevation_state": activated_elevation["state"]["status"],
+            "runtime_state": runtime["state"]["status"],
+        }
+
+    def verify_task_elevation(
+        self,
+        task_id: str,
+        *,
+        executor_run_id: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Verify the elevation and runtime only from official receipts."""
+        from .permission_runtime import (
+            PERMISSION_RUNTIME_EXTENSION_KEY,
+            permission_runtime_from_extensions,
+            verify_permission_runtime_record,
+        )
+
+        task = self.get_task(task_id)
+        extensions = dict(task.extensions or {})
+        elevation = permission_elevation_from_extensions(
+            extensions,
+            task_id=task.id,
+        )
+        if elevation is None:
+            raise ABCError("permission_elevation_missing", "No task elevation receipt exists")
+        verified_elevation = verify_permission_elevation(
+            elevation,
+            executor_run_id=executor_run_id,
+            session_id=session_id,
+        )
+        runtime = permission_runtime_from_extensions(extensions)
+        if runtime is None:
+            raise ABCError(
+                "permission_elevation_runtime_invalid",
+                "Cannot verify elevation without its runtime receipt",
+            )
+        verified_runtime = verify_permission_runtime_record(
+            runtime,
+            session_id=session_id,
+        )
+        extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = verified_elevation
+        extensions[PERMISSION_RUNTIME_EXTENSION_KEY] = verified_runtime
+        task.extensions = _merge_execution(
+            extensions,
+            {
+                "permission_elevation_state": "verified",
+                "permission_runtime_state": "verified",
+            },
+        )
+        task.updated_at = _utc_now()
+        self.store.write_task(task.id, _without_none(task.to_dict()))
+        self.store.append_event(
+            task.id,
+            {
+                "event_type": "task.permission_elevation_verified",
+                "task_id": task.id,
+                "executor_run_id": executor_run_id,
+                "session_id": session_id,
+                "created_at": task.updated_at,
+            },
+        )
+        self._refresh_task_index()
+        return {
+            "ok": True,
+            "task_id": task.id,
+            "elevation_state": "verified",
+            "runtime_state": "verified",
+        }
+
     def cutover_preflight(self) -> dict[str, Any]:
         """Return the strict cutover gate for a supported update/preflight.
 
@@ -2402,13 +3694,25 @@ class TaskService:
                 {"task_id": task.id, "run_id": lease.run_id, "run_lease_state": lease.state},
             )
         response_type = str(response_type or "").strip()
-        if response_type not in {"message", "approve", "deny", "permission_option"}:
+        if response_type not in {
+            "message",
+            "approve",
+            "approve_full",
+            "deny",
+            "permission_option",
+        }:
             raise ABCError("invalid_input_response", f"Unsupported response type: {response_type}")
         clean_message = str(redact_secrets(message)).strip() if response_type == "message" else response_type
         if response_type == "message" and not clean_message:
             raise ABCError("invalid_input_response", "--message requires non-empty text")
 
         is_permission_request = request.get("type") == "permission"
+        is_task_elevation_request = (
+            is_permission_request
+            and int(request.get("approval_version") or 1) == 3
+            and request.get("scope") == APPROVAL_V3_SCOPE
+            and request.get("elevation_mode") == PERMISSION_ELEVATION_MODE
+        )
         is_v2_permission = (
             is_permission_request
             and int(request.get("approval_version") or 1) == 2
@@ -2427,12 +3731,18 @@ class TaskService:
                     "invalid_input_response",
                     "--permission-option requires the exact offered handle",
                 )
-        elif is_permission_request and response_type not in {"approve", "deny"}:
+        elif is_permission_request and response_type not in (
+            {"approve_full", "deny"}
+            if is_task_elevation_request
+            else {"approve", "deny"}
+        ):
             raise ABCError(
                 "invalid_input_response",
-                "Permission requests only accept approve or deny",
+                "Task elevation requests only accept approve_full or deny"
+                if is_task_elevation_request
+                else "Permission requests only accept approve or deny",
             )
-        if is_v2_permission and response_type in {"approve", "deny"}:
+        if is_v2_permission and response_type in {"approve", "deny", "approve_full"}:
             raise ABCError(
                 "native_permission_choice_required",
                 "A v2 native permission request requires an explicit choice "
@@ -2520,6 +3830,184 @@ class TaskService:
         extensions["agentbc.input"] = answered
         if updated_resources is not None:
             extensions[RESOURCE_EXTENSION_KEY] = updated_resources
+
+        if is_task_elevation_request:
+            # v3 never mints the legacy permission grant.  The approval and
+            # elevation receipts are updated together, and a denial becomes
+            # terminal immediately (close/timeout arrive here as deny with a
+            # durable source).  An approve_full result resumes the same
+            # official executor session; Runner records activation only after
+            # its authoritative continuation receipt.
+            elevation = permission_elevation_from_extensions(
+                extensions,
+                task_id=task.id,
+                path_plan_digest=str(request.get("path_plan_digest") or ""),
+                executor=task.assignee,
+                executor_run_id=str(request.get("executor_run_id") or ""),
+                session_id=str(
+                    (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
+                ),
+                request_id=str(request.get("request_id") or ""),
+                request_fingerprint=str(request.get("request_fingerprint") or ""),
+            )
+            if elevation is None:
+                raise ABCError(
+                    "permission_elevation_binding_mismatch",
+                    "Task elevation input is missing its durable elevation receipt",
+                )
+            session_value = str(
+                (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
+            )
+            approval_receipt = self._approval_receipt_for_response(
+                task,
+                extensions,
+                request,
+                current_input_id,
+            )
+            elevation_source = (
+                permission_denial_source if response_type == "deny" else "user"
+            )
+            updated_receipt = record_approval_decision(
+                approval_receipt,
+                response_type,
+                source=elevation_source,
+                decided_at=now,
+                executor=task.assignee,
+                task_id=task.id,
+                session_id=session_value,
+                request_id=str(request.get("request_id") or ""),
+                executor_run_id=str(request.get("executor_run_id") or ""),
+                request_fingerprint=str(request.get("request_fingerprint") or ""),
+            )
+            updated_elevation = record_permission_elevation_decision(
+                elevation,
+                response_type,
+                source=elevation_source,
+                decided_at=now,
+                task_id=task.id,
+                path_plan_digest=str(request.get("path_plan_digest") or ""),
+                executor=task.assignee,
+                executor_run_id=str(request.get("executor_run_id") or ""),
+                session_id=session_value,
+                request_id=str(request.get("request_id") or ""),
+                request_fingerprint=str(request.get("request_fingerprint") or ""),
+            )
+            extensions[APPROVAL_EXTENSION_KEY] = updated_receipt
+            extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = updated_elevation
+            if response_type == "deny":
+                timed_out = permission_denial_source == "timeout"
+                failure_code = (
+                    "permission_denied_by_timeout"
+                    if timed_out
+                    else "permission_denied_by_user"
+                )
+                failure_message = (
+                    "Task elevation timed out and was automatically denied"
+                    if timed_out
+                    else "User denied contained-full task elevation"
+                )
+                task.extensions = extensions
+                task.updated_at = now
+                self._mark_task_failed_model(
+                    task,
+                    failure_code,
+                    failure_message,
+                    {
+                        "failure": {
+                            "kind": failure_code,
+                            "layer": "permission",
+                            "message": failure_message,
+                            "retryable": False,
+                        },
+                        "input_id": current_input_id,
+                        "executor": task.assignee,
+                        "permission_elevation_mode": PERMISSION_ELEVATION_MODE,
+                    },
+                    executor_run_id=str(request.get("executor_run_id") or ""),
+                )
+                self.store.append_event(
+                    task.id,
+                    {
+                        "event_type": "task.permission_elevation_denied",
+                        "task_id": task.id,
+                        "input_id": current_input_id,
+                        "request_id": str(request.get("request_id") or ""),
+                        "response_source": elevation_source,
+                        "created_at": now,
+                    },
+                )
+                return {
+                    "ok": True,
+                    "task_id": task.id,
+                    "input_id": current_input_id,
+                    "request_id": str(request.get("request_id") or ""),
+                    "status": "failed",
+                    "dispatch_required": False,
+                    "same_session": False,
+                    "permission_denied": True,
+                    "approval_decision": "deny",
+                    "elevation_state": "denied",
+                }
+
+            blocked_step_id = request.get("blocked_step_id")
+            if not any(
+                step.get("id") == blocked_step_id and step.get("status") == "blocked"
+                for step in task.steps
+            ):
+                raise ABCError(
+                    "permission_input_invalid",
+                    "Task elevation input does not identify the current blocked step",
+                )
+            task.steps = [
+                {**step, "status": "pending"}
+                if step.get("id") == blocked_step_id and step.get("status") == "blocked"
+                else dict(step)
+                for step in task.steps
+            ]
+            task.status = "running"
+            task.updated_at = now
+            task.extensions = _merge_execution(
+                extensions,
+                {
+                    "internal_status": "resuming",
+                    "lease_state": "suspended",
+                    "resuming_at": now,
+                    "permission_elevation_mode": PERMISSION_ELEVATION_MODE,
+                    "permission_elevation_source": "task_elevation",
+                    "permission_elevation_state": "approved",
+                },
+            )
+            self.store.write_task(task.id, _without_none(task.to_dict()))
+            self.store.append_event(
+                task.id,
+                {
+                    "event_type": "task.permission_elevation_approved",
+                    "task_id": task.id,
+                    "input_id": current_input_id,
+                    "request_id": str(request.get("request_id") or ""),
+                    "response_source": elevation_source,
+                    "created_at": now,
+                },
+            )
+            write_task_progress(
+                task,
+                state="resuming",
+                message="contained-full elevation approved; resuming the same task session",
+                source="runner",
+            )
+            self._refresh_task_index()
+            return {
+                "ok": True,
+                "task_id": task.id,
+                "input_id": current_input_id,
+                "request_id": str(request.get("request_id") or ""),
+                "status": "resuming",
+                "dispatch_required": True,
+                "approval_decision": "approve_full",
+                "approval_source": elevation_source,
+                "same_session": True,
+                "elevation_state": "approved",
+            }
 
         is_approval_request = (
             is_permission_request
@@ -2890,6 +4378,104 @@ class TaskService:
                     request.get("scope") == APPROVAL_SCOPE
                     and bool(str(request.get("request_id") or "").strip())
                 )
+                is_task_elevation_request = (
+                    request.get("scope") == APPROVAL_V3_SCOPE
+                    and int(request.get("approval_version") or 1) == 3
+                    and request.get("elevation_mode") == PERMISSION_ELEVATION_MODE
+                )
+                if is_task_elevation_request:
+                    extensions = dict(task.extensions or {})
+                    try:
+                        session_value = str(
+                            (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
+                        )
+                        receipt = self._approval_receipt_for_response(
+                            task,
+                            extensions,
+                            request,
+                            str(request.get("input_id") or ""),
+                        )
+                        elevation = permission_elevation_from_extensions(
+                            extensions,
+                            task_id=task.id,
+                            path_plan_digest=str(request.get("path_plan_digest") or ""),
+                            executor=task.assignee,
+                            executor_run_id=str(request.get("executor_run_id") or ""),
+                            session_id=session_value,
+                            request_id=str(request.get("request_id") or ""),
+                            request_fingerprint=str(request.get("request_fingerprint") or ""),
+                        )
+                        if elevation is None:
+                            raise ABCError(
+                                "permission_elevation_binding_mismatch",
+                                "Timed-out task elevation has no durable elevation receipt",
+                            )
+                        extensions[APPROVAL_EXTENSION_KEY] = record_approval_decision(
+                            receipt,
+                            "deny",
+                            source="timeout",
+                            decided_at=expired_at,
+                            executor=task.assignee,
+                            task_id=task.id,
+                            session_id=session_value,
+                            request_id=str(request.get("request_id") or ""),
+                            executor_run_id=str(request.get("executor_run_id") or ""),
+                            request_fingerprint=str(request.get("request_fingerprint") or ""),
+                        )
+                        extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = record_permission_elevation_decision(
+                            elevation,
+                            "deny",
+                            source="timeout",
+                            decided_at=expired_at,
+                            task_id=task.id,
+                            path_plan_digest=str(request.get("path_plan_digest") or ""),
+                            executor=task.assignee,
+                            executor_run_id=str(request.get("executor_run_id") or ""),
+                            session_id=session_value,
+                            request_id=str(request.get("request_id") or ""),
+                            request_fingerprint=str(request.get("request_fingerprint") or ""),
+                        )
+                        task.extensions = extensions
+                        self.store.write_task(task.id, _without_none(task.to_dict()))
+                    except ABCError:
+                        # The timeout remains fail-closed even if a damaged
+                        # receipt prevents a second write; the task is still
+                        # terminal and no replacement dialog is created.
+                        pass
+                    self._mark_task_failed_model(
+                        task,
+                        "permission_denied_by_timeout",
+                        "Task elevation timed out and was automatically denied",
+                        {
+                            "failure": {
+                                "kind": "permission_denied_by_timeout",
+                                "layer": "permission",
+                                "message": "Task elevation timed out and was automatically denied",
+                                "retryable": False,
+                            },
+                            "input_id": request.get("input_id", ""),
+                            "executor": task.assignee,
+                            "permission_elevation_mode": PERMISSION_ELEVATION_MODE,
+                        },
+                    )
+                    self.store.append_event(
+                        task.id,
+                        {
+                            "event_type": "task.permission_elevation_denied",
+                            "task_id": task.id,
+                            "input_id": request.get("input_id", ""),
+                            "response_type": "deny",
+                            "response_source": "timeout",
+                            "created_at": expired_at,
+                        },
+                    )
+                    expired.append(
+                        {
+                            "task_id": task.id,
+                            "input_id": request.get("input_id", ""),
+                        }
+                    )
+                    continue
                 if is_approval_request:
                     # Approval-based timeout auto-denies on the same native
                     # request, records the decision source, and never issues a
@@ -4405,6 +5991,24 @@ def task_to_status(task: TaskModel) -> dict[str, Any]:
             )
         except ABCError:
             extensions.pop(APPROVAL_EXTENSION_KEY, None)
+    elevation_value = extensions.get(PERMISSION_ELEVATION_EXTENSION_KEY)
+    if elevation_value is not None:
+        try:
+            from .permission_elevation import permission_elevation_public_projection
+
+            extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = (
+                permission_elevation_public_projection(elevation_value)
+            )
+        except ABCError:
+            extensions.pop(PERMISSION_ELEVATION_EXTENSION_KEY, None)
+    claude_elevation_value = extensions.get(CLAUDE_ELEVATION_EXTENSION_KEY)
+    if claude_elevation_value is not None:
+        try:
+            extensions[CLAUDE_ELEVATION_EXTENSION_KEY] = (
+                claude_elevation_public_projection(claude_elevation_value)
+            )
+        except ABCError:
+            extensions.pop(CLAUDE_ELEVATION_EXTENSION_KEY, None)
     # PERM-104-002 1.04A: the session tool rule surface is retired; historical
     # receipts are projected through the audit-only public view (matcher,
     # digests, state) so terminal tasks stay readable without rewriting

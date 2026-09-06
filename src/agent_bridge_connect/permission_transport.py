@@ -44,9 +44,8 @@ CONTROL_PATH_MCP_PERMISSION_TOOL = "mcp_permission_tool"
 CONTROL_PATH_STDIO_CAN_USE_TOOL = "stdio_can_use_tool"
 CONTROL_PATH_SDK_TRANSPORT = "sdk_control_transport"
 
-# The exact SDK tuple proven by the isolated live probe.  Anything else
-# (missing package, other SDK version, other platform, PATH-discovered CLI)
-# fails closed with a stable code and redacted diagnostics.
+# These historical probe values remain available for diagnostics and legacy
+# reports only.  They are never admission keys; protocol shape is authoritative.
 CLAUDE_SDK_PACKAGE = "claude-agent-sdk"
 CLAUDE_SDK_PINNED_VERSION = "0.2.142"
 CLAUDE_SDK_PLATFORM = "macOS arm64"
@@ -91,7 +90,7 @@ def parse_claude_version(value: str | None) -> str | None:
     """Extract the canonical ``x.y.z`` version from a version probe line.
 
     Official probes report lines such as ``2.1.226 (Claude Code)``; the
-    matrix is keyed by the parsed triple only.
+    parsed triple is retained as diagnostic metadata only.
     """
     text = str(value or "").strip()
     match = _CLAUDE_VERSION_RE.search(text)
@@ -225,7 +224,7 @@ def claude_sdk_protocol_capability() -> dict[str, Any]:
         missing.append(f"PermissionResultAllow.{name}")
     for name in sorted({"message", "interrupt"} - deny_params):
         missing.append(f"PermissionResultDeny.{name}")
-    for name in sorted({"type", "destination"} - update_params):
+    for name in sorted({"type", "mode", "destination"} - update_params):
         missing.append(f"PermissionUpdate.{name}")
     for name in sorted({"tool_use_id", "suggestions"} - context_fields):
         missing.append(f"ToolPermissionContext.{name}")
@@ -240,11 +239,68 @@ def claude_sdk_protocol_capability() -> dict[str, Any]:
             },
         )
 
+    # Capability is admitted by the actual control shape, not the package or
+    # CLI version.  Constructing and serializing the update catches forks that
+    # expose a similarly named field but cannot carry the exact session-scoped
+    # bypass transition required by the live callback.
+    try:
+        mode_update = PermissionUpdate(
+            type="setMode",
+            mode="bypassPermissions",
+            destination="session",
+        )
+        serializer = getattr(mode_update, "to_dict", None)
+        serialized = serializer() if callable(serializer) else _shape_from_object(mode_update)
+    except Exception as exc:
+        raise ABCError(
+            PERMISSION_PROTOCOL_SHAPE_UNSUPPORTED,
+            "The Claude SDK cannot construct the session-scoped setMode update.",
+            {
+                "executor": "claude",
+                "transport": CONTROL_PATH_SDK_TRANSPORT,
+                "missing_members": ["PermissionUpdate.setMode"],
+                "error_type": type(exc).__name__,
+            },
+        ) from exc
+    if not isinstance(serialized, dict) or any(
+        serialized.get(key) != expected
+        for key, expected in {
+            "type": "setMode",
+            "mode": "bypassPermissions",
+            "destination": "session",
+        }.items()
+    ):
+        raise ABCError(
+            PERMISSION_PROTOCOL_SHAPE_UNSUPPORTED,
+            "The Claude SDK setMode update has an incompatible wire shape.",
+            {
+                "executor": "claude",
+                "transport": CONTROL_PATH_SDK_TRANSPORT,
+                "missing_members": ["PermissionUpdate.setMode.wire_shape"],
+            },
+        )
+
     return {
         "available": True,
         "protocol": "sdk.can_use_tool",
         "sdk_version": str(getattr(_sdk, "__version__", "") or "unknown"),
         "required_members": sorted(required_options),
+        "set_mode_update": {
+            "type": "setMode",
+            "mode": "bypassPermissions",
+            "destination": "session",
+        },
+    }
+
+
+def _shape_from_object(value: Any) -> dict[str, Any] | None:
+    data = getattr(value, "__dict__", None)
+    if not isinstance(data, dict):
+        return None
+    return {
+        str(key): item
+        for key, item in data.items()
+        if item is not None and not str(key).startswith("_")
     }
 
 

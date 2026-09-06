@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 from .permission_grants import permission_grant_from_extensions
+from .permission_elevation import permission_elevation_from_extensions
 from .permission_modes import (
     PERMISSION_EXTENSION_KEY,
     permission_record_from_extensions,
@@ -52,6 +53,26 @@ def resolve_effective_permission(
     extensions = task.get("extensions")
     extensions = extensions if isinstance(extensions, dict) else {}
     base = permission_record_from_extensions(extensions, allow_legacy=True)
+    elevation = permission_elevation_from_extensions(extensions)
+    if elevation is not None and elevation["state"]["status"] in {
+        "approved",
+        "active",
+        "verified",
+    }:
+        if not trusted_runner_managed:
+            raise ABCError(
+                "permission_elevation_runner_context_required",
+                "An active task elevation requires trusted Runner-managed context.",
+            )
+        return {
+            "requested_mode": "full",
+            "effective_mode": "full",
+            "selection_source": "task_elevation",
+            "base_mode": str(base.get("effective_mode") or "inherit"),
+            "temporary": False,
+            "elevation_id": str(elevation.get("elevation_id") or ""),
+            "elevation_state": str(elevation["state"].get("status") or ""),
+        }
     grant = permission_grant_from_extensions(extensions)
     if grant is None or grant["state"]["status"] == "revoked":
         return dict(base)
