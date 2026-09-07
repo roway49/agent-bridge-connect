@@ -165,6 +165,38 @@ class Phase3RunnerArgumentTests(unittest.TestCase):
                 "hermes", command, str(self.project), drifted
             )
 
+    def test_fresh_registered_acp_run_stays_fresh_after_run_id_append(self) -> None:
+        packet = self._packet("hermes")
+        task_id = packet["task_id"]
+        raw = TaskService(self.board).store.read_task(task_id)
+        session = raw["extensions"][SESSION_EXTENSION_KEY]
+        run_id = "hermes-TT4V-001-first"
+        session.update(
+            {
+                "run_ids": [run_id],
+                "run_resume_facts": {run_id: False},
+                "session_state": "pending",
+            }
+        )
+        TaskService(self.board).store.write_task(task_id, raw)
+        packet = dict(raw)
+        packet["task_id"] = task_id
+        packet["task_board"] = {"root": str(self.board)}
+        packet["_agentbc_resume_fact"] = {
+            "run_id": run_id,
+            "resumed": False,
+            "session_id": "",
+        }
+        self.assertTrue(
+            self.state.authorize_command(
+                "hermes",
+                [str(self.binaries["hermes"]), "acp"],
+                str(self.project),
+                packet,
+                executor_run_id=run_id,
+            )["authorized"]
+        )
+
     def test_codex_resume_requires_exact_id_and_forbids_last(self) -> None:
         session_id = "019feed0-0000-7000-8000-000000000003"
         packet = self._resume_packet("codex", session_id)

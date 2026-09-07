@@ -1230,22 +1230,21 @@ class RunnerCapabilityValidationTests(unittest.TestCase):
             )
         self.assertIn("runner_capability_mismatch", str(raised.exception))
 
-    def test_runner_rejects_full_permission_on_app_server_command(self) -> None:
+    def test_runner_does_not_add_a_second_gate_to_full_permission(self) -> None:
         persisted = self._persisted_task(mode="full", transport="app-server")
         packet = self._packet()
         packet["task_id"] = persisted["id"]
         packet["workspace"] = persisted["workspace"]
         packet["extensions"] = persisted["extensions"]
         packet["task_board"] = {"root": str(self.board)}
-        with self.assertRaises(RunnerError) as raised:
-            self.state.authorize_command(
-                "codex",
-                [str(self.codex), "app-server", "--stdio"],
-                str(self.root),
-                packet,
-                executor_run_id="codex-runner-1",
-            )
-        self.assertIn("runner_capability_mismatch", str(raised.exception))
+        authorized = self.state.authorize_command(
+            "codex",
+            [str(self.codex), "app-server", "--stdio"],
+            str(self.root),
+            packet,
+            executor_run_id="codex-runner-1",
+        )
+        self.assertEqual(authorized["effective_permission_mode"], "full")
 
 
 class InheritAndFallbackTests(unittest.TestCase):

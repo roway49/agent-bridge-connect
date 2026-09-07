@@ -427,12 +427,14 @@ class ExecutorPermissionMappingTests(unittest.TestCase):
         self.assertIn("--safe-mode", claude)
         self.assertIn("acceptEdits", claude)
 
-    def test_unsupported_full_capability_fails_closed(self) -> None:
+    def test_protocol_compatible_full_is_not_version_or_help_allowlisted(self) -> None:
         completed = mock.Mock(returncode=0, stdout="usage without full flag", stderr="")
-        with mock.patch("agent_bridge_connect.permission_modes.subprocess.run", return_value=completed):
-            with self.assertRaises(ABCError) as raised:
-                assert_executor_permission_supported("codex", "full", sys.executable)
-        self.assertEqual(raised.exception.code, "unsupported_permission_mode")
+        with mock.patch(
+            "agent_bridge_connect.permission_modes.subprocess.run",
+            return_value=completed,
+        ) as probe:
+            assert_executor_permission_supported("codex", "full", sys.executable)
+        probe.assert_not_called()
 
 
 class CanonicalPermissionArgumentTests(unittest.TestCase):
@@ -734,12 +736,11 @@ class RunnerPermissionAuthorizationTests(unittest.TestCase):
         self.assertEqual(result["run_id"], "mock-full")
         run.assert_called_once()
 
-    def test_full_does_not_bypass_task_scoped_cwd_check(self) -> None:
-        from agent_bridge_connect.runner import RunnerError
-
+    def test_full_does_not_add_a_second_task_scoped_cwd_gate(self) -> None:
         _service, _task, full = self._packet("full")
         command = [str(self.fake_hermes), "chat", "--yolo", "-q", "prompt"]
-        with self.assertRaisesRegex(RunnerError, "outside allowed roots"):
+        spawned = {"ok": True, "run_id": "mock-full-cwd", "pid": 1, "status": "running"}
+        with mock.patch.object(self.state, "_spawn_process", return_value=spawned):
             self.state.submit("hermes", command, self.root.anchor, full)
 
     def test_dispatch_records_redacted_permission_audit_and_report(self) -> None:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-import subprocess
+# Kept as a compatibility module attribute for historical tests/readers. Plan
+# D never invokes subprocess probing from this module.
+import subprocess  # noqa: F401
 from pathlib import Path
 from typing import Any
 
@@ -417,12 +419,10 @@ def permission_record_from_extensions(
 def permission_flags(executor: str, mode: str) -> list[str]:
     """Frozen CLI flag mapping for one AgentBC permission mode.
 
-    PERM-104-002: the Claude full mapping now runs through the official SDK
-    transport's ``permission_mode="bypassPermissions"`` (``--dangerously-skip-
-    permissions`` on the SDK-spawned CLI) instead of a raw CLI invocation.
-    The flag string stays the frozen contract token; the SDK transport maps
-    it (see ``claude_sdk_transport.SDK_PERMISSION_MODE_BY_FLAG``).  safe/
-    inherit keep the SDK default modes so ``can_use_tool`` still fires.
+    Under Plan D, ``full`` is the executor's native strongest noninteractive
+    flag.  Claude's direct CLI uses ``--dangerously-skip-permissions`` while
+    its SDK control transport uses the equivalent live-session mode update;
+    ``safe``/``inherit`` retain their native approval transports.
     """
     selected = normalize_permission_mode(mode)
     if executor == "codex":
@@ -460,51 +460,9 @@ def assert_executor_permission_supported(
 ) -> None:
     selected = normalize_permission_mode(mode)
     permission_flags(executor, selected)
-    if selected != "full":
-        return
-    required = _FULL_PERMISSION_FLAGS.get(executor)
-    if required is None or executable is None:
-        raise ABCError(
-            "unsupported_permission_mode",
-            f"Executor {executor!r} cannot represent permission mode full.",
-            {"executor": executor, "permission_mode": selected},
-        )
-    command = [str(Path(executable).expanduser())]
-    if executor == "codex":
-        command.extend(["exec", "--help"])
-    elif executor == "hermes":
-        command.extend(["chat", "--help"])
-    else:
-        command.append("--help")
-    try:
-        completed = subprocess.run(
-            command,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ABCError(
-            "unsupported_permission_mode",
-            f"Could not verify {executor} full-mode capability: {exc}",
-            {"executor": executor, "permission_mode": selected},
-        ) from exc
-    help_text = f"{completed.stdout}\n{completed.stderr}"
-    if completed.returncode != 0 or required not in help_text:
-        raise ABCError(
-            "unsupported_permission_mode",
-            (
-                f"Installed {executor} cannot represent AgentBC permission mode full; "
-                f"documented flag {required} was not found."
-            ),
-            {
-                "executor": executor,
-                "permission_mode": selected,
-                "required_flag": required,
-                "returncode": completed.returncode,
-            },
-        )
+    # Plan D deliberately does not probe --help, versions, or capability
+    # receipts. Protocol-compatible releases and forks use the native flag
+    # mapping; the executor owns whether that native invocation starts.
 
 
 def validate_permission_command(

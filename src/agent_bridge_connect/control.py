@@ -149,6 +149,7 @@ class ApprovalRequest:
     requested_permissions: dict[str, Any] = field(default_factory=dict)
     tool_name: str = ""
     tool_use_id: str = ""
+    input_fingerprint: str = ""
     action_fingerprint: str = ""
     escalation_domain: str = ""
     profile_digest: str = ""
@@ -193,6 +194,7 @@ class ApprovalRequest:
         for key, item in (
             ("tool_name", self.tool_name),
             ("tool_use_id", self.tool_use_id),
+            ("input_fingerprint", self.input_fingerprint),
             ("action_fingerprint", self.action_fingerprint),
             ("escalation_domain", self.escalation_domain),
             ("profile_digest", self.profile_digest),
@@ -284,21 +286,24 @@ def normalize_approval_request(
     )
     native_tool_name = _bounded_text(agentbc.get("tool_name"), 120)
     native_tool_use_id = _bounded_text(agentbc.get("tool_use_id"), 512)
+    native_input_fingerprint = _bounded_text(
+        agentbc.get("input_fingerprint"), 160
+    )
     native_action_fingerprint = _bounded_text(
         agentbc.get("action_fingerprint"), 160
     )
     native_domain = _bounded_text(agentbc.get("escalation_domain"), 120)
     native_profile = _bounded_text(agentbc.get("host_profile_digest"), 160)
     native_control_path = _bounded_text(agentbc.get("control_path"), 160)
-    # PERM-104-001 v3: a trusted structured native block may request one
-    # contained-full elevation.  It carries no choices; all human decisions
+    # PERM-104 Plan D v3: a trusted structured native block may request one
+    # native-full elevation.  It carries no choices; all human decisions
     # are represented by the single top-level Approve Full / Deny dialog.
     requested_scope = str(message.get("scope") or "").strip()
     requested_mode = str(message.get("elevation_mode") or "").strip()
     is_v3 = (
         message.get("approval_version") == 3
         or requested_scope == APPROVAL_V3_SCOPE
-        or requested_mode == APPROVAL_V3_ELEVATION_MODE
+        or requested_mode in {APPROVAL_V3_ELEVATION_MODE, "contained_full"}
     )
     authority: dict[str, Any] = (
         dict(message.get("authority"))
@@ -311,10 +316,10 @@ def normalize_approval_request(
                 "approval_scope_invalid",
                 "A v3 elevation request must use the task_elevation scope.",
             )
-        if requested_mode != APPROVAL_V3_ELEVATION_MODE:
+        if requested_mode not in {APPROVAL_V3_ELEVATION_MODE, "contained_full"}:
             raise ControlPlaneError(
                 "approval_elevation_mode_invalid",
-                "A v3 elevation request must use contained_full mode.",
+                "A v3 elevation request must use full mode.",
             )
         if message.get("offered_choices") is not None:
             raise ControlPlaneError(
@@ -348,21 +353,12 @@ def normalize_approval_request(
                 "approval_authority_invalid",
                 "A v3 elevation request requires the trusted native event shape.",
             )
+        legacy_contained = requested_mode == "contained_full"
         preflight_value = message.get("preflight")
         if not isinstance(preflight_value, dict):
             preflight_value = message.get("full_preflight")
         if not isinstance(preflight_value, dict):
             preflight_value = agentbc.get("preflight")
-        preflight_ok = isinstance(preflight_value, dict) and (
-            preflight_value.get("ok") is True
-            or str(preflight_value.get("status") or "").strip().lower()
-            == "passed"
-        )
-        if not preflight_ok:
-            raise ControlPlaneError(
-                "permission_preflight_failed",
-                "A v3 elevation request requires a passed full-capability preflight.",
-            )
         path_digest = _bounded_text(
             message.get("path_plan_digest") or agentbc.get("path_plan_digest"),
             160,
@@ -374,12 +370,13 @@ def normalize_approval_request(
             or agentbc.get("host_profile_digest"),
             160,
         )
-        if not _SHA256_DIGEST_RE.fullmatch(path_digest) or not _SHA256_DIGEST_RE.fullmatch(
-            profile_digest
+        if legacy_contained and (
+            not _SHA256_DIGEST_RE.fullmatch(path_digest)
+            or not _SHA256_DIGEST_RE.fullmatch(profile_digest)
         ):
             raise ControlPlaneError(
                 "approval_scope_invalid",
-                "A v3 elevation request requires frozen PathPlan and containment digests.",
+                "A legacy contained-full request requires its historical digests.",
             )
         native_live_elevation = message.get("native_live_elevation") is True
         native_elevation_protocol = _bounded_text(
@@ -444,6 +441,7 @@ def normalize_approval_request(
             item_id=item_id,
             tool_name=native_tool_name,
             tool_use_id=native_tool_use_id,
+            input_fingerprint=native_input_fingerprint,
             action_fingerprint=native_action_fingerprint,
             escalation_domain=native_domain,
             profile_digest=profile_digest,
@@ -454,7 +452,11 @@ def normalize_approval_request(
             elevation_mode=APPROVAL_V3_ELEVATION_MODE,
             path_plan_digest=path_digest,
             containment_profile_digest=profile_digest,
-            preflight={"status": "passed", "mode": APPROVAL_V3_ELEVATION_MODE},
+            preflight=(
+                {"status": "passed", "mode": "contained_full"}
+                if legacy_contained
+                else {"status": "retired", "mode": APPROVAL_V3_ELEVATION_MODE}
+            ),
             native_live_elevation=native_live_elevation,
             native_elevation_protocol=native_elevation_protocol,
         )
@@ -546,6 +548,7 @@ def normalize_approval_request(
         requested_permissions=_bounded_json(requested),
         tool_name=native_tool_name,
         tool_use_id=native_tool_use_id,
+        input_fingerprint=native_input_fingerprint,
         action_fingerprint=native_action_fingerprint,
         escalation_domain=native_domain,
         profile_digest=native_profile,
@@ -1063,6 +1066,9 @@ class ApprovalControlPlane:
                 action_fingerprint_value = str(
                     identity.get("action_fingerprint") or ""
                 ).strip()
+                input_fingerprint_value = str(
+                    identity.get("input_fingerprint") or ""
+                ).strip()
                 domain = str(identity.get("escalation_domain") or "").strip().lower()
                 profile_digest = str(
                     identity.get("host_profile_digest") or ""
@@ -1079,19 +1085,24 @@ class ApprovalControlPlane:
                     binding_errors.append("request_fingerprint_missing")
                 if not action_fingerprint_value.startswith("fp-"):
                     binding_errors.append("action_fingerprint")
+                if request.native_live_elevation:
+                    if not _SHA256_DIGEST_RE.fullmatch(input_fingerprint_value):
+                        binding_errors.append("input_fingerprint")
+                    elif request.input_fingerprint != input_fingerprint_value:
+                        binding_errors.append("input_fingerprint_mismatch")
                 if not actual_identity["tool_name"]:
                     binding_errors.append("tool_name")
-                if domain not in PERMISSION_RUNTIME_DOMAINS:
+                if request.approval_version != 3 and domain not in PERMISSION_RUNTIME_DOMAINS:
                     binding_errors.append("escalation_domain")
-                if top_level_domain != domain:
+                if request.approval_version != 3 and top_level_domain != domain:
                     binding_errors.append("top_level_escalation_domain")
-                if not (
+                if request.approval_version != 3 and not (
                     profile_digest.startswith("sha256:")
                     and len(profile_digest) == len("sha256:") + 64
                     and all(character in "0123456789abcdef" for character in profile_digest[7:])
                 ):
                     binding_errors.append("host_profile_digest")
-                if top_level_profile != profile_digest:
+                if request.approval_version != 3 and top_level_profile != profile_digest:
                     binding_errors.append("top_level_host_profile_digest")
                 if binding_errors:
                     evidence = {
@@ -1115,6 +1126,7 @@ class ApprovalControlPlane:
                     request,
                     tool_name=actual_identity["tool_name"],
                     tool_use_id=actual_identity["tool_use_id"],
+                    input_fingerprint=input_fingerprint_value,
                     action_fingerprint=action_fingerprint_value,
                     escalation_domain=domain,
                     profile_digest=profile_digest,
@@ -1161,6 +1173,35 @@ class ApprovalControlPlane:
                     }
                     self._recovery("approval_identity_mismatch", message_text, evidence)
                     raise ControlPlaneError("approval_identity_mismatch", message_text, evidence)
+                if request.native_live_elevation and pending.get("native_live_elevation") is True:
+                    native_fields = (
+                        "tool_name",
+                        "tool_use_id",
+                        "request_fingerprint",
+                        "input_fingerprint",
+                        "action_fingerprint",
+                    )
+                    native_mismatches = [
+                        field
+                        for field in native_fields
+                        if str(pending.get(field) or "")
+                        != str(request.to_dict().get(field) or "")
+                    ]
+                    if native_mismatches:
+                        evidence = {
+                            "request_id": request.request_id,
+                            "native_binding_errors": native_mismatches,
+                        }
+                        self._recovery(
+                            PERMISSION_BLOCK_EVIDENCE_UNAVAILABLE,
+                            "A duplicate Claude approval changed its native identity.",
+                            evidence,
+                        )
+                        raise ControlPlaneError(
+                            PERMISSION_BLOCK_EVIDENCE_UNAVAILABLE,
+                            "A duplicate Claude approval changed its native identity.",
+                            evidence,
+                        )
                 if str(pending.get("request_id")) == request.request_id:
                     code = "approval_request_duplicate"
                     message_text = "The approval request ID was already seen for this task run."
@@ -1179,6 +1220,9 @@ class ApprovalControlPlane:
             # reach this point; stderr, natural language and exit codes are
             # diagnostics only.
             domain = str(message.get("escalation_domain") or "").strip().lower()
+            if request.approval_version == 3:
+                # Plan D task elevation is not a legacy runtime block ledger.
+                domain = ""
             profile_digest = str(message.get("host_profile_digest") or "").strip()
             agentbc_identity = (
                 message.get("_agentbc")
@@ -1192,7 +1236,9 @@ class ApprovalControlPlane:
                 structured_action_fingerprint = action_fingerprint(
                     executor=self.executor,
                     session_id=exact_session,
-                    operation=str(request.operation or "").strip(),
+                    operation=str(
+                        request.tool_name or request.operation or ""
+                    ).strip(),
                 )
             if domain:
                 if domain not in PERMISSION_RUNTIME_DOMAINS:
@@ -1207,7 +1253,12 @@ class ApprovalControlPlane:
                     task_id=self.task_id,
                     session_id=exact_session,
                     executor=self.executor,
-                    operation=str(request.operation or "").strip(),
+                    # ``operation`` is the outer RPC display/routing label
+                    # (for Claude this is ``command``).  Native Claude tool
+                    # identity remains in tool_name/action_fingerprint.
+                    operation=str(
+                        request.tool_name or request.operation or ""
+                    ).strip(),
                     domain=domain,
                     profile_digest=profile_digest,
                     action_fingerprint_value=structured_action_fingerprint,
@@ -1463,6 +1514,8 @@ class ApprovalControlPlane:
             # failure, restore the pre-decision state and ledger before
             # propagating the error.
             domain = str(pending.get("escalation_domain") or "").strip()
+            if pending.get("approval_version") == 3:
+                domain = ""
             previous_state = json.loads(json.dumps(state))
             previous_ledger = load_block_ledger(self.root) if domain else None
             pending = dict(pending)

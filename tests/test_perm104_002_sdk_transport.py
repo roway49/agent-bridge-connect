@@ -365,7 +365,7 @@ class ClaudeExecutorSdkSemanticsTests(unittest.TestCase):
         self.assertEqual(executor.tools, ["Read"])
         self.assertEqual(executor.auto_approve_tools, [])
 
-    def test_start_control_fails_closed_without_sdk(self) -> None:
+    def test_start_control_rejects_missing_permission_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary) / "workspace"
             workspace.mkdir()
@@ -394,11 +394,7 @@ class ClaudeExecutorSdkSemanticsTests(unittest.TestCase):
                 with mock.patch.dict(sys.modules, {"claude_agent_sdk": None}):
                     result = executor.start_control(packet)
             self.assertFalse(result.ok)
-            self.assertTrue(
-                result.message.startswith("claude_sdk_")
-                or "permission_transport_unsupported" in result.message,
-                result.message,
-            )
+            self.assertIn("invalid_permission_mode", result.message)
 
 
 class ClaudeSdkRuntimeVerifierTests(unittest.TestCase):

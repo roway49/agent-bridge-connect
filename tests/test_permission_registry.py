@@ -524,12 +524,10 @@ class HermesACPCapabilityProbeTests(unittest.TestCase):
         self.assertNotEqual(details["permission_mode"], "inherit")
         self.assertNotEqual(details["permission_mode"], "full")
 
-    def test_full_cli_probe_missing_executable_fails_closed(self) -> None:
-        with self.assertRaises(ABCError) as raised:
-            probe_executor_capability("hermes", "full", None)
-        self.assertEqual(raised.exception.code, "permission_capability_unsupported")
-        self.assertEqual(raised.exception.details["executor"], "hermes")
-        self.assertEqual(raised.exception.details["permission_mode"], "full")
+    def test_full_mapping_does_not_require_an_executable_probe(self) -> None:
+        report = probe_executor_capability("hermes", "full", None)
+        self.assertTrue(report["supported"])
+        self.assertEqual(report["evidence"], ["native_flag_mapping"])
 
     def test_probe_only_uses_official_acp_cli_never_scans_sessions(self) -> None:
         """The probe never touches Hermes private session storage or logs."""
@@ -548,14 +546,14 @@ class HermesACPCapabilityProbeTests(unittest.TestCase):
         self.assertTrue(report["supported"])
         self.assertEqual(report["evidence"], ["no_overrides"])
 
-    def test_cli_transport_probe_fails_closed_without_documented_flag(self) -> None:
+    def test_cli_transport_full_uses_the_frozen_native_mapping(self) -> None:
         completed = mock.Mock(returncode=0, stdout="usage without full flag", stderr="")
         with mock.patch(
             "agent_bridge_connect.permission_modes.subprocess.run", return_value=completed
         ):
-            with self.assertRaises(ABCError) as raised:
-                probe_executor_capability("codex", "full", "/usr/local/bin/codex")
-        self.assertEqual(raised.exception.code, "permission_capability_unsupported")
+            report = probe_executor_capability("codex", "full", "/usr/local/bin/codex")
+        self.assertTrue(report["supported"])
+        self.assertEqual(report["evidence"], ["native_flag_mapping"])
 
     def test_cli_transport_probe_success(self) -> None:
         completed = mock.Mock(
@@ -568,7 +566,7 @@ class HermesACPCapabilityProbeTests(unittest.TestCase):
         ):
             report = probe_executor_capability("codex", "full", "/usr/local/bin/codex")
         self.assertTrue(report["supported"])
-        self.assertEqual(report["evidence"], ["cli_help_verified"])
+        self.assertEqual(report["evidence"], ["native_flag_mapping"])
 
 
 class PermissionAuditPayloadTests(unittest.TestCase):

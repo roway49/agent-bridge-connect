@@ -72,9 +72,9 @@ class Perm103007ClaudePathCapabilityTests(unittest.TestCase):
             record,
         )
 
-    def test_all_permission_modes_receive_the_same_orthogonal_path_boundary(self) -> None:
+    def test_safe_and_inherit_receive_the_orthogonal_path_boundary(self) -> None:
         expected_settings = None
-        for mode in ("inherit", "safe", "full"):
+        for mode in ("inherit", "safe"):
             with self.subTest(mode=mode):
                 command = self._command(mode)
                 self.assertEqual(command.count("--settings"), 1)
@@ -106,6 +106,12 @@ class Perm103007ClaudePathCapabilityTests(unittest.TestCase):
                 if expected_settings is None:
                     expected_settings = settings_text
                 self.assertEqual(settings_text, expected_settings)
+
+    def test_full_uses_native_flag_without_path_capability_args(self) -> None:
+        command = self._command("full")
+        self.assertIn("--dangerously-skip-permissions", command)
+        self.assertNotIn("--settings", command)
+        self.assertNotIn("--add-dir", command)
 
     def test_runner_reconstructs_exact_settings_and_rejects_tampering(self) -> None:
         command = self._command("safe")

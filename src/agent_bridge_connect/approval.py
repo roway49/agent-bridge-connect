@@ -37,10 +37,11 @@ APPROVAL_V2_VERSION = 2
 # lists or a session/once grant decision.
 APPROVAL_V3_VERSION = 3
 APPROVAL_SCOPE = "single_action"
-# A v3 receipt is deliberately not a single-action approval.  It is the one
-# task-scoped decision which authorizes the contained-full continuation.
+# A v3 receipt is deliberately not a single-action approval. It is the one
+# task-scoped decision which authorizes the native-full continuation.
 APPROVAL_V3_SCOPE = "task_elevation"
-APPROVAL_V3_ELEVATION_MODE = "contained_full"
+APPROVAL_V3_ELEVATION_MODE = "full"
+APPROVAL_V3_LEGACY_ELEVATION_MODE = "contained_full"
 APPROVAL_KIND = "permission"
 APPROVAL_STATES = frozenset({"pending", "answered"})
 APPROVAL_DECISION_TYPES = frozenset({"approve", "deny"})
@@ -1197,6 +1198,7 @@ def build_approval_receipt_v3(
             "mode": APPROVAL_V3_ELEVATION_MODE,
             "profile_digest": clean_profile_digest,
             "path_plan_digest": path_plan_digest,
+            "policy": "executor_native_no_agentbc_sandbox",
         },
         "cardinality": {
             "permission_requests": 1,
@@ -1268,10 +1270,13 @@ def validate_approval_receipt_v3(
             "approval_scope_invalid",
             f"Approval v3 scope must be {APPROVAL_V3_SCOPE}",
         )
-    if receipt.get("elevation_mode") != APPROVAL_V3_ELEVATION_MODE:
+    if receipt.get("elevation_mode") not in {
+        APPROVAL_V3_ELEVATION_MODE,
+        APPROVAL_V3_LEGACY_ELEVATION_MODE,
+    }:
         _invalid(
             "approval_elevation_mode_invalid",
-            "Approval v3 must request contained_full elevation",
+            "Approval v3 must request full elevation",
         )
     if receipt.get("requested_permission") != "full":
         _invalid(
@@ -1304,13 +1309,14 @@ def validate_approval_receipt_v3(
     _require_summary(receipt.get("summary"))
     _require_reason_summary(receipt.get("reason_summary"))
     _require_reason_detail(receipt.get("reason_detail"))
-    if not _V3_DIGEST_RE.fullmatch(str(receipt.get("path_plan_digest") or "")):
-        _invalid("approval_scope_invalid", "Approval v3 requires a PathPlan digest")
+    path_digest = str(receipt.get("path_plan_digest") or "")
+    if path_digest and not _V3_DIGEST_RE.fullmatch(path_digest):
+        _invalid("approval_scope_invalid", "Approval v3 PathPlan digest is invalid")
     profile_digest = str(receipt.get("containment_profile_digest") or "")
-    if not _V3_DIGEST_RE.fullmatch(profile_digest):
+    if profile_digest and not _V3_DIGEST_RE.fullmatch(profile_digest):
         _invalid(
             "approval_scope_invalid",
-            "Approval v3 requires a containment profile digest",
+            "Approval v3 containment profile digest is invalid",
         )
     authority = receipt.get("authority")
     if not isinstance(authority, dict):
@@ -1343,12 +1349,18 @@ def validate_approval_receipt_v3(
     containment = receipt.get("containment")
     if not isinstance(containment, dict):
         _invalid("approval_containment_invalid", "Approval v3 requires containment facts")
-    if containment.get("mode") != APPROVAL_V3_ELEVATION_MODE:
-        _invalid("approval_containment_invalid", "Approval v3 containment mode is invalid")
-    if containment.get("profile_digest") != profile_digest:
-        _invalid("approval_containment_invalid", "Approval v3 profile digest is not bound")
-    if containment.get("path_plan_digest") != receipt.get("path_plan_digest"):
-        _invalid("approval_containment_invalid", "Approval v3 PathPlan digest is not bound")
+    if receipt.get("elevation_mode") == APPROVAL_V3_LEGACY_ELEVATION_MODE:
+        if containment.get("mode") != APPROVAL_V3_LEGACY_ELEVATION_MODE:
+            _invalid("approval_containment_invalid", "Legacy approval containment mode is invalid")
+        if containment.get("profile_digest") != profile_digest:
+            _invalid("approval_containment_invalid", "Legacy approval profile digest is not bound")
+        if containment.get("path_plan_digest") != receipt.get("path_plan_digest"):
+            _invalid("approval_containment_invalid", "Legacy approval PathPlan digest is not bound")
+    else:
+        if containment.get("mode") != APPROVAL_V3_ELEVATION_MODE:
+            _invalid("approval_containment_invalid", "Approval v3 full mode is invalid")
+        if containment.get("policy") != "executor_native_no_agentbc_sandbox":
+            _invalid("approval_containment_invalid", "Approval v3 full mode must not add AgentBC containment")
     cardinality = receipt.get("cardinality")
     if not isinstance(cardinality, dict):
         _invalid("approval_cardinality_invalid", "Approval v3 requires cardinality facts")
@@ -1457,7 +1469,7 @@ def record_approval_full_continuation(
     executor_run_id: str,
     session_id: str,
 ) -> dict[str, Any]:
-    """Record one authoritative contained-full continuation, idempotently."""
+    """Record one authoritative native-full continuation, idempotently."""
     receipt = validate_approval_receipt_v3(value)
     if receipt["decision"]["type"] != "approve_full":
         _invalid("approval_continuation_invalid", "Only approve_full may continue")

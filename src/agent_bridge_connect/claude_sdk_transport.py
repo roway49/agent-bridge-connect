@@ -782,7 +782,7 @@ class ClaudeSDKControlTransport:
             preflight = dict(self.full_preflight or {})
             preflight.setdefault("ok", True)
             preflight.setdefault("status", "passed")
-            preflight.setdefault("mode", "contained_full")
+            preflight.setdefault("mode", "full")
             native_protocol = "claude.can_use_tool.setMode"
             message = {
                 "jsonrpc": "2.0",
@@ -801,6 +801,7 @@ class ClaudeSDKControlTransport:
                     "request_id": request_id,
                     "tool_name": tool,
                     "request_fingerprint": fingerprint,
+                    "input_fingerprint": stable_input_digest(tool_input),
                     "action_fingerprint": action_fingerprint_value,
                     "control_path": control_path,
                     "native_event": "claude_sdk_can_use_tool",
@@ -813,14 +814,12 @@ class ClaudeSDKControlTransport:
                 "host_profile_digest": self.host_profile_digest,
                 "approval_version": 3,
                 "scope": "task_elevation",
-                "elevation_mode": "contained_full",
+                "elevation_mode": "full",
                 "native_live_elevation": True,
                 "native_elevation_protocol": native_protocol,
                 "native_event": "claude_sdk_can_use_tool",
-                "path_plan_digest": self.path_plan_digest
-                or stable_input_digest("path-plan-unavailable"),
-                "containment_profile_digest": self.containment_profile_digest
-                or stable_input_digest("containment-profile-unavailable"),
+                "path_plan_digest": "",
+                "containment_profile_digest": "",
                 "preflight": preflight,
                 "authority": {
                     "executor": self.executor,
@@ -868,6 +867,7 @@ class ClaudeSDKControlTransport:
                     "request_id": request_id,
                     "tool_name": tool,
                     "request_fingerprint": fingerprint,
+                    "input_fingerprint": stable_input_digest(tool_input),
                     "action_fingerprint": action_fingerprint_value,
                     "control_path": control_path,
                     "escalation_domain": self.escalation_domain,

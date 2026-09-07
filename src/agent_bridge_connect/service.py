@@ -680,10 +680,27 @@ class TaskService:
         if not normalized_run_id:
             raise ABCError("executor_run_id_invalid", "Executor run ID is required")
         run_ids = list(session.get("run_ids") or [])
+        resume_facts = dict(session.get("run_resume_facts") or {})
         if normalized_run_id in run_ids:
+            # Duplicate registration is a no-op and must return the original
+            # pre-registration fact, never recompute it from the now-mutated
+            # run list.  The index fallback keeps historical snapshots
+            # readable until their next real registration.
+            resumed = resume_facts.get(normalized_run_id)
+            if type(resumed) is not bool:
+                resumed = run_ids.index(normalized_run_id) > 0
+                resume_facts[normalized_run_id] = resumed
+                session["run_resume_facts"] = resume_facts
+                errors = validate_session_snapshot(session, executor=task.assignee)
+                if errors:
+                    raise ABCError("executor_session_invalid", "; ".join(errors), {"errors": errors})
+                extensions[SESSION_EXTENSION_KEY] = session
+                task.extensions = extensions
+                task.updated_at = _utc_now()
+                self.store.write_task(task.id, _without_none(task.to_dict()))
             return {
                 "run_id": normalized_run_id,
-                "resumed": len(run_ids) > 1,
+                "resumed": bool(resumed),
                 "session_state": session.get("session_state"),
             }
         resumed = bool(run_ids)
@@ -694,6 +711,8 @@ class TaskService:
             )
         run_ids.append(normalized_run_id)
         session["run_ids"] = run_ids
+        resume_facts[normalized_run_id] = resumed
+        session["run_resume_facts"] = resume_facts
         if resumed:
             session["resume_count"] = int(session.get("resume_count") or 0) + 1
         if str(session.get("session_id") or "").strip():
@@ -2169,6 +2188,7 @@ class TaskService:
         execution_session: dict[str, Any] | None = None,
         tool_name: str = "",
         tool_use_id: str = "",
+        input_fingerprint: str = "",
         action_fingerprint: str = "",
         escalation_domain: str = "",
         profile_digest: str = "",
@@ -2284,7 +2304,8 @@ class TaskService:
         # task-scoped full elevation.
         is_task_elevation = (
             approval_version == 3
-            or str(elevation_mode or "").strip().lower() == PERMISSION_ELEVATION_MODE
+            or str(elevation_mode or "").strip().lower()
+            in {PERMISSION_ELEVATION_MODE, "contained_full"}
         )
         if is_task_elevation:
             if offered_choices:
@@ -2292,7 +2313,10 @@ class TaskService:
                     "approval_legacy_field_rejected",
                     "v3 task elevation cannot carry native once/session choices",
                 )
-            if live_claude:
+            if live_claude and str(elevation_mode or "").strip().lower() == "contained_full":
+                # Historical Claude-specific receipts are retained solely for
+                # old protocol fixtures.  Current Plan D adapters send
+                # elevation_mode=full and use the generic v3 record below.
                 return self._block_claude_live_elevation(
                     task,
                     executor_run_id=normalized_run_id,
@@ -2307,6 +2331,7 @@ class TaskService:
                     blocked_step_id=blocked_step_id,
                     tool_name=tool_name,
                     tool_use_id=tool_use_id,
+                    input_fingerprint=input_fingerprint,
                     action_fingerprint=action_fingerprint,
                     escalation_domain=escalation_domain,
                     profile_digest=profile_digest,
@@ -2331,6 +2356,7 @@ class TaskService:
                 blocked_step_id=blocked_step_id,
                 tool_name=tool_name,
                 tool_use_id=tool_use_id,
+                input_fingerprint=input_fingerprint,
                 action_fingerprint=action_fingerprint,
                 escalation_domain=escalation_domain,
                 profile_digest=profile_digest,
@@ -2340,6 +2366,7 @@ class TaskService:
                 path_plan_digest_value=path_plan_digest,
                 containment_profile_digest_value=containment_profile_digest,
                 full_preflight=full_preflight,
+                native_live_elevation=live_claude,
             )
 
         if offered_choices:
@@ -2622,6 +2649,7 @@ class TaskService:
         blocked_step_id: int | None,
         tool_name: str,
         tool_use_id: str,
+        input_fingerprint: str,
         action_fingerprint: str,
         escalation_domain: str,
         profile_digest: str,
@@ -2641,6 +2669,11 @@ class TaskService:
             raise ABCError(
                 "approval_no_step",
                 "Claude live elevation cannot be displayed without an incomplete step",
+            )
+        legacy_input_fingerprint = str(input_fingerprint or "").strip()
+        if not legacy_input_fingerprint:
+            legacy_input_fingerprint = stable_claude_input_digest(
+                {"request_fingerprint": request_fingerprint}
             )
         clean_plan = str(path_plan_digest_value or path_plan_digest(task.workspace or {}))
         clean_profile = str(
@@ -2674,11 +2707,12 @@ class TaskService:
                 request_id=request_id,
                 tool_use_id=tool_use_id or request_id,
                 request_fingerprint=request_fingerprint,
-                input_fingerprint=stable_claude_input_digest(
-                    {"request_fingerprint": request_fingerprint}
-                ),
+                input_fingerprint=legacy_input_fingerprint,
                 action_fingerprint=action_fingerprint or request_fingerprint,
-                operation=operation,
+                # The receipt keeps the native SDK tool identity.  The outer
+                # RPC operation (normally ``command``) is display/routing
+                # metadata and is never used as the security identity.
+                operation=tool_name or operation,
                 path_plan_digest=clean_plan,
                 containment_profile_digest=clean_profile,
                 native_event=native_event or "claude_sdk_can_use_tool",
@@ -2696,13 +2730,20 @@ class TaskService:
                 "request_id": request_id,
                 "tool_use_id": tool_use_id or request_id,
                 "request_fingerprint": request_fingerprint,
+                "input_fingerprint": legacy_input_fingerprint,
                 "action_fingerprint": action_fingerprint or request_fingerprint,
-                "operation": operation,
             }
-            same_request = all(
+            expected_tool_name = str(tool_name or "").strip()
+            same_request = bool(expected_tool_name) and (
+                existing_binding.get("operation") == expected_tool_name
+            ) and all(
                 existing_binding.get(field) == expected
                 for field, expected in expected_binding.items()
-            )
+            ) and existing_receipt.get("containment") == {
+                "path_plan_digest": clean_plan,
+                "profile_digest": clean_profile,
+                "policy": "runner_pathplan_contained",
+            }
             if not same_request:
                 raise ABCError(
                     "claude_elevation_binding_mismatch",
@@ -2727,10 +2768,11 @@ class TaskService:
                         "dispatch_required": False,
                         "idempotent": True,
                     }
-                raise ABCError(
-                    "claude_elevation_input_missing",
-                    "The pending Claude elevation receipt has no reusable input request",
-                )
+                # The SDK persists the native elevation receipt before Core
+                # projects the first task-scoped waiting input.  A pending
+                # receipt without an input is therefore the first projection,
+                # not a replay failure; only an existing native input is an
+                # idempotent duplicate.
             elif existing_receipt["state"]["status"] != CLAUDE_ELEVATION_PENDING:
                 # A duplicate/replayed native event is never a reason to show
                 # a second dialog.  The live callback/control plane owns the
@@ -2741,6 +2783,25 @@ class TaskService:
                 )
         extensions[APPROVAL_EXTENSION_KEY] = receipt_value
         extensions[CLAUDE_ELEVATION_EXTENSION_KEY] = existing_receipt
+        # Keep the generic v3 elevation projection available to the shared
+        # responder even for this legacy Claude receipt fixture.  It is never
+        # selected by current Plan D adapters (which send mode=full).
+        if permission_elevation_from_extensions(extensions) is None:
+            extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = build_permission_elevation(
+                task_id=task.id,
+                path_plan_digest="",
+                executor=executor,
+                executor_run_id=executor_run_id,
+                session_id=session_id,
+                request_id=request_id,
+                request_fingerprint=request_fingerprint,
+                containment_profile_digest="",
+                operation=operation,
+                native_event=native_event or "claude_sdk_can_use_tool",
+                tool_call_id=tool_use_id or request_id,
+                action_fingerprint=action_fingerprint,
+                authority=native_authority,
+            )
         now = _utc_now()
         deadline_at = (
             _parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)
@@ -2880,18 +2941,18 @@ class TaskService:
                 "approval_session_mismatch",
                 "The live Claude input is not bound to the official executor session",
             )
-        receipt = claude_elevation_from_extensions(
+        elevation = permission_elevation_from_extensions(
             extensions,
             task_id=task.id,
             executor_run_id=expected_run,
             session_id=session_id,
             request_id=str(request.get("request_id") or ""),
-            tool_use_id=str(request.get("tool_use_id") or "") or None,
+            request_fingerprint=str(request.get("request_fingerprint") or ""),
         )
-        if receipt is None or receipt["state"]["status"] != CLAUDE_ELEVATION_PENDING:
+        if elevation is None or elevation["state"]["status"] != "prepared":
             raise ABCError(
-                "claude_elevation_state_invalid",
-                "The live Claude elevation receipt is not pending",
+                "permission_elevation_state_invalid",
+                "The live task elevation receipt is not pending",
             )
         now = _utc_now()
         deadline = _parse_timestamp(str(request.get("deadline_at") or now))
@@ -2911,6 +2972,20 @@ class TaskService:
                 executor_run_id=expected_run,
                 request_fingerprint=str(request.get("request_fingerprint") or ""),
             )
+        extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = (
+            record_permission_elevation_decision(
+                elevation,
+                "approve_full" if response_value == "approve" else "deny",
+                source="user",
+                decided_at=now,
+                task_id=task.id,
+                executor=task.assignee,
+                executor_run_id=expected_run,
+                session_id=session_id,
+                request_id=str(request.get("request_id") or ""),
+                request_fingerprint=str(request.get("request_fingerprint") or ""),
+            )
+        )
         answered = dict(request)
         answered.update(
             {
@@ -2928,10 +3003,8 @@ class TaskService:
             {
                 "internal_status": "running",
                 "lease_state": "active",
-                "claude_elevation_state": (
-                    CLAUDE_ELEVATION_PENDING
-                    if response_value == "approve"
-                    else CLAUDE_ELEVATION_DENIED
+                "permission_elevation_state": (
+                    "approved" if response_value == "approve" else "denied"
                 ),
             },
         )
@@ -2979,6 +3052,7 @@ class TaskService:
         blocked_step_id: int | None,
         tool_name: str,
         tool_use_id: str,
+        input_fingerprint: str,
         action_fingerprint: str,
         escalation_domain: str,
         profile_digest: str,
@@ -2988,12 +3062,15 @@ class TaskService:
         path_plan_digest_value: str,
         containment_profile_digest_value: str,
         full_preflight: dict[str, Any] | None,
+        native_live_elevation: bool = False,
     ) -> dict[str, Any]:
-        """Create the one v3 wait after a no-UI contained-full preflight."""
-        from .permission_runtime import (
-            host_profile_digest as host_profile_digest_fn,
-            path_plan_digest as path_plan_digest_fn,
-        )
+        """Create the one v3 wait from trusted native authority facts.
+
+        Plan D deliberately does not turn PathPlan, host containment,
+        runtime receipts, executor probes, or version strings into a second
+        permission gate.  Those fields remain accepted only for reading old
+        records; new full waits carry the retired preflight marker.
+        """
         from .reports import redact_secrets
         from .run_lease import suspend_lease
         from .task_health import clear_task_progress
@@ -3015,55 +3092,21 @@ class TaskService:
                 "Task elevation requires the trusted structured native authority event",
             )
 
-        try:
-            validate_path_plan_workspace(task.workspace or {})
-            frozen_plan_digest = path_plan_digest_fn(task.workspace or {})
-            frozen_profile_digest = host_profile_digest_fn()
-        except (ABCError, OSError) as exc:
-            raise ABCError(
-                "permission_preflight_failed",
-                "Full-capability preflight could not validate the frozen PathPlan",
-                {"reason_code": getattr(exc, "code", "path_plan_invalid")},
-            ) from exc
-        requested_plan_digest = str(path_plan_digest_value or "").strip()
-        if requested_plan_digest and requested_plan_digest != frozen_plan_digest:
-            raise ABCError(
-                "permission_elevation_binding_mismatch",
-                "Native elevation request is bound to a different PathPlan digest",
-            )
-        clean_plan_digest = requested_plan_digest or frozen_plan_digest
-        requested_profile_digest = str(
-            containment_profile_digest_value or profile_digest or ""
-        ).strip()
-        if requested_profile_digest and requested_profile_digest != frozen_profile_digest:
-            raise ABCError(
-                "permission_elevation_binding_mismatch",
-                "Native elevation request is bound to a different containment profile",
-            )
-        clean_profile_digest = requested_profile_digest or frozen_profile_digest
-
-        # The adapter may supply a Runner/mechanical capability result.  A
-        # negative result is fail-closed before any input record or dialog is
-        # created.  No prose, stderr, exit code, or version string is used as
-        # an approval authority.
-        if isinstance(full_preflight, dict) and full_preflight.get("ok") is False:
-            raise ABCError(
-                "permission_preflight_failed",
-                "Executor cannot enter the contained-full capability",
-                {"reason_code": str(full_preflight.get("code") or "capability_unavailable")},
-            )
+        clean_plan_digest = ""
+        clean_profile_digest = ""
 
         previous_input = extensions.get("agentbc.input")
-        if isinstance(previous_input, dict) and previous_input.get("status") == "waiting":
-            if (
-                int(previous_input.get("approval_version") or 1) == 3
-                and str(previous_input.get("request_id") or "") == request_id
-            ):
-                if str(previous_input.get("request_fingerprint") or "") != request_fingerprint:
-                    raise ABCError(
-                        "permission_elevation_binding_mismatch",
-                        "A replayed task elevation request changed its native fingerprint",
-                    )
+        if (
+            isinstance(previous_input, dict)
+            and int(previous_input.get("approval_version") or 1) == 3
+            and str(previous_input.get("request_id") or "") == request_id
+        ):
+            if str(previous_input.get("request_fingerprint") or "") != request_fingerprint:
+                raise ABCError(
+                    "permission_elevation_binding_mismatch",
+                    "A replayed task elevation request changed its native fingerprint",
+                )
+            if previous_input.get("status") == "waiting":
                 return {
                     "ok": True,
                     "task_id": task_id,
@@ -3075,6 +3118,28 @@ class TaskService:
                     "blocked_step_id": previous_input.get("blocked_step_id"),
                     "idempotent": True,
                 }
+            previous_response = previous_input.get("response")
+            previous_decision = (
+                str(previous_response.get("type") or "").strip().lower()
+                if isinstance(previous_response, dict)
+                else ""
+            )
+            return {
+                "ok": True,
+                "task_id": task_id,
+                "status": str(task.status or ""),
+                "input_id": str(previous_input.get("input_id") or ""),
+                "request_id": request_id,
+                "request_fingerprint": request_fingerprint,
+                "scope": APPROVAL_V3_SCOPE,
+                "approval_version": 3,
+                "elevation_mode": PERMISSION_ELEVATION_MODE,
+                "approval_decision": previous_decision,
+                "same_session": previous_input.get("native_live_elevation") is True,
+                "dispatch_required": False,
+                "idempotent": True,
+            }
+        if isinstance(previous_input, dict) and previous_input.get("status") == "waiting":
             raise ABCError(
                 "approval_already_pending",
                 "A task elevation request is already waiting for this Task ID",
@@ -3101,7 +3166,7 @@ class TaskService:
                 self.mark_task_needs_recovery(
                     task_id,
                     "permission_escalation_ineffective",
-                    "The approved contained-full elevation did not remove the native permission block",
+                    "The approved native-full elevation did not remove the native permission block",
                     {
                         "executor": executor,
                         "request_id": request_id,
@@ -3182,6 +3247,7 @@ class TaskService:
             "session_id": session_id,
             "request_id": request_id,
             "request_fingerprint": request_fingerprint,
+            "input_fingerprint": str(input_fingerprint or "").strip()[:160],
             "operation": operation,
             "summary": receipt["summary"],
             "reason_summary": reason_summary,
@@ -3196,15 +3262,15 @@ class TaskService:
             "escalation_domain": str(escalation_domain or "").strip().lower()[:120],
             "control_path": str(control_path or "").strip()[:512],
             "preflight": {
-                "status": "passed",
+                "status": "retired",
                 "mode": PERMISSION_ELEVATION_MODE,
-                "path_plan_digest": clean_plan_digest,
-                "containment_profile_digest": clean_profile_digest,
             },
             "created_at": now,
             "deadline_at": deadline_at,
             "status": "waiting",
         }
+        if native_live_elevation:
+            request["native_live_elevation"] = True
         history = list(extensions.get("agentbc.input_history") or [])
         if isinstance(previous_input, dict):
             history.append(previous_input)
@@ -3223,26 +3289,27 @@ class TaskService:
             extensions,
             {
                 "internal_status": "waiting",
-                "lease_state": "suspended",
+                "lease_state": "active" if native_live_elevation else "suspended",
                 "waiting_since": now,
                 "permission_elevation_mode": PERMISSION_ELEVATION_MODE,
                 "permission_elevation_source": "task_elevation",
                 "permission_elevation_state": "prepared",
             },
         )
-        self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
-        suspend_lease(
-            task_id,
-            self.board_root,
-            executor_run_id=executor_run_id,
-            executor_id=task.assignee,
-            work_dir=str(
-                (task.workspace or {}).get("project_root")
-                or (task.workspace or {}).get("root")
-                or self.board_root
-            ),
-        )
+        if not native_live_elevation:
+            self._release_lease(task_id)
+            suspend_lease(
+                task_id,
+                self.board_root,
+                executor_run_id=executor_run_id,
+                executor_id=task.assignee,
+                work_dir=str(
+                    (task.workspace or {}).get("project_root")
+                    or (task.workspace or {}).get("root")
+                    or self.board_root
+                ),
+            )
         clear_task_progress(task)
         self.store.append_event(
             task_id,
@@ -3270,7 +3337,9 @@ class TaskService:
             "approval_version": 3,
             "elevation_mode": PERMISSION_ELEVATION_MODE,
             "blocked_step_id": step_id,
-            "preflight": "passed",
+            "preflight": "retired",
+            "same_session": bool(native_live_elevation),
+            "dispatch_required": not native_live_elevation,
         }
 
     def block_task_for_elevation(self, task_id: str, **kwargs: Any) -> dict[str, Any]:
@@ -3336,15 +3405,7 @@ class TaskService:
         executor_run_id: str,
         session_id: str,
     ) -> dict[str, Any]:
-        """Activate one approved elevation from authoritative Runner facts."""
-        from .permission_runtime import (
-            activate_permission_runtime_record,
-            authorize_permission_runtime_record,
-            build_permission_runtime_record,
-            host_profile_digest,
-            path_plan_digest,
-            permission_runtime_from_extensions,
-        )
+        """Activate one approved native-full elevation."""
 
         task = self.get_task(task_id)
         extensions = dict(task.extensions or {})
@@ -3370,108 +3431,6 @@ class TaskService:
                 "permission_elevation_state_invalid",
                 "Only an approved task elevation can be activated",
             )
-        plan_digest = path_plan_digest(task.workspace or {})
-        if plan_digest != str(elevation["binding"].get("path_plan_digest") or ""):
-            raise ABCError(
-                "permission_elevation_binding_mismatch",
-                "Activation PathPlan digest does not match the approved elevation",
-            )
-        profile_digest = host_profile_digest()
-        if profile_digest != str(elevation["containment"].get("profile_digest") or ""):
-            raise ABCError(
-                "permission_elevation_binding_mismatch",
-                "Activation containment profile does not match the approved elevation",
-            )
-        runtime = permission_runtime_from_extensions(extensions)
-        if runtime is not None:
-            runtime_binding = runtime.get("binding") or {}
-            runtime_state = str((runtime.get("state") or {}).get("status") or "")
-            # Runner prepares the outer worker capability before the adapter
-            # has an official Hermes session or continuation run ID.  The
-            # approved child must replace that placeholder with the exact
-            # adapter run/session before the full transport starts; otherwise
-            # final verification would be bound to the outer worker instead
-            # of the official resumed session.
-            runtime_needs_child_binding = (
-                str(runtime_binding.get("executor_run_id") or "") != str(executor_run_id)
-                or str(runtime_binding.get("session_id") or "") != str(session_id)
-            )
-            if runtime_needs_child_binding:
-                if runtime_state == "verified":
-                    raise ABCError(
-                        "permission_elevation_replay",
-                        "A verified task elevation cannot be rebound to another continuation",
-                    )
-                try:
-                    chain = self.resolve_chain(task.id)
-                    chain_head_id = chain.chain_root_task_id or task.id
-                    runtime = build_permission_runtime_record(
-                        task_id=task.id,
-                        chain_head_id=chain_head_id,
-                        executor=task.assignee,
-                        executor_run_id=executor_run_id,
-                        session_id=session_id,
-                        permission_source="task_elevation",
-                        path_plan_digest=plan_digest,
-                        host_profile_digest=profile_digest,
-                        action_fingerprint=str(
-                            (elevation.get("provenance") or {}).get("action_fingerprint") or ""
-                        ),
-                        operation=str(elevation.get("operation") or ""),
-                        elevation_id=str(elevation.get("elevation_id") or ""),
-                    )
-                except (ABCError, OSError) as exc:
-                    raise ABCError(
-                        "permission_elevation_runtime_unavailable",
-                        "Task elevation runtime receipt could not be rebound to the continuation",
-                        {"reason_code": getattr(exc, "code", "runtime_unavailable")},
-                    ) from exc
-        if runtime is None:
-            try:
-                chain = self.resolve_chain(task.id)
-                chain_head_id = chain.chain_root_task_id or task.id
-                runtime = build_permission_runtime_record(
-                    task_id=task.id,
-                    chain_head_id=chain_head_id,
-                    executor=task.assignee,
-                    executor_run_id=executor_run_id,
-                    session_id=session_id,
-                    permission_source="task_elevation",
-                    path_plan_digest=plan_digest,
-                    host_profile_digest=profile_digest,
-                    action_fingerprint=str(
-                        (elevation.get("provenance") or {}).get("action_fingerprint") or ""
-                    ),
-                    operation=str(elevation.get("operation") or ""),
-                    elevation_id=str(elevation.get("elevation_id") or ""),
-                )
-            except (ABCError, OSError) as exc:
-                raise ABCError(
-                    "permission_elevation_runtime_unavailable",
-                    "Task elevation runtime receipt could not be prepared",
-                    {"reason_code": getattr(exc, "code", "runtime_unavailable")},
-                ) from exc
-        if runtime["binding"].get("permission_source") != "task_elevation":
-            raise ABCError(
-                "permission_elevation_binding_mismatch",
-                "An elevation cannot reuse a legacy runtime capability",
-            )
-        if runtime["state"]["status"] == "prepared":
-            runtime = authorize_permission_runtime_record(
-                runtime,
-                decision="approve_full",
-                request_id=str(elevation["binding"].get("request_id") or ""),
-                elevation_id=str(elevation.get("elevation_id") or ""),
-            )
-            runtime = activate_permission_runtime_record(
-                runtime,
-                host_profile_digest=profile_digest,
-            )
-        elif runtime["state"]["status"] not in {"activated", "verified"}:
-            raise ABCError(
-                "permission_elevation_runtime_invalid",
-                "Task elevation runtime is not activatable",
-            )
         approval_value = extensions.get(APPROVAL_EXTENSION_KEY)
         approval = validate_approval_receipt(approval_value)
         if approval.get("version") == 3 and approval["decision"].get("type") == "approve_full":
@@ -3482,16 +3441,13 @@ class TaskService:
             )
         extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = activated_elevation
         extensions[APPROVAL_EXTENSION_KEY] = approval
-        from .permission_runtime import PERMISSION_RUNTIME_EXTENSION_KEY
-
-        extensions[PERMISSION_RUNTIME_EXTENSION_KEY] = runtime
         task.extensions = _merge_execution(
             extensions,
             {
                 "permission_elevation_mode": PERMISSION_ELEVATION_MODE,
                 "permission_elevation_source": "task_elevation",
                 "permission_elevation_state": activated_elevation["state"]["status"],
-                "permission_runtime_state": runtime["state"]["status"],
+                "permission_runtime_state": "retired",
             },
         )
         task.updated_at = _utc_now()
@@ -3515,7 +3471,7 @@ class TaskService:
             "mode": PERMISSION_ELEVATION_MODE,
             "source": "task_elevation",
             "elevation_state": activated_elevation["state"]["status"],
-            "runtime_state": runtime["state"]["status"],
+            "runtime_state": "retired",
         }
 
     def verify_task_elevation(
@@ -3525,12 +3481,7 @@ class TaskService:
         executor_run_id: str,
         session_id: str,
     ) -> dict[str, Any]:
-        """Verify the elevation and runtime only from official receipts."""
-        from .permission_runtime import (
-            PERMISSION_RUNTIME_EXTENSION_KEY,
-            permission_runtime_from_extensions,
-            verify_permission_runtime_record,
-        )
+        """Verify the elevation from the official executor session."""
 
         task = self.get_task(task_id)
         extensions = dict(task.extensions or {})
@@ -3545,23 +3496,12 @@ class TaskService:
             executor_run_id=executor_run_id,
             session_id=session_id,
         )
-        runtime = permission_runtime_from_extensions(extensions)
-        if runtime is None:
-            raise ABCError(
-                "permission_elevation_runtime_invalid",
-                "Cannot verify elevation without its runtime receipt",
-            )
-        verified_runtime = verify_permission_runtime_record(
-            runtime,
-            session_id=session_id,
-        )
         extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = verified_elevation
-        extensions[PERMISSION_RUNTIME_EXTENSION_KEY] = verified_runtime
         task.extensions = _merge_execution(
             extensions,
             {
                 "permission_elevation_state": "verified",
-                "permission_runtime_state": "verified",
+                "permission_runtime_state": "retired",
             },
         )
         task.updated_at = _utc_now()
@@ -3581,7 +3521,7 @@ class TaskService:
             "ok": True,
             "task_id": task.id,
             "elevation_state": "verified",
-            "runtime_state": "verified",
+            "runtime_state": "retired",
         }
 
     def cutover_preflight(self) -> dict[str, Any]:
@@ -3671,12 +3611,40 @@ class TaskService:
                 {"task_id": task.id, "input_id": input_id, "current_input_id": current_input_id},
             )
         if str(request.get("status") or "") == "answered":
+            answered_response = request.get("response")
+            answered_type = (
+                str(answered_response.get("type") or "").strip().lower()
+                if isinstance(answered_response, dict)
+                else ""
+            )
+            answered_elevation = (
+                request.get("type") == "permission"
+                and int(request.get("approval_version") or 1) == 3
+                and request.get("scope") == APPROVAL_V3_SCOPE
+                and request.get("elevation_mode")
+                in {PERMISSION_ELEVATION_MODE, "contained_full"}
+            )
+            elevation_value = permission_elevation_from_extensions(
+                task.extensions if isinstance(task.extensions, dict) else {},
+                task_id=task.id,
+            ) if answered_elevation else None
+            continuation_pending = (
+                answered_elevation
+                and answered_type == "approve_full"
+                and request.get("native_live_elevation") is not True
+                and isinstance(elevation_value, dict)
+                and elevation_value["continuation"].get("count") == 0
+                and elevation_value["state"].get("status") == "approved"
+            )
             return {
                 "ok": True,
                 "task_id": task.id,
                 "input_id": current_input_id,
-                "status": "already_answered",
-                "dispatch_required": False,
+                "status": "resuming" if continuation_pending else "already_answered",
+                "dispatch_required": continuation_pending,
+                "approval_decision": "approve_full" if continuation_pending else answered_type,
+                "same_session": request.get("native_live_elevation") is True,
+                "idempotent": True,
             }
         if _normalize_status(task.status) != "input_required" or request.get("status") != "waiting":
             raise ABCError("input_not_pending", f"Input {input_id} is not waiting")
@@ -3711,7 +3679,7 @@ class TaskService:
             is_permission_request
             and int(request.get("approval_version") or 1) == 3
             and request.get("scope") == APPROVAL_V3_SCOPE
-            and request.get("elevation_mode") == PERMISSION_ELEVATION_MODE
+            and request.get("elevation_mode") in {PERMISSION_ELEVATION_MODE, "contained_full"}
         )
         is_v2_permission = (
             is_permission_request
@@ -3904,7 +3872,7 @@ class TaskService:
                 failure_message = (
                     "Task elevation timed out and was automatically denied"
                     if timed_out
-                    else "User denied contained-full task elevation"
+                    else "User denied native-full task elevation"
                 )
                 task.extensions = extensions
                 task.updated_at = now
@@ -3992,7 +3960,7 @@ class TaskService:
             write_task_progress(
                 task,
                 state="resuming",
-                message="contained-full elevation approved; resuming the same task session",
+                message="native-full elevation approved; resuming the same task session",
                 source="runner",
             )
             self._refresh_task_index()
@@ -4658,7 +4626,11 @@ class TaskService:
         from .run_lease import RunLeaseState, close_lease, load_lease
 
         run_lease = load_lease(task_id, self.board_root)
-        if run_lease is not None and run_lease.state == RunLeaseState.SUSPENDED:
+        if run_lease is not None and run_lease.state != RunLeaseState.CLOSED:
+            # A terminal failure owns the end of the executor interval.  Set
+            # the end marker before closing so an active/stale lease cannot
+            # leave the interval looking live or keep a worker projection.
+            run_lease.last_heartbeat_at = now
             close_lease(run_lease, self.board_root)
             execution_updates["lease_state"] = RunLeaseState.CLOSED
         task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
@@ -4744,7 +4716,8 @@ class TaskService:
         from .run_lease import RunLeaseState, close_lease, load_lease
 
         run_lease = load_lease(task_id, self.board_root)
-        if run_lease is not None and run_lease.state == RunLeaseState.SUSPENDED:
+        if run_lease is not None and run_lease.state != RunLeaseState.CLOSED:
+            run_lease.last_heartbeat_at = now
             close_lease(run_lease, self.board_root)
             execution_updates["lease_state"] = RunLeaseState.CLOSED
         task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
@@ -5342,7 +5315,8 @@ class TaskService:
                 )
         workspace = source.workspace or {}
         source_permission = permission_record_from_extensions(source.extensions)
-        validate_path_plan_workspace(workspace)
+        if source_permission.get("effective_mode") != "full":
+            validate_path_plan_workspace(workspace)
         report_file = workspace.get("report_file") or str(self.store.task_dir(source.id) / f"{source.id}-report.md")
         task_file = workspace.get("task_file") or report_file
         task_record_path = Path(str(task_file)).expanduser()
@@ -5490,7 +5464,13 @@ class TaskService:
                 "executor_session_run_mismatch",
                 "Executor session receipt does not belong to the recorded run",
             )
-        expected_resumed = run_ids.index(normalized_run_id) > 0
+        resume_facts = session.get("run_resume_facts")
+        expected_resumed = (
+            resume_facts[normalized_run_id]
+            if isinstance(resume_facts, dict)
+            and type(resume_facts.get(normalized_run_id)) is bool
+            else run_ids.index(normalized_run_id) > 0
+        )
         if receipt.get("resumed") is not expected_resumed:
             raise ABCError(
                 "executor_session_resume_mismatch",
@@ -5609,6 +5589,37 @@ class TaskService:
             }
         )
         return _merge_execution(merged, {"run_intervals": ledger[:8]})
+
+    def close_task_run_lifecycle(self, task_id: str) -> None:
+        """Close a terminal task's RunLease and active execution projection.
+
+        Runner calls this when a worker has already written a recovery/terminal
+        state but exited before the normal worker-finalization path could
+        reconcile the lease.  It is deliberately idempotent and emits no user
+        notification.
+        """
+        from .run_lease import RunLeaseState, close_lease, load_lease
+
+        task = self.get_task(task_id)
+        now = _utc_now()
+        lease = load_lease(task.id, self.board_root)
+        if lease is not None and lease.state != RunLeaseState.CLOSED:
+            lease.last_heartbeat_at = now
+            close_lease(lease, self.board_root)
+        extensions = self._record_run_interval(task.id, dict(task.extensions or {}))
+        execution = dict(extensions.get("agentbc.execution") or {})
+        execution.update({
+            "internal_status": "needs_recovery"
+            if task.status == "needs_recovery"
+            else execution.get("internal_status") or task.status,
+            "lease_state": RunLeaseState.CLOSED,
+        })
+        extensions["agentbc.execution"] = execution
+        if extensions != (task.extensions or {}):
+            task.extensions = extensions
+            task.updated_at = now
+            self.store.write_task(task.id, _without_none(task.to_dict()))
+            self._refresh_task_index()
 
     def _append_intervention(
         self,

@@ -780,11 +780,7 @@ class PermissionRuntimeHermesCanaryTests(unittest.TestCase):
 
 
 class DispatchContainmentTests(unittest.TestCase):
-    """Concrete full retains task-scoped Runner containment.
-
-    Plain projects and linked worktrees receive the same frozen PathPlan
-    boundary; linked worktrees additionally pin their exact Git metadata.
-    """
+    """Plan D full dispatch does not add an AgentBC containment layer."""
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -850,10 +846,7 @@ class DispatchContainmentTests(unittest.TestCase):
             )
         self.assertEqual(result["dispatch_status"], "accepted")
         _args, kwargs = spawn.call_args
-        containment = kwargs.get("containment")
-        self.assertIsInstance(containment, dict)
-        self.assertEqual(containment.get("task_id"), created.id)
-        self.assertEqual(containment.get("board_root"), str(self.board))
+        self.assertIsNone(kwargs.get("containment"))
 
     def test_plain_project_full_dispatch_does_not_require_sandbox_exec(self) -> None:
         self._assert_full_dispatch_does_not_require_sandbox_exec("hermes")
@@ -1060,11 +1053,8 @@ class ClaudeWorkerTransportGateTests(unittest.TestCase):
                 self.assertIs(executor.start(packet), sentinel)
             control.assert_called_once_with(packet)
 
-    def test_full_sources_route_through_sdk_control(self) -> None:
-        """PERM-104-002 correction (GGQN-001): explicit full and an
-        issued/consumed one-shot grant route through the official SDK
-        control transport like every other Runner-managed task — the raw
-        CLI full path is no longer a production branch."""
+    def test_full_source_uses_native_cli_and_grant_stays_inert(self) -> None:
+        """Plan D full is direct native CLI; legacy grants do not reroute it."""
         from agent_bridge_connect.executors.claude import _claude_control_required
 
         full_packet = {
@@ -1073,7 +1063,7 @@ class ClaudeWorkerTransportGateTests(unittest.TestCase):
             },
             "runner_authorization_required": True,
         }
-        self.assertTrue(_claude_control_required(full_packet))
+        self.assertFalse(_claude_control_required(full_packet))
 
         grant = build_permission_grant(
             executor="claude",
@@ -1096,8 +1086,8 @@ class ClaudeWorkerTransportGateTests(unittest.TestCase):
 
         self.assertFalse(_claude_control_required({"extensions": {}}))
 
-    def test_start_control_does_not_reject_unknown_cli_version(self) -> None:
-        from agent_bridge_connect.executors.claude import ClaudeExecutor
+    def test_unknown_cli_version_is_not_a_permission_gate(self) -> None:
+        from agent_bridge_connect.permission_modes import assert_executor_permission_supported
 
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary) / "workspace"
@@ -1105,19 +1095,9 @@ class ClaudeWorkerTransportGateTests(unittest.TestCase):
             fake = Path(temporary) / "claude"
             fake.write_text("#!/bin/sh\nprintf '2.1.247 (Claude Code)'\n", encoding="utf-8")
             fake.chmod(fake.stat().st_mode | 0o100)
-            executor = ClaudeExecutor(command=str(fake), transport="direct")
-            executor._version = "2.1.247 (Claude Code)"
-            packet = {
-                "task_id": "E52M-003",
-                "steps": [{"id": 1, "description": "one"}],
-                "workspace": {"project_root": str(workspace), "root": str(workspace)},
-                "extensions": {},
-                "runner_authorization_required": True,
-            }
-            result = executor.start_control(packet)
-            self.assertFalse(result.ok)
-            self.assertNotIn("permission_transport_unsupported", result.message)
-            self.assertIn("approval_control_invalid", result.message)
+            with mock.patch("subprocess.run") as probe:
+                assert_executor_permission_supported("claude", "full", fake)
+            probe.assert_not_called()
 
     def test_control_command_never_carries_broker_value(self) -> None:
         from agent_bridge_connect.executors.claude import ClaudeExecutor

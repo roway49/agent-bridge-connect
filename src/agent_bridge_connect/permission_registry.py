@@ -345,6 +345,19 @@ def probe_executor_capability(
     """
     entry = executor_permission_mapping(executor, mode, transport=transport)
     selected = entry["mode"]
+    if selected == "full":
+        # Plan D full is a frozen native flag mapping.  It must not be gated
+        # by executable help output, version strings, runtime receipts, or a
+        # second capability probe; compatible releases and forks are valid.
+        return {
+            "executor": executor,
+            "mode": selected,
+            "transport": entry["transport"],
+            "supported": True,
+            "capability_id": entry["capability_id"],
+            "evidence": ["native_flag_mapping"],
+            "details": {"permission_args": list(entry["args"])},
+        }
     if selected == "inherit" and executor not in {"codex", "claude"}:
         # Non-Codex inherit transports add no AgentBC override and require no
         # permission capability probe.

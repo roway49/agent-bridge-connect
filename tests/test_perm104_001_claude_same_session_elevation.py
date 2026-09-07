@@ -382,6 +382,28 @@ class ClaudeSameSessionElevationTransportTests(unittest.TestCase):
         self.assertEqual(receipt["error_code"], "claude_sdk_set_mode_rejected")
         self.assertEqual(receipt["cardinality"]["set_mode_updates"], 0)
 
+        # The rejected setMode scenario has already terminally answered the
+        # first control-plane request.  A Runner restart/new transport owns a
+        # fresh control-plane state; reusing the answered plane would test an
+        # artificial duplicate rather than transport-loss handling.
+        loss_plane = ApprovalControlPlane(
+            self.root / ".agentbc-control" / f"{self.task_id}-loss",
+            task_id=self.task_id,
+            executor_run_id=self.run_id,
+            session_id=self.session_id,
+            executor="claude",
+        )
+        loss_plane.record_session_started(
+            {
+                "version": 1,
+                "executor": "claude",
+                "session_id": self.session_id,
+                "resumed": False,
+                "persistence": "persistent",
+                "source": "preallocated",
+            }
+        )
+        self.plane = loss_plane
         loss_transport = self._transport()
 
         async def loss_scenario() -> str:

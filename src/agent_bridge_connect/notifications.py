@@ -112,7 +112,8 @@ def notify_input_required(
     elif (
         payload.get("input_type") == "permission"
         and int(payload.get("approval_version") or 1) == 3
-        and payload.get("elevation_mode") == PERMISSION_ELEVATION_MODE
+        and payload.get("elevation_mode")
+        in {PERMISSION_ELEVATION_MODE, "contained_full"}
     ):
         reserve = getattr(service, "reserve_task_elevation_notification", None)
         if callable(reserve):
@@ -393,10 +394,10 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         elif is_task_elevation:
             body_lines.extend(
                 [
-                    "Requested access: contained full for this Task ID only.",
-                    "Approve Full authorizes this task's frozen PathPlan and contained Runner continuation.",
-                    "The approval remains effective across retry, recovery, and reassignment of this Task ID.",
-                    "A handoff creates a new Task ID and does not inherit this elevation.",
+                    "Requested access: full in the executor's native noninteractive mode.",
+                    "Approve Full authorizes one task-scoped native continuation.",
+                    "The approval remains effective across retry and recovery of this Task ID.",
+                    "A handoff carries only the task's inherited permission snapshot.",
                     "Deny terminates the task as failed.",
                     "Choose Approve Full or Deny below.",
                 ]

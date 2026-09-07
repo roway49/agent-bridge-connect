@@ -28,6 +28,7 @@ from .config import (
 )
 from .executor_registry import get_executor
 from .path_model import DEFAULT_CUSTOMER_PATH, derive_customer_path_plan
+from .permission_elevation import PERMISSION_ELEVATION_MODE
 from .permission_modes import CANONICAL_PERMISSION_MODES, PERMISSION_EXTENSION_KEY
 from .protocol import ABCError
 from .service import TaskService, load_steps, task_to_status
@@ -268,7 +269,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--approve-full",
         dest="approve_full",
         action="store_true",
-        help="Approve the single task-scoped contained-full elevation.",
+        help="Approve the single task-scoped native-full elevation.",
     )
     response.add_argument("--deny", action="store_true")
     response.add_argument(
@@ -1450,9 +1451,9 @@ def command_worker_run(args: argparse.Namespace) -> int:
         return 0
 
     config = load_config(args.config)
-    # Runner-authorized workers run inside the task-scoped Seatbelt profile.
-    # Keep their TaskService writes task-local; the Runner refreshes global
-    # indexes after the process exits.
+    # Runner-authorized workers keep their TaskService writes task-local; the
+    # Runner refreshes global indexes after the process exits.  Plan D full
+    # workers use the executor's native noninteractive mode without Seatbelt.
     if getattr(args, "runner_authorize", False) is True:
         config = {**config, "_runner_worker": True}
     service = TaskService(args.root, config=config)
@@ -1556,7 +1557,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 # executor's later idempotent registration is retained for
                 # compatibility, but session-first ordering is authoritative
                 # for the resumed full transport.
-                service.record_executor_run_started(
+                registration = service.record_executor_run_started(
                     claimed_task.id,
                     preallocated_run_id,
                 )
@@ -1575,6 +1576,13 @@ def command_worker_run(args: argparse.Namespace) -> int:
             }
             if preallocated_run_id:
                 task_packet["_agentbc_executor_run_id"] = preallocated_run_id
+                task_packet["_agentbc_resume_fact"] = {
+                    "run_id": preallocated_run_id,
+                    "resumed": bool(registration.get("resumed")),
+                    "session_id": str(
+                        claimed_task.extensions.get("agentbc.session", {}).get("session_id") or ""
+                    ),
+                }
             start = executor.start(task_packet)
             if not start.ok:
                 start_code = (
@@ -1662,7 +1670,8 @@ def command_worker_run(args: argparse.Namespace) -> int:
                         or (
                             int(approval_request.get("approval_version") or 1) == 3
                             and approval_request.get("scope") == "task_elevation"
-                            and approval_request.get("elevation_mode") == "contained_full"
+                            and approval_request.get("elevation_mode")
+                            in {PERMISSION_ELEVATION_MODE, "contained_full"}
                         )
                     )
                     and bool(str(approval_request.get("request_id") or "").strip())
@@ -1672,7 +1681,8 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     is_task_elevation = (
                         int(approval_request.get("approval_version") or 1) == 3
                         and approval_request.get("scope") == "task_elevation"
-                        and approval_request.get("elevation_mode") == "contained_full"
+                        and approval_request.get("elevation_mode")
+                        in {PERMISSION_ELEVATION_MODE, "contained_full"}
                     )
                     is_native_live_elevation = (
                         is_task_elevation
@@ -1735,6 +1745,9 @@ def command_worker_run(args: argparse.Namespace) -> int:
                                         approval_request.get("tool_use_id")
                                         or approval_request.get("item_id")
                                         or ""
+                                    ),
+                                    input_fingerprint=str(
+                                        approval_request.get("input_fingerprint") or ""
                                     ),
                                     action_fingerprint=str(
                                         approval_request.get("action_fingerprint") or ""
@@ -1821,19 +1834,45 @@ def command_worker_run(args: argparse.Namespace) -> int:
                             print(f"worker_error: native approval failed for {task.id}: {exc}")
                             return 1
                         notified_approval_requests.add(request_id)
-                        _notify_input_required(
-                            service,
-                            task.id,
-                            config_path=getattr(args, "config", None),
-                            interval_s=getattr(args, "interval", 2),
-                        )
+                        try:
+                            _notify_input_required(
+                                service,
+                                task.id,
+                                config_path=getattr(args, "config", None),
+                                interval_s=getattr(args, "interval", 2),
+                            )
+                        except (ABCError, OSError, RuntimeError) as exc:
+                            # A persisted wait without a delivered dialog is
+                            # not actionable.  Close the same worker/lease
+                            # lifecycle and leave one stable recovery error;
+                            # do not emit a second terminal dialog.
+                            recovery_marked = service.mark_task_needs_recovery(
+                                task.id,
+                                "notification_delivery_failed",
+                                str(exc),
+                                {
+                                    "executor": args.executor,
+                                    "phase": "native_approval_notification",
+                                    "request_id": request_id,
+                                },
+                                executor_run_id=start.run_id,
+                                execution_session=execution_session,
+                            )
+                            service.clear_execution_run_references(task.id)
+                            if recovery_marked:
+                                _write_worker_terminal_report(service, task.id)
+                            _request_task_list_refresh_for_service(service)
+                            print(
+                                f"worker_error: approval notification failed for {task.id}: {exc}"
+                            )
+                            return 1
                         _request_task_list_refresh_for_service(service)
                     print(
                         f"input_required: {task.id} "
                         f"request={blocked.get('request_id', request_id)}"
                     )
                     if is_task_elevation and not is_native_live_elevation:
-                        # A contained-full elevation cannot change the active
+                        # A native-full elevation cannot change the active
                         # Codex/Hermes process policy in place. End this
                         # Runner-owned worker after persisting the exact native
                         # receipt; approval dispatches exactly one continuation

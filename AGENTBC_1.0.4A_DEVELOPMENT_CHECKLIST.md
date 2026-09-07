@@ -1,7 +1,7 @@
 # AgentBC 1.0.4A 需求开发清单
 
 > 制定日期：2026-08-26
-> 状态：持续开发与回归中；`SESSION-104-001` 保持已通过，`PERM-104-001` 的 Claude 同会话 safe-to-full 自动化门禁已完成，`PERM-104-002` 仍开放
+> 状态：持续开发与回归中；`SESSION-104-001` 保持已通过，`PERM-104-001` 的 Claude 同会话 safe-to-full 自动化门禁已完成，`PERM-104-002` Plan D 实现与自动化闭环已完成（2026-09-07）
 > 目标版本：AgentBC `1.0.4A` / Python `1.0.4a1`
 > 来源基线：`private/integration@01f3ce1`
 > 已发布基线：`v1.0.3A2@62757a4`；公开 Formula 收口 `public/main@87c4bca`
@@ -56,7 +56,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `PROTO-104-001` | P0 / fixture matrix 已完成（2026-08-27）；production collaboration_spawn wiring 待回归（2026-08-28） | 上游 CLI version/help/argv/event 漂移只能靠临时补测试 | 三 Executor 完整版本化 fixture、capability matrix 和未知组合 fail-closed；生产派生会话接线需通过版本 fixture + live probe 双门 | 无 |
 | `ARCH-104-001` | P1 / 按域执行 | Service、Runner、CLI、approval、notification 责任仍集中 | 每个功能项先完成对应窄模块机械拆分，公共 API/CLI/磁盘行为不变 | `PROTO-104-001` |
 | `PERM-104-001` | P0 / 实现与自动化门禁完成（2026-09-05） | native Deny 后 Agent 仍可用 Prompt/callback 请求 full 并启动第二 worker | Claude safe/default 的首个结构化 `can_use_tool` 事件只产生一次同会话输入；Approve 原子返回原始 input + `setMode/bypassPermissions/session`，Deny 无 mode change；重复事件 fail closed | `RM7A-001` artifact evidence；`tests/test_perm104_001_claude_same_session_elevation.py`；`PERM-104-002` 的部署后 full canary 仍独立开放 |
-| `PERM-104-002` | P0-Blocker / 仍开放（RAXT-001，2026-08-31） | Claude native request 曾在 session receipt 建立前失败，后续 callback/full popup/worker crash 不能证明 native approval 成功；同一不可升级阻塞还可能重复请求 | 已补 session-first、native single_action 权威绑定、callback fail-closed、Runner contained cleanup 与回归；仍需 deployed explicit/temporary/inherited full 真机 canary 和 `PERM-104-002-R1` 详情回归，未通过前不得关闭 | `PERM-104-001` |
+| `PERM-104-002` | P0 / Plan D 实现与自动化闭环完成（2026-09-07） | full 曾被旧的 containment/runtime receipt/版本探测链阻塞，native elevation 也可能重复请求或重复 worker | 显式/继承 full 进入三 Executor 原生最强非交互模式；inherit/safe 仅可信 native structured event 可产生一次 v3 task elevation；Approve/Deny/timeout、handoff/retry、重启与乱序回放均保持单次、幂等、无第二权限层 | `PERM-104-001` |
 | `FLOW-104-002` | P0 | report/record 超限可跳过终态通知和 cleanup receipt | terminal、report、notification、cleanup 独立且可重放，通知不被报告失败吞掉 | terminal fixtures；对应 ARCH slice |
 | `FLOW-104-001` | P1 | handoff 只能声明一个 step，自由文本多步骤直到 callback 才失败 | handoff 原生结构化 steps、dispatch 前预检、严格 callback 一致性 | schema fixtures；对应 ARCH slice |
 | `FLOW-103-001` | P1 / 跨版转入 | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | task/run/session scoped 单调 progress receipt；所有公共视图同源 | `FLOW-104-001` 的 declared steps |
@@ -257,7 +257,29 @@ native Deny 后伪造 full callback、transport lost、Runner 重启和 UI/CLI �
   one-dialog delivery、异构 Read/Write/Edit/Bash fake stream、shape-only admission、rejected setMode
   与 transport loss；可复验证据见 artifact root 的 `PERM-104-001_RM7A-001_EVIDENCE.md`。
 
-### 4.4 `PERM-104-002`：阻塞来源域、不可升级动作与 full 闭环
+### 4.4 `PERM-104-002`：Plan D 原生 full 与单次 v3 elevation 闭环
+
+Plan D 当前权威合同（2026-09-07）：
+
+- 显式或继承的 `full` 直接使用 Codex、Claude、Hermes 各自最强的原生非交互模式：分别为
+  `--dangerously-bypass-approvals-and-sandbox`、`--dangerously-skip-permissions`、`--yolo`；
+  该路径零 AgentBC Seatbelt、PathPlan authorization、runtime-capability、grant、版本 allowlist
+  与第二层权限门禁，且不弹审批框；协议兼容的 release/fork 默认支持。
+- `inherit`/`safe` 只有在可信结构化原生事件到达时才可建立一个 v3 `task_elevation` request：
+  Codex 原生事件、Claude SDK `can_use_tool` 事件或 Hermes ACP permission request；不得从 prose、
+  stderr、callback 文本、退出码、tool-name 匹配或版本字符串推断 escalation。
+- 当前审批 UI 与 response protocol 保持不变。Approve Full 最多产生一个 full transition；Deny 与
+  timeout 不产生 full worker 或 continuation。Claude approve 必须在同一 live SDK session 执行一次
+  `setMode(bypassPermissions)`；Codex/Hermes 仅在原生 transport 需要时建立一个 full continuation。
+- full inheritance 在 handoff/retry 中保留 `selection_source=inherited_task`；duplicate/out-of-order
+  native event 与 Runner restart 只能复用已持久化 request/decision，不得生成第二 input、notification、
+  grant、worker、continuation 或 permission-mode transition。
+- approval v1/v2、`agentbc.permission_grant`、`agentbc.permission_runtime` 与 Seatbelt 记录仅保持
+  reader 兼容，生产路径不得重新连接；旧记录不得改变当前权限选择。
+
+#### 历史说明（Plan D 之前的 containment/runtime receipt 合同）
+
+以下条目保留为历史实施背景，不是当前生产准入或验收要求：
 
 - 为动作保存脱敏稳定 fingerprint，不保存 raw argv、token 或私有绝对路径；
 - 来源域至少区分 Executor policy、AgentBC permission policy、Runner PathPlan 和宿主 OS containment；
@@ -275,14 +297,11 @@ native Deny 后伪造 full callback、transport lost、Runner 重启和 UI/CLI �
 - 已经生效的 concrete `full` 不得再次请求 `full`，不得产生 `permission_mode_unsupported`、
   `permission_resume_session_unavailable`、重复弹窗、重复 grant 或同 fingerprint continuation。
 
-统一验收标识：人工授予、临时申请、权限继承均能让 `full` 权限正确生效，声明范围内的目标动作必须
-实际执行成功，不得仍有权限、Runner PathPlan 或宿主 containment 阻塞。三条路径分别以同一组
-linked-worktree 本地提交、受管 progress receipt 和普通项目写入 canary 验证，要求动作成功、唯一
-RunLease/continuation、无第二次弹窗且 status/report/receipt 同源。声明范围之外的动作仍按 PathPlan
-fail closed，不得借 full 扩大到任意用户或系统路径。
-
-对于本来就不可升级、且不属于声明授权边界的动作，最多出现一次审批并稳定 blocked；真正可升级的
-Executor 拒绝必须在同 session、同 request Approve 后精确执行。
+统一验收标识：显式/继承 `full` 均只验证三 Executor 原生最强非交互 argv；`inherit`/`safe` 的
+升级只接受可信 native structured event。每个 v3 request 最多一个 notification、一个决定和一个
+full continuation；Approve、Deny、timeout、handoff/retry、duplicate/out-of-order 与 Runner restart
+均必须保持同一持久化 request/decision，且无第二 input、grant、worker、continuation 或 mode change。
+旧 v1/v2、grant、runtime、Seatbelt 记录只读兼容，不得回接当前生产授权路径。
 
 派生回归项 `PERM-104-002-R1` 在上述验收完成后执行：
 
@@ -710,7 +729,7 @@ status/report/doctor 投影命令证据。
 | `PROTO-104-001` | `tests/fixtures/`、协议 probe/fixture tests | 不修改生产 argv/parser 语义 |
 | `ARCH-104-001` | 每次仅一个目标模块及 import compatibility tests | 不夹带 schema、状态机、文案变化 |
 | `PERM-104-001` | approval/permission decision、TaskService approval lifecycle | 不改 handoff、update、notification pipeline |
-| `PERM-104-002`（含 `R1`） | permission failure taxonomy、fingerprint/domain projection、三来源 full runtime capability 闭环；完成后 approval detail/DialogNotifier 回归 | 不新增 Git/path 穷举预检；不先做 UI 修复绕过阻塞与 full 生效闭环 |
+| `PERM-104-002`（含 `R1`） | Plan D 三 Executor 原生 full、可信 native v3 elevation、单次 continuation 与重启/回放回归 | 不重新接入 v1/v2、permission-grant、permission-runtime、Seatbelt 生产链；不新增 Git/path/版本穷举预检 |
 | `FLOW-104-001` | handoff CLI/schema/task packet/prompt contract | 不放宽 callback validator |
 | `FLOW-103-001` | progress receipt/store/projection | 不改变 terminal completion authority |
 | `FLOW-104-002` | terminal delivery、reports、record budget、notifications/cleanup receipt | 不改变任务质量含义或权限策略 |
@@ -742,8 +761,8 @@ status/report/doctor 投影命令证据。
 ### 真实 E2E
 
 - Codex、Claude、Hermes 分别完成 native Approve、Deny、不可升级 blocked 和 session cleanup；
-- `PERM-104-002` 对人工显式 full、inherit/safe 临时申请 full、handoff/retry 权限继承 full 分别执行同类
-  linked-worktree 提交与受管 progress 动作；三条路径必须实际成功、无第二弹窗、无阻塞和无权限降级；
+- `PERM-104-002` 对人工显式 full、inherit/safe 临时申请 full、handoff/retry 权限继承 full 分别验证同一
+  原生模式/单次 elevation 合同；三条路径必须无第二弹窗、无第二权限层、无重复 worker 或 continuation；
 - `PERM-104-002` 先证明不可升级动作最多一次审批；随后 `PERM-104-002-R1` 验证每条仍合法的可审批路径
   均有 `View Details`、内容脱敏、Back 不响应且总 deadline 不重置；
 - Codex 临时会话在 CLI 与 Desktop 两个恢复入口清理前可定位、清理及重启后均不可恢复，同时保留哨兵存在；
@@ -790,8 +809,9 @@ status/report/doctor 投影命令证据。
 
 - 十个权威开发项均有实现、定向/全量测试、真实 E2E 和合入证据；
 - Core 不再依据 Prompt/Agent 自述选择审批渠道；native Deny 零执行且不产生第二 worker；
-- `PERM-104-002` 证明人工授予、临时申请与权限继承的 full 均通过权威 runtime capability receipt 真实
-  生效，声明范围内动作无权限/PathPlan/宿主 containment 阻塞、无重复审批且无静默降级；
+- `PERM-104-002` 证明人工授予、临时申请与权限继承的 full 均进入三 Executor 原生最强非交互模式；
+  v3 只由可信 native structured event 建立且最多一次，Approve/Deny/timeout/restart/replay 无重复审批、
+  grant、worker、continuation 或 permission-mode transition；
 - 不可升级阻塞最多一次审批并稳定 blocked；之后 `PERM-104-002-R1` 证明所有仍合法的权限弹窗稳定
   提供脱敏只读详情，Details/Back 不改变审批状态或 deadline；
 - Codex Executor 临时会话经 cleanup 后在 CLI/Desktop 双入口及重启后均不可恢复，dispatcher 与保留哨兵不受影响；

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_bridge_connect.adapters import DeliveryResult
+from agent_bridge_connect.permission_elevation import PERMISSION_ELEVATION_MODE
 from agent_bridge_connect.reports import redact_secrets
 
 
@@ -49,9 +50,11 @@ class DialogNotifier:
                 return self._send_live_claude_elevation_dialog(
                     clean, title, dialog_timeout_s
                 )
-            if int(clean.get("approval_version") or 1) == 3 and str(
-                clean.get("elevation_mode") or ""
-            ).strip().lower() == "contained_full":
+            if (
+                int(clean.get("approval_version") or 1) == 3
+                and str(clean.get("elevation_mode") or "").strip().lower()
+                in {PERMISSION_ELEVATION_MODE, "contained_full"}
+            ):
                 return self._send_task_elevation_dialog(clean, title, dialog_timeout_s)
             return self._send_permission_dialog(clean, title, dialog_timeout_s)
         script = self._dialog_script(event_type, input_type, dialog_timeout_s)
@@ -548,7 +551,12 @@ class DialogNotifier:
                 f"Task: {identity_task_id}" if identity_task_id else "",
                 f"Title: {identity_title}" if identity_title else "",
                 f"Blocked step: {identity_blocked_step}" if identity_blocked_step else "",
-                "Permission scope: contained_full",
+                (
+                    "Permission scope: full (native executor mode)"
+                    if str(clean.get("elevation_mode") or "").strip().lower()
+                    == PERMISSION_ELEVATION_MODE
+                    else "Permission scope: contained_full (historical)"
+                ),
                 f"Executor: {identity_executor}",
             )
             if line

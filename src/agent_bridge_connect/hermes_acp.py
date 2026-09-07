@@ -26,7 +26,7 @@ Contract invariants (fail closed):
 * Strict permission surface: historical v1/v2 compatibility frames expose
   only ``allow_once`` and ``deny`` (``cancelled``) outcomes.  A normal v3
   task-elevation frame is authority only: the adapter persists one
-  ``approve_full``/``deny`` decision request and raises its contained-full
+  ``approve_full``/``deny`` decision request and raises its native-full
   handoff signal without answering the native ACP request.  Requests whose
   option list cannot express the declared surface, requests for a different
   session, duplicate/concurrent requests, mismatched identities, and late

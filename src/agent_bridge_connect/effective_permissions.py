@@ -36,14 +36,11 @@ def resolve_effective_permission(
     *,
     trusted_runner_managed: bool = False,
 ) -> dict[str, Any]:
-    """Return the base permission or one matching one-shot ``full`` upgrade.
+    """Resolve the base mode or approved task elevation.
 
-    A revoked grant is inert, and a consumed grant is inert outside Runner's
-    one locked authorization call. An issued grant is active only for an
-    approved permission response tied to the current task, executor,
-    authoritative session, source run, and the caller's already allocated
-    target run. Malformed/unknown grant versions fail through the frozen schema
-    validator rather than falling back to the base mode.
+    Plan D keeps historical one-shot grants readable but inert in production.
+    Native full is selected only by the frozen task permission or the v3
+    task-elevation receipt.
     """
     if not isinstance(task, dict):
         raise ABCError(
@@ -53,17 +50,14 @@ def resolve_effective_permission(
     extensions = task.get("extensions")
     extensions = extensions if isinstance(extensions, dict) else {}
     base = permission_record_from_extensions(extensions, allow_legacy=True)
+    if base.get("effective_mode") == "full":
+        return dict(base)
     elevation = permission_elevation_from_extensions(extensions)
     if elevation is not None and elevation["state"]["status"] in {
         "approved",
         "active",
         "verified",
     }:
-        if not trusted_runner_managed:
-            raise ABCError(
-                "permission_elevation_runner_context_required",
-                "An active task elevation requires trusted Runner-managed context.",
-            )
         return {
             "requested_mode": "full",
             "effective_mode": "full",
@@ -73,33 +67,8 @@ def resolve_effective_permission(
             "elevation_id": str(elevation.get("elevation_id") or ""),
             "elevation_state": str(elevation["state"].get("status") or ""),
         }
-    grant = permission_grant_from_extensions(extensions)
-    if grant is None or grant["state"]["status"] == "revoked":
-        return dict(base)
-
-    if not trusted_runner_managed:
-        if grant["state"]["status"] == "consumed":
-            return dict(base)
-        raise ABCError(
-            "permission_grant_runner_context_required",
-            "An issued permission grant requires explicit trusted Runner-managed context.",
-        )
-
-    grant = validate_temporary_permission_context(
-        task,
-        executor,
-        executor_run_id,
-        expected_status=str(grant["state"]["status"]),
-    )
-    return {
-        "requested_mode": "full",
-        "effective_mode": "full",
-        "selection_source": "one_shot_permission_grant",
-        "base_mode": str(grant.get("transition", {}).get("from") or ""),
-        "temporary": True,
-        "executor_run_id": str(executor_run_id).strip(),
-        "grant_status": grant["state"]["status"],
-    }
+    # Legacy permission grants remain dual-read/report-compatible only.
+    return dict(base)
 
 
 def validate_temporary_permission_context(

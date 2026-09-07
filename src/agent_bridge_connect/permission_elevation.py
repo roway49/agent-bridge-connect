@@ -1,4 +1,4 @@
-"""Task-scoped contained-full permission elevation.
+r"""Task-scoped native-full permission elevation.
 
 This module is the durable v1 capability which replaces the old one-shot
 ``agentbc.permission_grant`` write path for new approvals.  It intentionally
@@ -35,7 +35,8 @@ PERMISSION_PROTOCOL_EXTENSION_KEY = "agentbc.permission_protocol"
 PERMISSION_PROTOCOL_VERSION = 3
 PERMISSION_PROTOCOL_SCOPE = "task_elevation"
 PERMISSION_ELEVATION_VERSION = 1
-PERMISSION_ELEVATION_MODE = "contained_full"
+PERMISSION_ELEVATION_MODE = "full"
+LEGACY_PERMISSION_ELEVATION_MODE = "contained_full"
 PERMISSION_ELEVATION_SOURCE = "task_elevation"
 PERMISSION_ELEVATION_STATES = frozenset(
     {"prepared", "approved", "active", "verified", "denied", "blocked"}
@@ -106,7 +107,11 @@ def build_permission_elevation(
     elevation_id: str | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
-    """Build a pending task elevation bound to one request and PathPlan."""
+    """Build a pending task elevation bound to one native request.
+
+    The empty digest fields used by Plan D full are intentional.  The legacy
+    contained-full envelope remains readable for historical records only.
+    """
     clean_profile = str(containment_profile_digest or profile_digest or "").strip()
     authority_value = dict(authority or {})
     clean_executor = str(executor or "").strip().lower()
@@ -144,7 +149,7 @@ def build_permission_elevation(
             "mode": PERMISSION_ELEVATION_MODE,
             "path_plan_digest": path_plan_digest,
             "profile_digest": clean_profile,
-            "policy": "runner_pathplan_contained",
+            "policy": "executor_native_no_agentbc_sandbox",
         },
         "decision": {"type": "", "source": "", "at": ""},
         "continuation": {
@@ -192,8 +197,11 @@ def validate_permission_elevation(
         )
     _reject_sensitive_additions(record)
     _require_identifier(record.get("elevation_id"), "elevation_id")
-    if record.get("mode") != PERMISSION_ELEVATION_MODE:
-        _invalid("permission_elevation_mode_invalid", "Permission elevation mode must be contained_full")
+    if record.get("mode") not in {
+        PERMISSION_ELEVATION_MODE,
+        LEGACY_PERMISSION_ELEVATION_MODE,
+    }:
+        _invalid("permission_elevation_mode_invalid", "Permission elevation mode must be full")
     if record.get("source") != PERMISSION_ELEVATION_SOURCE:
         _invalid("permission_elevation_source_invalid", "Permission elevation source must be task_elevation")
 
@@ -218,9 +226,9 @@ def validate_permission_elevation(
         "request_fingerprint",
     ):
         _require_identifier(binding.get(field), f"binding.{field}")
-    for digest_field in ("path_plan_digest",):
-        if not _DIGEST_RE.fullmatch(str(binding.get(digest_field) or "")):
-            _invalid("permission_elevation_binding_invalid", f"binding.{digest_field} must be a sha256 digest")
+    path_digest_value = str(binding.get("path_plan_digest") or "")
+    if path_digest_value and not _DIGEST_RE.fullmatch(path_digest_value):
+        _invalid("permission_elevation_binding_invalid", "binding.path_plan_digest must be a sha256 digest")
     expected = {
         "task_id": task_id,
         "path_plan_digest": path_plan_digest,
@@ -259,15 +267,18 @@ def validate_permission_elevation(
         _invalid("permission_elevation_authority_invalid", "authority.protocol_version must be an integer")
 
     containment = _require_object(record, "containment")
-    if containment.get("mode") != PERMISSION_ELEVATION_MODE:
-        _invalid("permission_elevation_containment_invalid", "containment.mode must be contained_full")
-    if containment.get("policy") != "runner_pathplan_contained":
-        _invalid("permission_elevation_containment_invalid", "containment policy must be Runner PathPlan containment")
-    if containment.get("path_plan_digest") != binding.get("path_plan_digest"):
-        _invalid("permission_elevation_containment_invalid", "containment PathPlan digest is not bound")
-    profile_digest = str(containment.get("profile_digest") or "")
-    if not _DIGEST_RE.fullmatch(profile_digest):
-        _invalid("permission_elevation_containment_invalid", "containment.profile_digest must be a sha256 digest")
+    if record.get("mode") == LEGACY_PERMISSION_ELEVATION_MODE:
+        if containment.get("mode") != LEGACY_PERMISSION_ELEVATION_MODE:
+            _invalid("permission_elevation_containment_invalid", "legacy containment mode is invalid")
+        if containment.get("policy") != "runner_pathplan_contained":
+            _invalid("permission_elevation_containment_invalid", "legacy containment policy is invalid")
+        if containment.get("path_plan_digest") != binding.get("path_plan_digest"):
+            _invalid("permission_elevation_containment_invalid", "legacy PathPlan digest is not bound")
+        profile_digest = str(containment.get("profile_digest") or "")
+        if not _DIGEST_RE.fullmatch(profile_digest):
+            _invalid("permission_elevation_containment_invalid", "legacy profile digest is invalid")
+    elif containment.get("policy") != "executor_native_no_agentbc_sandbox":
+        _invalid("permission_elevation_containment_invalid", "full elevation must not add AgentBC containment")
 
     operation = str(record.get("operation") or "")
     if operation and not _OPERATION_RE.fullmatch(operation):
@@ -375,12 +386,10 @@ def full_capability_preflight(
     executor: str,
     executable: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Run the no-UI structural/full-capability gate for one native block.
+    """Read the historical full-capability gate for a legacy record.
 
-    The result is intentionally a bounded receipt: only pass/fail, executor,
-    mode, and frozen digests cross the adapter boundary. If an executable is
-    supplied, its documented full capability is checked mechanically before a
-    request can be shown to a user.
+    This compatibility helper is retained for old persisted envelopes and
+    tests.  Plan D production full does not call it or require its receipt.
     """
     from .path_model import validate_path_plan_workspace
     from .permission_modes import assert_executor_permission_supported
@@ -701,6 +710,7 @@ __all__ = [
     "PERMISSION_ELEVATION_EXTENSION_KEY",
     "PERMISSION_ELEVATION_FILENAME",
     "PERMISSION_ELEVATION_MODE",
+    "LEGACY_PERMISSION_ELEVATION_MODE",
     "PERMISSION_ELEVATION_SOURCE",
     "PERMISSION_ELEVATION_STATES",
     "PERMISSION_ELEVATION_VERSION",

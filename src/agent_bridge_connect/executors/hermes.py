@@ -50,7 +50,7 @@ from agent_bridge_connect.permission_modes import (
     permission_record_from_extensions,
 )
 from agent_bridge_connect.permission_elevation import (
-    full_capability_preflight,
+    full_capability_preflight,  # noqa: F401 - legacy reader/test seam only
     task_elevation_protocol_enabled,
 )
 from agent_bridge_connect.permission_registry import (
@@ -744,7 +744,17 @@ class HermesExecutor(CLIExecutorBase):
         through the frozen ``SessionFirstGate`` before ``session/prompt`` is
         ever sent; every transport failure lands in ``needs_recovery``.
         """
+        # Capture the resume decision before this run is registered.  The
+        # registration appends the current run ID to the durable session and
+        # must not be allowed to turn a fresh ACP run into a synthetic resume.
         resumed, explicit_session_id = _task_resume_session(task_packet)
+        resume_fact = {
+            "run_id": run_id,
+            "resumed": resumed,
+            "session_id": explicit_session_id,
+        }
+        task_packet = dict(task_packet)
+        task_packet["_agentbc_resume_fact"] = dict(resume_fact)
         self._task_packets[run_id] = dict(task_packet)
         self._start_run_lease(task_packet, run_id, "hermes")
         if task_elevation_protocol_enabled(
@@ -767,10 +777,16 @@ class HermesExecutor(CLIExecutorBase):
                     board_root,
                     config={"_runner_worker": True},
                 )
-                service.record_executor_run_started(task_id, run_id)
+                registration = service.record_executor_run_started(task_id, run_id)
+                if registration.get("resumed") is not resumed:
+                    raise ABCError(
+                        "executor_session_resume_mismatch",
+                        "The pre-registration resume fact changed during run registration",
+                    )
                 persisted_task = service.get_task(task_id)
                 refreshed_packet = dict(task_packet)
                 refreshed_packet["extensions"] = dict(persisted_task.extensions or {})
+                refreshed_packet["_agentbc_resume_fact"] = dict(resume_fact)
                 task_packet = refreshed_packet
                 self._task_packets[run_id] = dict(task_packet)
             except (ABCError, OSError) as exc:
@@ -1201,7 +1217,7 @@ class HermesExecutor(CLIExecutorBase):
         record: dict[str, Any],
         frame: dict[str, Any],
     ) -> dict[str, Any]:
-        """Persist one native Hermes request as a contained-full task wait.
+        """Persist one native Hermes request as a native-full task wait.
 
         The ACP request is authority evidence only.  No ``allow_once`` or
         native permission response is produced for a v3 task; approval is a
@@ -1243,17 +1259,10 @@ class HermesExecutor(CLIExecutorBase):
             tool_name=operation,
             tool_input=tool_call,
         )
-        preflight = full_capability_preflight(
-            task_packet,
-            executor="hermes",
-            executable=self.agent_bin,
-        )
-        if preflight.get("ok") is not True:
-            raise HermesAcpError(
-                "hermes_acp_full_preflight_failed",
-                "Hermes contained-full capability preflight failed.",
-                {"reason_code": str(preflight.get("code") or "capability_unavailable")},
-            )
+        # Plan D full has no AgentBC capability/containment preflight.  The
+        # structured ACP request itself is the only elevation authority;
+        # legacy preflight fields remain read-compatible but inert.
+        preflight: dict[str, Any] = {"status": "retired", "mode": PERMISSION_ELEVATION_MODE}
         authority = {
             "executor": "hermes",
             "protocol": "hermes_acp",
@@ -1284,14 +1293,12 @@ class HermesExecutor(CLIExecutorBase):
             tool_use_id=tool_call_id,
             action_fingerprint=action_fingerprint,
             escalation_domain="hermes_acp",
-            profile_digest=str(preflight.get("containment_profile_digest") or ""),
+            profile_digest="",
             control_path=TRANSPORT_HERMES_ACP,
             native_event=native_event,
             authority=authority,
-            path_plan_digest=str(preflight.get("path_plan_digest") or ""),
-            containment_profile_digest=str(
-                preflight.get("containment_profile_digest") or ""
-            ),
+            path_plan_digest="",
+            containment_profile_digest="",
             full_preflight=preflight,
         )
         persisted = service.get_task(task_id)
@@ -1358,7 +1365,12 @@ class HermesExecutor(CLIExecutorBase):
         max_turns = _task_max_turns(task_packet, self.max_turns)
         if max_turns is not None:
             command.extend(["--max-turns", str(max_turns)])
-        resumed, session_id = _task_resume_session(task_packet)
+        resume_fact = _task_resume_fact(task_packet)
+        resumed, session_id = _task_resume_session(
+            task_packet,
+            resume_fact=(resume_fact["resumed"] if resume_fact is not None else None),
+            resume_session_id=(resume_fact["session_id"] if resume_fact is not None else None),
+        )
         if resumed:
             command.extend(["--resume", session_id])
         if images:
@@ -1451,7 +1463,7 @@ class HermesExecutor(CLIExecutorBase):
                 # Historical hand-built packets retain the v2 compatibility
                 # surface.  Normal TaskService packets use the v3 cutover:
                 # the native event is authority only and the human decision
-                # is the separate contained-full task elevation.
+                # is the separate native-full task elevation.
                 "state": acp_state,
                 "capability_id": HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID,
                 "decisions": (
@@ -1654,6 +1666,9 @@ def _task_max_turns(
 
 def _task_resume_session(
     task_packet: dict[str, Any] | None,
+    *,
+    resume_fact: bool | None = None,
+    resume_session_id: str | None = None,
 ) -> tuple[bool, str]:
     if not isinstance(task_packet, dict):
         return False, ""
@@ -1668,13 +1683,37 @@ def _task_resume_session(
     run_ids = session.get("run_ids")
     if not isinstance(run_ids, list):
         raise ValueError("agentbc.session.run_ids must be a list")
-    resumed = bool(run_ids)
+    # Production adapters pass the frozen fact captured before registration.
+    # The run list fallback remains only for standalone historical callers
+    # that have no adapter-owned pre-registration fact.
+    resumed = bool(run_ids) if resume_fact is None else bool(resume_fact)
     if not resumed:
         return False, ""
-    session_id = str(session.get("session_id") or "").strip()
+    session_id = str(
+        resume_session_id if resume_session_id is not None else session.get("session_id")
+        or ""
+    ).strip()
     if not session_id:
         raise ValueError("agentbc.session.session_id is required for resume")
     return True, session_id
+
+
+def _task_resume_fact(task_packet: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Read the adapter's immutable pre-registration resume fact."""
+    if not isinstance(task_packet, dict):
+        return None
+    value = task_packet.get("_agentbc_resume_fact")
+    if not isinstance(value, dict):
+        return None
+    run_id = str(value.get("run_id") or "").strip()
+    if not run_id:
+        raise ValueError("_agentbc_resume_fact.run_id is required")
+    if type(value.get("resumed")) is not bool:
+        raise ValueError("_agentbc_resume_fact.resumed must be a boolean")
+    session_id = str(value.get("session_id") or "").strip()
+    if value["resumed"] and not session_id:
+        raise ValueError("_agentbc_resume_fact.session_id is required for resume")
+    return {"run_id": run_id, "resumed": value["resumed"], "session_id": session_id}
 
 
 def _task_has_session_policy(task_packet: dict[str, Any] | None) -> bool:
@@ -1693,7 +1732,12 @@ def _execution_session_receipt(
     session_id = extract_hermes_session_id(stderr)
     if session_id is None:
         return None
-    resumed, _ = _task_resume_session(task_packet)
+    resume_fact = _task_resume_fact(task_packet)
+    resumed, _ = _task_resume_session(
+        task_packet,
+        resume_fact=(resume_fact["resumed"] if resume_fact is not None else None),
+        resume_session_id=(resume_fact["session_id"] if resume_fact is not None else None),
+    )
     return {
         "version": 1,
         "executor": "hermes",

@@ -52,10 +52,7 @@ from agent_bridge_connect.permission_modes import (
     permission_flags,
     permission_record_from_extensions,
 )
-from agent_bridge_connect.permission_elevation import (
-    full_capability_preflight,
-    task_elevation_protocol_enabled,
-)
+from agent_bridge_connect.permission_elevation import task_elevation_protocol_enabled
 from agent_bridge_connect.prompt_contract import (
     PromptPlatformExtras,
     build_prompt_contract,
@@ -665,41 +662,22 @@ class CodexExecutor(CLIExecutorBase):
         transport = self.transport_mode.strip().lower()
         if transport in {"cli", "direct"}:
             return False
-        from agent_bridge_connect.permission_grants import (
-            permission_grant_from_extensions,
-        )
-
         extensions = (task_packet or {}).get("extensions")
-        grant = permission_grant_from_extensions(
-            extensions if isinstance(extensions, dict) else {}
-        )
-        session = (
-            extensions.get(SESSION_EXTENSION_KEY)
-            if isinstance(extensions, dict)
-            else None
-        )
-        official_receipt = (
-            isinstance(session, dict)
-            and session.get("official_receipt_bound") is True
-            and bool(str(session.get("session_id") or "").strip())
-        )
-        if (
-            grant is not None
-            and grant["state"]["status"] != "revoked"
-            and not official_receipt
-        ):
-            # A fresh compatibility full run has no official session to
-            # resume, so keep the pre-receipt CLI start path.
-            return False
-        permission = permission_record_from_extensions(
-            extensions,
-            allow_legacy=True,
-        )
-        # Once an official receipt exists, auto/app-server must use the same
-        # App Server transport for every continuation, including full mode.
-        # The fresh full task exception above avoids creating a resumable
-        # session through a path that has no official receipt yet.
-        if permission["effective_mode"] == "full" and not official_receipt:
+        try:
+            permission = permission_record_from_extensions(
+                extensions,
+                allow_legacy=False,
+            )
+        except ABCError:
+            # Capability introspection is also used by legacy/minimal packets
+            # and terminal diagnostics. Missing permission metadata must not
+            # turn that read-only path into an executor crash; actual
+            # authorization still validates the persisted task snapshot.
+            return transport == "auto" or transport in CODEX_APP_SERVER_TRANSPORT_ALIASES
+        # Plan D full always uses Codex's native strongest noninteractive CLI;
+        # App Server remains the structured permission transport for safe and
+        # inherit only.
+        if permission["effective_mode"] == "full":
             return False
         return transport == "auto" or transport in CODEX_APP_SERVER_TRANSPORT_ALIASES
 
@@ -1348,33 +1326,23 @@ class CodexExecutor(CLIExecutorBase):
                 "method": method,
             }
             if task_elevation:
-                preflight = full_capability_preflight(
-                    record.get("task_packet"),
-                    executor="codex",
-                    executable=self.agent_bin,
-                )
-                if preflight.get("ok") is not True:
-                    raise ControlPlaneError(
-                        "permission_preflight_failed",
-                        "Codex full-capability preflight failed before the elevation UI.",
-                    )
                 identity = message.get("_agentbc") if isinstance(message.get("_agentbc"), dict) else {}
                 message = {
                     **message,
                     "approval_version": 3,
                     "scope": "task_elevation",
-                    "elevation_mode": "contained_full",
+                    "elevation_mode": "full",
                     "native_event": f"codex_app_server.{method}",
-                    "path_plan_digest": preflight["path_plan_digest"],
-                    "containment_profile_digest": preflight["containment_profile_digest"],
-                    "preflight": preflight,
+                    "path_plan_digest": "",
+                    "containment_profile_digest": "",
+                    "preflight": {"status": "retired", "mode": "full"},
                     "authority": authority,
                     "_agentbc": {
                         **identity,
                         "native_event": f"codex_app_server.{method}",
-                        "path_plan_digest": preflight["path_plan_digest"],
-                        "containment_profile_digest": preflight["containment_profile_digest"],
-                        "preflight": preflight,
+                        "path_plan_digest": "",
+                        "containment_profile_digest": "",
+                        "preflight": {"status": "retired", "mode": "full"},
                     },
                 }
             else:
@@ -1419,7 +1387,7 @@ class CodexExecutor(CLIExecutorBase):
                 {
                     "approval_version": 3,
                     "elevation_mode": str(
-                        pending_after.get("elevation_mode") or "contained_full"
+                        pending_after.get("elevation_mode") or "full"
                     ),
                     "path_plan_digest": str(pending_after.get("path_plan_digest") or ""),
                     "containment_profile_digest": str(
