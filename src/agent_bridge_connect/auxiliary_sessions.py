@@ -830,19 +830,18 @@ def auxiliary_cleanup_blockers(
     *,
     task_status: str,
     lease_state: str,
-    report_written: bool,
-    notification_recorded: bool,
 ) -> list[str]:
-    """Return the ordered reasons one auxiliary session must not be cleaned."""
+    """Return the ordered reasons one auxiliary session must not be cleaned.
+
+    FLOW-104-002 removed ``report_written`` and ``notification_recorded`` as
+    auxiliary cleanup gates: those are independent ``agentbc.terminal_delivery``
+    stages and must never block an auxiliary session cleanup.
+    """
     blockers: list[str] = []
     if str(task_status or "").strip().lower() not in TERMINAL_SESSION_CLEANUP_STATUSES:
         blockers.append("task_not_terminal")
     if str(lease_state or "").strip().lower() != "closed":
         blockers.append("run_lease_not_closed")
-    if report_written is not True:
-        blockers.append("report_not_written")
-    if notification_recorded is not True:
-        blockers.append("notification_not_recorded")
     entry_errors = validate_auxiliary_entry(entry)
     if entry_errors:
         blockers.append("auxiliary_ledger_invalid")
@@ -870,8 +869,6 @@ def transition_auxiliary_cleanup(
     *,
     task_status: str,
     lease_state: str,
-    report_written: bool,
-    notification_recorded: bool,
     capability: str | None = None,
     strategy: str | None = None,
     error_code: str = "",
@@ -906,8 +903,6 @@ def transition_auxiliary_cleanup(
         entry,
         task_status=task_status,
         lease_state=lease_state,
-        report_written=report_written,
-        notification_recorded=notification_recorded,
     )
     if target_state == "retained":
         if current_state != "not_requested" or entry.get("retain") is not True:
@@ -1147,8 +1142,6 @@ def auxiliary_aggregate_view(ledger: Any) -> dict[str, Any]:
                 entry,
                 task_status="completed",
                 lease_state="closed",
-                report_written=True,
-                notification_recorded=True,
             )
             cleanup = read_session_cleanup_receipt(entry.get("cleanup"))
         except ABCError:

@@ -329,10 +329,14 @@ def _compact_terminal_extensions(value: Any) -> dict[str, Any]:
         "agentbc.session",
         "agentbc.permission",
         "agentbc.auxiliary_sessions",
+        "agentbc.terminal_delivery",
     ):
         item = value.get(key)
         if item not in (None, "", [], {}):
             # These v1 policy receipts are already bounded and must remain exact.
+            # ``agentbc.terminal_delivery`` (FLOW-104-002) survives 50 KiB
+            # terminal-record compaction verbatim so independent delivery
+            # stages can still be replayed after a record trim.
             compact[key] = item
     for key in (
         "agentbc.provenance",

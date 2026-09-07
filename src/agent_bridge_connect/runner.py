@@ -752,6 +752,22 @@ class RunnerClient:
     def write_report(self, path: str | Path, content: str) -> dict[str, Any]:
         return self._request({"op": "write_report", "path": str(Path(path).expanduser()), "content": content})
 
+    def deliver_terminal(self, task_id: str, board_root: str | Path) -> dict[str, Any]:
+        """Ask the Runner (the production delivery owner) to deliver one task now.
+
+        FLOW-104-002: a contained worker finalizes the task and attempts the
+        report/record/index stages, but must not write the board-level
+        notification side channel.  It hands the remaining stages to the Runner,
+        which owns every terminal delivery replay.
+        """
+        return self._request(
+            {
+                "op": "terminal_delivery",
+                "task_id": task_id,
+                "board_root": str(Path(board_root).expanduser()),
+            }
+        )
+
     def agent_callback(
         self,
         task_id: str,
@@ -2193,6 +2209,29 @@ class RunnerState:
                 continue
         return processed
 
+    def maintain_terminal_delivery(self, *, now: str | None = None) -> list[dict[str, Any]]:
+        """Runner-owned replay of incomplete terminal delivery stages.
+
+        FLOW-104-002: Runner is the production owner of terminal delivery.  It
+        attempts delivery immediately when a terminal task write lands and then
+        replays only the stages that are not confirmed and whose backoff has
+        elapsed (immediate, then earliest 60s, then capped at 300s).  Confirmed
+        stages never repeat.  ``input_required`` tasks are never processed and
+        ``needs_recovery`` sessions are never mutated here.
+        """
+        from .terminal_delivery_coordinator import TerminalDeliveryCoordinator
+
+        processed: list[dict[str, Any]] = []
+        with self.lock:
+            boards = tuple(sorted(self.known_boards, key=str))
+        for board in boards:
+            try:
+                coordinator = TerminalDeliveryCoordinator(board)
+                processed.extend(coordinator.maintain_board(now=now))
+            except (ABCError, OSError, ValueError):
+                continue
+        return processed
+
     def handoff_and_dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
         from .config import load_config
         from .service import TaskService
@@ -2765,6 +2804,23 @@ class RunnerState:
             "notified": False,
             "report_file": (current.workspace or {}).get("report_file", ""),
         }
+
+    def terminal_delivery(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Attempt terminal delivery immediately for one exact terminal task.
+
+        FLOW-104-002: the Runner is the production owner of terminal delivery.
+        This op delivers the incomplete stages right away; Runner maintenance
+        later replays anything still outstanding.  ``input_required`` tasks are
+        never processed and ``needs_recovery`` sessions are never mutated.
+        """
+        from .terminal_delivery_coordinator import TerminalDeliveryCoordinator
+
+        task_id = str(request.get("task_id") or "")
+        board = self._atomic_board(str(request.get("board_root") or ""))
+        try:
+            return TerminalDeliveryCoordinator(board).deliver_now(task_id)
+        except (ABCError, OSError, ValueError) as exc:
+            raise RunnerError(f"terminal delivery failed: {exc}") from exc
 
     def show_task(self, task_id: str, board_root: str) -> dict[str, Any]:
         board = self._atomic_board(board_root)
@@ -3753,6 +3809,7 @@ class RunnerService:
         now = time.monotonic()
         if now - self._last_maintenance_at >= 60.0:
             self.runner_state.maintain_waiting_inputs()
+            self.runner_state.maintain_terminal_delivery()
             self.runner_state.maintain_session_cleanup()
             self._last_maintenance_at = now
         handled = False
@@ -4017,6 +4074,8 @@ def _dispatch_request(state: RunnerState, request: dict[str, Any]) -> dict[str, 
         return state.cancel(str(request.get("run_id") or ""))
     if operation == "write_report":
         return state.write_report(str(request.get("path") or ""), str(request.get("content") or ""))
+    if operation == "terminal_delivery":
+        return state.terminal_delivery(request)
     if operation == "agent_callback":
         return state.agent_callback(request)
     if operation == "show_task":

@@ -569,8 +569,6 @@ class SessionCleanupCoordinator:
             target,
             task_status=str(task.get("status") or ""),
             lease_state=self._lease_state(task_id),
-            report_written=self._report_written(task),
-            notification_recorded=self._notification_recorded(task_id),
             occurred_at=occurred_at,
             **kwargs,
         )
@@ -698,10 +696,8 @@ class SessionCleanupCoordinator:
             blockers.append("task_not_terminal")
         if str(self._lease_state(task_id) or "").strip().lower() != "closed":
             blockers.append("run_lease_not_closed")
-        if self._report_written(task) is not True:
-            blockers.append("report_not_written")
-        if self._notification_recorded(task_id) is not True:
-            blockers.append("notification_not_recorded")
+        # FLOW-104-002: report/notification evidence is no longer an auxiliary
+        # cleanup gate; terminal delivery is tracked independently by Runner.
         entry_errors = validate_auxiliary_entry(entry)
         if entry_errors:
             blockers.append("auxiliary_ledger_invalid")
@@ -922,8 +918,6 @@ class SessionCleanupCoordinator:
             target,
             task_status=str(task.get("status") or ""),
             lease_state=self._lease_state(task_id),
-            report_written=self._report_written(task),
-            notification_recorded=self._notification_recorded(task_id),
             occurred_at=occurred_at,
             **kwargs,
         )
@@ -1120,11 +1114,13 @@ class SessionCleanupCoordinator:
         session = self._authoritative_session(task)
         if session is None:
             return ["session_receipt_invalid"]
+        # FLOW-104-002: report_written / notification_recorded are no longer
+        # cleanup gates.  They are independent ``agentbc.terminal_delivery``
+        # stages owned by Runner; a report or notification failure must never
+        # block executor-session cleanup.
         return session_cleanup_blockers(
             task_status=str(task.get("status") or ""),
             lease_state=self._lease_state(task_id),
-            report_written=self._report_written(task),
-            notification_recorded=self._notification_recorded(task_id),
             session=session,
         )
 
@@ -1139,29 +1135,6 @@ class SessionCleanupCoordinator:
         if state == "closed":
             return "closed"
         return state or "active"
-
-    def _report_path(self, task: dict[str, Any]) -> Path:
-        workspace = task.get("workspace")
-        if isinstance(workspace, dict):
-            report = str(workspace.get("report_file") or "").strip()
-            if report:
-                return Path(report).expanduser()
-        task_id = str(task.get("id") or task.get("task_id") or "")
-        return Path(self.store.task_dir(task_id)) / f"{task_id}-report.md"
-
-    def _report_written(self, task: dict[str, Any]) -> bool:
-        return self._report_path(task).is_file()
-
-    def _notification_recorded(self, task_id: str) -> bool:
-        for event in self._read_events(task_id):
-            if event.get("event_type") != "notification_delivery":
-                continue
-            if event.get("terminal") is False:
-                continue
-            if event.get("notification_event") == "task.input_required":
-                continue
-            return True
-        return False
 
     def _read_events(self, task_id: str) -> list[dict[str, Any]]:
         try:

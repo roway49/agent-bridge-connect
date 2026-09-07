@@ -2029,6 +2029,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 callback=callback if isinstance(callback, dict) else None,
                 execution_session=execution_session,
             )
+            _handoff_terminal_delivery(service, task.id)
             # PERM-104-002 (E52M-003 review fix): ``verified`` may only come
             # from the structured success receipt of the declared target
             # action - a valid agent callback finalized by Core plus the
@@ -2750,6 +2751,31 @@ def _notify_terminal(
     from .notifications import notify_terminal
 
     notify_terminal(service, task_id, event_type, level, message)
+
+
+def _handoff_terminal_delivery(service: TaskService, task_id: str) -> None:
+    """Hand remaining terminal delivery stages to the Runner.
+
+    FLOW-104-002: the worker finalizes the business terminal state and attempts
+    the report/record/index stages inline, but a contained worker must not write
+    the board-level notification side channel.  The Runner is the production
+    owner of terminal delivery, so it receives the outstanding stages
+    immediately; Runner maintenance replays anything still incomplete later.
+    Every failure here is non-fatal: the delivery receipt on the task keeps the
+    outstanding stages and the business terminal state is already durable.
+    """
+    try:
+        extensions = service.get_task(task_id).extensions or {}
+    except Exception:  # noqa: BLE001 - delivery handoff must never mask the task
+        return
+    if "agentbc.terminal_delivery" not in extensions:
+        return
+    try:
+        from .runner import RunnerClient
+
+        RunnerClient().deliver_terminal(task_id, str(service.board_root))
+    except Exception:  # noqa: BLE001 - Runner may be offline; maintenance replays
+        return
 
 
 def _notify_input_required(

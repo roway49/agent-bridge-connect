@@ -26,6 +26,12 @@ from .run_lease import (
 )
 from .task_id import split_task_ref, task_sequence
 from .task_store import TaskStore
+from .terminal_delivery import (
+    TERMINAL_DELIVERY_EXTENSION_KEY,
+    delivery_health_view,
+    import_legacy_terminal_delivery,
+    terminal_delivery_view,
+)
 from .terminal_states import TASK_TERMINAL_STATES
 from .timing_view import build_timing_view
 
@@ -140,6 +146,20 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         permission_elevation_projection = permission_elevation_public_projection(
             elevation_record
         )
+    # FLOW-104-002: public terminal-delivery projections.  A legacy terminal
+    # record without a receipt projects historical evidence (existing report /
+    # terminal notification event) or ``not_applicable``; no historical UI
+    # dialog is ever replayed.
+    delivery_source = extensions.get(TERMINAL_DELIVERY_EXTENSION_KEY)
+    if not isinstance(delivery_source, dict):
+        try:
+            delivery_source = import_legacy_terminal_delivery(
+                None, task=task, events=events
+            )
+        except Exception:  # noqa: BLE001 - projection must never break reporting
+            delivery_source = None
+    terminal_delivery = terminal_delivery_view(delivery_source)
+    delivery_health = delivery_health_view(delivery_source)
 
     report = {
         "task_id": task.get("id", task_id),
@@ -181,6 +201,8 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "permission": permission,
         "permission_runtime": permission_runtime_projection,
         "permission_elevation": permission_elevation_projection,
+        "terminal_delivery": terminal_delivery,
+        "delivery_health": delivery_health,
         "execution_policy": execution_policy_view(extensions),
         "run_lease_state": lease_state,
         "time_since_last_heartbeat_s": heartbeat_age,
@@ -254,16 +276,17 @@ def generate_task_brief(task_id: str, board_root: Path) -> dict[str, Any]:
     return redact_secrets(brief)
 
 
-def write_report_files(
+def write_report_markdown(
     task_id: str,
     board_root: Path,
-    *,
-    refresh_index: bool = True,
 ) -> tuple[dict[str, Any], str]:
-    """Write the single human-readable task record and enforce its size budget."""
+    """Report stage only: generate and write the canonical Markdown projection.
+
+    FLOW-104-002 keeps this independently catchable from record compaction and
+    index refresh so one failure can never suppress the other terminal side
+    effects or rewrite a confirmed terminal task state.
+    """
     root = Path(board_root).expanduser().resolve()
-    store = TaskStore(root)
-    task_dir = store.task_dir(task_id)
     report = generate_report(task_id, root)
     workspace = report.get("workspace") or {}
     report_file = workspace.get("report_file")
@@ -286,13 +309,55 @@ def write_report_files(
             from .runner import RunnerClient
 
             RunnerClient().write_report(user_report, markdown)
+    return report, markdown
+
+
+def compact_task_record(
+    task_id: str,
+    board_root: Path,
+) -> int:
+    """Record stage only: enforce the terminal 50 KiB task record budget."""
     from .record_management import enforce_task_record_budget
 
-    enforce_task_record_budget(task_dir, report_file)
-    if refresh_index:
-        from .task_index import refresh_task_index
+    root = Path(board_root).expanduser().resolve()
+    store = TaskStore(root)
+    task_dir = store.task_dir(task_id)
+    report_file = ""
+    try:
+        task = store.read_task(task_id)
+    except Exception:  # noqa: BLE001 - projection only; compaction stays best effort
+        task = {}
+    workspace = (task or {}).get("workspace") or {}
+    if isinstance(workspace, dict):
+        report_file = str(workspace.get("report_file") or "")
+    return enforce_task_record_budget(task_dir, report_file)
 
-        refresh_task_index(root)
+
+def refresh_board_index(board_root: Path) -> list[dict[str, Any]]:
+    """Index stage only: rebuild the board task lookup index."""
+    from .task_index import refresh_task_index
+
+    return refresh_task_index(Path(board_root).expanduser().resolve())
+
+
+def write_report_files(
+    task_id: str,
+    board_root: Path,
+    *,
+    refresh_index: bool = True,
+) -> tuple[dict[str, Any], str]:
+    """Write the report, then compact the record, then refresh the index.
+
+    The three terminal side effects stay independently catchable (see
+    :func:`write_report_markdown`, :func:`compact_task_record`,
+    :func:`refresh_board_index`); this composed entry point preserves the
+    historical raise-on-first-failure contract for existing callers.
+    """
+    root = Path(board_root).expanduser().resolve()
+    report, markdown = write_report_markdown(task_id, root)
+    compact_task_record(task_id, root)
+    if refresh_index:
+        refresh_board_index(root)
     return report, markdown
 
 
@@ -617,6 +682,13 @@ def _parse_timestamp(value: Any) -> datetime | None:
     return parsed
 
 
+def _format_delivery_stages(stages: Any) -> str:
+    """Render outstanding delivery stages as a bounded public label."""
+    if not isinstance(stages, list) or not stages:
+        return "none"
+    return ",".join(str(stage) for stage in stages)
+
+
 def _render_report_md(report: dict[str, Any]) -> str:
     created_at = str(report.get("created_at") or "")
     completed_at = str(report.get("completed_at") or "")
@@ -630,6 +702,8 @@ def _render_report_md(report: dict[str, Any]) -> str:
         f"- Marker valid: `{'yes' if report.get('marker_valid') else 'no'}`",
         f"- Completed steps: `{(report.get('summary') or {}).get('steps_done', 0)}/{(report.get('summary') or {}).get('steps_total', 0)}`",
         f"- Flow contract satisfied: `{'yes' if report.get('flow_contract_satisfied') else 'no'}`",
+        f"- Terminal delivery: `{(report.get('delivery_health') or {}).get('state', 'unknown')}`",
+        f"- Terminal delivery outstanding: `{_format_delivery_stages((report.get('delivery_health') or {}).get('outstanding_stages'))}`",
         f"- Failure code: `{report.get('failure_code') or 'none'}`",
         f"- Failed steps: `{_format_step_ids(report.get('failed_steps'))}`",
         f"- Blocked steps: `{_format_step_ids(report.get('blocked_steps'))}`",

@@ -575,8 +575,6 @@ class CodexCleanupContractTests(unittest.TestCase):
         blockers = session_cleanup_blockers(
             task_status="completed",
             lease_state="closed",
-            report_written=True,
-            notification_recorded=True,
             session=session,
         )
         self.assertIn("session_receipt_unbound", blockers)
@@ -590,8 +588,6 @@ class CodexCleanupContractTests(unittest.TestCase):
         retained_blockers = session_cleanup_blockers(
             task_status="completed",
             lease_state="closed",
-            report_written=True,
-            notification_recorded=True,
             session=retained,
         )
         self.assertNotIn("session_receipt_unbound", retained_blockers)
@@ -634,8 +630,6 @@ class V4TransitionGateTests(unittest.TestCase):
         defaults = {
             "task_status": "completed",
             "lease_state": "closed",
-            "report_written": True,
-            "notification_recorded": True,
             "occurred_at": T0,
         }
         defaults.update(kwargs)
@@ -878,8 +872,6 @@ class PrimaryAuxiliaryIsolationTests(unittest.TestCase):
         blockers = session_cleanup_blockers(
             task_status="completed",
             lease_state="closed",
-            report_written=True,
-            notification_recorded=True,
             session=session,
         )
         self.assertEqual(blockers, [])

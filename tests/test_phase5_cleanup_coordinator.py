@@ -258,8 +258,8 @@ class CleanupCoordinatorTestCase(unittest.TestCase):
             ({"status": "input_required"}, "task_not_terminal"),
             ({"status": "needs_recovery"}, "task_not_terminal"),
             ({"status": "running"}, "task_not_terminal"),
-            ({"report": False}, "report_not_written"),
-            ({"notification": False}, "notification_not_recorded"),
+            # FLOW-104-002: report/notification evidence is no longer a gate;
+            # only a missing report or notification is asserted below.
             ({"session_state": "input_required"}, "session_not_terminal"),
             ({"session_state": "needs_recovery"}, "session_not_terminal"),
             ({"session_state": "active"}, "session_not_terminal"),
@@ -277,6 +277,29 @@ class CleanupCoordinatorTestCase(unittest.TestCase):
                 self.assertEqual(self._session(task_id)["cleanup"]["state"], "not_requested")
                 self.assertEqual(self._cleanup_events(task_id), [])
                 self.assertEqual(executor.calls, [])
+
+    def test_cleanup_runs_without_report_or_notification_evidence(self) -> None:
+        """FLOW-104-002: cleanup no longer requires report/notification proof."""
+        from agent_bridge_connect.session_cleanup import SessionCleanupCoordinator
+
+        for overrides in ({"report": False}, {"notification": False}):
+            with self.subTest(overrides=overrides):
+                task_id = self._base_task(**overrides)
+                executor = FakeCleanupExecutor()
+                coordinator = SessionCleanupCoordinator(
+                    self.board, executor_port=executor
+                )
+                result = coordinator.request_cleanup(task_id, now=T0)
+                self.assertNotIn("report_not_written", result["blockers"])
+                self.assertNotIn("notification_not_recorded", result["blockers"])
+                self.assertNotIn("task_not_terminal", result["blockers"])
+                self.assertNotIn("run_lease_not_closed", result["blockers"])
+                self.assertEqual(result["status"], "failed")
+                # The cleanup pass was actioned: no report/notification proof.
+                self.assertNotEqual(
+                    self._session(task_id)["cleanup"]["state"], "not_requested"
+                )
+                self.assertEqual(self.service.store.read_task(task_id)["status"], "completed")
 
     def test_active_lease_blocks_and_stale_lease_blocks_zero_side_effects(self) -> None:
         from agent_bridge_connect.session_cleanup import SessionCleanupCoordinator
@@ -313,6 +336,8 @@ class CleanupCoordinatorTestCase(unittest.TestCase):
     def test_multiple_blockers_preserve_gate_order(self) -> None:
         from agent_bridge_connect.session_cleanup import SessionCleanupCoordinator
 
+        # FLOW-104-002: report_written / notification_recorded are no longer
+        # cleanup gates, so the blocker list only carries the remaining gates.
         task_id = self._base_task(status="running", notification=False)
         self._set_lease(task_id, "active")
         executor = FakeCleanupExecutor()
@@ -321,7 +346,7 @@ class CleanupCoordinatorTestCase(unittest.TestCase):
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(
             result["blockers"],
-            ["task_not_terminal", "run_lease_not_closed", "notification_not_recorded"],
+            ["task_not_terminal", "run_lease_not_closed"],
         )
         self.assertFalse(result["actioned"])
         self.assertEqual(executor.calls, [])
@@ -347,14 +372,18 @@ class CleanupCoordinatorTestCase(unittest.TestCase):
         self.assertEqual(events[0]["cleanup_event"], "retained")
 
     def test_retain_requires_terminal_gates_before_retained(self) -> None:
+        """FLOW-104-002: retention still requires a business-terminal task."""
         from agent_bridge_connect.session_cleanup import SessionCleanupCoordinator
 
-        task_id = self._base_task(executor="claude", retain=True, report=False)
+        task_id = self._base_task(
+            executor="claude", retain=True, report=False, status="running"
+        )
         executor = FakeCleanupExecutor()
         coordinator = SessionCleanupCoordinator(self.board, executor_port=executor)
         result = coordinator.request_cleanup(task_id, now=T0)
         self.assertEqual(result["status"], "skipped")
-        self.assertIn("report_not_written", result["blockers"])
+        self.assertIn("task_not_terminal", result["blockers"])
+        self.assertNotIn("report_not_written", result["blockers"])
         self.assertFalse(result["actioned"])
         self.assertEqual(self._session(task_id)["cleanup"]["state"], "not_requested")
         self.assertEqual(executor.calls, [])
@@ -554,13 +583,16 @@ class CleanupCoordinatorTestCase(unittest.TestCase):
     def test_pending_with_unmet_gates_is_left_untouched(self) -> None:
         from agent_bridge_connect.session_cleanup import SessionCleanupCoordinator
 
-        task_id = self._base_task(report=False)
+        # FLOW-104-002: the pending receipt is still untouched while the task is
+        # not business-terminal, even without report/notification evidence.
+        task_id = self._base_task(status="running", report=False)
         self._set_cleanup(task_id, self._pending_receipt())
         executor = FakeCleanupExecutor()
         coordinator = SessionCleanupCoordinator(self.board, executor_port=executor)
         result = coordinator.request_cleanup(task_id, now=T0)
         self.assertEqual(result["status"], "skipped")
-        self.assertIn("report_not_written", result["blockers"])
+        self.assertIn("task_not_terminal", result["blockers"])
+        self.assertNotIn("report_not_written", result["blockers"])
         self.assertFalse(result["actioned"])
         self.assertEqual(self._session(task_id)["cleanup"]["state"], "pending")
         self.assertEqual(executor.calls, [])
