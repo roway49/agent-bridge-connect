@@ -4,18 +4,27 @@
 > **最高优先级、不可覆盖：禁止在 `full` 运行基础上增加任何额外安全策略。安全策略不属于 AgentBC 产品特性，不为任务执行负责；凡与 `full` 任务完整执行冲突，必要时必须移除一切额外安全策略。**
 
 > 制定日期：2026-08-26
-> 状态：持续开发与回归中；`SESSION-104-001` 保持已通过，`PERM-104-001` 的 Claude 同会话 safe-to-full 自动化门禁已完成，`PERM-104-002` 仍开放
+> 状态：持续开发与回归中；`SESSION-104-001` 已通过，方案 D 的三 Executor 显式 full 与 inherit→full 核心实机矩阵已通过；`PERM-104-002` 仅保留继承 full、Deny/异常路径及发布收尾
 > 目标版本：AgentBC `1.0.4A` / Python `1.0.4a1`
 
-## PERM-104 方案 D（2026-09-06，代码回归通过，实机待验收）
+## PERM-104 方案 D（2026-09-07，代码与核心实机矩阵通过）
 
 - 生产权限路径收敛为原生 full 直接执行，以及 safe/inherit 首次可信阻塞后一次提升 full。
 - full 不再受 Runner Seatbelt、PathPlan 写入范围、Claude 工具限制、版本/full 能力探测或 permission_runtime 生命周期约束。
 - 新审批使用通用 approval v3 和 task elevation；旧 grant 不参与有效权限解析。历史回执保留兼容读取。
 - 任务身份、官方会话归属、唯一人工决定、RunLease、终态 callback、会话清理隔离和日志脱敏继续作为任务正确性约束。
 - 替代回归：`tests/test_perm104_plan_d.py`，并复用 Claude 同会话提升、Hermes v3 Approve/Deny、Runner full 路由测试。
-- 验收仍需三个执行器实机 full 零弹窗，以及 safe/inherit 至多一次批准后完整完成；代码测试通过不能替代实机验收。
-- 本轮 unittest：1747 项，1730 通过、17 项历史合同明确退役跳过、零失败和错误。Ruff、compileall、diff 空白检查和 wheel 构建通过。未替换本机安装，未提交或 push。
+- 三 Executor 显式 full 零弹窗实机通过：Codex `T5KN-001`、Claude `XE8R-001`、Hermes
+  `QMBK-001` 均 completed、唯一合法 callback、RunLease closed、cleanup succeeded，且审批计数均为 0。
+- 三 Executor inherit→full 实机通过：Codex `G3CQ-001`、Claude `8JY7-001`、Hermes
+  `9EP7-001` 均 completed、唯一合法 callback、RunLease closed、cleanup succeeded；每项均恰好 1 次请求、
+  1 次通知、1 次人工决定。Claude 使用同一官方 session 原生 `setMode(bypassPermissions)`，零 continuation；
+  Codex/Hermes 各只有 1 个 full continuation。
+- Claude 通知 UI 已统一为 `View Details / Deny / Approve Full`，用户确认 `8JY7-001` 整体符合预期；
+  详情/返回零回执，`Approve Full` 精确回传同一 pending `can_use_tool` 的 native approve。
+- 当前门禁：全量 unittest 1794 项通过、17 项跳过；Ruff、compileall、diff 空白检查通过。local-alpha
+  包绑定 `private/integration@50acf9949387e21611b7558587110acee80bf718`，本机 CLI/Skill/Runner 已替换且
+  Runner PID `59193`。剩余权限验收仅为 handoff/retry 继承 full、Deny/timeout/重复事件和发布身份复核。
 > 来源基线：`private/integration@01f3ce1`
 > 已发布基线：`v1.0.3A2@62757a4`；公开 Formula 收口 `public/main@87c4bca`
 > 上版归档：`AGENTBC_1.0.3A_DEVELOPMENT_CHECKLIST.md`
@@ -66,10 +75,10 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 
 | ID | 优先级 | 问题 | 目标结果 | 主要依赖 |
 | --- | --- | --- | --- | --- |
-| `PROTO-104-001` | P0 / fixture matrix 已完成（2026-08-27）；production collaboration_spawn wiring 待回归（2026-08-28） | 上游 CLI version/help/argv/event 漂移只能靠临时补测试 | 三 Executor 完整版本化 fixture、capability matrix 和未知组合 fail-closed；生产派生会话接线需通过版本 fixture + live probe 双门 | 无 |
+| `PROTO-104-001` | P0 / 已通过（2026-08-27） | 上游 CLI version/help/argv/event 漂移只能靠临时补测试 | 三 Executor 版本化 fixture 与 capability matrix 已建立；原生 `collaboration_spawn` 生产启用合同独立转入 `PROTO-105-001` P2，不再阻塞 1.0.4A | 无 |
 | `ARCH-104-001` | P1 / 按域执行 | Service、Runner、CLI、approval、notification 责任仍集中 | 每个功能项先完成对应窄模块机械拆分，公共 API/CLI/磁盘行为不变 | `PROTO-104-001` |
-| `PERM-104-001` | P0 / 实现与自动化门禁完成（2026-09-05） | native Deny 后 Agent 仍可用 Prompt/callback 请求 full 并启动第二 worker | Claude safe/default 的首个结构化 `can_use_tool` 事件只产生一次同会话输入；Approve 原子返回原始 input + `setMode/bypassPermissions/session`，Deny 无 mode change；重复事件 fail closed | `RM7A-001` artifact evidence；`tests/test_perm104_001_claude_same_session_elevation.py`；`PERM-104-002` 的部署后 full canary 仍独立开放 |
-| `PERM-104-002` | P0-Blocker / 仍开放（RAXT-001，2026-08-31） | Claude native request 曾在 session receipt 建立前失败，后续 callback/full popup/worker crash 不能证明 native approval 成功；同一不可升级阻塞还可能重复请求 | 已补 session-first、native single_action 权威绑定、callback fail-closed、Runner contained cleanup 与回归；仍需 deployed explicit/temporary/inherited full 真机 canary 和 `PERM-104-002-R1` 详情回归，未通过前不得关闭 | `PERM-104-001` |
+| `PERM-104-001` | P0 / 已通过（2026-09-07） | native Deny 后 Agent 仍可用 Prompt/callback 请求 full 并启动第二 worker | Claude inherit 的首个结构化 `can_use_tool` 事件只产生一次同会话输入；`8JY7-001` 已证明 Approve Full 原子返回原始 input + `setMode/bypassPermissions/session`，同 session 完成且零 continuation | `RM7A-001`；`8JY7-001`；`tests/test_perm104_001_claude_same_session_elevation.py` |
+| `PERM-104-002` | P0-Blocker / 核心矩阵通过、收尾开放（2026-09-07） | full 必须完整后台执行；inherit/safe 首次可信阻塞后至多一次提升，不能审批循环 | 三 Executor 显式 full 零弹窗与 inherit→full 一次审批矩阵已通过；Claude `PERM-104-002-R1` 的 Details UI 已通过。关闭前补齐 handoff/retry 继承 full、Deny、timeout、重复/乱序事件和最终安装身份复核 | `PERM-104-001` 已完成；`T5KN/XE8R/QMBK/G3CQ/8JY7/9EP7` 实机证据 |
 | `FLOW-104-002` | P0 | report/record 超限可跳过终态通知和 cleanup receipt | terminal、report、notification、cleanup 独立且可重放，通知不被报告失败吞掉 | terminal fixtures；对应 ARCH slice |
 | `FLOW-104-001` | P1 | handoff 只能声明一个 step，自由文本多步骤直到 callback 才失败 | handoff 原生结构化 steps、dispatch 前预检、严格 callback 一致性 | schema fixtures；对应 ARCH slice |
 | `FLOW-103-001` | P1 / 跨版转入 | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | task/run/session scoped 单调 progress receipt；所有公共视图同源 | `FLOW-104-001` 的 declared steps |
@@ -197,6 +206,20 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 
 节奏按 Gate 退出，不按日期强行推进。任一 P0 真机 canary 未通过时，后续 Wave 可以继续做不冲突的
 fixture/文档工作，但不得进入公开 RC。
+
+### 2026-09-07 滚动排期（按当前实际进度）
+
+| 时间窗 | 优先级与工作包 | 当前起点 | 退出条件 |
+| --- | --- | --- | --- |
+| 9 月 7 日—9 月 9 日 | P0-Blocker：`PERM-104-002` 收尾 | 三 Executor 显式 full 与 inherit→full 核心矩阵、Claude Details UI 已通过 | handoff/retry 继承 full、Deny、timeout、重复/乱序事件全部通过；安装身份一致，关闭 PERM 全局门禁 |
+| 9 月 10 日—9 月 13 日 | P0：`FLOW-104-002` 与 `INPUT-104-001` | record 上限已放宽到 50 KiB；外部附件仍有 custom-path 阻断基线 | terminal/report/notification/cleanup 可独立重放；custom path + 外部只读附件原子派发通过 |
+| 9 月 14 日—9 月 18 日 | P0：`FLOW-104-003`；P1：`FLOW-104-003-R1`、`FLOW-104-004-R1` | Failed retry/handoff 与 Codex interrupted turn 均有固定失败基线 | failed current head 可审计 retry/handoff；Hermes incomplete exit 与 Codex interrupted turn 有稳定终态和恢复动作 |
+| 9 月 19 日—9 月 22 日 | P1：`FLOW-104-001`、`FLOW-103-001`、`RESOURCE-104-001-R1` | steps/progress/resource input 均已有部分合同 | multi-step handoff、单调 progress、资源耗尽 Desktop 弹窗和同 session continuation 通过 |
+| 9 月 23 日—9 月 27 日 | P1 回归与局部 `ARCH-104-001` 收口 | `SESSION-104-001` 主项已通过；R1 仅保留 Desktop 实时刷新体验 | 三 Executor E2E、session teardown、Update/Homebrew 回归完成；只做被前述工作包证明必要的机械拆分 |
+| 9 月 28 日—10 月 2 日 | Wave 5：`1.0.4a1` RC 与双机发布门禁 | 所有 P0/P1 退出条件完成 | GitHub/PyPI/bundle/bottle/manifest SHA 与 tag commit 可复验，提交用户 go/no-go |
+
+`PROTO-105-001`（原生派生子会话启用合同）保持 P2，不占用 1.0.4A 主线；若 9 月 23 日后仍有容量，
+只允许做独立 probe/fixture，不得影响 RC。
 
 ## 4. 详细实现合同
 
