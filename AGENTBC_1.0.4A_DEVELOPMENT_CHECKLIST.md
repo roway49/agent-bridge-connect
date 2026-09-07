@@ -697,6 +697,11 @@ Executor 拒绝必须在同 session、同 request Approve 后精确执行。
   生产代码，只移植与方案 D 相容的终态仲裁、协议 fixture、证据与回归测试，并删除测试中已退役的
   `full_capability_preflight` / `preflight_host_containment` mock。最终门禁与重新封包证据以本次
   integration merge commit 和后续真机 canary 为准。
+- 2026-09-07 Claude live elevation 通知一致性收尾：现场任务 `6DV5-001` 的请求已是权威
+  `agentbc.approval v3`、`scope=task_elevation`、`requested_permission=full`，差异仅来自
+  `native_live_elevation` 的旧双按钮模板。一级界面统一为 `View Details / Deny / Approve Full`；
+  Details/Back 仅本地导航、零回执，`Approve Full` 继续映射为同一 pending `can_use_tool` 的原生
+  `approve`（`setMode(bypassPermissions)`），不得误用非 live 的 `approve_full` continuation。
 
 ### 4.5 `FLOW-104-001`：handoff 结构化多 steps
 

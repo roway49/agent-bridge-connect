@@ -365,10 +365,10 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
             body_lines.extend(
                 [
                     "Requested access: elevate this live Claude session to bypassPermissions.",
-                    "Approve sends one native setMode/bypassPermissions/session response for this exact blocked action.",
+                    "Approve Full sends one native setMode/bypassPermissions/session response for this exact blocked action.",
                     "The current task, RunLease, worker, and official Claude session remain unchanged.",
                     "Deny returns one native PermissionResultDeny and does not change permission mode.",
-                    "Choose Approve or Deny below.",
+                    "Choose Approve Full or Deny below; View Details does not answer the request.",
                 ]
             )
         elif is_task_elevation:

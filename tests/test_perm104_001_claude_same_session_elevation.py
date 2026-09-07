@@ -34,6 +34,7 @@ from agent_bridge_connect.notifications import (
     build_input_required_notification,
     notify_input_required,
 )
+from agent_bridge_connect.notifiers.dialog import DialogNotifier
 from agent_bridge_connect.permission_runtime import host_profile_digest, path_plan_digest
 from agent_bridge_connect.permission_transport import (
     claude_control_path_capability,
@@ -670,6 +671,7 @@ class ClaudeSameSessionElevationServiceTests(unittest.TestCase):
         self.assertIn("--approve", notification["respond_command"])
         self.assertNotIn("--approve-full", notification["respond_command"])
         self.assertIn("setMode/bypassPermissions/session", notification["message"])
+        self.assertIn("Approve Full", notification["message"])
 
         with mock.patch(
             "agent_bridge_connect.notifications.DialogNotifier.send",
@@ -711,6 +713,61 @@ class ClaudeSameSessionElevationServiceTests(unittest.TestCase):
         self.assertEqual(
             self.service.get_task(self.task.id).extensions["agentbc.session"]["session_id"],
             self.session_id,
+        )
+
+    def test_live_dialog_matches_full_elevation_ui_without_changing_protocol_action(self) -> None:
+        payload = {
+            "event_type": "task.input_required",
+            "input_type": "permission",
+            "native_live_elevation": True,
+            "approval_version": 3,
+            "elevation_mode": "full",
+            "dialog_title": "AgentBC · claude · LIVE-001",
+            "identity_task_id": "LIVE-001",
+            "identity_executor": "claude",
+            "identity_blocked_step": "1",
+            "reason_summary": "Command execution approval requested",
+            "reason_detail": "Bounded native Claude permission details",
+            "deadline_at": "2099-01-01T00:00:00Z",
+        }
+        notifier = DialogNotifier()
+        with mock.patch.object(notifier, "_run_script") as run:
+            run.side_effect = ["View Details", "Back", "Approve Full"]
+            result = notifier.send(payload)
+
+        self.assertEqual(
+            result.details,
+            {"action": "approve", "decision_source": "user"},
+        )
+        self.assertIn(
+            'buttons {"View Details", "Deny", "Approve Full"}',
+            run.call_args_list[0].args[2],
+        )
+        self.assertIn("Permission scope: full", run.call_args_list[0].args[1])
+        self.assertEqual(
+            run.call_args_list[1].args[1],
+            "Bounded native Claude permission details",
+        )
+        self.assertEqual(run.call_args_list[2].args[1], run.call_args_list[0].args[1])
+        self.assertNotEqual(result.details["action"], "approve_full")
+
+    def test_live_dialog_deny_still_returns_native_deny(self) -> None:
+        notifier = DialogNotifier()
+        payload = {
+            "event_type": "task.input_required",
+            "input_type": "permission",
+            "native_live_elevation": True,
+            "approval_version": 3,
+            "elevation_mode": "full",
+            "reason_summary": "Command execution approval requested",
+            "reason_detail": "Bounded native Claude permission details",
+            "deadline_at": "2099-01-01T00:00:00Z",
+        }
+        with mock.patch.object(notifier, "_run_script", return_value="Deny"):
+            result = notifier.send(payload)
+        self.assertEqual(
+            result.details,
+            {"action": "deny", "decision_source": "user"},
         )
 
     def test_non_live_task_elevation_dispatches_one_full_continuation(self) -> None:
