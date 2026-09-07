@@ -105,12 +105,25 @@ def _collected_intervals(
     """Ledger intervals plus the current on-disk lease, deduplicated by run id."""
     intervals = _ledger_intervals(extensions)
     lease = load_lease(task_id, root) if task_id else None
-    if lease is not None and not any(
-        str(item.get("run_id") or "") == lease.run_id for item in intervals
-    ):
+    if lease is not None:
         current = _interval_from_lease(lease, now)
         if current is not None:
-            intervals.append(current)
+            matching = next(
+                (
+                    index
+                    for index, item in enumerate(intervals)
+                    if str(item.get("run_id") or "") == lease.run_id
+                ),
+                None,
+            )
+            if matching is None:
+                intervals.append(current)
+            else:
+                # The on-disk RunLease is authoritative.  A lifecycle snapshot
+                # may have recorded this same run while it was active; once the
+                # lease closes, status/report/list must not keep projecting that
+                # stale active interval.
+                intervals[matching] = current
     intervals.sort(key=lambda item: str(item.get("started_at") or ""))
     return intervals
 

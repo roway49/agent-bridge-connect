@@ -399,7 +399,14 @@ class TerminalDeliveryBoardTests(TerminalDeliveryBoardSetup):
             for _ in range(24)
         ]
         self.service.store.write_task(task_id, raw)
-        result = self._coordinator().deliver_now(task_id, now=T0)
+        # This case isolates record compaction.  Never make its result depend on
+        # whether the test host can display a real terminal dialog.
+        stage_executors = {
+            stage: (lambda: StageOutcome(True)) for stage in TERMINAL_DELIVERY_STAGES
+        }
+        result = self._coordinator(stage_executors=stage_executors).deliver_now(
+            task_id, now=T0
+        )
         status = self.service.store.read_task(task_id)["status"]
         self.assertEqual(status, "completed")
         self.assertEqual(result["status"], "delivered")

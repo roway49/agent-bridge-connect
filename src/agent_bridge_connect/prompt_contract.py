@@ -46,8 +46,7 @@ COMMON_RULES = (
 PROGRESS_LEAD = "For long-running work, refresh AgentBC progress at least every few minutes:"
 
 MARKER_LEAD = (
-    "Your final response must end with exactly one single-line terminal marker "
-    "and no text after it:"
+    "End with exactly one marker. Use each Step ID once; description numbers are not Step IDs:"
 )
 INPUT_REQUIRED_RULE = (
     "Use final_state input_required only with at least one declared step status blocked; "

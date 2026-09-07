@@ -433,3 +433,35 @@ One real regression was caught by the full suite during development and fixed:
 locally imported name, which broke when a test substituted the service facade
 (`TypeError: isinstance() arg 2 must be a type`). It is now duck-typed on
 `service.board_root`.
+
+## 10. Controller-owned finalization after YBNW-002
+
+Direct acceptance found that YBNW-002 was not terminally valid: the handoff
+declared one step, while Claude returned step results 1-5, so Core correctly
+rejected the marker with `completion_marker_step_unknown`. The focused 50 KiB
+test recorded in section 9.4 was also not reproducible from clean HEAD: it
+returned `partial` because the compaction-only case invoked the host's real UI
+notification rather than injected successful stage executors.
+
+The finalization keeps strict callback validation and makes three narrow fixes:
+
+* The compaction test injects success for all five delivery stages, so it tests
+  receipt survival and record compaction without depending on GUI availability.
+* The timing view replaces a same-run stale active ledger interval with the
+  authoritative current RunLease interval. A closed lease now projects the run
+  as closed without duplicating it.
+* The shared Executor prompt states that callback results use each declared Step
+  ID exactly once and that numbers inside a step description are not Step IDs.
+  A one-step handoff regression covers Codex, Claude, and Hermes prompts.
+
+Final verification from the controller-owned working tree:
+
+| Check | Result |
+| --- | --- |
+| Focused FLOW/timing/prompt/input/permission suites | `Ran 134 tests` — `OK` |
+| Complete locked-environment unittest suite | `Ran 1855 tests in 83.946s` — `OK (skipped=17)` |
+| Ruff | `All checks passed!` |
+| compileall | exit `0` |
+| `git diff --check` | exit `0` |
+| Package build | `uv build --no-build-isolation --python /opt/homebrew/bin/python3` built `agentbc-1.0.3a2` sdist and wheel |
+| Live YBNW-002 timing projection through the repaired source | lease `closed`, interval `closed`, one run |
