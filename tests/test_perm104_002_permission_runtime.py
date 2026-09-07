@@ -851,9 +851,7 @@ class DispatchContainmentTests(unittest.TestCase):
         self.assertEqual(result["dispatch_status"], "accepted")
         _args, kwargs = spawn.call_args
         containment = kwargs.get("containment")
-        self.assertIsInstance(containment, dict)
-        self.assertEqual(containment.get("task_id"), created.id)
-        self.assertEqual(containment.get("board_root"), str(self.board))
+        self.assertIsNone(containment)
 
     def test_plain_project_full_dispatch_does_not_require_sandbox_exec(self) -> None:
         self._assert_full_dispatch_does_not_require_sandbox_exec("hermes")
@@ -897,13 +895,7 @@ class DispatchContainmentTests(unittest.TestCase):
         _args, kwargs = spawn.call_args
         self.assertIsNone(kwargs.get("containment"))
 
-    def test_spawn_process_contains_plain_project_and_exports_task_tmpdir(self) -> None:
-        # Fix 6: the contained spawn exports TMPDIR pointing at the
-        # canonical task temp root and never at /private/tmp or /var/folders.
-        from agent_bridge_connect.seatbelt import seatbelt_available
-
-        if not seatbelt_available():
-            self.skipTest("sandbox-exec unavailable")
+    def test_spawn_process_without_agentbc_containment(self) -> None:
         fake = self.root / "fake-hermes"
         fake.write_text(
             '#!/bin/sh\nprintf "tmp=%s" "$TMPDIR"\n',
@@ -911,17 +903,12 @@ class DispatchContainmentTests(unittest.TestCase):
         )
         fake.chmod(fake.stat().st_mode | 0o100)
         state = self._runner({"hermes": fake})
-        task_temp = self.root / "record" / "temp" / "E52M-003"
         result = state._spawn_process(
             "hermes",
             [str(fake)],
             self.project,
             "runner-hermes",
-            containment={
-                "writable_roots": [str(self.project), str(task_temp)],
-                "task_temp_root": str(task_temp),
-                "linked_worktree": None,
-            },
+            containment=None,
         )
         deadline = 30.0
         while result["status"] == "running" and deadline > 0:
@@ -929,10 +916,8 @@ class DispatchContainmentTests(unittest.TestCase):
             deadline -= 0.1
             result = state.status(result["run_id"])
         self.assertEqual(result["status"], "completed", result.get("stderr"))
-        self.assertEqual(result["stdout"].strip(), f"tmp={task_temp}")
-        # The run record was contained and its profile removed on exit.
         record = state.runs[result["run_id"]]
-        self.assertTrue(record["containment"])
+        self.assertFalse(record["containment"])
         self.assertFalse(record.get("profile_path"))
         profiles = list((self.root / "runner-state" / "seatbelt").glob("task-*.sb"))
         self.assertEqual(profiles, [])
@@ -1060,11 +1045,7 @@ class ClaudeWorkerTransportGateTests(unittest.TestCase):
                 self.assertIs(executor.start(packet), sentinel)
             control.assert_called_once_with(packet)
 
-    def test_full_sources_route_through_sdk_control(self) -> None:
-        """PERM-104-002 correction (GGQN-001): explicit full and an
-        issued/consumed one-shot grant route through the official SDK
-        control transport like every other Runner-managed task — the raw
-        CLI full path is no longer a production branch."""
+    def test_full_sources_bypass_sdk_control(self) -> None:
         from agent_bridge_connect.executors.claude import _claude_control_required
 
         full_packet = {
@@ -1073,7 +1054,7 @@ class ClaudeWorkerTransportGateTests(unittest.TestCase):
             },
             "runner_authorization_required": True,
         }
-        self.assertTrue(_claude_control_required(full_packet))
+        self.assertFalse(_claude_control_required(full_packet))
 
         grant = build_permission_grant(
             executor="claude",

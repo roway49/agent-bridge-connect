@@ -1662,7 +1662,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                         or (
                             int(approval_request.get("approval_version") or 1) == 3
                             and approval_request.get("scope") == "task_elevation"
-                            and approval_request.get("elevation_mode") == "contained_full"
+                            and approval_request.get("elevation_mode") in {"full", "contained_full"}
                         )
                     )
                     and bool(str(approval_request.get("request_id") or "").strip())
@@ -1672,7 +1672,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     is_task_elevation = (
                         int(approval_request.get("approval_version") or 1) == 3
                         and approval_request.get("scope") == "task_elevation"
-                        and approval_request.get("elevation_mode") == "contained_full"
+                        and approval_request.get("elevation_mode") in {"full", "contained_full"}
                     )
                     is_native_live_elevation = (
                         is_task_elevation

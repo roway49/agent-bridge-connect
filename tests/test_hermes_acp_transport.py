@@ -41,7 +41,6 @@ from agent_bridge_connect.hermes_acp import (
     validate_initialize_result,
 )
 from agent_bridge_connect.permission_modes import build_permission_record
-from agent_bridge_connect.permission_runtime import host_profile_digest, path_plan_digest
 from agent_bridge_connect.permission_registry import (
     HERMES_ACP_ALLOWED_DECISIONS,
     HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID,
@@ -591,13 +590,6 @@ class HermesAcpExecutorTests(unittest.TestCase):
         fake = FakeAcpTransport(self.board, packet["task_id"])
         fake.permission_frames = [_permission_frame()]
         executor = self._executor(fake)
-        preflight = {
-            "ok": True,
-            "status": "passed",
-            "mode": "contained_full",
-            "path_plan_digest": path_plan_digest(packet["workspace"]),
-            "containment_profile_digest": host_profile_digest(),
-        }
         with (
             mock.patch.object(executor, "_start_run_lease"),
             mock.patch.object(executor, "_close_run_lease") as close_lease,
@@ -608,10 +600,6 @@ class HermesAcpExecutorTests(unittest.TestCase):
             ),
             mock.patch(
                 "agent_bridge_connect.executors.hermes.assert_executor_permission_supported"
-            ),
-            mock.patch(
-                "agent_bridge_connect.executors.hermes.full_capability_preflight",
-                return_value=preflight,
             ),
         ):
             started = executor.start(packet)

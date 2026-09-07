@@ -261,7 +261,9 @@ class PermissionFailureTaxonomyTests(unittest.TestCase):
             context["task"].extensions[SESSION_EXTENSION_KEY]["resume_count"] = -1
 
         def executor_session_run_mismatch(harness, context):
-            context["task"].extensions[SESSION_EXTENSION_KEY]["run_ids"] = ["old-run"]
+            session = context["task"].extensions[SESSION_EXTENSION_KEY]
+            session["run_ids"] = ["old-run"]
+            session["run_resume_facts"] = {"old-run": False}
 
         cases = [
             ("non-escalatable full base", PERMISSION_MODE_UNSUPPORTED, mode),

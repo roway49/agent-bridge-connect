@@ -49,10 +49,7 @@ from agent_bridge_connect.permission_modes import (
     permission_flags,
     permission_record_from_extensions,
 )
-from agent_bridge_connect.permission_elevation import (
-    full_capability_preflight,
-    task_elevation_protocol_enabled,
-)
+from agent_bridge_connect.permission_elevation import task_elevation_protocol_enabled
 from agent_bridge_connect.permission_registry import (
     HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID,
     TRANSPORT_HERMES_ACP,
@@ -384,12 +381,13 @@ class HermesExecutor(CLIExecutorBase):
             )
         except ABCError as exc:
             return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
-        try:
-            assert_executor_permission_supported(
-                "hermes", permission["effective_mode"], self.agent_bin
-            )
-        except ABCError as exc:
-            return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
+        if permission["effective_mode"] != "full":
+            try:
+                assert_executor_permission_supported(
+                    "hermes", permission["effective_mode"], self.agent_bin
+                )
+            except ABCError as exc:
+                return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
 
         frozen_transport = _hermes_transport_from_permission(permission)
         # ``direct`` and ``runner`` are retained as explicit legacy/test
@@ -1243,17 +1241,6 @@ class HermesExecutor(CLIExecutorBase):
             tool_name=operation,
             tool_input=tool_call,
         )
-        preflight = full_capability_preflight(
-            task_packet,
-            executor="hermes",
-            executable=self.agent_bin,
-        )
-        if preflight.get("ok") is not True:
-            raise HermesAcpError(
-                "hermes_acp_full_preflight_failed",
-                "Hermes contained-full capability preflight failed.",
-                {"reason_code": str(preflight.get("code") or "capability_unavailable")},
-            )
         authority = {
             "executor": "hermes",
             "protocol": "hermes_acp",
@@ -1284,15 +1271,13 @@ class HermesExecutor(CLIExecutorBase):
             tool_use_id=tool_call_id,
             action_fingerprint=action_fingerprint,
             escalation_domain="hermes_acp",
-            profile_digest=str(preflight.get("containment_profile_digest") or ""),
+            profile_digest="",
             control_path=TRANSPORT_HERMES_ACP,
             native_event=native_event,
             authority=authority,
-            path_plan_digest=str(preflight.get("path_plan_digest") or ""),
-            containment_profile_digest=str(
-                preflight.get("containment_profile_digest") or ""
-            ),
-            full_preflight=preflight,
+            path_plan_digest="",
+            containment_profile_digest="",
+            full_preflight=None,
         )
         persisted = service.get_task(task_id)
         request = (persisted.extensions or {}).get("agentbc.input")

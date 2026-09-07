@@ -53,7 +53,7 @@ from agent_bridge_connect.permission_modes import (
     permission_record_from_extensions,
 )
 from agent_bridge_connect.permission_elevation import (
-    full_capability_preflight,
+    permission_elevation_from_extensions,
     task_elevation_protocol_enabled,
 )
 from agent_bridge_connect.prompt_contract import (
@@ -545,9 +545,10 @@ class CodexExecutor(CLIExecutorBase):
             self._close_run_lease(run_id)
             return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
         try:
-            assert_executor_permission_supported(
-                "codex", permission["effective_mode"], self.agent_bin
-            )
+            if permission["effective_mode"] != "full":
+                assert_executor_permission_supported(
+                    "codex", permission["effective_mode"], self.agent_bin
+                )
             resumed, _ = _codex_resume_context(task_packet)
             command, prompt_input = self._build_command(
                 task_packet,
@@ -665,14 +666,9 @@ class CodexExecutor(CLIExecutorBase):
         transport = self.transport_mode.strip().lower()
         if transport in {"cli", "direct"}:
             return False
-        from agent_bridge_connect.permission_grants import (
-            permission_grant_from_extensions,
-        )
-
         extensions = (task_packet or {}).get("extensions")
-        grant = permission_grant_from_extensions(
-            extensions if isinstance(extensions, dict) else {}
-        )
+        extensions = extensions if isinstance(extensions, dict) else {}
+        elevation = permission_elevation_from_extensions(extensions)
         session = (
             extensions.get(SESSION_EXTENSION_KEY)
             if isinstance(extensions, dict)
@@ -683,13 +679,13 @@ class CodexExecutor(CLIExecutorBase):
             and session.get("official_receipt_bound") is True
             and bool(str(session.get("session_id") or "").strip())
         )
-        if (
-            grant is not None
-            and grant["state"]["status"] != "revoked"
-            and not official_receipt
-        ):
-            # A fresh compatibility full run has no official session to
-            # resume, so keep the pre-receipt CLI start path.
+        if elevation is not None and elevation["state"]["status"] in {
+            "approved",
+            "active",
+            "verified",
+        }:
+            # Plan D: once elevated, use Codex's native strongest CLI mode.
+            # Historical permission grants are deliberately ignored.
             return False
         permission = permission_record_from_extensions(
             extensions,
@@ -912,13 +908,15 @@ class CodexExecutor(CLIExecutorBase):
                     task_packet.get("runner_authorization_required") is True
                 ),
             )
-            assert_executor_permission_supported(
-                "codex", permission["effective_mode"], self.agent_bin
-            )
+            if permission["effective_mode"] != "full":
+                assert_executor_permission_supported(
+                    "codex", permission["effective_mode"], self.agent_bin
+                )
             # Capability gate is transport- and receipt-based. Inherit keeps
             # native permission settings, safe supplies the conservative
             # workspace policy, and full keeps the CLI fallback.
-            self._freeze_app_server_capability(permission)
+            if permission["effective_mode"] != "full":
+                self._freeze_app_server_capability(permission)
             collaboration_capability = {
                 "enabled": False,
                 "reason": "collaboration_spawn_not_requested",
@@ -1348,33 +1346,23 @@ class CodexExecutor(CLIExecutorBase):
                 "method": method,
             }
             if task_elevation:
-                preflight = full_capability_preflight(
-                    record.get("task_packet"),
-                    executor="codex",
-                    executable=self.agent_bin,
-                )
-                if preflight.get("ok") is not True:
-                    raise ControlPlaneError(
-                        "permission_preflight_failed",
-                        "Codex full-capability preflight failed before the elevation UI.",
-                    )
                 identity = message.get("_agentbc") if isinstance(message.get("_agentbc"), dict) else {}
                 message = {
                     **message,
                     "approval_version": 3,
                     "scope": "task_elevation",
-                    "elevation_mode": "contained_full",
+                    "elevation_mode": "full",
                     "native_event": f"codex_app_server.{method}",
-                    "path_plan_digest": preflight["path_plan_digest"],
-                    "containment_profile_digest": preflight["containment_profile_digest"],
-                    "preflight": preflight,
+                    "path_plan_digest": "",
+                    "containment_profile_digest": "",
+                    "preflight": {"status": "retired", "mode": "full"},
                     "authority": authority,
                     "_agentbc": {
                         **identity,
                         "native_event": f"codex_app_server.{method}",
-                        "path_plan_digest": preflight["path_plan_digest"],
-                        "containment_profile_digest": preflight["containment_profile_digest"],
-                        "preflight": preflight,
+                        "path_plan_digest": "",
+                        "containment_profile_digest": "",
+                        "preflight": {"status": "retired", "mode": "full"},
                     },
                 }
             else:
@@ -1419,7 +1407,7 @@ class CodexExecutor(CLIExecutorBase):
                 {
                     "approval_version": 3,
                     "elevation_mode": str(
-                        pending_after.get("elevation_mode") or "contained_full"
+                        pending_after.get("elevation_mode") or "full"
                     ),
                     "path_plan_digest": str(pending_after.get("path_plan_digest") or ""),
                     "containment_profile_digest": str(

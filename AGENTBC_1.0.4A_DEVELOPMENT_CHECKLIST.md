@@ -1,8 +1,21 @@
 # AgentBC 1.0.4A 需求开发清单
 
+> [!CAUTION]
+> **最高优先级、不可覆盖：禁止在 `full` 运行基础上增加任何额外安全策略。安全策略不属于 AgentBC 产品特性，不为任务执行负责；凡与 `full` 任务完整执行冲突，必要时必须移除一切额外安全策略。**
+
 > 制定日期：2026-08-26
 > 状态：持续开发与回归中；`SESSION-104-001` 保持已通过，`PERM-104-001` 的 Claude 同会话 safe-to-full 自动化门禁已完成，`PERM-104-002` 仍开放
 > 目标版本：AgentBC `1.0.4A` / Python `1.0.4a1`
+
+## PERM-104 方案 D（2026-09-06，代码回归通过，实机待验收）
+
+- 生产权限路径收敛为原生 full 直接执行，以及 safe/inherit 首次可信阻塞后一次提升 full。
+- full 不再受 Runner Seatbelt、PathPlan 写入范围、Claude 工具限制、版本/full 能力探测或 permission_runtime 生命周期约束。
+- 新审批使用通用 approval v3 和 task elevation；旧 grant 不参与有效权限解析。历史回执保留兼容读取。
+- 任务身份、官方会话归属、唯一人工决定、RunLease、终态 callback、会话清理隔离和日志脱敏继续作为任务正确性约束。
+- 替代回归：`tests/test_perm104_plan_d.py`，并复用 Claude 同会话提升、Hermes v3 Approve/Deny、Runner full 路由测试。
+- 验收仍需三个执行器实机 full 零弹窗，以及 safe/inherit 至多一次批准后完整完成；代码测试通过不能替代实机验收。
+- 本轮 unittest：1747 项，1730 通过、17 项历史合同明确退役跳过、零失败和错误。Ruff、compileall、diff 空白检查和 wheel 构建通过。未替换本机安装，未提交或 push。
 > 来源基线：`private/integration@01f3ce1`
 > 已发布基线：`v1.0.3A2@62757a4`；公开 Formula 收口 `public/main@87c4bca`
 > 上版归档：`AGENTBC_1.0.3A_DEVELOPMENT_CHECKLIST.md`
@@ -70,6 +83,8 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | --- | --- | --- | --- | --- |
 | `RESOURCE-104-001-R1` | P1 / 待回归 | `E52M-002` 的 Hermes run 使用完 `150/150` 次迭代后，Core 已持久化 `input_required(type=choice, kind=resource_limit)`、RunLease 已挂起且 CLI 可响应，但 Codex Desktop 没有显示“提高预算并继续 / 终止任务”弹窗 | 每个仍有效的 resource-limit input 都有且只有一个 Desktop 弹窗；Approve 将当前 Task 上限翻倍并恢复同一官方 session，Deny 单调终止；CLI 响应保持等价兜底，但不能替代 Desktop 真机验收 | `FLOW-104-002` notification delivery；`FLOW-103-001` progress receipt；DialogNotifier |
 | `FLOW-104-003-R1` | P1 / 待回归 | `E52M-003` 中 Hermes 0.20.1 运行 `2h37m` 后以返回码 `0` 结束，但输出停留在代码 diff、未产生 `AGENTBC_FINAL_CALLBACK`；Runner 明确记录 `output_truncated=false`、`marker_seen=false`，且没有可识别的迭代耗尽 receipt | 进程成功退出与任务合同完成继续严格分离；Hermes 必须提供结构化 terminal reason、实际/上限 turns 和最终响应边界。确属资源耗尽时生成唯一可恢复 input；仍有 pending step 却正常退出时给出稳定的 incomplete-exit 分类、保留部分进度并允许受审计 retry/handoff；不得伪造 callback | `FLOW-104-003` failed recovery；`FLOW-103-001` progress receipt；Hermes ACP/CLI terminal receipt |
+| `FLOW-104-004-R1` | P1 / 1.0.4 待回归（`A3AC-001`，2026-09-05） | Codex 原生审批于 `08:54:43Z` 成功回传，唯一 contained-full continuation 于 `08:54:45Z` 在同一官方 session `01a070c5-836a-7553-b07f-68ab7da97e8b` 启动并继续完成合并、测试与代码修改；随后官方 Codex turn 变为 `interrupted`（`error=null`、无 `completedAt`），但 App Server Adapter 未收到或未持久化 `turn/completed`，无超时地阻塞在 stdio `recv/readline`，导致 Task 长期保持 `running`、RunLease `stale`、无 terminal callback | 权限审批成功与后续 turn 中断必须独立投影；App Server 等待循环须有有界接收、活性心跳和官方 turn 状态对账。发现 `interrupted/cancelled/failed`、transport loss 或在有界窗口内无法取得可信终态时，必须停止对应 Worker、关闭 RunLease、保留同一 session/工作树证据并单调进入稳定的 `needs_recovery`，不得无限等待、伪造 completed 或自动重派；正常长任务仍不得仅因耗时被终止 | Codex App Server turn lifecycle；RunLease heartbeat/reconciliation；`FLOW-104-003` terminal recovery |
+| `SESSION-104-001-R1` | P1 / 1.0.4 待回归（`Z2W7-001`，2026-09-05） | 精确官方会话 `01a06f9a-ed4b-71b1-ac50-a818b18c63ba` 的 `thread/archive` 已于任务终态后取得 RPC acknowledgement，随后 `thread/delete` 也确认且 active/archived/read 均 absent，但当前 Codex Desktop 侧栏没有在 archive 后实时移除该临时会话 | 保持现有 archive acknowledgement → delete acknowledgement 后端门禁不变；新增当前 Desktop 运行实例的官方可见性回归，证明 archive 确认后侧栏无需点击会话即可收敛。若官方控制面仍不提供实时刷新/通知能力，明确记录上游限制和可复现证据，不扫描私有存储、不用 GUI 自动化或强制重启伪造通过 | `SESSION-104-001`；Codex Desktop 官方控制面；notification/refresh capability |
 
 `RESOURCE-104-001-R1` 的固定验收合同：
 

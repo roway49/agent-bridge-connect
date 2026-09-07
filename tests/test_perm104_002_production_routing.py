@@ -54,7 +54,7 @@ def _fake_binary(directory: str, version: str = "2.1.233 (Claude Code)") -> Path
 class ProductionRoutingTests(unittest.TestCase):
     """Routing decisions on the real production selector and executor."""
 
-    def test_every_runner_managed_base_routes_to_control(self) -> None:
+    def test_only_safe_runner_managed_base_routes_to_control(self) -> None:
         bases = (
             {"requested_mode": "safe", "effective_mode": "safe",
              "selection_source": "configured_default"},
@@ -69,7 +69,10 @@ class ProductionRoutingTests(unittest.TestCase):
                     "extensions": {"agentbc.permission": dict(permission)},
                     "runner_authorization_required": True,
                 }
-                self.assertTrue(_claude_control_required(packet))
+                self.assertEqual(
+                    _claude_control_required(packet),
+                    permission["effective_mode"] != "full",
+                )
 
     def test_temporary_grant_routes_to_control(self) -> None:
         grant = build_permission_grant(
@@ -103,14 +106,8 @@ class ProductionRoutingTests(unittest.TestCase):
             )
         )
 
-    def test_start_dispatches_full_tasks_into_start_control(self) -> None:
-        """Production call-path proof: start() hands explicit full,
-        inherited full, and granted full packets to start_control instead
-        of the raw CLI branch."""
+    def test_full_tasks_do_not_enter_sdk_control(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            executor = ClaudeExecutor(
-                command=str(_fake_binary(temporary)), transport="direct"
-            )
             for permission in (
                 build_permission_record(explicit_mode="full"),
                 {
@@ -130,12 +127,7 @@ class ProductionRoutingTests(unittest.TestCase):
                         "extensions": {"agentbc.permission": dict(permission)},
                         "runner_authorization_required": True,
                     }
-                    sentinel = object()
-                    with mock.patch.object(
-                        executor, "start_control", return_value=sentinel
-                    ) as control:
-                        self.assertIs(executor.start(packet), sentinel)
-                    control.assert_called_once_with(packet)
+                    self.assertFalse(_claude_control_required(packet))
 
 
 class TemporaryFullSessionModeTests(unittest.TestCase):
@@ -392,7 +384,7 @@ class TemporaryFullGrantLifecycleTests(unittest.TestCase):
             },
         }
 
-    def test_issued_grant_resolves_temporary_full_only_under_runner(self) -> None:
+    def test_issued_grant_is_inert_under_plan_d(self) -> None:
         grant = self._grant()
         permission = resolve_effective_permission(
             self._authoritative_task(grant),
@@ -400,23 +392,16 @@ class TemporaryFullGrantLifecycleTests(unittest.TestCase):
             RUN_ID,
             trusted_runner_managed=True,
         )
-        self.assertEqual(permission["effective_mode"], "full")
-        self.assertEqual(permission["selection_source"], "one_shot_permission_grant")
-        self.assertTrue(permission["temporary"])
+        self.assertEqual(permission["effective_mode"], "safe")
 
-    def test_issued_grant_fails_closed_without_runner_context(self) -> None:
-        from agent_bridge_connect.protocol import ABCError
-
-        with self.assertRaises(ABCError) as raised:
-            resolve_effective_permission(
-                self._task_with_grant(self._grant()),
-                "claude",
-                RUN_ID,
-                trusted_runner_managed=False,
-            )
-        self.assertEqual(
-            raised.exception.code, "permission_grant_runner_context_required"
+    def test_issued_grant_is_inert_without_runner_context(self) -> None:
+        permission = resolve_effective_permission(
+            self._task_with_grant(self._grant()),
+            "claude",
+            RUN_ID,
+            trusted_runner_managed=False,
         )
+        self.assertEqual(permission["effective_mode"], "safe")
 
     def test_revoked_grant_is_inert_for_resolution(self) -> None:
         grant = revoke_permission_grant(self._grant(), "claude_run_terminal")

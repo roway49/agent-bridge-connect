@@ -155,14 +155,10 @@
     "codex": {
       "capability_groups_reference": "agent_bridge_connect.codex_app_server",
       "production": {
-        "app_server_bounds": {
-          "max_inclusive": "0.150.1",
-          "min_inclusive": "0.146.0"
-        },
+        "app_server_support": "protocol_surface",
         "binding_constants": [
           "agent_bridge_connect.executors.codex._CODEX_FROZEN_VERSION",
-          "agent_bridge_connect.codex_app_server.CODEX_APP_SERVER_MIN_VERSION",
-          "agent_bridge_connect.codex_app_server.CODEX_APP_SERVER_MAX_VERSION"
+          "agent_bridge_connect.codex_app_server.CODEX_APP_SERVER_REQUIRED_PROTOCOL"
         ],
         "frozen_cli_version": "0.146.0"
       },

@@ -290,8 +290,8 @@ def normalize_approval_request(
     native_domain = _bounded_text(agentbc.get("escalation_domain"), 120)
     native_profile = _bounded_text(agentbc.get("host_profile_digest"), 160)
     native_control_path = _bounded_text(agentbc.get("control_path"), 160)
-    # PERM-104-001 v3: a trusted structured native block may request one
-    # contained-full elevation.  It carries no choices; all human decisions
+    # PERM-104 Plan D: a trusted structured native block may request one
+    # native-full elevation.  It carries no choices; all human decisions
     # are represented by the single top-level Approve Full / Deny dialog.
     requested_scope = str(message.get("scope") or "").strip()
     requested_mode = str(message.get("elevation_mode") or "").strip()
@@ -314,12 +314,7 @@ def normalize_approval_request(
         if requested_mode != APPROVAL_V3_ELEVATION_MODE:
             raise ControlPlaneError(
                 "approval_elevation_mode_invalid",
-                "A v3 elevation request must use contained_full mode.",
-            )
-        if message.get("offered_choices") is not None:
-            raise ControlPlaneError(
-                "approval_legacy_field_rejected",
-                "A v3 elevation request cannot carry native once/session choices.",
+                "A v3 elevation request must use full mode.",
             )
         authority_executor = str(authority.get("executor") or "").strip().lower()
         if authority_executor != str(executor or "").strip().lower():
@@ -348,21 +343,6 @@ def normalize_approval_request(
                 "approval_authority_invalid",
                 "A v3 elevation request requires the trusted native event shape.",
             )
-        preflight_value = message.get("preflight")
-        if not isinstance(preflight_value, dict):
-            preflight_value = message.get("full_preflight")
-        if not isinstance(preflight_value, dict):
-            preflight_value = agentbc.get("preflight")
-        preflight_ok = isinstance(preflight_value, dict) and (
-            preflight_value.get("ok") is True
-            or str(preflight_value.get("status") or "").strip().lower()
-            == "passed"
-        )
-        if not preflight_ok:
-            raise ControlPlaneError(
-                "permission_preflight_failed",
-                "A v3 elevation request requires a passed full-capability preflight.",
-            )
         path_digest = _bounded_text(
             message.get("path_plan_digest") or agentbc.get("path_plan_digest"),
             160,
@@ -374,13 +354,6 @@ def normalize_approval_request(
             or agentbc.get("host_profile_digest"),
             160,
         )
-        if not _SHA256_DIGEST_RE.fullmatch(path_digest) or not _SHA256_DIGEST_RE.fullmatch(
-            profile_digest
-        ):
-            raise ControlPlaneError(
-                "approval_scope_invalid",
-                "A v3 elevation request requires frozen PathPlan and containment digests.",
-            )
         native_live_elevation = message.get("native_live_elevation") is True
         native_elevation_protocol = _bounded_text(
             message.get("native_elevation_protocol"), 160
@@ -1081,17 +1054,17 @@ class ApprovalControlPlane:
                     binding_errors.append("action_fingerprint")
                 if not actual_identity["tool_name"]:
                     binding_errors.append("tool_name")
-                if domain not in PERMISSION_RUNTIME_DOMAINS:
+                if request.approval_version != 3 and domain not in PERMISSION_RUNTIME_DOMAINS:
                     binding_errors.append("escalation_domain")
-                if top_level_domain != domain:
+                if request.approval_version != 3 and top_level_domain != domain:
                     binding_errors.append("top_level_escalation_domain")
-                if not (
+                if request.approval_version != 3 and not (
                     profile_digest.startswith("sha256:")
                     and len(profile_digest) == len("sha256:") + 64
                     and all(character in "0123456789abcdef" for character in profile_digest[7:])
                 ):
                     binding_errors.append("host_profile_digest")
-                if top_level_profile != profile_digest:
+                if request.approval_version != 3 and top_level_profile != profile_digest:
                     binding_errors.append("top_level_host_profile_digest")
                 if binding_errors:
                     evidence = {
@@ -1179,6 +1152,10 @@ class ApprovalControlPlane:
             # reach this point; stderr, natural language and exit codes are
             # diagnostics only.
             domain = str(message.get("escalation_domain") or "").strip().lower()
+            if request.approval_version == 3:
+                # Plan D uses the single task elevation decision. Historical
+                # block-domain ledgers cannot gate or record this path.
+                domain = ""
             profile_digest = str(message.get("host_profile_digest") or "").strip()
             agentbc_identity = (
                 message.get("_agentbc")
@@ -1463,6 +1440,8 @@ class ApprovalControlPlane:
             # failure, restore the pre-decision state and ledger before
             # propagating the error.
             domain = str(pending.get("escalation_domain") or "").strip()
+            if pending.get("approval_version") == 3:
+                domain = ""
             previous_state = json.loads(json.dumps(state))
             previous_ledger = load_block_ledger(self.root) if domain else None
             pending = dict(pending)

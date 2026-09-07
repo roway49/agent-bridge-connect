@@ -18,7 +18,6 @@ from .permission_elevation import (
     PERMISSION_ELEVATION_MODE,
 )
 from .adapters import DeliveryResult
-from .claude_elevation import CLAUDE_ELEVATION_EXTENSION_KEY
 from .protocol import ABCError
 from .execution_policy import execution_policy_view
 from .notifiers.dialog import DialogNotifier
@@ -91,25 +90,7 @@ def notify_input_required(
     payload = build_input_required_notification(service, task_id)
     live_dialog_already_reserved = False
     task_elevation_dialog_already_reserved = False
-    if payload.get("native_live_elevation") is True:
-        existing_task = service.get_task(task_id)
-        existing_extensions = (
-            existing_task.extensions
-            if isinstance(existing_task.extensions, dict)
-            else {}
-        )
-        existing_receipt = existing_extensions.get(CLAUDE_ELEVATION_EXTENSION_KEY)
-        existing_cardinality = (
-            existing_receipt.get("cardinality")
-            if isinstance(existing_receipt, dict)
-            else None
-        )
-        live_dialog_already_reserved = (
-            isinstance(existing_cardinality, dict)
-            and existing_cardinality.get("dialogs") == 1
-        )
-        service.record_claude_elevation_notification(task_id)
-    elif (
+    if (
         payload.get("input_type") == "permission"
         and int(payload.get("approval_version") or 1) == 3
         and payload.get("elevation_mode") == PERMISSION_ELEVATION_MODE
@@ -393,10 +374,10 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         elif is_task_elevation:
             body_lines.extend(
                 [
-                    "Requested access: contained full for this Task ID only.",
-                    "Approve Full authorizes this task's frozen PathPlan and contained Runner continuation.",
-                    "The approval remains effective across retry, recovery, and reassignment of this Task ID.",
-                    "A handoff creates a new Task ID and does not inherit this elevation.",
+                    "Requested access: full for this Task ID.",
+                    "Approve Full restarts or updates the executor in its native strongest noninteractive mode.",
+                    "AgentBC adds no filesystem sandbox, PathPlan restriction, capability probe, or per-tool approval after elevation.",
+                    "This is the only permission dialog allowed for the task.",
                     "Deny terminates the task as failed.",
                     "Choose Approve Full or Deny below.",
                 ]

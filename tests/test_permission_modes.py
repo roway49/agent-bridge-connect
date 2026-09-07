@@ -734,13 +734,13 @@ class RunnerPermissionAuthorizationTests(unittest.TestCase):
         self.assertEqual(result["run_id"], "mock-full")
         run.assert_called_once()
 
-    def test_full_does_not_bypass_task_scoped_cwd_check(self) -> None:
-        from agent_bridge_connect.runner import RunnerError
-
+    def test_full_bypasses_task_scoped_cwd_security_check(self) -> None:
         _service, _task, full = self._packet("full")
         command = [str(self.fake_hermes), "chat", "--yolo", "-q", "prompt"]
-        with self.assertRaisesRegex(RunnerError, "outside allowed roots"):
-            self.state.submit("hermes", command, self.root.anchor, full)
+        spawned = {"ok": True, "run_id": "mock-full-root", "pid": 1, "status": "running"}
+        with mock.patch.object(self.state, "_spawn_process", return_value=spawned):
+            result = self.state.submit("hermes", command, self.root.anchor, full)
+        self.assertEqual(result["run_id"], "mock-full-root")
 
     def test_dispatch_records_redacted_permission_audit_and_report(self) -> None:
         from agent_bridge_connect.reports import generate_report, generate_report_md

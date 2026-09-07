@@ -14,12 +14,7 @@ import re
 import unittest
 from pathlib import Path
 
-from agent_bridge_connect.codex_app_server import (
-    CODEX_APP_SERVER_MAX_VERSION,
-    CODEX_APP_SERVER_SUPPORTED_VERSIONS,
-    codex_app_server_contract,
-    parse_codex_version,
-)
+from agent_bridge_connect.codex_app_server import codex_app_server_contract
 from agent_bridge_connect.execution_policy import extract_hermes_session_id
 from agent_bridge_connect.executors.codex import (
     _codex_has_exact_session_delete_entry,
@@ -104,14 +99,15 @@ class CodexSurfaceTests(unittest.TestCase):
             with self.subTest(text=text[:40]):
                 self.assertFalse(_codex_has_exact_session_delete_entry(text))
 
-    def test_version_gate_rejects_unknown_future_versions(self) -> None:
+    def test_versions_do_not_gate_a_compatible_protocol_surface(self) -> None:
         boundary_cases = {
-            "codex-cli 0.145.9": "outside",
+            "codex-cli 0.145.9": "schema",
             "codex-cli 0.146.0": "schema",
             "codex-cli 0.147.0": "schema",
-            "codex-cli 0.148.0": "outside",
+            "codex-cli 0.148.0": "schema",
             "codex-cli 0.150.1": "schema",
-            "not-a-version": "parseable",
+            "codex-cli 0.153.4": "schema",
+            "not-a-version": "schema",
             "": "unavailable",
         }
         for output, expected_reason in boundary_cases.items():
@@ -124,14 +120,8 @@ class CodexSurfaceTests(unittest.TestCase):
                 )
                 self.assertFalse(probe["ok"])
                 self.assertIn(expected_reason, probe["reason"])
-                parsed = parse_codex_version(output)
-                if parsed is not None:
-                    in_bounds = parsed in CODEX_APP_SERVER_SUPPORTED_VERSIONS
-                    self.assertEqual(in_bounds, expected_reason == "schema")
-        # The live-captured collaboration build is an explicitly supported
-        # non-contiguous version; unrecorded intermediate versions remain out.
-        candidate = parse_codex_version("codex-cli 0.150.1")
-        self.assertTrue(candidate <= CODEX_APP_SERVER_MAX_VERSION)
+                if output:
+                    self.assertIn("schema", probe["reason"])
 
 
 class HermesSurfaceTests(unittest.TestCase):

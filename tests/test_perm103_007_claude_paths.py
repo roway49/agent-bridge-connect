@@ -72,11 +72,16 @@ class Perm103007ClaudePathCapabilityTests(unittest.TestCase):
             record,
         )
 
-    def test_all_permission_modes_receive_the_same_orthogonal_path_boundary(self) -> None:
+    def test_only_non_full_modes_receive_the_legacy_path_boundary(self) -> None:
         expected_settings = None
         for mode in ("inherit", "safe", "full"):
             with self.subTest(mode=mode):
                 command = self._command(mode)
+                if mode == "full":
+                    self.assertNotIn("--settings", command)
+                    self.assertNotIn("--add-dir", command)
+                    self.assertNotIn("--disallowedTools", command)
+                    continue
                 self.assertEqual(command.count("--settings"), 1)
                 self.assertEqual(command.count("--add-dir"), 1)
                 settings_text = command[command.index("--settings") + 1]

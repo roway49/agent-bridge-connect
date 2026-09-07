@@ -172,6 +172,7 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
             return packet["extensions"]["agentbc.session"]["project_path"]
         return str(self.project)
 
+    @unittest.skip("Plan D retires legacy grants and outer Runner containment")
     def test_issued_grant_prepares_outer_containment_before_worker_spawn(self) -> None:
         service, packet, _source_run_id, _session_id = self._grant_packet("hermes")
         task_id = packet["task_id"]
@@ -207,6 +208,7 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
         grant = service.get_task(task_id).extensions[PERMISSION_GRANT_EXTENSION_KEY]
         self.assertEqual(grant["state"]["status"], "issued")
 
+    @unittest.skip("Plan D retires legacy one-shot grant authorization")
     def test_common_resolver_upgrades_only_the_approved_target_context(self) -> None:
         for executor in ("codex", "claude", "hermes"):
             with self.subTest(executor=executor):
@@ -315,15 +317,19 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
         self.assertEqual(grant["state"], {"status": "issued", "uses": 0})
         self.assertEqual(grant["binding"]["target_run_id"], "")
 
+    @unittest.skip("Plan D makes historical grants inert")
     def test_codex_unmanaged_issued_grant_fails_before_argv_or_spawn(self) -> None:
         self._assert_unmanaged_adapter_rejected("codex")
 
+    @unittest.skip("Plan D makes historical grants inert")
     def test_claude_unmanaged_issued_grant_fails_before_argv_or_spawn(self) -> None:
         self._assert_unmanaged_adapter_rejected("claude")
 
+    @unittest.skip("Plan D makes historical grants inert")
     def test_hermes_unmanaged_issued_grant_fails_before_argv_or_spawn(self) -> None:
         self._assert_unmanaged_adapter_rejected("hermes")
 
+    @unittest.skip("Plan D removes grant consumption from Runner")
     def test_runner_authorization_consumes_once_and_rejects_other_targets(self) -> None:
         service, packet, _source, _session = self._grant_packet("codex")
         target = f"codex-{packet['task_id']}-approved"
@@ -377,6 +383,7 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                 f"{target}-retry",
             )
 
+    @unittest.skip("Plan D removes grant consumption from Runner")
     def test_runner_rejects_unmanaged_marker_without_consuming_grant(self) -> None:
         service, packet, _source, _session = self._grant_packet("codex")
         packet.pop("runner_authorization_required")
@@ -397,6 +404,7 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
         self.assertEqual(grant["state"], {"status": "issued", "uses": 0})
         self.assertEqual(grant["binding"]["target_run_id"], "")
 
+    @unittest.skip("Plan D removes grant consumption from Runner")
     def test_two_concurrent_authorizations_have_one_winner(self) -> None:
         service, packet, _source, _session = self._grant_packet("hermes")
         barrier = threading.Barrier(2)
@@ -428,6 +436,7 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
         ]
         self.assertEqual(grant["state"]["uses"], 1)
 
+    @unittest.skip("Plan D replaces grant-bound full injection with task elevation")
     def test_packet_drift_wrong_source_unknown_version_and_full_injection_fail(self) -> None:
         _service, packet, _source, _session = self._grant_packet("claude")
         injected = copy.deepcopy(packet)
@@ -501,6 +510,7 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                 f"hermes-{safe_task.id}-injected",
             )
 
+    @unittest.skip("Plan D removes grant consumption from Runner")
     def test_runner_submit_uses_preallocated_id_and_spawn_failure_stays_consumed(self) -> None:
         service, packet, _source, _session = self._grant_packet("hermes")
         target = f"hermes-{packet['task_id']}-runner"
@@ -539,6 +549,7 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
         self.assertEqual(consumed["state"]["status"], "consumed")
         self.assertEqual(consumed["binding"]["target_run_id"], target2)
 
+    @unittest.skip("Plan D replaces compatibility grants with durable task elevation")
     def test_adapters_build_full_argv_for_same_session_and_pass_target_run(self) -> None:
         cases = (
             ("codex", CodexExecutor(command=str(self.binaries["codex"]))),
@@ -701,6 +712,7 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                 else:
                     self.assertEqual(command[command.index("--resume") + 1], session_id)
 
+    @unittest.skip("Plan D replaces compatibility grants with durable task elevation")
     def test_hermes_runner_transport_keeps_adapter_run_id(self) -> None:
         _service, packet, _source, session_id = self._grant_packet("hermes")
         executor = HermesExecutor(command=str(self.binaries["hermes"]), transport="runner")
@@ -799,6 +811,7 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                 {"control_path": "sdk_control_transport"},
             )
 
+    @unittest.skip("Plan D routes full Claude runs directly instead of SDK grant mode")
     def test_runner_authorizes_claude_sdk_transport_without_fake_print_argv(self) -> None:
         _service, packet, _source, session_id = self._grant_packet("claude")
         run_id = f"claude-{packet['task_id']}-sdk"
@@ -922,6 +935,93 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                 "claude-sdk-drift",
             )
 
+    def test_runner_accepts_plan_d_claude_sdk_context_without_retired_paths(self) -> None:
+        service = TaskService(
+            self.root / "sdk-plan-d-board",
+            config={
+                "workspace_root": str(self.root / "sdk-plan-d-workspace"),
+                "executors": {"claude": {"max_budget_usd": 10.0}},
+                "sessions": {"retain_executor_sessions": False},
+            },
+        )
+        task = service.create_task(
+            "SDK Plan D context",
+            "claude",
+            [{"id": 1, "description": "accept native SDK context"}],
+            customer_dir=True,
+            customer_path=self.project,
+            permission_mode="safe",
+        )
+        packet = service.store.read_task(task.id)
+        packet["task_id"] = task.id
+        packet["task_board"] = {"root": str(service.board_root)}
+        packet["runner_authorization_required"] = True
+        session = packet["extensions"]["agentbc.session"]
+        executor = ClaudeExecutor(command=str(self.binaries["claude"]))
+        sdk_facts = {
+            "sdk_version": "0.2.142",
+            "platform": "macOS arm64",
+            "cli_path": str(self.binaries["claude"]),
+        }
+        context = executor._build_sdk_authorization_context(
+            packet,
+            Path(session["project_path"]),
+            session["session_id"],
+            sdk_facts,
+            resolve_effective_permission(packet, "claude", "claude-sdk-plan-d"),
+        )
+        Path(session["project_path"]).mkdir(parents=True, exist_ok=True)
+        self.state.allowed_roots.append(Path(session["project_path"]).resolve())
+
+        with mock.patch(
+            "agent_bridge_connect.runner.assert_claude_sdk_environment",
+            return_value=sdk_facts,
+        ):
+            result = self.state.authorize_transport(
+                "claude",
+                CLAUDE_SDK_CONTROL_AUTHORIZATION,
+                session["project_path"],
+                packet,
+                context,
+                "claude-sdk-plan-d",
+            )
+
+        self.assertEqual(result["effective_permission_mode"], "safe")
+        self.assertEqual(context["settings_json"], "")
+        self.assertEqual(context["additional_dirs"], [])
+
+    def test_runner_treats_registered_first_hermes_acp_run_as_fresh(self) -> None:
+        service = TaskService(
+            self.root / "hermes-fresh-board",
+            config={
+                "workspace_root": str(self.root / "hermes-fresh-workspace"),
+                "executors": {"hermes": {"max_turns": 90}},
+                "sessions": {"retain_executor_sessions": False},
+            },
+        )
+        task = service.create_task(
+            "Hermes fresh ACP",
+            "hermes",
+            [{"id": 1, "description": "start one fresh ACP session"}],
+            customer_dir=True,
+            customer_path=self.project,
+            permission_mode="inherit",
+        )
+        run_id = f"hermes-{task.id}-fresh"
+        service.record_executor_run_started(task.id, run_id)
+        persisted = service.store.read_task(task.id)
+
+        self.state._validate_phase3_execution_command(
+            "hermes",
+            [str(self.binaries["hermes"]), "acp"],
+            self.project,
+            persisted,
+            run_id,
+        )
+        self.assertFalse(
+            persisted["extensions"]["agentbc.session"]["run_resume_facts"][run_id]
+        )
+
     def test_preconsume_dispatch_failure_calls_core_revoke_helper(self) -> None:
         _service, packet, _source, _session = self._grant_packet("codex")
         task = SimpleNamespace(
@@ -963,6 +1063,7 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
         )
         fake_service.mark_task_needs_recovery.assert_called_once()
 
+    @unittest.skip("Plan D makes all historical grant states inert")
     def test_consumed_or_foreign_grants_do_not_leak_to_later_flows(self) -> None:
         service, packet, _source, _session = self._grant_packet("codex")
         target = f"codex-{packet['task_id']}-once"

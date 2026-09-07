@@ -3,9 +3,8 @@
 Covers the PERM-103-009 freeze:
 
 * the canonical ``app-server`` transport value and the capability gate that
-  verifies the configured executable against the frozen schema contract for
-  both the Runner-pinned ``0.146.0`` and local ``0.147.0`` surfaces,
-* fail-closed behavior for unknown versions, missing schema methods,
+  verifies the configured executable against the required schema contract,
+* default compatibility for new/fork versions and fail-closed behavior for missing schema methods,
   malformed receipts, cross-task/run/session requests, duplicate/concurrent/
   late responses and transport death,
 * the executor-neutral exact-action receipt (accept/decline only) and the
@@ -73,7 +72,7 @@ def capability_override(version: str = "0.146.0") -> dict:
         "version": f"codex-cli {version}",
         "version_parsed": tuple(int(part) for part in version.split(".")),
         "schema_missing": [],
-        "evidence": ["version_gate", "schema_methods_verified"],
+        "evidence": ["protocol_surface_default_compatible", "schema_methods_verified"],
         "schema_summary": "CodexAppServerProtocol",
     }
 
@@ -92,18 +91,26 @@ class SchemaContractTests(unittest.TestCase):
                 self.assertEqual(result["transport"], CODEX_APP_SERVER_TRANSPORT)
                 self.assertEqual(result["protocol_version"], 2)
                 self.assertEqual(result["schema_missing"], [])
-                self.assertEqual(result["evidence"], ["version_gate", "schema_methods_verified"])
+                self.assertEqual(
+                    result["evidence"],
+                    ["protocol_surface_default_compatible", "schema_methods_verified"],
+                )
 
-    def test_unknown_version_fails_closed(self) -> None:
-        for version in ("codex-cli 0.145.0", "codex-cli 0.148.0", "codex-cli 9.9.9"):
+    def test_unknown_and_fork_versions_use_protocol_surface(self) -> None:
+        for version in (
+            "codex-cli 0.145.0",
+            "codex-cli 0.153.4",
+            "codex-cli 9.9.9",
+            "codex-custom-fork",
+        ):
             with self.subTest(version=version):
                 result = codex_app_server_contract(
                     "/tmp/fake-codex",
                     version_output=version,
                     schema_bundle=load_contract_fixture("0.147.0"),
                 )
-                self.assertFalse(result["ok"])
-                self.assertIn("outside the frozen", result["reason"])
+                self.assertTrue(result["ok"])
+                self.assertIn("schema_methods_verified", result["evidence"])
 
     def test_missing_method_fails_closed(self) -> None:
         bundle = load_contract_fixture("0.147.0")
@@ -161,7 +168,7 @@ class SchemaContractTests(unittest.TestCase):
         self.assertIsNone(parse_codex_version(""))
         self.assertIsNone(parse_codex_version("codex-cli"))
 
-    def test_min_max_version_bounds_are_frozen(self) -> None:
+    def test_min_max_version_bounds_are_fixture_metadata_only(self) -> None:
         self.assertEqual(CODEX_APP_SERVER_MIN_VERSION, (0, 146, 0))
         self.assertEqual(CODEX_APP_SERVER_MAX_VERSION, (0, 150, 1))
 
@@ -204,7 +211,7 @@ class CapabilityGateTests(unittest.TestCase):
     def test_probe_success_freezes_transport_and_surface(self) -> None:
         probe = {
             **capability_override("0.147.0"),
-            "evidence": ["version_gate", "schema_methods_verified"],
+            "evidence": ["protocol_surface_default_compatible", "schema_methods_verified"],
         }
         with mock.patch(
             "agent_bridge_connect.codex_app_server.assert_codex_app_server_capability",
@@ -216,7 +223,7 @@ class CapabilityGateTests(unittest.TestCase):
         self.assertTrue(report["supported"])
         self.assertEqual(report["transport"], TRANSPORT_CODEX_APP_SERVER)
         self.assertEqual(report["capability_id"], "codex.sandbox_workspace_write")
-        self.assertIn("version_gate", report["evidence"])
+        self.assertIn("protocol_surface_default_compatible", report["evidence"])
         self.assertEqual(report["details"]["decisions"], ["accept", "decline"])
         self.assertEqual(report["details"]["scope"], "single_action")
         self.assertIn("item/commandExecution/requestApproval", report["details"]["request_methods"])
@@ -1230,22 +1237,21 @@ class RunnerCapabilityValidationTests(unittest.TestCase):
             )
         self.assertIn("runner_capability_mismatch", str(raised.exception))
 
-    def test_runner_rejects_full_permission_on_app_server_command(self) -> None:
+    def test_runner_full_leaves_transport_selection_to_adapter(self) -> None:
         persisted = self._persisted_task(mode="full", transport="app-server")
         packet = self._packet()
         packet["task_id"] = persisted["id"]
         packet["workspace"] = persisted["workspace"]
         packet["extensions"] = persisted["extensions"]
         packet["task_board"] = {"root": str(self.board)}
-        with self.assertRaises(RunnerError) as raised:
-            self.state.authorize_command(
+        result = self.state.authorize_command(
                 "codex",
                 [str(self.codex), "app-server", "--stdio"],
                 str(self.root),
                 packet,
                 executor_run_id="codex-runner-1",
-            )
-        self.assertIn("runner_capability_mismatch", str(raised.exception))
+        )
+        self.assertEqual(result["effective_permission_mode"], "full")
 
 
 class InheritAndFallbackTests(unittest.TestCase):
