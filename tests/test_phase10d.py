@@ -374,7 +374,9 @@ class RunLeaseTests(unittest.TestCase):
 
         self.service.cancel_task(self.task.id)
         with (
-            mock.patch("agent_bridge_connect.task_completion.write_report_files") as write_report,
+            mock.patch(
+                "agent_bridge_connect.service.TaskService.run_terminal_side_effects"
+            ) as side_effects,
             mock.patch("agent_bridge_connect.task_completion.notify_terminal") as notify,
         ):
             result = apply_agent_completion(
@@ -386,7 +388,7 @@ class RunLeaseTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "cancelled")
         self.assertFalse(result["notified"])
-        write_report.assert_not_called()
+        side_effects.assert_not_called()
         notify.assert_not_called()
 
     def test_global_task_index_updates_recovery_result(self):

@@ -348,3 +348,88 @@ rebased or pushed.
 * The delivery receipt is intentionally *not* cleaned up by
   `record clean`/`task close` bookkeeping beyond the existing terminal-record
   rules; `task.json` (and therefore the receipt) is always preserved.
+
+---
+
+## 9. YBNW-002 handoff corrections (iteration 002)
+
+Base: clean `agent/claude` @ `eb4514e61135b54a26a9ebd99b9f63f62aaedffb`
+(contains `private/integration@82db1da`). No reset, rebase, branch switch or
+push; `private/integration` was not modified.
+
+### 9.1 Gaps proven after YBNW-001
+
+| # | Gap | Direct evidence |
+| --- | --- | --- |
+| G1 | Production terminal side effects bypassed the durable receipt. `runner.py` still called `write_report_files` + `notify_terminal` at **7** sites and `task_completion.apply_agent_completion` at **2** sites. Because a receipt's notification stages were left unconfirmed, `maintain_terminal_delivery` replayed a terminal notification the user had already seen. | `grep -n "write_report_files\\|notify_terminal" src/agent_bridge_connect/runner.py src/agent_bridge_connect/task_completion.py` → 9 call sites; `ProductionRoutingTests.test_maintenance_never_repeats_a_confirmed_terminal_notification` failed before the fix (2 dialogs). |
+| G2 | Core reserved a stage it does not own. `TaskService._run_terminal_delivery_stages` transitioned the `file_notification` / `ui_notification` stages to `in_progress` *before* checking for a handler, then persisted the receipt. The Runner's immediate delivery therefore reconciled them to `retry_wait` at the capped 300 s backoff, so the terminal dialog was never shown immediately. | `ProductionRoutingTests.test_core_leaves_notification_stages_pending_for_the_runner` and `test_immediate_runner_delivery_shows_the_terminal_dialog` (0 dialogs before the fix). |
+| G3 | The delivery receipt write persisted a whole stale task snapshot, so a lifecycle write landing during the stage run (for example a freshly recorded `agentbc.execution.run_intervals` entry) was reverted into a stale execution-interval projection. | `ProductionRoutingTests.test_delivery_pass_never_reverts_a_concurrent_run_interval` failed before the fix (`['run-concurrent'] != ['run-concurrent', 'run-active']`). |
+| G4 | `cancel_task` still writes no receipt, so a user-cancelled task keeps the historical direct notification. | Recorded as a follow-up, **not** changed: the handoff restricts corrections to the proven gaps, and the non-receipt fallback keeps cancellation byte-identical. |
+
+G1–G3 are the acceptance gaps named in the YBNW-002 brief; the remaining two
+brief items (approval isolation and locked-environment runs) are covered in
+9.3 and 9.4.
+
+### 9.2 Changes
+
+| Path | Change |
+| --- | --- |
+| `src/agent_bridge_connect/terminal_delivery.py` | `TERMINAL_DELIVERY_NOTIFICATION_EVENTS` / `_LEVELS` and `terminal_notification_request()` so a maintenance replay derives the bounded `(event_type, level)` from the frozen terminal facts; no message body is stored. |
+| `src/agent_bridge_connect/notifications.py` | `notify_terminal()` split into `deliver_terminal_notification(channels=…)` + `record_terminal_notification()`. It keeps its exact signature, payload order, dialog delay and `notification_delivery` evidence, and now returns the per-channel result. `RUNNER_WORKER_FILE_DEFERRAL` is a named constant. |
+| `src/agent_bridge_connect/terminal_delivery_coordinator.py` | `TerminalNotification` request; `service=` / `deferred_stages=` construction; per-channel notification executors; `_record_notification_evidence()` keeps the historical `notification_delivery` event; `_persist_receipt()` re-reads the authoritative record and changes only the receipt extension; new `deliver_terminal_outcome()` single production entry point; `WORKER_DEFERRED_TERMINAL_STAGES`. |
+| `src/agent_bridge_connect/service.py` | public `run_terminal_side_effects()`; `_run_terminal_delivery_stages` no longer reserves an unowned stage; `_persist_terminal_delivery_receipt` re-reads before writing. |
+| `src/agent_bridge_connect/runner.py` | all 7 `respond_and_dispatch` / `maintain_waiting_inputs` / `_atomic_dispatch_task` / `_reconcile_worker_start_failure` sites routed through the receipt or the durable stage split; zero direct `write_report_files` / `notify_terminal` calls remain. |
+| `src/agent_bridge_connect/task_completion.py` | `apply_agent_completion` routes business-terminal outcomes through `deliver_terminal_outcome`, keeps `notify_input_required` for `input_required`, and uses the durable stage split for `needs_recovery`. |
+| `src/agent_bridge_connect/cli.py` | `_notify_terminal` is receipt-owned and `_write_worker_terminal_report` no longer duplicates confirmed report/record/index stages; both keep the historical behaviour for tasks without a receipt. |
+| `tests/test_flow104_002_terminal_delivery.py` | new `ProductionRoutingTests` (7 tests) on a shared `TerminalDeliveryBoardSetup` fixture. |
+| `tests/test_input_response_lifecycle.py` | new `test_expiry_maintenance_keeps_delivery_receipt_ownership_isolated`. |
+| `tests/test_phase10d.py` | the late-recovery mock target follows the renamed seam (`TaskService.run_terminal_side_effects`); assertion intent unchanged. |
+
+### 9.3 Invariants that were preserved
+
+* `input_required` and the current approval/elevation state are untouched:
+  `ApprovalSystemIsolationTests` still passes unchanged, and
+  `test_apply_agent_completion_keeps_the_input_notice_and_approval_state`
+  proves exactly one `notification_delivery` event with
+  `notification_event == "task.input_required"` and `terminal: false`, the
+  elevation receipt unchanged, and no receipt invented for the task.
+* `needs_recovery` sessions are never mutated by the terminal coordinator
+  (`test_expiry_maintenance_keeps_delivery_receipt_ownership_isolated`).
+* A closed RunLease stays authoritative for the timing view:
+  `test_delivery_pass_keeps_a_closed_run_lease_authoritative` plus the
+  pre-existing `test_timing_view.test_missing_run_lease_reads_as_closed` and
+  `test_stale_lease_snapshot_cannot_override_current_lease`.
+* Official-session cleanup isolation and the Codex `thread/archive`
+  acknowledgement before the `thread/delete` acknowledgement are untouched —
+  `src/agent_bridge_connect/codex_session_cleanup.py` and
+  `src/agent_bridge_connect/session_cleanup.py` have no diff in this iteration.
+* The accepted permission flow was not redesigned: no permission, elevation,
+  approval or transport module changed.
+
+### 9.4 Verification (locked environment with the Claude SDK extra)
+
+Environment: `.venv` (Python 3.11.15) synced from `uv.lock` with
+`uv sync --locked --extra claude --inexact`; `claude-agent-sdk==0.2.142` imports
+successfully. This removes the 36 `ModuleNotFoundError: No module named
+'claude_agent_sdk'` errors recorded in §7, so a new baseline was measured
+**before** any source edit.
+
+| # | Check | Command | Result |
+| --- | --- | --- | --- |
+| 1 | Baseline full suite (before edits, SDK extra installed) | `.venv/bin/python -m unittest discover -s tests -t .` | `Ran 1845 tests in 168.539s` — `FAILED (failures=2, skipped=17)` |
+| 2 | Full suite (after edits) | same | `Ran 1853 tests` — `FAILED (failures=2, skipped=17)` |
+| 3 | Baseline failure set | `FAIL:`/`ERROR:` id list of run 1 | `test_day2_smoke…test_init_create_list_and_disk_protocol`, `test_phase10d…test_cli_detects_codex_thread_origin` |
+| 4 | Failure-set diff | `comm` of runs 1 and 3 | **0 new, 0 fixed** — both remaining failures are the same pre-existing environment-dependent ids |
+| 5 | Focused FLOW-104-002 suites | `unittest tests.test_flow104_002_terminal_delivery tests.test_flow104_002_fault_injection` | `Ran 56 tests` — `OK` (49 accepted + 7 new) |
+| 6 | Runner / cleanup / permission regressions | `test_runner`, `test_phase5_cleanup_contract`, `test_phase5_cleanup_coordinator`, `test_session_cleanup_codex_v2`, `test_auxiliary_sessions`, `test_execution_policy`, `test_perm104_003_input_terminal_arbitration` | `Ran 165 tests` — `OK` |
+| 7 | Bytecode compilation | `.venv/bin/python -m compileall -q src/agent_bridge_connect` | exit `0`, no output |
+| 8 | Lint | `ruff check .` (ruff 0.15.13) | `All checks passed!` |
+| 9 | Package build | `/usr/bin/python3 -m build --sdist --wheel --outdir /tmp/ybnw002-dist .` | `Successfully built agentbc-1.0.3a2.tar.gz and agentbc-1.0.3a2-py3-none-any.whl`; `terminal_delivery.py`, `terminal_delivery_coordinator.py`, `record_management.py` and `notifications.py` present in the wheel |
+| 10 | Whitespace check | `git diff --check` | exit `0`, no output |
+| 11 | Local commit | `git commit` on `agent/claude` | committed locally, not pushed, tree clean |
+
+One real regression was caught by the full suite during development and fixed:
+`deliver_terminal_outcome` used `isinstance(service, TaskService)` against a
+locally imported name, which broke when a test substituted the service facade
+(`TypeError: isinstance() arg 2 must be a type`). It is now duck-typed on
+`service.board_root`.

@@ -5054,6 +5054,19 @@ class TaskService:
         self._cleanup_empty_managed_artifacts(task_id)
 
     # ------------------------------------------------- terminal delivery (v1)
+    def run_terminal_side_effects(self, task_id: str) -> None:
+        """Run the local terminal side effects through the durable stage split.
+
+        FLOW-104-002 public wrapper around :meth:`_sync_terminal_report`.  When
+        the task carries a ``agentbc.terminal_delivery`` receipt the report,
+        record and index stages are attempted under it and recorded, so Runner
+        maintenance replays only the unconfirmed ones.  Tasks without a receipt
+        (``needs_recovery``, cancelled, or legacy records) keep the historical
+        direct behaviour and never gain a receipt: the terminal coordinator must
+        not touch a ``needs_recovery`` session.
+        """
+        self._sync_terminal_report(task_id)
+
     def _terminal_delivery_executors(
         self,
         task_id: str,
@@ -5148,6 +5161,14 @@ class TaskService:
                 continue
             if stage == "index" and not refresh_index:
                 continue
+            handler = handlers.get(stage)
+            if handler is None:
+                # Core does not own this stage (the notification stages belong to
+                # the Runner).  It must stay ``pending`` with no attempt consumed
+                # so the Runner can deliver it immediately: reserving it here
+                # would force every delivery through the 300s uncertain-retry
+                # backoff instead.
+                continue
             if entry["state"] != "in_progress":
                 try:
                     receipt = transition_terminal_delivery_stage(
@@ -5156,9 +5177,6 @@ class TaskService:
                 except ABCError:
                     # Attempt limit reached for this stage.
                     continue
-            handler = handlers.get(stage)
-            if handler is None:
-                continue
             try:
                 outcome = handler()
             except ABCError as exc:
@@ -5217,6 +5235,9 @@ class TaskService:
             delivery_event_payload,
         )
 
+        # Re-read the authoritative record and change only the receipt extension:
+        # the stages ran against an older snapshot, so writing it back verbatim
+        # could revert a concurrently recorded execution interval.
         task = self.get_task(task_id)
         task.extensions = dict(task.extensions or {})
         task.extensions[TERMINAL_DELIVERY_EXTENSION_KEY] = receipt

@@ -44,6 +44,7 @@ from agent_bridge_connect.terminal_delivery import (
 from agent_bridge_connect.terminal_delivery_coordinator import (
     TerminalDeliveryCoordinator,
 )
+from agent_bridge_connect.notifications import notify_input_required
 from agent_bridge_connect.reports import generate_report
 
 T0 = "2026-09-01T00:00:00Z"
@@ -263,8 +264,12 @@ def reserved_backoff(receipt: dict, stage: str = "record") -> int:
     return int(round(delta.total_seconds()))
 
 
-class TerminalDeliveryBoardTests(unittest.TestCase):
-    """End-to-end delivery/cleanup behaviour on a real temporary board."""
+class TerminalDeliveryBoardSetup(unittest.TestCase):
+    """Shared temporary board and receipt builders.
+
+    Splitting the fixture out keeps YBNW-002's production-routing tests from
+    re-running every ``TerminalDeliveryBoardTests`` case as a subclass.
+    """
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -334,6 +339,11 @@ class TerminalDeliveryBoardTests(unittest.TestCase):
 
     def _coordinator(self, **kwargs) -> TerminalDeliveryCoordinator:
         return TerminalDeliveryCoordinator(self.board, **kwargs)
+
+
+
+class TerminalDeliveryBoardTests(TerminalDeliveryBoardSetup):
+    """End-to-end delivery/cleanup behaviour on a real temporary board."""
 
     # ---------------------------------------------------------------- tests
     def test_receipt_is_created_in_the_same_authoritative_task_write(self) -> None:
@@ -807,6 +817,320 @@ class FlowContractTests(unittest.TestCase):
         self.assertFalse(report["flow_contract_satisfied"])
         self.assertFalse(report["report_ready"])
         self.assertEqual(report["status"], "completed")
+
+
+class ProductionRoutingTests(TerminalDeliveryBoardSetup):
+    """YBNW-002: production terminal side effects are receipt-owned.
+
+    Before this correction the Runner, Core completion and the worker CLI all
+    called ``write_report_files`` / ``notify_terminal`` directly, so the receipt's
+    notification stages stayed unconfirmed and Runner maintenance replayed a
+    terminal notification the user had already seen.
+    """
+
+    def _finalize(self, task_id: str) -> None:
+        from agent_bridge_connect.service import TaskService
+
+        TaskService(self.board).finalize_task_from_agent(
+            task_id,
+            {
+                "version": 1,
+                "task_id": task_id,
+                "final_state": "completed",
+                "summary": "production routing",
+                "step_results": [{"id": 1, "status": "done"}],
+            },
+        )
+
+    def test_core_leaves_notification_stages_pending_for_the_runner(self) -> None:
+        from agent_bridge_connect.terminal_delivery import (
+            pending_terminal_delivery_stages,
+        )
+
+        task_id = self.service.create_task(
+            "core reservation",
+            "hermes",
+            [{"id": 1, "description": "run"}],
+            customer_dir=False,
+        ).id
+        self._finalize(task_id)
+        stages = pending_terminal_delivery_stages(self._receipt(task_id))
+        self.assertEqual(
+            stages,
+            ["file_notification", "ui_notification"],
+            "Core must not reserve a notification stage it does not own",
+        )
+        for stage in ("report", "record", "index"):
+            self.assertEqual(self._receipt(task_id)["stages"][stage]["state"], "succeeded")
+
+    def test_immediate_runner_delivery_shows_the_terminal_dialog(self) -> None:
+        task_id = self.service.create_task(
+            "immediate dialog",
+            "hermes",
+            [{"id": 1, "description": "run"}],
+            customer_dir=False,
+        ).id
+        self._finalize(task_id)
+        dialogs: list[dict] = []
+
+        def _dialog(payload: dict) -> StageOutcome:
+            dialogs.append(payload)
+            return StageOutcome(True)
+
+        with mock.patch("agent_bridge_connect.notifications.time.sleep"):
+            result = self._coordinator(ui_notifier=_dialog).deliver_now(task_id, now=T0)
+        self.assertEqual(result["status"], "delivered")
+        self.assertEqual(len(dialogs), 1, "the terminal dialog must not be deferred")
+        self.assertEqual(self._receipt(task_id)["stages"]["ui_notification"]["state"], "succeeded")
+
+    def test_maintenance_never_repeats_a_confirmed_terminal_notification(self) -> None:
+        task_id = self.service.create_task(
+            "no duplicate dialog",
+            "hermes",
+            [{"id": 1, "description": "run"}],
+            customer_dir=False,
+        ).id
+        self._finalize(task_id)
+        dialogs: list[dict] = []
+
+        def _dialog(payload: dict) -> StageOutcome:
+            dialogs.append(payload)
+            return StageOutcome(True)
+
+        coordinator = self._coordinator(ui_notifier=_dialog)
+        with mock.patch("agent_bridge_connect.notifications.time.sleep"):
+            first = coordinator.deliver_now(task_id, now=T0)
+        self.assertEqual(first["status"], "delivered")
+        self.assertEqual(len(dialogs), 1)
+        # Runner restart: a brand new coordinator with no memory.
+        for now in (T0, _at(1), _at(400), _at(1000)):
+            TerminalDeliveryCoordinator(self.board).maintain_board(now=now)
+        self.assertEqual(
+            len(dialogs),
+            1,
+            "maintenance replayed a terminal notification the user already saw",
+        )
+
+    def test_apply_agent_completion_records_the_notification_on_the_receipt(self) -> None:
+        from agent_bridge_connect.task_completion import apply_agent_completion
+
+        task_id = self.service.create_task(
+            "completion routing",
+            "hermes",
+            [{"id": 1, "description": "run"}],
+            customer_dir=False,
+        ).id
+        dialogs: list[dict] = []
+
+        def _dialog(payload: dict) -> StageOutcome:
+            dialogs.append(payload)
+            return StageOutcome(True)
+
+        with mock.patch("agent_bridge_connect.notifications.time.sleep"), mock.patch(
+            "agent_bridge_connect.notifiers.dialog.DialogNotifier.send"
+        ) as dialog, mock.patch(
+            "agent_bridge_connect.notifiers.file.FileNotifier.send"
+        ) as file_send:
+            dialog.return_value = mock.Mock(ok=True, message="dialog shown")
+            file_send.return_value = mock.Mock(ok=True, message="file written")
+            result = apply_agent_completion(
+                self.service,
+                task_id,
+                state="completed",
+                summary="routing through the receipt",
+                step_results=[{"id": 1, "status": "done"}],
+            )
+        self.assertTrue(result["notified"])
+        self.assertEqual(dialog.call_count, 1)
+        self.assertEqual(self.service.store.read_task(task_id)["status"], "completed")
+        coordinator = TerminalDeliveryCoordinator(self.board)
+        receipt = coordinator.receipt(task_id)
+        self.assertEqual(receipt["stages"]["ui_notification"]["state"], "succeeded")
+        # A second, identical completion pass must not notify again.
+        TerminalDeliveryCoordinator(
+            self.board, ui_notifier=_dialog
+        ).maintain_board(now=_at(400))
+        self.assertEqual(len(dialogs), 0)
+        self.assertEqual(self.service.store.read_task(task_id)["status"], "completed")
+
+    def test_apply_agent_completion_keeps_the_input_notice_and_approval_state(self) -> None:
+        from agent_bridge_connect.task_completion import apply_agent_completion
+
+        task_id = self.service.create_task(
+            "input routing",
+            "hermes",
+            [{"id": 1, "description": "blocked"}],
+            customer_dir=False,
+        ).id
+        raw = self.service.store.read_task(task_id)
+        raw["extensions"]["agentbc.input"] = {
+            "version": 1,
+            "input_id": "I-001",
+            "type": "permission",
+            "scope": "task_elevation",
+            "approval_version": 3,
+            "elevation_mode": "full",
+            "status": "waiting",
+            "reason_summary": "needs full access",
+            "blocked_step_id": 1,
+            "deadline_at": "2026-09-30T00:00:00Z",
+            "dialog_count": 1,
+            "request_id": "req-ybnw-002",
+            "created_at": T0,
+        }
+        raw["extensions"]["agentbc.permission_elevation"] = {
+            "version": 1,
+            "mode": "full",
+            "scope": "task_elevation",
+            "cardinality": {"notifications": 1, "dialogs": 1},
+            "reserved_at": T0,
+        }
+        self.service.store.write_task(task_id, raw)
+        before = self.service.store.read_task(task_id)
+        with mock.patch(
+            "agent_bridge_connect.task_completion.notify_input_required",
+            wraps=notify_input_required,
+        ) as notice:
+            result = apply_agent_completion(
+                self.service,
+                task_id,
+                state="input_required",
+                summary="waiting on the user",
+                step_results=[{"id": 1, "status": "blocked"}],
+            )
+        self.assertTrue(result["notified"])
+        self.assertEqual(result["event_type"], "task.input_required")
+        notice.assert_called_once()
+        after = self.service.store.read_task(task_id)
+        self.assertEqual(after["status"], "input_required")
+        request = after["extensions"]["agentbc.input"]
+        self.assertEqual(request["status"], "waiting")
+        # The elevation receipt and its notification cardinality are untouched:
+        # FLOW-104-002 never enters the approval flow.
+        self.assertEqual(
+            after["extensions"]["agentbc.permission_elevation"],
+            before["extensions"]["agentbc.permission_elevation"],
+        )
+        self.assertNotIn(
+            TERMINAL_DELIVERY_EXTENSION_KEY,
+            after["extensions"],
+            "an input_required task must never gain a delivery receipt",
+        )
+        deliveries = [
+            event
+            for event in self.service.store.read_events(task_id)
+            if event.get("event_type") == "notification_delivery"
+        ]
+        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(deliveries[0]["notification_event"], "task.input_required")
+        self.assertIs(deliveries[0].get("terminal"), False)
+
+    def test_delivery_pass_never_reverts_a_concurrent_run_interval(self) -> None:
+        """FLOW-104-002 must not project a stale active execution interval.
+
+        The delivery pass holds a task snapshot while the report/record/index
+        stages run.  A lifecycle write that lands in between must survive the
+        receipt persistence instead of being reverted by it.
+        """
+        task_id = self.service.create_task(
+            "stale interval",
+            "hermes",
+            [{"id": 1, "description": "run"}],
+            customer_dir=False,
+        ).id
+        self._finalize(task_id)
+        raw = self.service.store.read_task(task_id)
+        execution = dict(raw["extensions"].get("agentbc.execution") or {})
+        execution["run_intervals"] = [
+            {
+                "run_id": "run-concurrent",
+                "executor_id": "hermes",
+                "started_at": T0,
+                "ended_at": _at(30),
+                "duration_s": 30.0,
+                "state": "closed",
+            }
+        ]
+        raw["extensions"]["agentbc.execution"] = execution
+        self.service.store.write_task(task_id, raw)
+
+        def _record_interval_then_fail() -> StageOutcome:
+            concurrent = self.service.store.read_task(task_id)
+            extensions = dict(concurrent["extensions"] or {})
+            current = dict(extensions.get("agentbc.execution") or {})
+            current["run_intervals"] = [
+                {
+                    "run_id": "run-concurrent",
+                    "executor_id": "hermes",
+                    "started_at": T0,
+                    "ended_at": _at(30),
+                    "duration_s": 30.0,
+                    "state": "closed",
+                },
+                {
+                    "run_id": "run-active",
+                    "executor_id": "hermes",
+                    "started_at": _at(30),
+                    "ended_at": _at(45),
+                    "duration_s": 15.0,
+                    "state": "closed",
+                },
+            ]
+            extensions["agentbc.execution"] = current
+            concurrent["extensions"] = extensions
+            self.service.store.write_task(task_id, concurrent)
+            return StageOutcome(False, error_code="index_refresh_failed")
+
+        result = self._coordinator(
+            stage_executors={
+                "file_notification": _record_interval_then_fail,
+                "ui_notification": lambda: StageOutcome(True),
+            }
+        ).deliver_now(task_id, now=_at(60))
+        self.assertEqual(result["status"], "partial")
+        intervals = (self.service.store.read_task(task_id)["extensions"] or {}).get(
+            "agentbc.execution", {}
+        ).get("run_intervals") or []
+        self.assertEqual(
+            [item["run_id"] for item in intervals],
+            ["run-concurrent", "run-active"],
+            "the delivery receipt write reverted a concurrent execution interval",
+        )
+
+    def test_delivery_pass_keeps_a_closed_run_lease_authoritative(self) -> None:
+        """The delivery pass must not resurrect a closed RunLease projection."""
+        from agent_bridge_connect.run_lease import RunLeaseState, create_lease, save_lease
+        from agent_bridge_connect.timing_view import build_timing_view
+
+        task_id = self.service.create_task(
+            "closed lease authority",
+            "hermes",
+            [{"id": 1, "description": "run"}],
+            customer_dir=False,
+        ).id
+        self._finalize(task_id)
+        raw = self.service.store.read_task(task_id)
+        execution = dict(raw["extensions"].get("agentbc.execution") or {})
+        execution["lease_state"] = "active"
+        raw["extensions"]["agentbc.execution"] = execution
+        self.service.store.write_task(task_id, raw)
+        lease = create_lease(task_id, "hermes", 1, str(self.root))
+        lease.state = RunLeaseState.CLOSED
+        save_lease(lease, self.board)
+
+        self._coordinator(
+            stage_executors={
+                "file_notification": lambda: StageOutcome(True),
+                "ui_notification": lambda: StageOutcome(True),
+            }
+        ).deliver_now(task_id, now=T0)
+
+        view = build_timing_view(self.service.store.read_task(task_id), self.board, now=T0)
+        self.assertEqual(
+            view["lease_state"],
+            RunLeaseState.CLOSED,
+            "a stale active lease snapshot must not override the closed RunLease",
+        )
 
 
 if __name__ == "__main__":

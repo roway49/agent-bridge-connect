@@ -1828,9 +1828,8 @@ class RunnerState:
     def respond_and_dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
         """Record an input answer and launch the same task under one Runner lock."""
         from .config import load_config
-        from .notifications import notify_terminal
-        from .reports import write_report_files
         from .service import TaskService
+        from .terminal_delivery_coordinator import deliver_terminal_outcome
 
         board = self._atomic_board(str(request.get("board_root") or ""))
         config = self._atomic_config(str(request.get("config_path") or ""))
@@ -1853,13 +1852,14 @@ class RunnerState:
                     if timed_out_permission
                     else "Input response deadline expired"
                 )
-                write_report_files(task_id, board)
-                notify_terminal(
+                # FLOW-104-002: the durable stage receipt owns every terminal
+                # side effect, so Runner maintenance can never repeat it.
+                deliver_terminal_outcome(
                     service,
                     task_id,
-                    event_type,
-                    level,
-                    message,
+                    event_type=event_type,
+                    level=level,
+                    message=message,
                 )
                 self._refresh_task_list_dashboard(board)
                 raise RunnerError(f"input deadline expired for task {task_id}")
@@ -1951,13 +1951,12 @@ class RunnerState:
                             failure.get("message")
                             or "User denied contained-full task elevation"
                         )
-                        write_report_files(task_id, board)
-                        notify_terminal(
+                        deliver_terminal_outcome(
                             service,
                             task_id,
-                            "task.failed",
-                            "error",
-                            failure_message,
+                            event_type="task.failed",
+                            level="error",
+                            message=failure_message,
                         )
                         self._refresh_task_list_dashboard(board)
                     return result
@@ -2030,13 +2029,12 @@ class RunnerState:
                         },
                         executor_run_id=executor_run_id,
                     )
-                    write_report_files(task_id, board)
-                    notify_terminal(
+                    deliver_terminal_outcome(
                         service,
                         task_id,
-                        "task.recovery_required",
-                        "warning",
-                        f"Native approval response failed: {exc}",
+                        event_type="task.recovery_required",
+                        level="warning",
+                        message=f"Native approval response failed: {exc}",
                     )
                     self._refresh_task_list_dashboard(board)
                     raise
@@ -2080,13 +2078,12 @@ class RunnerState:
                         failure.get("message")
                         or "Task terminated after executor resource exhaustion"
                     )
-                    write_report_files(task_id, board)
-                    notify_terminal(
+                    deliver_terminal_outcome(
                         service,
                         task_id,
-                        "task.failed",
-                        "error",
-                        failure_message,
+                        event_type="task.failed",
+                        level="error",
+                        message=failure_message,
                     )
                     self._refresh_task_list_dashboard(board)
                 return result
@@ -2126,13 +2123,12 @@ class RunnerState:
                         "phase": "resume_dispatch",
                     },
                 )
-                write_report_files(task.id, board)
-                notify_terminal(
+                deliver_terminal_outcome(
                     service,
                     task.id,
-                    "task.recovery_required",
-                    "warning",
-                    f"Resume dispatch failed: {exc}",
+                    event_type="task.recovery_required",
+                    level="warning",
+                    message=f"Resume dispatch failed: {exc}",
                 )
                 self._refresh_task_list_dashboard(board)
                 raise
@@ -2147,9 +2143,8 @@ class RunnerState:
 
     def maintain_waiting_inputs(self, *, now: str | None = None) -> list[dict[str, Any]]:
         """Expire durable input waits only from Runner-owned maintenance."""
-        from .notifications import notify_terminal
-        from .reports import write_report_files
         from .service import TaskService
+        from .terminal_delivery_coordinator import deliver_terminal_outcome
 
         expired: list[dict[str, Any]] = []
         with self.lock:
@@ -2169,17 +2164,21 @@ class RunnerState:
                             and expired_task.errors[-1].get("code")
                             == "permission_denied_by_timeout"
                         )
-                        write_report_files(task_id, board)
-                        notify_terminal(
+                        deliver_terminal_outcome(
                             service,
                             task_id,
-                            "task.failed" if timed_out_permission else "task.recovery_required",
-                            "error" if timed_out_permission else "warning",
-                            (
+                            event_type=(
+                                "task.failed"
+                                if timed_out_permission
+                                else "task.recovery_required"
+                            ),
+                            level="error" if timed_out_permission else "warning",
+                            message=(
                                 "Permission request timed out and was automatically denied"
                                 if timed_out_permission
                                 else "Input response deadline expired"
                             ),
+                            now=now,
                         )
                         self._refresh_task_list_dashboard(board)
                     except (ABCError, OSError, ValueError):
@@ -2266,7 +2265,6 @@ class RunnerState:
         request: dict[str, Any],
     ) -> dict[str, Any]:
         from .execution_policy import execution_policy_view, public_workspace_view
-        from .reports import write_report_files
 
         try:
             dispatched = self.dispatch_worker(
@@ -2284,7 +2282,10 @@ class RunnerState:
                 str(exc),
                 {"executor": task.assignee},
             )
-            write_report_files(task.id, service.board_root)
+            # FLOW-104-002: ``mark_task_needs_recovery`` already ran the report,
+            # record and index stages through the durable stage split; the
+            # composed report entry point must not duplicate them.
+            service.run_terminal_side_effects(task.id)
             self._refresh_task_list_dashboard(service.board_root)
             raise
         self._ensure_task_list_dashboard(service.board_root, task_id=task.id)
@@ -3600,10 +3601,11 @@ class RunnerState:
             service.block_permission_runtime_after_failure(task_id)
             service.clear_execution_run_references(task_id)
             if marked:
-                from .reports import write_report_files
-
+                # FLOW-104-002: the durable stage split replaces the composed
+                # report entry point so a report failure stays independently
+                # catchable and never rewrites the recovery state.
                 try:
-                    write_report_files(task_id, board)
+                    service.run_terminal_side_effects(task_id)
                 except (OSError, ValueError):
                     pass
         except Exception:

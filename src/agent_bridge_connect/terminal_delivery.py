@@ -68,6 +68,25 @@ TERMINAL_DELIVERY_EVENTS = frozenset(
     }
 )
 
+#: The notification event bound to each business terminal state.  The receipt is
+#: the single authority for what a terminal notification says, so Runner
+#: maintenance can replay an unconfirmed stage without the original caller still
+#: being alive.
+TERMINAL_DELIVERY_NOTIFICATION_EVENTS = {
+    "completed": "task.finalized",
+    "cancelled": "task.finalized",
+    "failed": "task.failed",
+    "rejected": "task.rejected",
+}
+
+#: The notification level bound to each business terminal state.
+TERMINAL_DELIVERY_NOTIFICATION_LEVELS = {
+    "completed": "done",
+    "cancelled": "info",
+    "failed": "error",
+    "rejected": "info",
+}
+
 #: Independent, individually catchable terminal side effects.
 TERMINAL_DELIVERY_STAGES = (
     "report",
@@ -536,6 +555,23 @@ def mark_stage_not_applicable(
 
 
 # ---------------------------------------------------------------- projections
+def terminal_notification_request(
+    terminal_state: str, terminal_event: str = ""
+) -> tuple[str, str]:
+    """Return the bounded ``(event_type, level)`` a terminal notification uses.
+
+    The frozen ``terminal_event`` recorded on the receipt wins when it is a known
+    terminal event; otherwise the event is derived from the business terminal
+    state.  The level is always derived from the state so a replayed stage is
+    indistinguishable from the immediate delivery it replaces.
+    """
+    state = _sanitize_terminal_state(terminal_state)
+    event = _sanitize_event(terminal_event) or TERMINAL_DELIVERY_NOTIFICATION_EVENTS.get(
+        state, "task.finalized"
+    )
+    return event, TERMINAL_DELIVERY_NOTIFICATION_LEVELS.get(state, "info")
+
+
 def terminal_delivery_view(value: Any) -> dict[str, Any]:
     """Return the public, path-free receipt projection used by status/report.
 
@@ -902,6 +938,8 @@ __all__ = [
     "TERMINAL_DELIVERY_EXTENSION_KEY",
     "TERMINAL_DELIVERY_MAX_ATTEMPTS",
     "TERMINAL_DELIVERY_MAX_BACKOFF_S",
+    "TERMINAL_DELIVERY_NOTIFICATION_EVENTS",
+    "TERMINAL_DELIVERY_NOTIFICATION_LEVELS",
     "TERMINAL_DELIVERY_NOTIFICATION_STAGES",
     "TERMINAL_DELIVERY_RECEIPT_VERSION",
     "TERMINAL_DELIVERY_STAGES",
@@ -923,6 +961,7 @@ __all__ = [
     "run_delivery_stages",
     "terminal_delivery_eligible",
     "terminal_delivery_view",
+    "terminal_notification_request",
     "transition_terminal_delivery_stage",
     "validate_terminal_delivery_receipt",
 ]

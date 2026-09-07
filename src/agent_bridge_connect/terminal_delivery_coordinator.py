@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import dataclasses
 import json
 import os
 import fcntl  # noqa: I001  (POSIX-only runtime, mirrors session_cleanup)
@@ -53,7 +54,23 @@ from .terminal_delivery import (
     reconcile_interrupted_stages,
     run_delivery_stages,
     terminal_delivery_eligible,
+    terminal_notification_request,
 )
+
+
+@dataclasses.dataclass(frozen=True)
+class TerminalNotification:
+    """The bounded presentation facts of one terminal notification.
+
+    The receipt stays free of raw bodies and private paths, so the exact
+    ``event_type`` / ``level`` the caller intends for the immediate delivery is
+    carried here instead.  A maintenance replay without a caller derives both
+    from the frozen terminal facts on the receipt.
+    """
+
+    event_type: str
+    level: str
+    message: str = ""
 
 
 def _utc_now() -> str:
@@ -70,15 +87,19 @@ class TerminalDeliveryCoordinator:
         board_root: str | Path,
         *,
         store: TaskStore | None = None,
+        service: Any = None,
         stage_executors: StageExecutors | None = None,
         file_notifier: Callable[[dict[str, Any]], StageOutcome] | None = None,
         ui_notifier: Callable[[dict[str, Any]], StageOutcome] | None = None,
+        deferred_stages: frozenset[str] | set[str] = frozenset(),
     ) -> None:
         self.board = Path(board_root).expanduser().resolve()
         self.store = store or TaskStore(self.board)
+        self._service = service
         self._stage_executors = dict(stage_executors or {})
         self._file_notifier = file_notifier
         self._ui_notifier = ui_notifier
+        self._deferred_stages = frozenset(deferred_stages or ())
 
     # ------------------------------------------------------------------ public
     def receipt(self, task_id: str) -> dict[str, Any]:
@@ -114,9 +135,12 @@ class TerminalDeliveryCoordinator:
         *,
         now: str | None = None,
         executors: StageExecutors | None = None,
+        notification: TerminalNotification | None = None,
     ) -> dict[str, Any]:
         """Attempt delivery immediately for one exact terminal task."""
-        return self._pass(task_id, now=now, executors=executors)
+        return self._pass(
+            task_id, now=now, executors=executors, notification=notification
+        )
 
     def maintain_board(self, *, now: str | None = None) -> list[dict[str, Any]]:
         """Scan this board for terminal tasks with incomplete delivery stages.
@@ -147,6 +171,7 @@ class TerminalDeliveryCoordinator:
         *,
         now: str | None = None,
         executors: StageExecutors | None = None,
+        notification: TerminalNotification | None = None,
     ) -> dict[str, Any]:
         task_id = str(task_id or "").strip()
         if not task_id:
@@ -154,6 +179,7 @@ class TerminalDeliveryCoordinator:
         if not self.store.task_exists(task_id):
             return {"task_id": task_id, "status": "skipped", "blockers": ["task_not_found"], "attempted": []}
         occurred_at = _sanitize_now(now)
+        evidence: dict[str, Any] = {"event_type": "", "notification": notification}
         with self._task_lock(task_id):
             task = self._read_task(task_id)
             if task is None:
@@ -197,7 +223,9 @@ class TerminalDeliveryCoordinator:
                     )
                 updated, results = run_delivery_stages(
                     receipt,
-                    self._executors(task, executors or {}),
+                    self._executors(
+                        task, executors or {}, receipt, notification, evidence
+                    ),
                     now=occurred_at,
                 )
             except ABCError as exc:
@@ -209,7 +237,7 @@ class TerminalDeliveryCoordinator:
                 }
             attempted = [item for item in results if item.get("status") != "skipped"]
             if attempted:
-                self._persist_receipt(task, updated, results, occurred_at)
+                self._persist_receipt(task, updated, results, occurred_at, evidence)
             return {
                 "task_id": task_id,
                 "status": "delivered" if not [
@@ -255,15 +283,27 @@ class TerminalDeliveryCoordinator:
         )
 
     def _executors(
-        self, task: dict[str, Any], overrides: StageExecutors
+        self,
+        task: dict[str, Any],
+        overrides: StageExecutors,
+        receipt: dict[str, Any] | None = None,
+        notification: TerminalNotification | None = None,
+        evidence: dict[str, Any] | None = None,
     ) -> StageExecutors:
+        observed = evidence if isinstance(evidence, dict) else {}
         resolved: StageExecutors = dict(self._stage_executors)
         resolved.update(overrides)
         resolved.setdefault("report", self._report_executor(task))
         resolved.setdefault("record", self._record_executor(task))
         resolved.setdefault("index", self._index_executor(task))
-        resolved.setdefault("file_notification", self._file_executor(task))
-        resolved.setdefault("ui_notification", self._ui_executor(task))
+        resolved.setdefault(
+            "file_notification",
+            self._file_executor(task, receipt, notification, observed),
+        )
+        resolved.setdefault(
+            "ui_notification",
+            self._ui_executor(task, receipt, notification, observed),
+        )
         return resolved
 
     # ------------------------------------------------------- stage executors
@@ -301,61 +341,162 @@ class TerminalDeliveryCoordinator:
 
         return _run
 
-    def _file_executor(self, task: dict[str, Any]) -> Callable[[], StageOutcome]:
+    def _notification_facts(
+        self,
+        task: dict[str, Any],
+        receipt: dict[str, Any] | None,
+        notification: TerminalNotification | None,
+        evidence: dict[str, Any] | None = None,
+    ) -> TerminalNotification:
+        """Resolve the bounded presentation facts of the terminal notification.
+
+        An explicit request wins because the caller knows the exact event it is
+        closing out.  A maintenance replay has no caller, so the frozen terminal
+        facts on the receipt decide instead - never a raw message body.
+        """
+        if notification is not None:
+            if isinstance(evidence, dict):
+                evidence["event_type"] = notification.event_type
+            return notification
+        stored = receipt if isinstance(receipt, dict) else {}
+        state = str(stored.get("terminal_state") or task.get("status") or "")
+        event_type, level = terminal_notification_request(
+            state, str(stored.get("terminal_event") or "")
+        )
+        if isinstance(evidence, dict):
+            evidence["event_type"] = event_type
+        return TerminalNotification(event_type=event_type, level=level, message="")
+
+    def _notification_service(self) -> Any:
+        """Reuse the caller's service so worker containment flags survive."""
+        if self._service is not None:
+            return self._service
+        from .service import TaskService
+
+        return TaskService(self.board)
+
+    def _file_executor(
+        self,
+        task: dict[str, Any],
+        receipt: dict[str, Any] | None = None,
+        notification: TerminalNotification | None = None,
+        evidence: dict[str, Any] | None = None,
+    ) -> Callable[[], StageOutcome]:
         task_id = str(task.get("id") or "")
+        facts = self._notification_facts(task, receipt, notification, evidence)
 
         def _run() -> StageOutcome:
-            from .adapters import DeliveryResult
-            from .notifications import build_notification_payload
-            from .service import TaskService
-
-            service = TaskService(self.board)
-            payload = build_notification_payload(
-                service, task_id, "task.terminal", "info", ""
+            from .notifications import (
+                build_notification_payload,
+                deliver_terminal_notification,
             )
-            notifier = self._file_notifier
-            if notifier is None:
-                from .notifiers.file import FileNotifier
 
-                def notifier(payload: dict[str, Any]) -> StageOutcome:
-                    result: DeliveryResult = FileNotifier(
-                        self.board / "notifications.jsonl"
-                    ).send(payload)
-                    return StageOutcome(bool(result.ok), error_code="file_notification_failed")
-
-            return notifier(payload)
+            if "file_notification" in self._deferred_stages:
+                # This process does not own the board-level side channel.  The
+                # stage stays pending without consuming an attempt so the Runner
+                # delivers it instead of a contained worker duplicating it.
+                return StageOutcome(deferred=True)
+            if self._file_notifier is not None:
+                payload = build_notification_payload(
+                    self._notification_service(),
+                    task_id,
+                    facts.event_type,
+                    facts.level,
+                    facts.message,
+                )
+                outcome = self._file_notifier(payload)
+                return outcome if isinstance(outcome, StageOutcome) else StageOutcome(
+                    bool(outcome), error_code="file_notification_failed"
+                )
+            result = deliver_terminal_notification(
+                self._notification_service(),
+                task_id,
+                facts.event_type,
+                facts.level,
+                facts.message,
+                channels=frozenset({"file"}),
+            )
+            if evidence is not None:
+                evidence["file_notification"] = {
+                    "ok": bool(result["file_ok"]),
+                    "deferred": bool(result["file_deferred"]),
+                }
+            if result["file_deferred"]:
+                return StageOutcome(deferred=True)
+            if result["file_ok"]:
+                return StageOutcome(True)
+            return StageOutcome(False, error_code="file_notification_failed")
 
         return _run
 
-    def _ui_executor(self, task: dict[str, Any]) -> Callable[[], StageOutcome]:
+    def _ui_executor(
+        self,
+        task: dict[str, Any],
+        receipt: dict[str, Any] | None = None,
+        notification: TerminalNotification | None = None,
+        evidence: dict[str, Any] | None = None,
+    ) -> Callable[[], StageOutcome]:
         task_id = str(task.get("id") or "")
+        facts = self._notification_facts(task, receipt, notification, evidence)
 
         def _run() -> StageOutcome:
-            from .notifications import build_notification_payload
-            from .service import TaskService
-
-            service = TaskService(self.board)
-            payload = build_notification_payload(
-                service, task_id, "task.terminal", "info", ""
+            from .notifications import (
+                build_notification_payload,
+                deliver_terminal_notification,
             )
-            notifier = self._ui_notifier
-            if notifier is None:
-                from .notifiers.dialog import DialogNotifier
 
-                def notifier(payload: dict[str, Any]) -> StageOutcome:
-                    result = DialogNotifier().send(payload)
-                    if result.ok:
-                        return StageOutcome(True)
-                    # A noninteractive dialog may genuinely be unobservable
-                    # after an interrupted process: record the uncertainty
-                    # instead of asserting a confirmed delivery.
-                    return StageOutcome(
-                        False,
-                        error_code="ui_notification_failed",
-                        delivery_uncertain=True,
+            if "ui_notification" in self._deferred_stages:
+                return StageOutcome(deferred=True)
+            if self._ui_notifier is not None:
+                payload = build_notification_payload(
+                    self._notification_service(),
+                    task_id,
+                    facts.event_type,
+                    facts.level,
+                    facts.message,
+                )
+                outcome = self._ui_notifier(payload)
+                if not isinstance(outcome, StageOutcome):
+                    outcome = StageOutcome(
+                        bool(outcome), error_code="ui_notification_failed"
                     )
-
-            return notifier(payload)
+                if evidence is not None:
+                    evidence["ui_notification"] = {
+                        "ok": bool(outcome.ok),
+                        "message": "",
+                        "delay_s": 0,
+                    }
+                if outcome.ok:
+                    return StageOutcome(True)
+                return StageOutcome(
+                    False,
+                    error_code=outcome.error_code or "ui_notification_failed",
+                    delivery_uncertain=True,
+                )
+            result = deliver_terminal_notification(
+                self._notification_service(),
+                task_id,
+                facts.event_type,
+                facts.level,
+                facts.message,
+                channels=frozenset({"dialog"}),
+            )
+            if evidence is not None:
+                evidence["ui_notification"] = {
+                    "ok": bool(result["dialog_ok"]),
+                    "message": str(result["dialog_message"]),
+                    "delay_s": int(result["dialog_delay_s"]),
+                }
+            if result["dialog_ok"]:
+                return StageOutcome(True)
+            # A noninteractive dialog may genuinely be unobservable
+            # after an interrupted process: record the uncertainty
+            # instead of asserting a confirmed delivery.
+            return StageOutcome(
+                False,
+                error_code="ui_notification_failed",
+                delivery_uncertain=True,
+            )
 
         return _run
 
@@ -366,9 +507,18 @@ class TerminalDeliveryCoordinator:
         receipt: dict[str, Any],
         results: list[dict[str, Any]],
         occurred_at: str,
+        evidence: dict[str, Any] | None = None,
     ) -> None:
         task_id = str(task.get("id") or task.get("task_id") or "")
-        updated = copy.deepcopy(task)
+        # The delivery pass holds the task snapshot it started with while the
+        # report/record/index/notification stages run.  Re-read the authoritative
+        # record here and change only the receipt extension, so a lifecycle write
+        # that landed in between (for example a freshly recorded run interval)
+        # is never reverted into a stale execution projection.
+        current = self._read_task(task_id)
+        if current is None:
+            current = copy.deepcopy(task)
+        updated = copy.deepcopy(current)
         extensions = dict(updated.get("extensions") or {})
         extensions[TERMINAL_DELIVERY_EXTENSION_KEY] = copy.deepcopy(receipt)
         updated["extensions"] = extensions
@@ -378,6 +528,48 @@ class TerminalDeliveryCoordinator:
         append_bounded_jsonl(
             task_dir / DELIVERY_EVENTS_FILE,
             delivery_event_payload(receipt, results, occurred_at=occurred_at),
+        )
+        self._record_notification_evidence(
+            task_id, receipt, results, evidence or {}, occurred_at
+        )
+
+    def _record_notification_evidence(
+        self,
+        task_id: str,
+        receipt: dict[str, Any],
+        results: list[dict[str, Any]],
+        evidence: dict[str, Any],
+        occurred_at: str,
+    ) -> None:
+        """Keep the historical ``notification_delivery`` evidence event.
+
+        The durable receipt is the delivery authority, but the board event log is
+        what users and legacy imports read.  It is appended only when a
+        notification stage really ran in this pass, and it reports the
+        cumulative channel outcome from the receipt so a partial retry never
+        claims a dialog that already succeeded had failed.
+        """
+        delivered = {
+            str(item.get("stage") or "")
+            for item in results
+            if str(item.get("status") or "") in {"succeeded", "retry_wait", "not_applicable"}
+        }
+        if not delivered & set(TERMINAL_DELIVERY_NOTIFICATION_STAGES):
+            return
+        stages = receipt.get("stages") or {}
+        ui = stages.get("ui_notification") or {}
+        file_entry = stages.get("file_notification") or {}
+        dialog = dict((evidence or {}).get("ui_notification") or {})
+        from .notifications import record_terminal_notification
+
+        record_terminal_notification(
+            self._notification_service(),
+            task_id,
+            str((evidence or {}).get("event_type") or receipt.get("terminal_event") or "task.finalized"),
+            file_ok=str(file_entry.get("state") or "") == "succeeded",
+            dialog_ok=str(ui.get("state") or "") == "succeeded",
+            dialog_message=str(dialog.get("message") or ""),
+            dialog_delay_s=int(dialog.get("delay_s") or 0),
         )
 
     # -------------------------------------------------------------- utilities
@@ -449,6 +641,71 @@ def lease_is_closed(task_id: str, board_root: str | Path) -> bool:
     return str(getattr(lease, "state", "") or "") == "closed"
 
 
+#: Stages a contained Runner-authorized worker process does not own.  They are
+#: left pending (never failed, never attempted) so the Runner delivers them.
+WORKER_DEFERRED_TERMINAL_STAGES = frozenset({"index", "file_notification"})
+
+
+def deliver_terminal_outcome(
+    service: Any,
+    task_id: str,
+    *,
+    event_type: str,
+    level: str,
+    message: str = "",
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Deliver one production terminal outcome; the receipt is the authority.
+
+    FLOW-104-002: this is the single production entry point for the terminal
+    side effects.
+
+    - A task carrying a receipt has every stage (report, record, index, file
+      notification, UI notification) attempted under it and each result recorded
+      on it, so Runner maintenance replays only the unconfirmed stages and can
+      never duplicate a terminal notification.
+    - ``input_required`` tasks and ``needs_recovery`` sessions are never routed
+      through the receipt: they return ``routed: False`` and keep the historical
+      direct behaviour, split into independently catchable operations.  No
+      receipt is ever invented for them.
+    """
+    from .notifications import notify_terminal
+
+    # Duck-typed on purpose: tests and alternate facades may substitute the
+    # service object, so the coordinator must not require a concrete type.
+    board_root = getattr(service, "board_root", None)
+    if not board_root:
+        return {"routed": False, "result": {}}
+    try:
+        task = service.get_task(task_id)
+    except (ABCError, OSError, ValueError):
+        return {"routed": False, "result": {}}
+    extensions = dict(getattr(task, "extensions", None) or {})
+    if TERMINAL_DELIVERY_EXTENSION_KEY not in extensions:
+        # needs_recovery / cancelled / legacy: no receipt, no coordinator and no
+        # maintenance replay, so the historical direct notification stands.  The
+        # report/record/index stages are already the caller's (or Core's) via
+        # ``TaskService.run_terminal_side_effects``; no receipt is ever invented.
+        notify_terminal(service, task_id, event_type, level, message)
+        return {"routed": False, "result": {}}
+    deferred = (
+        WORKER_DEFERRED_TERMINAL_STAGES
+        if bool(getattr(service, "_runner_worker", False))
+        else frozenset()
+    )
+    coordinator = TerminalDeliveryCoordinator(
+        service.board_root, service=service, deferred_stages=deferred
+    )
+    result = coordinator.deliver_now(
+        task_id,
+        now=now,
+        notification=TerminalNotification(
+            event_type=event_type, level=level, message=message
+        ),
+    )
+    return {"routed": result.get("status") != "skipped", "result": result}
+
+
 __all__ = [
     "DELIVERY_EVENT_TYPE",
     "DELIVERY_EVENTS_FILE",
@@ -457,6 +714,9 @@ __all__ = [
     "TERMINAL_DELIVERY_MAX_ATTEMPTS",
     "TERMINAL_DELIVERY_NOTIFICATION_STAGES",
     "TERMINAL_DELIVERY_STAGES",
+    "WORKER_DEFERRED_TERMINAL_STAGES",
     "TerminalDeliveryCoordinator",
+    "TerminalNotification",
+    "deliver_terminal_outcome",
     "lease_is_closed",
 ]
