@@ -1893,6 +1893,9 @@ def _task_max_turns(
 
 def _task_resume_session(
     task_packet: dict[str, Any] | None,
+    *,
+    resume_fact: bool | None = None,
+    resume_session_id: str = "",
 ) -> tuple[bool, str]:
     if not isinstance(task_packet, dict):
         return False, ""
@@ -1904,6 +1907,21 @@ def _task_resume_session(
         raise ValueError("agentbc.session must be an object")
     if str(session.get("executor") or "").strip().lower() != "hermes":
         raise ValueError("agentbc.session.executor must be hermes")
+    frozen_fact = task_packet.get("_agentbc_resume_fact")
+    if resume_fact is None and isinstance(frozen_fact, dict):
+        frozen_value = frozen_fact.get("resumed")
+        if type(frozen_value) is bool:
+            resume_fact = frozen_value
+            resume_session_id = str(
+                frozen_fact.get("session_id") or ""
+            ).strip()
+    if resume_fact is not None:
+        if not resume_fact:
+            return False, ""
+        session_id = str(resume_session_id or session.get("session_id") or "").strip()
+        if not session_id:
+            raise ValueError("agentbc.session.session_id is required for resume")
+        return True, session_id
     run_ids = session.get("run_ids")
     if not isinstance(run_ids, list):
         raise ValueError("agentbc.session.run_ids must be a list")

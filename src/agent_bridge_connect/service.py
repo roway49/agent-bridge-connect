@@ -2185,6 +2185,7 @@ class TaskService:
         execution_session: dict[str, Any] | None = None,
         tool_name: str = "",
         tool_use_id: str = "",
+        input_fingerprint: str = "",
         action_fingerprint: str = "",
         escalation_domain: str = "",
         profile_digest: str = "",
@@ -2317,6 +2318,7 @@ class TaskService:
                 blocked_step_id=blocked_step_id,
                 tool_name=tool_name,
                 tool_use_id=tool_use_id,
+                input_fingerprint=input_fingerprint,
                 action_fingerprint=action_fingerprint,
                 escalation_domain=escalation_domain,
                 profile_digest=profile_digest,
@@ -2609,6 +2611,7 @@ class TaskService:
         blocked_step_id: int | None,
         tool_name: str,
         tool_use_id: str,
+        input_fingerprint: str,
         action_fingerprint: str,
         escalation_domain: str,
         profile_digest: str,
@@ -2983,6 +2986,7 @@ class TaskService:
         blocked_step_id: int | None,
         tool_name: str,
         tool_use_id: str,
+        input_fingerprint: str,
         action_fingerprint: str,
         escalation_domain: str,
         profile_digest: str,
@@ -3028,10 +3032,27 @@ class TaskService:
                 int(previous_input.get("approval_version") or 1) == 3
                 and str(previous_input.get("request_id") or "") == request_id
             ):
-                if str(previous_input.get("request_fingerprint") or "") != request_fingerprint:
+                identity_fields = (
+                    ("request_fingerprint", request_fingerprint),
+                    ("input_fingerprint", input_fingerprint),
+                    ("tool_name", tool_name),
+                    ("tool_use_id", tool_use_id),
+                    ("action_fingerprint", action_fingerprint),
+                    ("control_path", control_path),
+                    ("native_event", native_event),
+                )
+                mismatched = [
+                    key
+                    for key, incoming in identity_fields
+                    if incoming
+                    and str(previous_input.get(key) or "")
+                    != str(incoming)
+                ]
+                if mismatched:
                     raise ABCError(
                         "permission_elevation_binding_mismatch",
-                        "A replayed task elevation request changed its native fingerprint",
+                        "A replayed native elevation request changed its native identity or input",
+                        {"fields": mismatched, "request_id": request_id},
                     )
                 return {
                     "ok": True,
@@ -3172,6 +3193,8 @@ class TaskService:
             "deadline_at": deadline_at,
             "status": "waiting",
         }
+        if str(input_fingerprint or "").strip():
+            request["input_fingerprint"] = str(input_fingerprint).strip()[:160]
         if native_live_elevation:
             request["native_live_elevation"] = True
         history = list(extensions.get("agentbc.input_history") or [])

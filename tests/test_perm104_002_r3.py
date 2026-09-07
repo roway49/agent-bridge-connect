@@ -226,13 +226,13 @@ class ClaudeV3IdentityClosureTests(unittest.TestCase):
             "host_profile_digest": self.PROFILE_DIGEST,
             "approval_version": 3,
             "scope": "task_elevation",
-            "elevation_mode": "contained_full",
+            "elevation_mode": "full",
             "native_live_elevation": True,
             "native_elevation_protocol": "claude.can_use_tool.setMode",
             "native_event": "claude_sdk_can_use_tool",
             "path_plan_digest": self.PATH_DIGEST,
             "containment_profile_digest": self.PROFILE_DIGEST,
-            "preflight": {"ok": True, "status": "passed", "mode": "contained_full"},
+            "preflight": {"ok": True, "status": "passed", "mode": "full"},
             "authority": {
                 "executor": "claude",
                 "protocol": "claude_agent_sdk",
@@ -370,10 +370,10 @@ class ClaudeV3IdentityClosureTests(unittest.TestCase):
                 },
             },
             "approval_version": 3,
-            "elevation_mode": "contained_full",
+            "elevation_mode": "full",
             "path_plan_digest": self.PATH_DIGEST,
             "containment_profile_digest": self.PROFILE_DIGEST,
-            "full_preflight": {"ok": True, "status": "passed", "mode": "contained_full"},
+            "full_preflight": {"ok": True, "status": "passed", "mode": "full"},
             "native_live_elevation": True,
         }
         first = service.block_task_for_approval(task.id, **kwargs)
@@ -398,7 +398,7 @@ class ClaudeV3IdentityClosureTests(unittest.TestCase):
         after = service.get_task(task.id)
         self.assertEqual(after.extensions["agentbc.input"]["input_id"], first["input_id"])
         self.assertEqual(
-            after.extensions["agentbc.claude_elevation"]["cardinality"]["dialogs"],
+            after.extensions["agentbc.permission_elevation"]["cardinality"]["notifications"],
             1,
         )
         response = service.respond_to_live_claude_elevation(

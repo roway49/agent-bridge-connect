@@ -149,6 +149,7 @@ class ApprovalRequest:
     requested_permissions: dict[str, Any] = field(default_factory=dict)
     tool_name: str = ""
     tool_use_id: str = ""
+    input_fingerprint: str = ""
     action_fingerprint: str = ""
     escalation_domain: str = ""
     profile_digest: str = ""
@@ -193,6 +194,7 @@ class ApprovalRequest:
         for key, item in (
             ("tool_name", self.tool_name),
             ("tool_use_id", self.tool_use_id),
+            ("input_fingerprint", self.input_fingerprint),
             ("action_fingerprint", self.action_fingerprint),
             ("escalation_domain", self.escalation_domain),
             ("profile_digest", self.profile_digest),
@@ -284,6 +286,9 @@ def normalize_approval_request(
     )
     native_tool_name = _bounded_text(agentbc.get("tool_name"), 120)
     native_tool_use_id = _bounded_text(agentbc.get("tool_use_id"), 512)
+    native_input_fingerprint = _bounded_text(
+        agentbc.get("input_fingerprint"), 160
+    )
     native_action_fingerprint = _bounded_text(
         agentbc.get("action_fingerprint"), 160
     )
@@ -417,6 +422,7 @@ def normalize_approval_request(
             item_id=item_id,
             tool_name=native_tool_name,
             tool_use_id=native_tool_use_id,
+            input_fingerprint=native_input_fingerprint,
             action_fingerprint=native_action_fingerprint,
             escalation_domain=native_domain,
             profile_digest=profile_digest,
@@ -1033,6 +1039,9 @@ class ApprovalControlPlane:
                 request_fingerprint = str(
                     identity.get("request_fingerprint") or ""
                 ).strip()
+                input_fingerprint = str(
+                    identity.get("input_fingerprint") or ""
+                ).strip()
                 action_fingerprint_value = str(
                     identity.get("action_fingerprint") or ""
                 ).strip()
@@ -1052,6 +1061,11 @@ class ApprovalControlPlane:
                     binding_errors.append("request_fingerprint_missing")
                 if not action_fingerprint_value.startswith("fp-"):
                     binding_errors.append("action_fingerprint")
+                if request.approval_version == 3 and not (
+                    _SHA256_DIGEST_RE.fullmatch(input_fingerprint)
+                    and input_fingerprint == request.input_fingerprint
+                ):
+                    binding_errors.append("input_fingerprint")
                 if not actual_identity["tool_name"]:
                     binding_errors.append("tool_name")
                 if request.approval_version != 3 and domain not in PERMISSION_RUNTIME_DOMAINS:
@@ -1088,6 +1102,7 @@ class ApprovalControlPlane:
                     request,
                     tool_name=actual_identity["tool_name"],
                     tool_use_id=actual_identity["tool_use_id"],
+                    input_fingerprint=input_fingerprint,
                     action_fingerprint=action_fingerprint_value,
                     escalation_domain=domain,
                     profile_digest=profile_digest,
@@ -1135,6 +1150,33 @@ class ApprovalControlPlane:
                     self._recovery("approval_identity_mismatch", message_text, evidence)
                     raise ControlPlaneError("approval_identity_mismatch", message_text, evidence)
                 if str(pending.get("request_id")) == request.request_id:
+                    native_identity_fields = (
+                        "request_fingerprint",
+                        "input_fingerprint",
+                        "tool_name",
+                        "tool_use_id",
+                        "action_fingerprint",
+                        "control_path",
+                    )
+                    native_mismatches = [
+                        field
+                        for field in native_identity_fields
+                        if request.to_dict().get(field)
+                        and pending.get(field)
+                        and str(request.to_dict().get(field))
+                        != str(pending.get(field))
+                    ]
+                    if native_mismatches:
+                        code = PERMISSION_BLOCK_EVIDENCE_UNAVAILABLE
+                        message_text = (
+                            "The repeated native approval changed its bound identity or input."
+                        )
+                        evidence = {
+                            "request_id": request.request_id,
+                            "binding_errors": native_mismatches,
+                        }
+                        self._recovery(code, message_text, evidence)
+                        raise ControlPlaneError(code, message_text, evidence)
                     code = "approval_request_duplicate"
                     message_text = "The approval request ID was already seen for this task run."
                     evidence = {"pending_request_id": pending.get("request_id"), "request_id": request.request_id}

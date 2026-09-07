@@ -394,7 +394,7 @@ class ClaudeExecutorSdkSemanticsTests(unittest.TestCase):
                 with mock.patch.dict(sys.modules, {"claude_agent_sdk": None}):
                     result = executor.start_control(packet)
             self.assertFalse(result.ok)
-            self.assertIn("invalid_permission_mode", result.message)
+            self.assertIn("claude_sdk_dependency_missing", result.message)
 
 
 class ClaudeSdkRuntimeVerifierTests(unittest.TestCase):

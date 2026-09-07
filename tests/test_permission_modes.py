@@ -427,12 +427,15 @@ class ExecutorPermissionMappingTests(unittest.TestCase):
         self.assertIn("--safe-mode", claude)
         self.assertIn("acceptEdits", claude)
 
-    def test_unsupported_full_capability_fails_closed(self) -> None:
-        completed = mock.Mock(returncode=0, stdout="usage without full flag", stderr="")
-        with mock.patch("agent_bridge_connect.permission_modes.subprocess.run", return_value=completed):
-            with self.assertRaises(ABCError) as raised:
-                assert_executor_permission_supported("codex", "full", sys.executable)
-        self.assertEqual(raised.exception.code, "unsupported_permission_mode")
+    def test_full_uses_native_mapping_without_capability_probe(self) -> None:
+        # Plan D accepts protocol-compatible releases and forks by their
+        # frozen native mapping; --help/version/runtime capability probes are
+        # not a second permission gate.
+        with mock.patch(
+            "agent_bridge_connect.permission_modes.subprocess.run",
+            side_effect=AssertionError("full must not probe executable help"),
+        ):
+            assert_executor_permission_supported("codex", "full", sys.executable)
 
 
 class CanonicalPermissionArgumentTests(unittest.TestCase):

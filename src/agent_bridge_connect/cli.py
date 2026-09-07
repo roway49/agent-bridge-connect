@@ -1781,6 +1781,9 @@ def command_worker_run(args: argparse.Namespace) -> int:
                                         or approval_request.get("item_id")
                                         or ""
                                     ),
+                                    input_fingerprint=str(
+                                        approval_request.get("input_fingerprint") or ""
+                                    ),
                                     action_fingerprint=str(
                                         approval_request.get("action_fingerprint") or ""
                                     ),
