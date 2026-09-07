@@ -36,15 +36,18 @@ from agent_bridge_connect.adapters import (
     ExecutorLevel,
     PollResult,
     ProbeResult,
+    SessionCleanupResult,
     StartResult,
 )
 from agent_bridge_connect.cli import command_worker_run
 from agent_bridge_connect.execution_policy import build_session_snapshot
 from agent_bridge_connect.hermes_acp import HermesAcpElevationRequired
 from agent_bridge_connect.notifications import build_input_required_notification
+from agent_bridge_connect.permission_elevation import permission_elevation_from_extensions
 from agent_bridge_connect.permission_modes import build_permission_record
 from agent_bridge_connect.permission_runtime import host_profile_digest, path_plan_digest
 from agent_bridge_connect.permission_registry import TRANSPORT_HERMES_ACP
+from agent_bridge_connect.runner import RunnerState
 from agent_bridge_connect.run_lease import (
     RunLeaseState,
     close_lease,
@@ -602,6 +605,194 @@ class InputTerminalArbitrationTests(unittest.TestCase):
         ):
             self.assertEqual(harness.run_worker(task_id, executor), 1)
         self.assertEqual(harness.service.get_task(task_id).status, "failed")
+
+
+class _CompletedFullContinuation:
+    """One resumed Hermes full turn with a real callback/session receipt."""
+
+    def __init__(self) -> None:
+        self.task_packet: dict | None = None
+        self.run_id = ""
+        self.poll_count = 0
+
+    def probe(self) -> ProbeResult:
+        return ProbeResult(ok=True, message="ready")
+
+    def capabilities(self) -> ExecutorCapabilities:
+        return ExecutorCapabilities(level=ExecutorLevel.L2, resume=True)
+
+    def start(self, task_packet: dict) -> StartResult:
+        from agent_bridge_connect.effective_permissions import resolve_effective_permission
+        from agent_bridge_connect.executors.hermes import (
+            HermesExecutor,
+            _hermes_transport_from_permission,
+        )
+
+        self.task_packet = task_packet
+        self.run_id = str(task_packet["_agentbc_executor_run_id"])
+        permission = resolve_effective_permission(
+            task_packet,
+            "hermes",
+            self.run_id,
+            trusted_runner_managed=True,
+        )
+        if permission["effective_mode"] != "full":
+            return StartResult(ok=False, run_id="", message="continuation is not full")
+        if _hermes_transport_from_permission(permission) != "direct":
+            return StartResult(ok=False, run_id="", message="continuation returned to ACP")
+        command = HermesExecutor(command="/bin/echo", transport="acp")._build_command(
+            "probe",
+            permission=permission,
+            task_packet=task_packet,
+        )
+        if command[:2] != ["/bin/echo", "chat"] or "--yolo" not in command:
+            return StartResult(ok=False, run_id="", message="full command is not headless")
+        if (
+            "--resume" not in command
+            or command[command.index("--resume") + 1] != FAKE_SESSION_ID
+        ):
+            return StartResult(ok=False, run_id="", message="full command lost its session")
+        elevation = permission_elevation_from_extensions(
+            task_packet["extensions"], task_id=task_packet["task_id"]
+        )
+        if elevation is None or elevation["state"]["status"] != "active":
+            return StartResult(ok=False, run_id="", message="elevation is not active")
+        if elevation["continuation"] != {
+            "count": 1,
+            "executor_run_id": self.run_id,
+            "session_id": FAKE_SESSION_ID,
+        }:
+            return StartResult(ok=False, run_id="", message="continuation binding mismatch")
+        return StartResult(ok=True, run_id=self.run_id, message="full continuation started")
+
+    def poll(self, run_id: str) -> PollResult:
+        self.poll_count += 1
+        if self.task_packet is None:
+            raise AssertionError("continuation was not started")
+        task_id = str(self.task_packet["task_id"])
+        return PollResult(
+            status="completed",
+            progress={"returncode": 0},
+            result={
+                "returncode": 0,
+                "summary": "full continuation completed",
+                "execution_session": {
+                    "version": 1,
+                    "executor": "hermes",
+                    "session_id": FAKE_SESSION_ID,
+                    "resumed": True,
+                    "persistence": "persistent",
+                    "source": "stderr_receipt",
+                },
+                "agent_callback": {
+                    "version": 1,
+                    "task_id": task_id,
+                    "final_state": "completed",
+                    "summary": "full continuation completed",
+                    "step_results": [{"id": 1, "status": "done"}],
+                },
+            },
+        )
+
+    def cleanup_session(self, _request) -> SessionCleanupResult:
+        return SessionCleanupResult(
+            state="completed",
+            capability="supported",
+            strategy="official_session_delete",
+        )
+
+
+class RunnerFullContinuationTests(unittest.TestCase):
+    """Runner consumes Approve and the resumed full worker closes the task."""
+
+    def setUp(self) -> None:
+        self.harness = _WorkerHarness()
+        self.addCleanup(self.harness.close)
+
+    def test_runner_approve_reaches_verified_full_continuation(self) -> None:
+        harness = self.harness
+        task_id = harness.create_task()
+        first = _TerminalHermesExecutor(_terminal_failure_result(), harness)
+        self.assertEqual(harness.run_worker(task_id, first), 0)
+        waiting = harness.service.get_task(task_id).extensions["agentbc.input"]
+
+        fake_bin = harness.root / "hermes"
+        fake_bin.write_text("fake", encoding="utf-8")
+        runner = RunnerState(
+            harness.root / "runner-state",
+            [harness.root],
+            {"hermes": fake_bin},
+        )
+        spawned = {
+            "ok": True,
+            "run_id": "runner-worker-continuation",
+            "pid": 12345,
+            "status": "running",
+        }
+        with (
+            mock.patch.object(runner, "_validate_executor_config"),
+            mock.patch.object(runner, "_spawn_process", return_value=spawned) as spawn,
+            mock.patch.object(
+                runner, "_open_task_monitor", return_value={"status": "disabled"}
+            ),
+            mock.patch("agent_bridge_connect.runner.assert_executor_permission_supported"),
+            mock.patch("agent_bridge_connect.runner.preflight_host_containment"),
+        ):
+            response = runner.respond_and_dispatch(
+                {
+                    "board_root": str(harness.board),
+                    "config_path": "",
+                    "task_id": task_id,
+                    "input_id": waiting["input_id"],
+                    "response_type": "approve_full",
+                    "message": "",
+                    "interval_s": 0.01,
+                }
+            )
+        self.assertEqual(response["run_id"], "runner-worker-continuation")
+        self.assertEqual(spawn.call_count, 1)
+        worker_command = spawn.call_args.args[1]
+        self.assertIn("--runner-authorize", worker_command)
+        self.assertIn("--task-id", worker_command)
+        self.assertEqual(worker_command[worker_command.index("--task-id") + 1], task_id)
+
+        continuation = _CompletedFullContinuation()
+        with (
+            mock.patch("agent_bridge_connect.cli.get_executor", return_value=continuation),
+            mock.patch("agent_bridge_connect.cli._notify_terminal"),
+            mock.patch("agent_bridge_connect.cli._request_task_list_refresh_for_service"),
+        ):
+            code = command_worker_run(
+                mock.Mock(
+                    root=harness.board,
+                    executor="hermes",
+                    once=True,
+                    interval=0.01,
+                    config=None,
+                    detach=False,
+                    task_id=task_id,
+                    runner_authorize=True,
+                )
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(continuation.poll_count, 1)
+
+        task = harness.service.get_task(task_id)
+        self.assertEqual(task.status, "completed")
+        elevation = permission_elevation_from_extensions(
+            task.extensions, task_id=task_id
+        )
+        self.assertIsNotNone(elevation)
+        self.assertEqual(elevation["state"]["status"], "verified")
+        self.assertEqual(elevation["cardinality"]["permission_requests"], 1)
+        self.assertEqual(elevation["cardinality"]["notifications"], 1)
+        self.assertEqual(elevation["cardinality"]["human_decisions"], 1)
+        self.assertEqual(elevation["cardinality"]["full_continuations"], 1)
+        self.assertEqual(elevation["continuation"]["session_id"], FAKE_SESSION_ID)
+        approval = task.extensions["agentbc.approval"]
+        self.assertEqual(approval["cardinality"]["full_continuations"], 1)
+        self.assertEqual(task.extensions["agentbc.session"]["session_id"], FAKE_SESSION_ID)
+        self.assertTrue(task.extensions["agentbc.final_callback"]["marker_valid"])
 
 
 class ElevationLatchTests(unittest.TestCase):

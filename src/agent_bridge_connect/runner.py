@@ -1784,6 +1784,29 @@ class RunnerState:
                     permission_source=source,
                     path_plan_digest=plan_digest,
                     host_profile_digest=profile_digest,
+                    action_fingerprint=(
+                        str(
+                            (elevation.get("provenance") or {}).get(
+                                "action_fingerprint"
+                            )
+                            or ""
+                        )
+                        if source == "task_elevation"
+                        and isinstance(elevation, dict)
+                        else ""
+                    ),
+                    operation=(
+                        str(elevation.get("operation") or "")
+                        if source == "task_elevation"
+                        and isinstance(elevation, dict)
+                        else ""
+                    ),
+                    elevation_id=(
+                        str(elevation.get("elevation_id") or "")
+                        if source == "task_elevation"
+                        and isinstance(elevation, dict)
+                        else ""
+                    ),
                 )
                 task["extensions"] = dict(task.get("extensions") or {})
                 task["extensions"][PERMISSION_RUNTIME_EXTENSION_KEY] = runtime_record

@@ -668,6 +668,25 @@ Executor 拒绝必须在同 session、同 request Approve 后精确执行。
   **逐项一致**（差异全部来自本环境缺失可选依赖 `claude_agent_sdk` 的 Claude SDK 传输门禁测试，
   以及 2 项与权限无关的 CLI 文本/会话来源断言）；相对未合并 `agent/claude` HEAD（4F/27E）仅新增
   private/integration 引入的同因 SDK 依赖测试，无本轮引入的新失败。
+- Controller 直接收尾验收发现原 13 项中的 Approve 用例只验证了
+  `dispatch_required=true`，并在 Runner 真正启动 worker 前断言 `full_continuations=0`，没有覆盖
+  Approve 后的生产 continuation。按真实 Runner→worker 路径重放后，定位到独立生产缺陷：
+  `dispatch_worker()` 以 `permission_source=task_elevation` 构造 runtime receipt 时未传入已持久化的
+  `elevation_id`，因此在进程启动前稳定失败为
+  `permission_runtime_binding_invalid: Task elevation runtime requires the bound elevation_id`。
+- 收尾修复：Runner 从同一权威 elevation receipt 机械传递 `elevation_id`、`operation` 与
+  `provenance.action_fingerprint` 到 `agentbc.permission_runtime`；不新增权限判断、版本白名单、
+  prompt 匹配或安全策略。新增第 14 项真实链路回归：Approve 只 spawn 一个 runner-authorized
+  worker；worker 激活同一 elevation 与同一官方 session；有效权限解析为 `full`；Hermes 命令固定为
+  `chat --yolo --resume <same-session>` 且不返回 ACP；唯一 continuation 完成并产出有效 callback，
+  elevation 最终进入 `verified`，permission request/notification/human decision/full continuation
+  cardinality 均为 1。
+- 收尾门禁：定向文件 14/14、相关权限套件 104/104 通过；在允许测试自身启动 macOS Seatbelt
+  子进程的宿主环境中重跑全量 unittest 1785/1785 通过；Ruff（独立 cache）、compileall、
+  `git diff --check` 通过；
+  package build 成功，产物为 `/tmp/agentbc-82cp-dist/agentbc-1.0.3a2-py3-none-any.whl` 与
+  `/tmp/agentbc-82cp-dist/agentbc-1.0.3a2.tar.gz`。未 push，尚未合入当前 dirty integration，
+  也尚未用重新安装后的本机 Runner 执行真机 Hermes canary。
 
 ### 4.5 `FLOW-104-001`：handoff 结构化多 steps
 
