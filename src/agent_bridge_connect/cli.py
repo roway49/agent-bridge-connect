@@ -28,6 +28,7 @@ from .config import (
 )
 from .executor_registry import get_executor
 from .path_model import DEFAULT_CUSTOMER_PATH, derive_customer_path_plan
+from .permission_elevation import PERMISSION_ELEVATION_MODE
 from .permission_modes import CANONICAL_PERMISSION_MODES, PERMISSION_EXTENSION_KEY
 from .protocol import ABCError
 from .service import TaskService, load_steps, task_to_status
@@ -35,6 +36,19 @@ from .task_id import is_task_like, split_task_ref
 from .terminal_states import TASK_TERMINAL_STATES, terminal_status_label
 
 _TASK_TERMINAL_STATUSES = TASK_TERMINAL_STATES
+# Poll statuses that end an executor run.  Every one of them must be arbitrated
+# against a durably waiting v3 task-elevation input before the worker can treat
+# it as a real terminal outcome (PERM-104-003).
+TERMINAL_POLL_STATUSES = frozenset(
+    {
+        "completed",
+        "cancelled",
+        "input_required",
+        "needs_recovery",
+        "failed",
+        "needs_review",
+    }
+)
 _SHORTHAND_ALIASES = {
     "list": ["task", "list"],
 }
@@ -1607,17 +1621,48 @@ def command_worker_run(args: argparse.Namespace) -> int:
             execution_session: dict[str, Any] | None = None
             while True:
                 poll = executor.poll(start.run_id)
-                terminal_statuses = {
-                    "completed",
-                    "cancelled",
-                    "input_required",
-                    "needs_recovery",
-                    "failed",
-                    "needs_review",
-                }
-                if poll.status not in terminal_statuses:
+                if poll.status not in TERMINAL_POLL_STATUSES:
                     time.sleep(max(args.interval, 0.1))
                     continue
+
+                # PERM-104-003: after every Hermes terminal-like poll, re-read
+                # TaskService BEFORE generic callback validation or failure
+                # finalization.  A durably waiting v3 task-elevation input is
+                # authoritative over completion_marker_missing: the ACP turn can
+                # end right after the adapter persisted the wait, and that must
+                # surface as exactly one input-required notice, never as a task
+                # failure.
+                poll_approval_request = poll.result.get("approval_request")
+                arbitration_session = (
+                    str(
+                        (poll.result.get("execution_session") or {}).get("session_id")
+                        or ""
+                    ).strip()
+                    if isinstance(poll.result.get("execution_session"), dict)
+                    else ""
+                )
+                if (
+                    args.executor == "hermes"
+                    and _arbitrate_waiting_task_elevation(
+                        service,
+                        task.id,
+                        executor_run_id=start.run_id,
+                        poll_status=poll.status,
+                        approval_request=(
+                            poll_approval_request
+                            if isinstance(poll_approval_request, dict)
+                            else None
+                        ),
+                        notified_request_ids=notified_approval_requests,
+                        config_path=getattr(args, "config", None),
+                        interval_s=getattr(args, "interval", 2),
+                        session_id=arbitration_session,
+                    )
+                ):
+                    # The original ACP turn ended while its v3 elevation waits.
+                    # This worker is done: approval dispatches exactly one full
+                    # continuation, deny terminates.  Never finalize here.
+                    return 0
 
                 execution_session = poll.result.get("execution_session")
                 session_receipt_required = (
@@ -2744,6 +2789,134 @@ def _request_task_list_refresh_for_service(service: TaskService) -> None:
     if bool(getattr(service, "_runner_worker", False)):
         return
     _request_task_list_refresh(service.board_root)
+
+
+def _waiting_task_elevation_input(
+    service: TaskService,
+    task_id: str,
+    *,
+    executor_run_id: str,
+    session_id: str = "",
+    approval_request: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Return the durably waiting v3 task-elevation input for one run.
+
+    TaskService is the only authority for a v3 contained-full elevation.  A
+    Hermes terminal-like poll is never proof that the task finished: the ACP
+    turn can end (transport close, stopReason, empty final text, no callback)
+    right after the adapter persisted one waiting elevation input.  This re-read
+    proves the wait is real and that it is bound to the exact
+    task/executor-run/official-session/request identity before the worker
+    treats it as the reason the run ended.
+    """
+    try:
+        persisted = service.get_task(task_id)
+    except ABCError:
+        return None
+    if str(persisted.status or "") != "input_required":
+        return None
+    waiting = (persisted.extensions or {}).get("agentbc.input")
+    if not isinstance(waiting, dict) or waiting.get("status") != "waiting":
+        return None
+    if int(waiting.get("approval_version") or 1) != 3:
+        return None
+    if waiting.get("scope") != "task_elevation":
+        return None
+    if waiting.get("elevation_mode") != PERMISSION_ELEVATION_MODE:
+        return None
+    if not str(waiting.get("request_id") or "").strip():
+        return None
+    # Binding identity: the waiting input must belong to the run that just
+    # ended.  A different run's wait is someone else's business.
+    persisted_run = str(waiting.get("executor_run_id") or "").strip()
+    if persisted_run and persisted_run != str(executor_run_id or "").strip():
+        return None
+    # Binding identity: the official execution session must agree when both
+    # sides declare one.  A mismatch means the wait predates this run.
+    persisted_session = str(waiting.get("session_id") or "").strip()
+    if (
+        persisted_session
+        and session_id
+        and persisted_session != str(session_id).strip()
+    ):
+        return None
+    request = approval_request if isinstance(approval_request, dict) else None
+    if request is not None:
+        request_id = str(request.get("request_id") or "").strip()
+        if request_id and request_id != str(waiting.get("request_id") or "").strip():
+            return None
+        request_fingerprint = str(request.get("request_fingerprint") or "").strip()
+        if (
+            request_fingerprint
+            and request_fingerprint
+            != str(waiting.get("request_fingerprint") or "").strip()
+        ):
+            return None
+    return waiting
+
+
+def _arbitrate_waiting_task_elevation(
+    service: TaskService,
+    task_id: str,
+    *,
+    executor_run_id: str,
+    poll_status: str,
+    approval_request: dict[str, Any] | None = None,
+    notified_request_ids: set[str] | None = None,
+    config_path: str | Path | None = None,
+    interval_s: float = 2.0,
+    session_id: str = "",
+) -> bool:
+    """Make a persisted waiting input authoritative over a terminal poll.
+
+    Called after every Hermes terminal-like poll and before generic callback
+    validation or failure finalization.  When the exact
+    task/run/session/request identity has a durably waiting v3 elevation input,
+    this delivers exactly one input-required notification, asks the UI to
+    refresh, clears only the stale execution-run pointers needed for the planned
+    continuation, and reports that the worker must end successfully.  The task
+    is never marked failed, no terminal-failure notification is written and no
+    terminal cleanup runs while the wait is live.
+
+    Returns ``True`` when the waiting input arbitrates the run end.
+    """
+    if poll_status not in TERMINAL_POLL_STATUSES:
+        return False
+    waiting = _waiting_task_elevation_input(
+        service,
+        task_id,
+        executor_run_id=executor_run_id,
+        session_id=session_id,
+        approval_request=approval_request,
+    )
+    if waiting is None:
+        return False
+    request_id = str(waiting.get("request_id") or "").strip()
+    already_notified = (
+        notified_request_ids is not None and request_id in notified_request_ids
+    )
+    if not already_notified:
+        # ``notify_input_required`` reserves the single v3 notice atomically, so
+        # a duplicate poll, a restart/replay or a racing worker can only ever
+        # deliver one notification for this waiting input.
+        _notify_input_required(
+            service,
+            task_id,
+            config_path=config_path,
+            interval_s=interval_s,
+        )
+        if notified_request_ids is not None:
+            notified_request_ids.add(request_id)
+    _request_task_list_refresh_for_service(service)
+    try:
+        service.clear_execution_run_references(task_id)
+    except (ABCError, OSError):
+        # Runner reconciliation shares the same v3 waiting predicate and will
+        # clear the stale worker pointers without converting this expected
+        # worker exit into a recovery condition.
+        pass
+    print(f"input_required: {task_id} request={request_id}")
+    return True
 
 
 def _build_notification_payload(

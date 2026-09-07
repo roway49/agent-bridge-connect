@@ -387,12 +387,15 @@ class HermesExactAdapterTests(unittest.TestCase):
             ]
         )
         self.assertEqual(
-            [o["native_option_id"] for o in options],
+            [option.native_option_id for option in options],
             ["opt-allow-once", "opt-session", "opt-reject"],
         )
-        self.assertEqual(options[0]["kind"], "once")
-        self.assertEqual(options[1]["kind"], "session")
-        self.assertEqual(options[2]["kind"], "deny")
+        # The 1.04A dialog role comes from the closed option-id table, never
+        # from a guessed permission category; the native kind stays verbatim.
+        self.assertEqual(
+            [(option.role, option.native_kind) for option in options],
+            [("once", "allow_once"), ("other", "allow_session"), ("deny", "reject_once")],
+        )
 
     def test_exact_optionid_returned_verbatim(self) -> None:
         from agent_bridge_connect.hermes_acp import approval_outcome_for_decision
@@ -400,7 +403,13 @@ class HermesExactAdapterTests(unittest.TestCase):
         outcome = approval_outcome_for_decision(
             {"native_option_id": "opt-allow-once-42"}
         )
-        self.assertEqual(outcome, {"outcome": {"optionId": "opt-allow-once-42"}})
+        # PERM-104-002 v2: the canonical ACP ``SelectedPermissionOutcome``
+        # carries the ``selected`` discriminator.  A bare
+        # ``{"outcome": {"optionId": ...}}`` is not parseable by the agent.
+        self.assertEqual(
+            outcome,
+            {"outcome": {"outcome": "selected", "optionId": "opt-allow-once-42"}},
+        )
         # Order/label independence: the optionId is the identity.
         weird = approval_outcome_for_decision(
             {"outcome": {"optionId": "weird-id-Ω"}}
@@ -408,7 +417,7 @@ class HermesExactAdapterTests(unittest.TestCase):
         self.assertEqual(weird["outcome"]["optionId"], "weird-id-Ω")
 
     def test_no_allow_once_requirement(self) -> None:
-        from agent_bridge_connect.hermes_acp import validate_permission_request
+        from agent_bridge_connect.hermes_acp import decode_permission_request
 
         frame = {
             "jsonrpc": "2.0",
@@ -416,20 +425,24 @@ class HermesExactAdapterTests(unittest.TestCase):
             "method": "session/request_permission",
             "params": {
                 "sessionId": "sess-7",
-                "toolCall": {"id": "tc-1", "title": "terminal"},
+                "toolCall": {"toolCallId": "tc-1", "title": "terminal"},
                 "options": [
                     {"optionId": "only-session", "kind": "allow_session", "name": "Session"},
                 ],
             },
         }
-        request_id, tool_call = validate_permission_request(frame, session_id="sess-7")
-        self.assertEqual(request_id, 5)
-        self.assertEqual(tool_call["id"], "tc-1")
+        request = decode_permission_request(frame, session_id="sess-7")
+        self.assertEqual(request.request_id, 5)
+        self.assertEqual(request.tool_call.tool_call_id, "tc-1")
+        self.assertEqual(
+            request.offered_option_ids(),
+            ("only-session",),
+        )
 
     def test_empty_options_fail_closed(self) -> None:
         from agent_bridge_connect.hermes_acp import (
             HermesAcpError,
-            validate_permission_request,
+            decode_permission_request,
         )
 
         frame = {
@@ -438,12 +451,12 @@ class HermesExactAdapterTests(unittest.TestCase):
             "method": "session/request_permission",
             "params": {
                 "sessionId": "sess-7",
-                "toolCall": {"id": "tc-1"},
+                "toolCall": {"toolCallId": "tc-1"},
                 "options": [],
             },
         }
         with self.assertRaises(HermesAcpError):
-            validate_permission_request(frame, session_id="sess-7")
+            decode_permission_request(frame, session_id="sess-7")
 
     def test_hermes_choice_builder(self) -> None:
         choices = hermes_offered_choices(
