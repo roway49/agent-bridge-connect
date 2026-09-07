@@ -38,9 +38,8 @@ def resolve_effective_permission(
 ) -> dict[str, Any]:
     """Resolve the base mode or approved task elevation.
 
-    Plan D keeps historical one-shot grants readable but inert in production.
-    Native full is selected only by the frozen task permission or the v3
-    task-elevation receipt.
+    Historical one-shot grants are inert in every state. Runner resolves its
+    authoritative persisted packet before launching the native executor.
     """
     if not isinstance(task, dict):
         raise ABCError(
@@ -67,7 +66,9 @@ def resolve_effective_permission(
             "elevation_id": str(elevation.get("elevation_id") or ""),
             "elevation_state": str(elevation["state"].get("status") or ""),
         }
-    # Legacy permission grants remain dual-read/report-compatible only.
+    # Plan D hard-retires one-shot permission grants from production
+    # resolution.  Historical grant envelopes remain readable by report and
+    # migration code, but they can no longer alter a run's permission.
     return dict(base)
 
 

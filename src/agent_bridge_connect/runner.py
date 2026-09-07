@@ -18,14 +18,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .effective_permissions import (
-    is_temporary_permission,
-    resolve_effective_permission,
-)
+from .effective_permissions import is_temporary_permission, resolve_effective_permission
 from .control import ApprovalControlPlane, ControlPlaneError, normalize_decision
 from .claude_path_capability import (
     assert_claude_path_capability_command,
-    claude_ephemeral_path_capability,
 )
 from .execution_policy import (
     RESOURCE_EXTENSION_KEY,
@@ -43,13 +39,8 @@ from .permission_modes import (
     permission_record_from_extensions,
     validate_permission_command,
 )
-from .permission_grants import (
-    PERMISSION_GRANT_EXTENSION_KEY,
-)
-from .permission_elevation import (
-    PERMISSION_ELEVATION_MODE,
-    permission_elevation_from_extensions,
-)
+from .permission_grants import PERMISSION_GRANT_EXTENSION_KEY
+from .permission_elevation import permission_elevation_from_extensions
 from .permission_registry import TRANSPORT_HERMES_ACP
 from .protocol import ABCError
 from .permission_transport import (
@@ -58,13 +49,6 @@ from .permission_transport import (
     select_claude_control_path,
 )
 from .session import SessionRecoveryRequired, control_root_for_task
-from .seatbelt import (
-    canonical_task_files,
-    canonical_task_roots,
-    preflight_host_containment,
-    task_temp_root,
-    validate_linked_worktree,
-)
 
 
 MAX_REQUEST_BYTES = 1024 * 1024
@@ -103,33 +87,6 @@ PHASE6_AUTHORIZATION_EXTENSION_KEYS = (
 _EXECUTOR_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,511}$")
 _RUNNER_IPC_CHANNEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 CLAUDE_SDK_CONTROL_AUTHORIZATION = "claude_sdk_control_v1"
-
-
-def _resume_fact_from_task(
-    task: dict[str, Any] | None,
-    expected_run_id: str,
-) -> dict[str, Any] | None:
-    """Return the adapter-owned resume fact carried into Runner authorization."""
-    if not isinstance(task, dict) or "_agentbc_resume_fact" not in task:
-        return None
-    value = task.get("_agentbc_resume_fact")
-    if not isinstance(value, dict):
-        raise RunnerError("runner_session_resume_fact_invalid: resume fact is not an object")
-    run_id = str(value.get("run_id") or "").strip()
-    if not run_id or (expected_run_id and run_id != str(expected_run_id).strip()):
-        raise RunnerError(
-            "runner_session_resume_fact_invalid: resume fact run ID does not match the authorized run"
-        )
-    if type(value.get("resumed")) is not bool:
-        raise RunnerError(
-            "runner_session_resume_fact_invalid: resume fact must contain a boolean resumed value"
-        )
-    session_id = str(value.get("session_id") or "").strip()
-    if value["resumed"] and not session_id:
-        raise RunnerError(
-            "runner_session_resume_fact_invalid: a resumed run requires its official session ID"
-        )
-    return {"run_id": run_id, "resumed": value["resumed"], "session_id": session_id}
 
 _EXECUTOR_COMMAND_RULES: dict[str, dict[str, Any]] = {
     "hermes": {
@@ -1559,116 +1516,6 @@ class RunnerState:
             self._phase2_append_audit(board, task_id, executor, "fail", reason)
             raise RunnerError(reason)
 
-    def _dispatch_native_full_worker(
-        self,
-        *,
-        task_id: str,
-        executor: str,
-        board: Path,
-        config: Path | None,
-        interval_s: float,
-        monitor: bool,
-        workspace: Path,
-        worker_run_id: str,
-        service: Any,
-        task_store: Any,
-    ) -> dict[str, Any]:
-        """Launch Plan D full directly in the executor's native mode."""
-        command = [
-            sys.executable,
-            "-m",
-            "agent_bridge_connect.cli",
-            "worker",
-            "run",
-            "--root",
-            str(board),
-            "--executor",
-            executor,
-            "--once",
-            "--interval",
-            str(max(interval_s, 0.1)),
-            "--task-id",
-            task_id,
-            "--runner-authorize",
-        ]
-        if config is not None:
-            command.extend(["--config", str(config)])
-        try:
-            # Persist the worker identity before process creation.  This
-            # durable starting marker closes the response/restart race: a
-            # concurrent or restarted Runner sees the same in-flight worker
-            # and returns it instead of creating another continuation.
-            service.update_execution_metadata(
-                task_id,
-                {
-                    "worker_run_id": worker_run_id,
-                    "dispatch_status": "starting",
-                },
-            )
-            result = self._spawn_process(
-                f"worker:{executor}",
-                command,
-                workspace,
-                "runner-worker",
-                run_id=worker_run_id,
-                containment=None,
-            )
-        except Exception as exc:
-            self._reconcile_worker_start_failure(
-                board, task_id, executor, worker_run_id, str(exc)
-            )
-            raise
-        try:
-            service.update_execution_metadata(
-                task_id,
-                {
-                    "worker_run_id": result["run_id"],
-                    "worker_pid": result["pid"],
-                    "dispatch_status": "accepted",
-                },
-            )
-            task_store.append_event(
-                task_id,
-                {
-                    "event_type": "worker_dispatched",
-                    "task_id": task_id,
-                    "executor_id": executor,
-                    "worker_run_id": result["run_id"],
-                    "created_at": _utc_now(),
-                },
-            )
-            monitor_result = (
-                self._open_task_monitor(task_id, board)
-                if monitor
-                else {"status": "disabled"}
-            )
-            service.update_execution_metadata(
-                task_id,
-                {
-                    "monitor_status": monitor_result["status"],
-                    "monitor_message": monitor_result.get("message"),
-                },
-            )
-        except Exception as exc:
-            try:
-                self.cancel(result["run_id"])
-            except RunnerError:
-                pass
-            self._reconcile_worker_start_failure(
-                board,
-                task_id,
-                executor,
-                worker_run_id,
-                f"worker_activation_failed: {exc}",
-            )
-            raise RunnerError(f"worker_activation_failed: {exc}") from exc
-        return {
-            **result,
-            "task_id": task_id,
-            "dispatch_status": "accepted",
-            "monitor_status": monitor_result["status"],
-        }
-
     def dispatch_worker(
         self,
         task_id: str,
@@ -1713,10 +1560,10 @@ class RunnerState:
             )
         )
         if not dispatch_is_full:
-            task = self._enforce_phase2_dispatch_policy(service, task, executor, board)
+            task = self._enforce_phase2_dispatch_policy(
+                service, task, executor, board
+            )
             task_model = service.get_task(task_id)
-        if not dispatch_is_full:
-            self._validate_task_path_plan(task)
         if task.get("assignee") != executor:
             raise RunnerError(f"task {task_id} is not assigned to {executor}")
         execution = dict((task.get("extensions") or {}).get("agentbc.execution") or {})
@@ -1739,30 +1586,6 @@ class RunnerState:
             if isinstance(elevation, dict)
             else ""
         )
-        if (
-            isinstance(elevation, dict)
-            and elevation_status in {"approved", "active", "verified"}
-            and (
-                elevation["continuation"].get("count") == 1
-                or (
-                    str(execution.get("worker_run_id") or "").strip()
-                    and str(execution.get("dispatch_status") or "").strip()
-                    in {"starting", "accepted"}
-                )
-            )
-        ):
-            # The durable elevation cardinality is the continuation mutex.
-            # A retried response or a restarted Runner may observe the same
-            # approved continuation, but it must never launch a second worker.
-            existing_worker_run_id = str(execution.get("worker_run_id") or "").strip()
-            return {
-                "ok": True,
-                "task_id": task_id,
-                "run_id": existing_worker_run_id,
-                "dispatch_status": "already_accepted",
-                "monitor_status": str(execution.get("monitor_status") or "unknown"),
-                "idempotent": True,
-            }
         if elevation_status in {"approved", "active", "verified"}:
             try:
                 permission = resolve_effective_permission(
@@ -1785,21 +1608,26 @@ class RunnerState:
                 task_model.extensions,
                 allow_legacy=False,
             )
-        try:
-            assert_executor_permission_supported(
-                executor,
-                permission["effective_mode"],
-                self.allowed_executables.get(executor),
-            )
-        except ABCError as exc:
-            self._reconcile_worker_start_failure(
-                board,
-                task_id,
-                executor,
-                worker_run_id,
-                f"{exc.code}: {exc}",
-            )
-            raise RunnerError(f"{exc.code}: {exc}") from exc
+        # Safe/inherit retain the existing PathPlan checks.  Full deliberately
+        # does not use PathPlan as an execution sandbox or authorization gate.
+        if permission["effective_mode"] != "full":
+            self._validate_task_path_plan(task)
+        if permission["effective_mode"] != "full":
+            try:
+                assert_executor_permission_supported(
+                    executor,
+                    permission["effective_mode"],
+                    self.allowed_executables.get(executor),
+                )
+            except ABCError as exc:
+                self._reconcile_worker_start_failure(
+                    board,
+                    task_id,
+                    executor,
+                    worker_run_id,
+                    f"{exc.code}: {exc}",
+                )
+                raise RunnerError(f"{exc.code}: {exc}") from exc
         TaskStore(board).append_event(
             task_id,
             {
@@ -1812,138 +1640,11 @@ class RunnerState:
                 "created_at": _utc_now(),
             },
         )
-        if permission["effective_mode"] == "full":
-            return self._dispatch_native_full_worker(
-                task_id=task_id,
-                executor=executor,
-                board=board,
-                config=config,
-                interval_s=interval_s,
-                monitor=monitor,
-                workspace=workspace,
-                worker_run_id=worker_run_id,
-                service=service,
-                task_store=TaskStore(board),
-            )
-        # Historical compatibility branch for retired pre-Plan-D full
-        # records.  Current Plan D full returns through the native worker
-        # path above and never enters this permission-runtime/Seatbelt code.
-        #
-        # Review fixes (E52M-002):
-        # * explicit full, temporary (one-shot grant) full and inherited full
-        #   get identical pre-start authorization.  The three sources differ
-        #   only in ``selection_source``.
-        # * ``chain_head_id`` is read from ``agentbc.lineage`` (falling back
-        #   to the task id itself only when the extension is absent).
-        # * the lifecycle is wired for production: the record is persisted
-        #   as ``prepared``, moved to ``authorized`` once the grant (if any)
-        #   has been consumed and the worker run is bound, ``activated``
-        #   only after the Runner-authorized process is actually spawned,
-        #   and verified by the worker when its structured run completes.
-        #   Any failure before activation moves the record to ``blocked``
-        #   with a stable code - a prepared record can never activate.
+        # Plan D: full is the executor's native strongest noninteractive mode.
+        # There is no AgentBC Seatbelt, runtime-capability receipt, grant
+        # consumption, PathPlan capability expansion, or version preflight on
+        # this production path.  Old records remain readable for reports only.
         containment: dict[str, Any] | None = None
-        runtime_record: dict[str, Any] | None = None
-        runtime_authorized: dict[str, Any] | None = None
-        profile_digest = ""
-        from .permission_runtime import (
-            PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE,
-            PERMISSION_RUNTIME_EXTENSION_KEY,
-            activate_permission_runtime_record,
-            authorize_permission_runtime_record,
-            block_permission_runtime_record,
-            build_permission_runtime_record,
-            host_profile_digest as host_profile_digest_fn,
-            path_plan_digest,
-            runtime_source_for_permission,
-        )
-        if permission["effective_mode"] == "full":
-            source: str | None = None
-            try:
-                source = runtime_source_for_permission(permission)
-                if source is None:
-                    raise ABCError(
-                        PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE,
-                        "concrete full requires a runtime capability source",
-                    )
-                workspace_values = dict(task.get("workspace") or {})
-                workspace_values.setdefault(
-                    "control_dir",
-                    str(control_root_for_task(task_id, board_root=board)),
-                )
-                lineage = (
-                    task.get("lineage")
-                    if isinstance(task.get("lineage"), dict)
-                    else (task.get("extensions") or {}).get("agentbc.lineage")
-                    if isinstance(
-                        (task.get("extensions") or {}).get("agentbc.lineage"), dict
-                    )
-                    else {}
-                )
-                chain_head_id = str(
-                    lineage.get("chain_root_task_id") or task_id
-                ).strip()
-                plan_digest = path_plan_digest(workspace_values)
-                profile_digest = host_profile_digest_fn()
-                with self.lock:
-                    real_roots = canonical_task_roots(workspace_values)
-                    linked_worktree = validate_linked_worktree(workspace)
-                    # PERM-104-002 review fix (E52M-003): every concrete full
-                    # Historical compatibility behavior for retired
-                    # containment records; current Plan D full returned above.
-                    preflight_host_containment(require_expansion=True)
-                    agentbc_root = str(
-                        (workspace_values or {}).get("agentbc_root") or ""
-                    ).strip()
-                    task_temp = task_temp_root(
-                        (
-                            Path(agentbc_root).expanduser() / "record"
-                            if agentbc_root
-                            else self.state_root / "task-temp"
-                        ),
-                        task_id,
-                    )
-                    containment = {
-                        "task_id": task_id,
-                        "board_root": str(board),
-                        # A concrete-full worker receives one private Runner
-                        # IPC channel.  This is required for it to submit the
-                        # authorized Executor run without gaining write access
-                        # to another task's requests or responses.
-                        "runner_ipc_channel": worker_run_id,
-                        "writable_roots": [str(root) for root in real_roots]
-                        + [str(task_temp)],
-                        "writable_files": [
-                            str(path) for path in canonical_task_files(workspace_values)
-                        ],
-                        "task_temp_root": str(task_temp),
-                        "linked_worktree": linked_worktree,
-                    }
-                runtime_record = build_permission_runtime_record(
-                    task_id=task_id,
-                    chain_head_id=chain_head_id,
-                    executor=executor,
-                    executor_run_id=worker_run_id,
-                    session_id="",
-                    permission_source=source,
-                    path_plan_digest=plan_digest,
-                    host_profile_digest=profile_digest,
-                )
-                task["extensions"] = dict(task.get("extensions") or {})
-                task["extensions"][PERMISSION_RUNTIME_EXTENSION_KEY] = runtime_record
-                TaskStore(board).write_task(task_id, task)
-            except (ABCError, OSError) as exc:
-                error_code = str(
-                    getattr(exc, "code", PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE)
-                )
-                self._reconcile_worker_start_failure(
-                    board,
-                    task_id,
-                    executor,
-                    worker_run_id,
-                    f"{error_code}: {exc}",
-                )
-                raise RunnerError(f"{error_code}: {exc}") from exc
         command = [
             sys.executable,
             "-m",
@@ -1963,43 +1664,6 @@ class RunnerState:
         ]
         if config is not None:
             command.extend(["--config", str(config)])
-        # The record stays ``prepared`` through process spawn; ``authorized``
-        # requires the consumed one-shot grant (temporary full) or the frozen
-        # task base (explicit/inherited full) and the live worker run id.
-        if runtime_record is not None:
-            if source == "one_shot_permission_grant":
-                binding = permission.get("binding")
-                binding_map = binding if isinstance(binding, dict) else {}
-                grant_id = str(
-                    binding_map.get("grant_id")
-                    or (permission.get("grant_id") if isinstance(permission, dict) else "")
-                    or ""
-                ).strip()
-            else:
-                grant_id = ""
-            try:
-                runtime_authorized = authorize_permission_runtime_record(
-                    runtime_record,
-                    decision="approve",
-                    request_id=f"runner-dispatch-{worker_run_id}",
-                    grant_id=grant_id,
-                )
-                task["extensions"][PERMISSION_RUNTIME_EXTENSION_KEY] = (
-                    runtime_authorized
-                )
-                TaskStore(board).write_task(task_id, task)
-            except (ABCError, OSError) as exc:
-                error_code = str(
-                    getattr(exc, "code", PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE)
-                )
-                self._reconcile_worker_start_failure(
-                    board,
-                    task_id,
-                    executor,
-                    worker_run_id,
-                    f"{error_code}: {exc}",
-                )
-                raise RunnerError(f"{error_code}: {exc}") from exc
         try:
             result = self._spawn_process(
                 f"worker:{executor}",
@@ -2010,19 +1674,6 @@ class RunnerState:
                 containment=containment,
             )
         except Exception as exc:
-            # A worker that did not spawn never activated its full mapping.
-            # Preserve that lifecycle fact without turning it into an approval.
-            if runtime_authorized is not None:
-                try:
-                    blocked = block_permission_runtime_record(
-                        runtime_authorized,
-                        code=PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE,
-                        domain="agentbc_policy",
-                    )
-                    task["extensions"][PERMISSION_RUNTIME_EXTENSION_KEY] = blocked
-                    TaskStore(board).write_task(task_id, task)
-                except ABCError:
-                    pass
             self._reconcile_worker_start_failure(
                 board,
                 task_id,
@@ -2031,45 +1682,6 @@ class RunnerState:
                 str(exc),
             )
             raise
-        if runtime_authorized is not None:
-            try:
-                # ``activated`` only after the Runner-authorized contained
-                # worker exists.
-                activated = activate_permission_runtime_record(
-                    runtime_authorized,
-                    host_profile_digest=profile_digest,
-                )
-                task["extensions"][PERMISSION_RUNTIME_EXTENSION_KEY] = activated
-                TaskStore(board).write_task(task_id, task)
-            except (ABCError, OSError) as exc:
-                # The process exists but its authoritative capability could
-                # not reach ``activated``.  It must not continue outside the
-                # runtime receipt lifecycle or survive as an orphan worker.
-                try:
-                    self.cancel(result["run_id"])
-                except RunnerError:
-                    pass
-                try:
-                    blocked = block_permission_runtime_record(
-                        runtime_authorized,
-                        code=PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE,
-                        domain="host_containment",
-                    )
-                    task["extensions"][PERMISSION_RUNTIME_EXTENSION_KEY] = blocked
-                    TaskStore(board).write_task(task_id, task)
-                except ABCError:
-                    pass
-                error_code = str(
-                    getattr(exc, "code", PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE)
-                )
-                self._reconcile_worker_start_failure(
-                    board,
-                    task_id,
-                    executor,
-                    worker_run_id,
-                    f"{error_code}: {exc}",
-                )
-                raise RunnerError(f"{error_code}: {exc}") from exc
         try:
             service.update_execution_metadata(
                 task_id,
@@ -2106,17 +1718,6 @@ class RunnerState:
                 self.cancel(result["run_id"])
             except RunnerError:
                 pass
-            if runtime_authorized is not None:
-                try:
-                    blocked = block_permission_runtime_record(
-                        runtime_authorized,
-                        code=PERMISSION_RUNTIME_CAPABILITY_UNAVAILABLE,
-                        domain="host_containment",
-                    )
-                    task["extensions"][PERMISSION_RUNTIME_EXTENSION_KEY] = blocked
-                    TaskStore(board).write_task(task_id, task)
-                except ABCError:
-                    pass
             self._reconcile_worker_start_failure(
                 board,
                 task_id,
@@ -2189,12 +1790,7 @@ class RunnerState:
             task_id = task_model.id
         except Exception as exc:
             raise RunnerError(f"runner task unavailable: {task_id}") from exc
-        permission = permission_record_from_extensions(
-            task.get("extensions") if isinstance(task.get("extensions"), dict) else {},
-            allow_legacy=False,
-        )
-        if permission.get("effective_mode") != "full":
-            self._validate_task_path_plan(task)
+        self._validate_task_path_plan(task)
         executor = str(task.get("assignee") or "")
         self._validate_executor_config(executor, config, loaded_config)
         if str(task.get("status") or "") in {"needs_recovery", "failed"}:
@@ -2281,9 +1877,7 @@ class RunnerState:
                 and waiting_input.get("type") == "permission"
                 and waiting_input.get("scope") == "task_elevation"
                 and int(waiting_input.get("approval_version") or 1) == 3
-                and waiting_input.get("elevation_mode")
-                in {PERMISSION_ELEVATION_MODE, "contained_full"}
-                and waiting_input.get("native_live_elevation") is not True
+                and waiting_input.get("elevation_mode") in {"full", "contained_full"}
                 and bool(str(waiting_input.get("request_id") or "").strip())
                 else None
             )
@@ -2329,7 +1923,7 @@ class RunnerState:
                     )
             except ABCError as exc:
                 raise RunnerError(f"{exc.code}: {exc}") from exc
-            if task_elevation_approval is not None:
+            if task_elevation_approval is not None and live_native_approval is None:
                 # v3 task elevation is a durable Core decision.  The original
                 # ACP worker has already ended, so never send this answer back
                 # as a native allow_once/grant response.  Approve falls through
@@ -2339,7 +1933,7 @@ class RunnerState:
                         failure = result.get("failure") or {}
                         failure_message = str(
                             failure.get("message")
-                            or "User denied native-full task elevation"
+                            or "User denied contained-full task elevation"
                         )
                         write_report_files(task_id, board)
                         notify_terminal(
@@ -2482,12 +2076,7 @@ class RunnerState:
                 return result
             task = service.get_task(task_id)
             try:
-                permission = permission_record_from_extensions(
-                    task.extensions if isinstance(task.extensions, dict) else {},
-                    allow_legacy=False,
-                )
-                if permission.get("effective_mode") != "full":
-                    self._validate_task_path_plan(task.to_dict())
+                self._validate_task_path_plan(task.to_dict())
                 dispatched = self.dispatch_worker(
                     task.id,
                     task.assignee,
@@ -2498,6 +2087,19 @@ class RunnerState:
                     resuming=True,
                 )
             except RunnerError as exc:
+                task_extensions = task.extensions if isinstance(task.extensions, dict) else {}
+                if PERMISSION_GRANT_EXTENSION_KEY in task_extensions:
+                    revoke = getattr(service, "revoke_permission_grant", None)
+                    if not callable(revoke):
+                        raise RunnerError(
+                            "permission_grant_revoke_unavailable: Core revoke helper is required"
+                        ) from exc
+                    try:
+                        revoke(task.id, "dispatch_failed")
+                    except ABCError as revoke_exc:
+                        raise RunnerError(
+                            f"{revoke_exc.code}: {revoke_exc}"
+                        ) from revoke_exc
                 service.mark_task_needs_recovery(
                     task.id,
                     "input_resume_dispatch_failed",
@@ -2604,12 +2206,7 @@ class RunnerState:
         self._validate_executor_config(target, config, service.config)
         source_id = str(request.get("source_task_id") or "")
         source = service.get_task(source_id)
-        source_permission = permission_record_from_extensions(
-            source.extensions if isinstance(source.extensions, dict) else {},
-            allow_legacy=False,
-        )
-        if source_permission.get("effective_mode") != "full":
-            self._validate_task_path_plan(source.to_dict())
+        self._validate_task_path_plan(source.to_dict())
         task = service.handoff_task(
             source_id,
             target,
@@ -2921,8 +2518,12 @@ class RunnerState:
         runner_ipc_channel = ""
         containment_lock_held = False
         if containment is not None:
-            # Historical compatibility launch for retired containment
-            # records.  Plan D native-full workers pass ``containment=None``.
+            # PERM-104-002: launch the worker inside a Runner-owned,
+            # task-scoped Seatbelt profile.  The profile is built exclusively
+            # from the frozen PathPlan plus the runner spool and this run
+            # directory; ``full`` is therefore effective only inside the
+            # frozen plan.  Missing sandbox-exec fails closed before any
+            # process starts: no dialog, no grant consumption.
             from .permission_runtime import HOST_CONTAINMENT_UNLIFTABLE
             from .seatbelt import (
                 active_seatbelt_profiles,
@@ -3194,11 +2795,6 @@ class RunnerState:
         expected = self.allowed_executables.get(executor)
         if expected is None or Path(command[0]).expanduser().resolve() != expected:
             raise RunnerError("runner executable is not allowlisted")
-        if isinstance(permission, dict) and permission.get("effective_mode") == "full":
-            # Plan D full is authorized by the persisted task identity and the
-            # executor's own native flag.  Do not re-run cwd, PathPlan,
-            # resource/session, containment, or runtime-capability gates here.
-            return
         if persisted_task is None or permission is None:
             persisted_task, permission = self._persisted_permission_authorization(
                 executor, task
@@ -3354,7 +2950,6 @@ class RunnerState:
         persisted, _base_permission = self._persisted_permission_authorization(
             executor, task
         )
-
         task_id = str(persisted.get("id") or "").strip()
         task_board = task.get("task_board")
         board_value = (
@@ -3378,12 +2973,8 @@ class RunnerState:
             elevation = permission_elevation_from_extensions(extensions)
             trusted_elevation = (
                 elevation is not None
-                and elevation["state"]["status"]
-                in {"approved", "active", "verified"}
+                and elevation["state"]["status"] in {"approved", "active", "verified"}
             )
-            # Plan D deliberately does not interpret or consume the legacy
-            # permission-grant extension.  It remains dual-read data only;
-            # native v3 authority is the sole elevation source.
             effective = resolve_effective_permission(
                 persisted,
                 executor,
@@ -3394,10 +2985,10 @@ class RunnerState:
             raise RunnerError(f"{exc.code}: {exc}") from exc
 
         if effective.get("effective_mode") == "full":
-            # Plan D full authorization stops at the persisted task identity
-            # and exact allowlisted executor.  It never consumes a legacy
-            # grant or re-runs PathPlan, runtime, containment, SDK-version,
-            # or argv permission gates.
+            # Plan D full authorization ends at executor identity.  The
+            # adapter owns its native strongest-mode argv/SDK mapping; Runner
+            # does not reinterpret cwd, PathPlan, flags, settings, versions,
+            # or host containment as a second permission system.
             if transport:
                 if (
                     executor != "claude"
@@ -3446,7 +3037,7 @@ class RunnerState:
                 command,
                 cwd,
                 persisted,
-                resume_fact=_resume_fact_from_task(task, executor_run_id),
+                executor_run_id,
             )
         except RunnerError as exc:
             self._phase2_append_audit(
@@ -3528,13 +3119,6 @@ class RunnerState:
 
         extensions = persisted_task.get("extensions")
         extensions = extensions if isinstance(extensions, dict) else {}
-        try:
-            if permission_record_from_extensions(
-                extensions, allow_legacy=False
-            ).get("effective_mode") == "full":
-                return
-        except ABCError as exc:
-            raise RunnerError(f"{exc.code}: {exc}") from exc
         session = extensions.get(SESSION_EXTENSION_KEY)
         session_errors = validate_session_snapshot(session, executor="claude")
         if session_errors:
@@ -3552,19 +3136,12 @@ class RunnerState:
                 "runner_session_argument_mismatch: SDK cwd must match the frozen project path"
             )
 
-        try:
-            capability = claude_ephemeral_path_capability(
-                persisted_task,
-                execution_root=cwd,
-            )
-        except ABCError as exc:
-            raise RunnerError(f"{exc.code}: {exc}") from exc
-        expected_settings = (
-            "" if capability is None else str(capability["settings_json"])
-        )
-        expected_dirs = (
-            [] if capability is None else list(capability["additional_dirs"])
-        )
+        # Plan D retired AgentBC-injected Claude filesystem settings and
+        # add-dir capabilities.  The SDK adapter now launches with the native
+        # permission protocol only; Runner must verify that exact empty
+        # contract rather than reconstructing the retired sandbox payload.
+        expected_settings = ""
+        expected_dirs: list[str] = []
         temporary = is_temporary_permission(permission)
         expected_mode = (
             "bypassPermissions"
@@ -3598,13 +3175,7 @@ class RunnerState:
     ) -> None:
         persisted_task, _permission = self._persisted_permission_authorization(executor, task)
         try:
-            self._validate_phase3_execution_command(
-                executor,
-                command,
-                cwd,
-                persisted_task,
-                resume_fact=_resume_fact_from_task(task, ""),
-            )
+            self._validate_phase3_execution_command(executor, command, cwd, persisted_task)
         except RunnerError as exc:
             task_id = str(persisted_task.get("id") or persisted_task.get("task_id") or "")
             task_board = task.get("task_board") if isinstance(task, dict) else None
@@ -3625,20 +3196,11 @@ class RunnerState:
         command: list[str],
         cwd: Path,
         persisted_task: dict[str, Any],
-        *,
-        resume_fact: dict[str, Any] | None = None,
+        executor_run_id: str = "",
     ) -> None:
         """Match resource/session argv to the authoritative Phase 2 snapshots."""
         extensions = persisted_task.get("extensions")
         extensions = extensions if isinstance(extensions, dict) else {}
-        # Plan D full has already been authorized by the persisted task
-        # identity and the executor-native mode.  Do not reintroduce the
-        # retired session/resource/containment/runtime second layer here.
-        try:
-            if permission_record_from_extensions(extensions).get("effective_mode") == "full":
-                return
-        except ABCError as exc:
-            raise RunnerError(f"{exc.code}: {exc}") from exc
         session = extensions.get(SESSION_EXTENSION_KEY)
         session_errors = validate_session_snapshot(session, executor=executor)
         if session_errors:
@@ -3647,26 +3209,19 @@ class RunnerState:
             )
         session_id = str(session.get("session_id") or "").strip()
         run_ids = list(session.get("run_ids") or [])
-        stored_facts = session.get("run_resume_facts")
-        if resume_fact is not None:
-            resumed = bool(resume_fact["resumed"])
-            fact_session_id = str(resume_fact.get("session_id") or "").strip()
-            if resumed and fact_session_id and session_id != fact_session_id:
-                raise RunnerError(
-                    "runner_session_argument_mismatch: pre-registration resume session does not match the frozen official session ID"
-                )
-        elif isinstance(stored_facts, dict) and run_ids:
-            latest_run_id = str(run_ids[-1] or "")
-            latest_fact = stored_facts.get(latest_run_id)
-            # A TaskService-created current run always has a fact.  Older
-            # hand-built packets may carry the optional map without the
-            # current entry; retain their historical interpretation while
-            # production adapters pass the explicit packet fact above.
-            resumed = latest_fact if type(latest_fact) is bool else bool(run_ids)
+        resume_facts = session.get("run_resume_facts")
+        if (
+            executor_run_id
+            and isinstance(resume_facts, dict)
+            and type(resume_facts.get(executor_run_id)) is bool
+        ):
+            resumed = bool(resume_facts[executor_run_id])
+        elif executor_run_id in run_ids:
+            # Compatibility for snapshots written before run_resume_facts:
+            # the first recorded run is fresh even though registration has
+            # already made run_ids non-empty.
+            resumed = run_ids.index(executor_run_id) > 0
         else:
-            # Historical hand-built packets predate the durable fact map.  New
-            # TaskService snapshots always take the branch above; retain this
-            # compatibility path only for those old packets.
             resumed = bool(run_ids)
 
         hermes_acp = (
@@ -3875,8 +3430,7 @@ class RunnerState:
             raise RunnerError(
                 "unsupported_permission_mode: stale or command-injected permission authorization"
             )
-        if persisted_permission.get("effective_mode") != "full":
-            self._validate_task_path_plan(persisted)
+        self._validate_task_path_plan(persisted)
         return persisted, persisted_permission
 
     def process_sample(self, patterns: list[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
@@ -3936,8 +3490,11 @@ class RunnerState:
         returncode = process.wait()
         stdout_file.close()
         stderr_file.close()
-        # Historical compatibility cleanup for retired containment records.
-        # Plan D native-full workers do not create a Seatbelt profile.
+        # PERM-104-002: the task-scoped Seatbelt profile outlives the worker
+        # by design only while the run is active.  Once the process exits
+        # (normally, cancelled, crashed), the Runner deletes the profile so
+        # no stale containment template, grant, worker or lock survives a
+        # crash/restart cycle.
         with self.lock:
             record = self.runs[run_id]
             record["returncode"] = returncode
@@ -4031,15 +3588,12 @@ class RunnerState:
                 and waiting_input.get("status") == "waiting"
                 and int(waiting_input.get("approval_version") or 1) == 3
                 and waiting_input.get("scope") == "task_elevation"
-                and waiting_input.get("elevation_mode")
-                in {PERMISSION_ELEVATION_MODE, "contained_full"}
-                and waiting_input.get("native_live_elevation") is not True
+                and waiting_input.get("elevation_mode") in {"full", "contained_full"}
             ):
                 # The original ACP worker is expected to exit after the v3
                 # request is durably persisted.  This is not a lost worker or
                 # a recovery condition; only its stale execution pointers are
                 # removed so one later approval can dispatch the continuation.
-                service.close_task_run_lifecycle(task_id)
                 service.clear_execution_run_references(task_id)
                 self._refresh_worker_board_index(board)
                 return
@@ -4050,8 +3604,6 @@ class RunnerState:
                 "rejected",
                 "needs_recovery",
             }:
-                service.close_task_run_lifecycle(task_id)
-                service.clear_execution_run_references(task_id)
                 self._refresh_worker_board_index(board)
                 return
             service.mark_task_needs_recovery(
@@ -4065,7 +3617,6 @@ class RunnerState:
                     "phase": "runner_worker_exit",
                 },
             )
-            service.close_task_run_lifecycle(task_id)
             service.block_permission_runtime_after_failure(task_id)
             service.clear_execution_run_references(task_id)
             self._invalidate_native_request_after_worker_exit(

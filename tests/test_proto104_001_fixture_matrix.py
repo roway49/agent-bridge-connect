@@ -36,8 +36,6 @@ from agent_bridge_connect.codex_app_server import (
     CODEX_APP_SERVER_COLLABORATION_LIFECYCLE,
     CODEX_APP_SERVER_CLIENT_METHODS,
     CODEX_APP_SERVER_DESKTOP_VISIBILITY_GROUP,
-    CODEX_APP_SERVER_MAX_VERSION,
-    CODEX_APP_SERVER_MIN_VERSION,
     CODEX_APP_SERVER_NOTIFICATIONS,
     CODEX_APP_SERVER_REQUEST_METHODS,
     verify_capability_group,
@@ -159,16 +157,10 @@ class ManifestIntegrityTests(unittest.TestCase):
 class ProductionBoundAgreementTests(unittest.TestCase):
     """The manifest may only describe bounds that production actually enforces."""
 
-    def test_codex_app_server_bounds_agree(self) -> None:
+    def test_codex_app_server_production_uses_protocol_detection(self) -> None:
         block = load_manifest()["executors"]["codex"]["production"]
-        self.assertEqual(
-            parse_version(block["app_server_bounds"]["min_inclusive"]),
-            CODEX_APP_SERVER_MIN_VERSION,
-        )
-        self.assertEqual(
-            parse_version(block["app_server_bounds"]["max_inclusive"]),
-            CODEX_APP_SERVER_MAX_VERSION,
-        )
+        self.assertEqual(block["app_server_support"], "protocol_surface")
+        self.assertNotIn("app_server_bounds", block)
         self.assertEqual(block["frozen_cli_version"], _CODEX_FROZEN_VERSION)
 
     def test_claude_path_capability_bounds_agree(self) -> None:

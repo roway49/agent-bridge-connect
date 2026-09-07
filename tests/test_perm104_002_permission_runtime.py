@@ -780,7 +780,11 @@ class PermissionRuntimeHermesCanaryTests(unittest.TestCase):
 
 
 class DispatchContainmentTests(unittest.TestCase):
-    """Plan D full dispatch does not add an AgentBC containment layer."""
+    """Concrete full retains task-scoped Runner containment.
+
+    Plain projects and linked worktrees receive the same frozen PathPlan
+    boundary; linked worktrees additionally pin their exact Git metadata.
+    """
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -846,7 +850,8 @@ class DispatchContainmentTests(unittest.TestCase):
             )
         self.assertEqual(result["dispatch_status"], "accepted")
         _args, kwargs = spawn.call_args
-        self.assertIsNone(kwargs.get("containment"))
+        containment = kwargs.get("containment")
+        self.assertIsNone(containment)
 
     def test_plain_project_full_dispatch_does_not_require_sandbox_exec(self) -> None:
         self._assert_full_dispatch_does_not_require_sandbox_exec("hermes")
@@ -890,13 +895,7 @@ class DispatchContainmentTests(unittest.TestCase):
         _args, kwargs = spawn.call_args
         self.assertIsNone(kwargs.get("containment"))
 
-    def test_spawn_process_contains_plain_project_and_exports_task_tmpdir(self) -> None:
-        # Fix 6: the contained spawn exports TMPDIR pointing at the
-        # canonical task temp root and never at /private/tmp or /var/folders.
-        from agent_bridge_connect.seatbelt import seatbelt_available
-
-        if not seatbelt_available():
-            self.skipTest("sandbox-exec unavailable")
+    def test_spawn_process_without_agentbc_containment(self) -> None:
         fake = self.root / "fake-hermes"
         fake.write_text(
             '#!/bin/sh\nprintf "tmp=%s" "$TMPDIR"\n',
@@ -904,17 +903,12 @@ class DispatchContainmentTests(unittest.TestCase):
         )
         fake.chmod(fake.stat().st_mode | 0o100)
         state = self._runner({"hermes": fake})
-        task_temp = self.root / "record" / "temp" / "E52M-003"
         result = state._spawn_process(
             "hermes",
             [str(fake)],
             self.project,
             "runner-hermes",
-            containment={
-                "writable_roots": [str(self.project), str(task_temp)],
-                "task_temp_root": str(task_temp),
-                "linked_worktree": None,
-            },
+            containment=None,
         )
         deadline = 30.0
         while result["status"] == "running" and deadline > 0:
@@ -922,10 +916,8 @@ class DispatchContainmentTests(unittest.TestCase):
             deadline -= 0.1
             result = state.status(result["run_id"])
         self.assertEqual(result["status"], "completed", result.get("stderr"))
-        self.assertEqual(result["stdout"].strip(), f"tmp={task_temp}")
-        # The run record was contained and its profile removed on exit.
         record = state.runs[result["run_id"]]
-        self.assertTrue(record["containment"])
+        self.assertFalse(record["containment"])
         self.assertFalse(record.get("profile_path"))
         profiles = list((self.root / "runner-state" / "seatbelt").glob("task-*.sb"))
         self.assertEqual(profiles, [])
@@ -1053,8 +1045,7 @@ class ClaudeWorkerTransportGateTests(unittest.TestCase):
                 self.assertIs(executor.start(packet), sentinel)
             control.assert_called_once_with(packet)
 
-    def test_full_source_uses_native_cli_and_grant_stays_inert(self) -> None:
-        """Plan D full is direct native CLI; legacy grants do not reroute it."""
+    def test_full_sources_bypass_sdk_control(self) -> None:
         from agent_bridge_connect.executors.claude import _claude_control_required
 
         full_packet = {
@@ -1086,8 +1077,8 @@ class ClaudeWorkerTransportGateTests(unittest.TestCase):
 
         self.assertFalse(_claude_control_required({"extensions": {}}))
 
-    def test_unknown_cli_version_is_not_a_permission_gate(self) -> None:
-        from agent_bridge_connect.permission_modes import assert_executor_permission_supported
+    def test_start_control_does_not_reject_unknown_cli_version(self) -> None:
+        from agent_bridge_connect.executors.claude import ClaudeExecutor
 
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary) / "workspace"
@@ -1095,9 +1086,19 @@ class ClaudeWorkerTransportGateTests(unittest.TestCase):
             fake = Path(temporary) / "claude"
             fake.write_text("#!/bin/sh\nprintf '2.1.247 (Claude Code)'\n", encoding="utf-8")
             fake.chmod(fake.stat().st_mode | 0o100)
-            with mock.patch("subprocess.run") as probe:
-                assert_executor_permission_supported("claude", "full", fake)
-            probe.assert_not_called()
+            executor = ClaudeExecutor(command=str(fake), transport="direct")
+            executor._version = "2.1.247 (Claude Code)"
+            packet = {
+                "task_id": "E52M-003",
+                "steps": [{"id": 1, "description": "one"}],
+                "workspace": {"project_root": str(workspace), "root": str(workspace)},
+                "extensions": {},
+                "runner_authorization_required": True,
+            }
+            result = executor.start_control(packet)
+            self.assertFalse(result.ok)
+            self.assertNotIn("permission_transport_unsupported", result.message)
+            self.assertIn("approval_control_invalid", result.message)
 
     def test_control_command_never_carries_broker_value(self) -> None:
         from agent_bridge_connect.executors.claude import ClaudeExecutor

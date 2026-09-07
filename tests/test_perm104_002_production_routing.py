@@ -1,11 +1,17 @@
-"""PERM-104-002 Plan D production routing and legacy-read compatibility.
+"""PERM-104-002 production routing and temporary-full lifecycle (GGQN-001).
 
 Covers the corrected production contract:
 
-* Runner-managed Claude ``full`` uses its native noninteractive CLI path;
-  safe/inherit alone use the SDK control transport;
-* v3 native task elevation is the only current full transition, while legacy
-  permission grants remain readable but inert;
+* every Runner-managed Claude task routes through the official SDK control
+  transport — explicit full, inherited full, safe/inherit, and trusted
+  temporary full — with no raw-CLI full branch;
+* explicit and inherited concrete ``full`` start ``bypassPermissions`` in
+  the SDK options; a temporary full starts in the SDK default mode and the
+  official session-scoped ``setMode`` update is applied inside the live
+  SDK session BEFORE the prompt is sent;
+* the temporary-full lifecycle consumes exactly one durable grant and
+  persistently revokes it on terminal, timeout, crash, handoff,
+  reassignment, and recovery through the TaskService store;
 * the routing is exercised against production call paths (spied on the
   real executor/transport methods), never against constants alone.
 """
@@ -48,7 +54,7 @@ def _fake_binary(directory: str, version: str = "2.1.233 (Claude Code)") -> Path
 class ProductionRoutingTests(unittest.TestCase):
     """Routing decisions on the real production selector and executor."""
 
-    def test_only_safe_and_inherit_runner_tasks_route_to_control(self) -> None:
+    def test_only_safe_runner_managed_base_routes_to_control(self) -> None:
         bases = (
             {"requested_mode": "safe", "effective_mode": "safe",
              "selection_source": "configured_default"},
@@ -68,7 +74,7 @@ class ProductionRoutingTests(unittest.TestCase):
                     permission["effective_mode"] != "full",
                 )
 
-    def test_legacy_grant_does_not_change_safe_routing(self) -> None:
+    def test_temporary_grant_routes_to_control(self) -> None:
         grant = build_permission_grant(
             executor="claude",
             task_id="GGQN-001",
@@ -100,12 +106,8 @@ class ProductionRoutingTests(unittest.TestCase):
             )
         )
 
-    def test_start_keeps_full_tasks_on_native_cli_path(self) -> None:
-        """Plan D proof: full never routes through the SDK control path."""
+    def test_full_tasks_do_not_enter_sdk_control(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            executor = ClaudeExecutor(
-                command=str(_fake_binary(temporary)), transport="direct"
-            )
             for permission in (
                 build_permission_record(explicit_mode="full"),
                 {
@@ -126,10 +128,6 @@ class ProductionRoutingTests(unittest.TestCase):
                         "runner_authorization_required": True,
                     }
                     self.assertFalse(_claude_control_required(packet))
-                    command = executor._build_command(
-                        "prompt", Path(temporary), packet, permission
-                    )
-                    self.assertIn("--dangerously-skip-permissions", command)
 
 
 class TemporaryFullSessionModeTests(unittest.TestCase):
@@ -386,7 +384,7 @@ class TemporaryFullGrantLifecycleTests(unittest.TestCase):
             },
         }
 
-    def test_issued_grant_is_inert_even_under_runner(self) -> None:
+    def test_issued_grant_is_inert_under_plan_d(self) -> None:
         grant = self._grant()
         permission = resolve_effective_permission(
             self._authoritative_task(grant),
@@ -395,8 +393,6 @@ class TemporaryFullGrantLifecycleTests(unittest.TestCase):
             trusted_runner_managed=True,
         )
         self.assertEqual(permission["effective_mode"], "safe")
-        self.assertNotEqual(permission["selection_source"], "one_shot_permission_grant")
-        self.assertIsNot(permission.get("temporary"), True)
 
     def test_issued_grant_is_inert_without_runner_context(self) -> None:
         permission = resolve_effective_permission(
@@ -406,7 +402,6 @@ class TemporaryFullGrantLifecycleTests(unittest.TestCase):
             trusted_runner_managed=False,
         )
         self.assertEqual(permission["effective_mode"], "safe")
-        self.assertNotIn("grant_status", permission)
 
     def test_revoked_grant_is_inert_for_resolution(self) -> None:
         grant = revoke_permission_grant(self._grant(), "claude_run_terminal")

@@ -18,7 +18,6 @@ from .permission_elevation import (
     PERMISSION_ELEVATION_MODE,
 )
 from .adapters import DeliveryResult
-from .claude_elevation import CLAUDE_ELEVATION_EXTENSION_KEY
 from .protocol import ABCError
 from .execution_policy import execution_policy_view
 from .notifiers.dialog import DialogNotifier
@@ -91,29 +90,10 @@ def notify_input_required(
     payload = build_input_required_notification(service, task_id)
     live_dialog_already_reserved = False
     task_elevation_dialog_already_reserved = False
-    if payload.get("native_live_elevation") is True:
-        existing_task = service.get_task(task_id)
-        existing_extensions = (
-            existing_task.extensions
-            if isinstance(existing_task.extensions, dict)
-            else {}
-        )
-        existing_receipt = existing_extensions.get(CLAUDE_ELEVATION_EXTENSION_KEY)
-        existing_cardinality = (
-            existing_receipt.get("cardinality")
-            if isinstance(existing_receipt, dict)
-            else None
-        )
-        live_dialog_already_reserved = (
-            isinstance(existing_cardinality, dict)
-            and existing_cardinality.get("dialogs") == 1
-        )
-        service.record_claude_elevation_notification(task_id)
-    elif (
+    if (
         payload.get("input_type") == "permission"
         and int(payload.get("approval_version") or 1) == 3
-        and payload.get("elevation_mode")
-        in {PERMISSION_ELEVATION_MODE, "contained_full"}
+        and payload.get("elevation_mode") == PERMISSION_ELEVATION_MODE
     ):
         reserve = getattr(service, "reserve_task_elevation_notification", None)
         if callable(reserve):
@@ -385,19 +365,19 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
             body_lines.extend(
                 [
                     "Requested access: elevate this live Claude session to bypassPermissions.",
-                    "Approve sends one native setMode/bypassPermissions/session response for this exact blocked action.",
+                    "Approve Full sends one native setMode/bypassPermissions/session response for this exact blocked action.",
                     "The current task, RunLease, worker, and official Claude session remain unchanged.",
                     "Deny returns one native PermissionResultDeny and does not change permission mode.",
-                    "Choose Approve or Deny below.",
+                    "Choose Approve Full or Deny below; View Details does not answer the request.",
                 ]
             )
         elif is_task_elevation:
             body_lines.extend(
                 [
-                    "Requested access: full in the executor's native noninteractive mode.",
-                    "Approve Full authorizes one task-scoped native continuation.",
-                    "The approval remains effective across retry and recovery of this Task ID.",
-                    "A handoff carries only the task's inherited permission snapshot.",
+                    "Requested access: full for this Task ID.",
+                    "Approve Full restarts or updates the executor in its native strongest noninteractive mode.",
+                    "AgentBC adds no filesystem sandbox, PathPlan restriction, capability probe, or per-tool approval after elevation.",
+                    "This is the only permission dialog allowed for the task.",
                     "Deny terminates the task as failed.",
                     "Choose Approve Full or Deny below.",
                 ]

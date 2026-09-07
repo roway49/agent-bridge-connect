@@ -34,6 +34,7 @@ from agent_bridge_connect.notifications import (
     build_input_required_notification,
     notify_input_required,
 )
+from agent_bridge_connect.notifiers.dialog import DialogNotifier
 from agent_bridge_connect.permission_runtime import host_profile_digest, path_plan_digest
 from agent_bridge_connect.permission_transport import (
     claude_control_path_capability,
@@ -290,7 +291,7 @@ class ClaudeSameSessionElevationTransportTests(unittest.TestCase):
         self.assertEqual(receipt["cardinality"]["set_mode_updates"], 0)
         self.assertEqual(receipt["cardinality"]["human_decisions"], 1)
 
-    def test_replayed_or_post_activation_callback_creates_no_second_request(self) -> None:
+    def test_post_approval_callbacks_are_allowed_without_second_request(self) -> None:
         transport = self._transport()
         request_calls = mock.Mock(wraps=self.plane.request_approval)
         with mock.patch.object(self.plane, "request_approval", request_calls):
@@ -315,6 +316,16 @@ class ClaudeSameSessionElevationTransportTests(unittest.TestCase):
                     types.SimpleNamespace(tool_use_id="tool-edit-1", suggestions=[]),
                 )
             )
+            transport.capture_tool_event(
+                event="PostToolUse",
+                tool_use_id="tool-read-1",
+                tool_name="Read",
+                session_id=self.session_id,
+            )
+            self.assertEqual(
+                transport.elevation_receipt["state"],
+                CLAUDE_ELEVATION_ACTIVE,
+            )
             replay = asyncio.run(
                 transport.can_use_tool(
                     "Bash",
@@ -322,13 +333,43 @@ class ClaudeSameSessionElevationTransportTests(unittest.TestCase):
                     types.SimpleNamespace(tool_use_id="tool-bash-replay", suggestions=[]),
                 )
             )
-        self.assertEqual(second.behavior, "deny")
-        self.assertEqual(replay.behavior, "deny")
+        self.assertEqual(second.behavior, "allow")
+        self.assertEqual(replay.behavior, "allow")
+        self.assertEqual(second.updated_input["new_string"], "b")
+        self.assertEqual(replay.updated_input, {"command": "echo replay"})
+        self.assertFalse(second.updated_permissions)
+        self.assertFalse(replay.updated_permissions)
         self.assertEqual(request_calls.call_count, 1)
         receipt = transport.elevation_receipt
-        self.assertEqual(receipt["state"], CLAUDE_ELEVATION_BLOCKED)
-        self.assertEqual(receipt["error_code"], "claude_full_mode_ineffective")
-        self.assertEqual(receipt["cardinality"]["protocol_anomalies"], 1)
+        self.assertEqual(receipt["state"], CLAUDE_ELEVATION_ACTIVE)
+        self.assertEqual(receipt["error_code"], "")
+        self.assertEqual(receipt["cardinality"]["protocol_anomalies"], 0)
+
+    def test_preauthorized_full_callback_is_allowed_without_request_or_set_mode(self) -> None:
+        transport = ClaudeSDKControlTransport(
+            plane=self.plane,
+            task_id=self.task_id,
+            run_id=self.run_id,
+            session_id=self.session_id,
+            executor="claude",
+            preauthorized_full=True,
+        )
+        self.addCleanup(transport.stop)
+        request_calls = mock.Mock(wraps=self.plane.request_approval)
+        with mock.patch.object(self.plane, "request_approval", request_calls):
+            result = asyncio.run(
+                transport.can_use_tool(
+                    "Bash",
+                    {"command": "echo already-full"},
+                    types.SimpleNamespace(tool_use_id="tool-full-1", suggestions=[]),
+                )
+            )
+        self.assertEqual(result.behavior, "allow")
+        self.assertEqual(result.updated_input, {"command": "echo already-full"})
+        self.assertFalse(result.updated_permissions)
+        self.assertEqual(request_calls.call_count, 0)
+        self.assertIsNone(transport.elevation_receipt)
+        self.assertTrue(transport.status()["preauthorized_full"])
 
     def test_concurrent_callback_is_denied_without_a_second_dialog_request(self) -> None:
         transport = self._transport()
@@ -634,10 +675,10 @@ class ClaudeSameSessionElevationServiceTests(unittest.TestCase):
                 "update": dict(SDK_SESSION_MODE_UPDATE),
             },
             approval_version=3,
-            elevation_mode="contained_full",
+            elevation_mode="full",
             path_plan_digest=plan_digest,
             containment_profile_digest=profile_digest,
-            full_preflight={"ok": True, "status": "passed", "mode": "contained_full"},
+            full_preflight=None,
             native_live_elevation=True,
         )
         self.assertTrue(result["same_session"])
@@ -646,12 +687,13 @@ class ClaudeSameSessionElevationServiceTests(unittest.TestCase):
         input_request = waiting.extensions["agentbc.input"]
         self.assertTrue(input_request["native_live_elevation"])
         self.assertEqual(input_request["session_id"], self.session_id)
-        self.assertEqual(input_request["input_fingerprint"], stable_input_digest({"request_fingerprint": request_fingerprint}))
+        self.assertNotIn("input_fingerprint", input_request)
         notification = build_input_required_notification(self.service, self.task.id)
         self.assertTrue(notification["native_live_elevation"])
         self.assertIn("--approve", notification["respond_command"])
         self.assertNotIn("--approve-full", notification["respond_command"])
         self.assertIn("setMode/bypassPermissions/session", notification["message"])
+        self.assertIn("Approve Full", notification["message"])
 
         with mock.patch(
             "agent_bridge_connect.notifications.DialogNotifier.send",
@@ -667,8 +709,12 @@ class ClaudeSameSessionElevationServiceTests(unittest.TestCase):
         self.assertEqual(dialog_send.call_count, 1)
         self.assertEqual(first_notice["dialog_action"], "dismissed")
         self.assertEqual(second_notice["dialog_action"], "already_delivered")
-        receipt = self.service.get_task(self.task.id).extensions["agentbc.claude_elevation"]
-        self.assertEqual(receipt["cardinality"]["dialogs"], 1)
+        extensions = self.service.get_task(self.task.id).extensions
+        self.assertNotIn("agentbc.claude_elevation", extensions)
+        self.assertEqual(
+            extensions["agentbc.permission_elevation"]["cardinality"]["notifications"],
+            1,
+        )
 
         answered = self.service.respond_to_live_claude_elevation(
             self.task.id,
@@ -689,6 +735,61 @@ class ClaudeSameSessionElevationServiceTests(unittest.TestCase):
         self.assertEqual(
             self.service.get_task(self.task.id).extensions["agentbc.session"]["session_id"],
             self.session_id,
+        )
+
+    def test_live_dialog_matches_full_elevation_ui_without_changing_protocol_action(self) -> None:
+        payload = {
+            "event_type": "task.input_required",
+            "input_type": "permission",
+            "native_live_elevation": True,
+            "approval_version": 3,
+            "elevation_mode": "full",
+            "dialog_title": "AgentBC · claude · LIVE-001",
+            "identity_task_id": "LIVE-001",
+            "identity_executor": "claude",
+            "identity_blocked_step": "1",
+            "reason_summary": "Command execution approval requested",
+            "reason_detail": "Bounded native Claude permission details",
+            "deadline_at": "2099-01-01T00:00:00Z",
+        }
+        notifier = DialogNotifier()
+        with mock.patch.object(notifier, "_run_script") as run:
+            run.side_effect = ["View Details", "Back", "Approve Full"]
+            result = notifier.send(payload)
+
+        self.assertEqual(
+            result.details,
+            {"action": "approve", "decision_source": "user"},
+        )
+        self.assertIn(
+            'buttons {"View Details", "Deny", "Approve Full"}',
+            run.call_args_list[0].args[2],
+        )
+        self.assertIn("Permission scope: full", run.call_args_list[0].args[1])
+        self.assertEqual(
+            run.call_args_list[1].args[1],
+            "Bounded native Claude permission details",
+        )
+        self.assertEqual(run.call_args_list[2].args[1], run.call_args_list[0].args[1])
+        self.assertNotEqual(result.details["action"], "approve_full")
+
+    def test_live_dialog_deny_still_returns_native_deny(self) -> None:
+        notifier = DialogNotifier()
+        payload = {
+            "event_type": "task.input_required",
+            "input_type": "permission",
+            "native_live_elevation": True,
+            "approval_version": 3,
+            "elevation_mode": "full",
+            "reason_summary": "Command execution approval requested",
+            "reason_detail": "Bounded native Claude permission details",
+            "deadline_at": "2099-01-01T00:00:00Z",
+        }
+        with mock.patch.object(notifier, "_run_script", return_value="Deny"):
+            result = notifier.send(payload)
+        self.assertEqual(
+            result.details,
+            {"action": "deny", "decision_source": "user"},
         )
 
     def test_non_live_task_elevation_dispatches_one_full_continuation(self) -> None:

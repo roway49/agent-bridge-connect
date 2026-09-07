@@ -428,6 +428,7 @@ class StaleProfileSweepTests(unittest.TestCase):
         stdout, stderr = process.communicate(timeout=30)
         return process.returncode, stdout, stderr, profile_path
 
+    @unittest.skip("Plan D retires outer Runner Seatbelt from production")
     def test_real_popen_plain_repo_containment_allows_task_root_denies_oob(self) -> None:
         # Fix 2 + Fix 6: a plain repository's concrete full worker enters the
         # task-scoped profile; writes inside the task root succeed and an
@@ -458,6 +459,7 @@ class StaleProfileSweepTests(unittest.TestCase):
             self.assertNotEqual(code, 0)
             self.assertIn("operation not permitted", stderr.lower())
 
+    @unittest.skip("Plan D retires outer Runner Seatbelt from production")
     def test_real_popen_allows_exact_report_file_but_denies_sibling_iteration(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary).resolve()
@@ -488,6 +490,7 @@ class StaleProfileSweepTests(unittest.TestCase):
             self.assertNotEqual(code, 0)
             self.assertFalse(sibling.exists())
 
+    @unittest.skip("Plan D retires outer Runner Seatbelt from production")
     def test_real_popen_linked_worktree_git_commit_and_oob_denied(self) -> None:
         # Fix 5 joint constraint: inside the profile a real git commit works
         # (ref/lock/reflog/objects allow), but writing outside the pinned

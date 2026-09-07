@@ -26,16 +26,16 @@ executor-specific App Server / project-purge / ACP surfaces).
 | `candidate`       | real official-probe evidence captured, but **not** in production    |
 | `pending_capture` | declared baseline with characterized expectation only              |
 
-A candidate never widens a production gate on its own. Promotion requires the
-full schema/help/event/canary contract to pass on that exact version. A newer
-binary appearing on `PATH` (for example Codex `0.150.1` or Claude `2.1.247`)
-never promotes anything automatically.
+A candidate never widens a feature contract on its own. Codex App Server
+support is version-agnostic: any release or fork is accepted when its official
+generated schema contains the required protocol surface. Other executor
+capabilities retain their documented policies.
 
 Production bounds currently enforced by code:
 
 | executor | bound | constant |
 | --- | --- | --- |
-| codex | CLI freeze `0.146.0`; App Server `0.146.0`–`0.147.0` | `_CODEX_FROZEN_VERSION`, `CODEX_APP_SERVER_MIN_VERSION`, `CODEX_APP_SERVER_MAX_VERSION` |
+| codex | CLI freeze `0.146.0`; App Server protocol-surface detection | `_CODEX_FROZEN_VERSION`, `CODEX_APP_SERVER_REQUIRED_PROTOCOL` |
 | claude | path capability `[2.1.216, 2.2.0)` | `CLAUDE_PATH_CAPABILITY_MIN_VERSION` / `..._MAX_VERSION` |
 | hermes | cleanup help freeze `0.17.0`; ACP protocol version `1` | `_HERMES_FROZEN_VERSION`, `HERMES_ACP_PROTOCOL_VERSION` |
 

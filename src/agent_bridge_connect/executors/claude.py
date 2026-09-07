@@ -53,7 +53,10 @@ from agent_bridge_connect.permission_modes import (
     permission_flags,
     permission_record_from_extensions,
 )
-from agent_bridge_connect.permission_elevation import task_elevation_protocol_enabled
+from agent_bridge_connect.permission_elevation import (
+    permission_elevation_from_extensions,
+    task_elevation_protocol_enabled,
+)
 from agent_bridge_connect.permission_transport import (
     CLAUDE_INIT_RECEIPT_KIND,
     CLAUDE_STDIO_CONTROL_RESPONSE,
@@ -416,20 +419,6 @@ class ClaudeExecutor(CLIExecutorBase):
             execution_session = _claude_execution_session(task_packet)
         except (OSError, ValueError) as exc:
             return StartResult(ok=False, run_id="", message=f"invalid claude session: {exc}")
-        try:
-            # Historical direct executor packets may omit the v2 snapshot;
-            # they remain safe/inherit-compatible.  Runner-managed Plan D
-            # packets are validated before authorization and carry the record.
-            permission = permission_record_from_extensions(task_packet.get("extensions"))
-            if (
-                permission.get("effective_mode") != "full"
-                and execution_session is not None
-                and _claude_session_is_ephemeral(task_packet)
-            ):
-                assert_claude_path_capability_supported(self.agent_bin)
-        except ABCError as exc:
-            return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
-
         run_id = (
             str(task_packet.get("_agentbc_executor_run_id") or "").strip()
             if task_packet.get("runner_authorization_required") is True
@@ -449,13 +438,19 @@ class ClaudeExecutor(CLIExecutorBase):
         except ABCError as exc:
             self._close_run_lease(run_id)
             return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
-        try:
-            assert_executor_permission_supported(
-                "claude", permission["effective_mode"], self.agent_bin
-            )
-        except ABCError as exc:
-            self._close_run_lease(run_id)
-            return StartResult(ok=False, run_id="", message=str(exc))
+        if permission["effective_mode"] != "full":
+            try:
+                assert_executor_permission_supported(
+                    "claude", permission["effective_mode"], self.agent_bin
+                )
+                if (
+                    execution_session is not None
+                    and _claude_session_is_ephemeral(task_packet)
+                ):
+                    assert_claude_path_capability_supported(self.agent_bin)
+            except ABCError as exc:
+                self._close_run_lease(run_id)
+                return StartResult(ok=False, run_id="", message=str(exc))
         try:
             prompt = _build_prompt(task_packet)
             command = self._build_command(prompt, root, task_packet, permission)
@@ -614,19 +609,6 @@ class ClaudeExecutor(CLIExecutorBase):
             execution_session = _claude_execution_session(task_packet)
         except (OSError, ValueError) as exc:
             return StartResult(ok=False, run_id="", message=f"invalid claude session: {exc}")
-        try:
-            permission = permission_record_from_extensions(
-                task_packet.get("extensions"), allow_legacy=False
-            )
-            if (
-                permission.get("effective_mode") != "full"
-                and execution_session is not None
-                and _claude_session_is_ephemeral(task_packet)
-            ):
-                assert_claude_path_capability_supported(self.agent_bin)
-        except ABCError as exc:
-            return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
-
         run_id = (
             str(task_packet.get("_agentbc_executor_run_id") or "").strip()
             if task_packet.get("runner_authorization_required") is True
@@ -808,19 +790,9 @@ class ClaudeExecutor(CLIExecutorBase):
         # (reload + revoke + write); a failed durable write raises instead of
         # being swallowed, so the run fails closed.
         safe_to_full = self._claude_safe_to_full(task_packet, permission)
-        def _persist_claude_elevation(receipt: dict[str, Any]) -> None:
-            """Persist only the redacted same-session transition receipt."""
-            from agent_bridge_connect.service import TaskService
-
-            service = TaskService(
-                board_root,
-                config={
-                    **(getattr(self, "_config", None) or {}),
-                    "_runner_worker": True,
-                },
-            )
-            task_id = str(task_packet.get("task_id") or "")
-            service.record_claude_elevation_transition(task_id, receipt)
+        live_preflight: dict[str, Any] | None = None
+        live_path_digest = ""
+        live_profile_digest = ""
 
         transport = ClaudeSDKControlTransport(
             plane=plane,
@@ -833,12 +805,13 @@ class ClaudeExecutor(CLIExecutorBase):
             host_profile_digest=control_context["host_profile_digest"],
             grant_revoke_callback=None,
             safe_to_full=safe_to_full,
-            path_plan_digest="",
-            containment_profile_digest="",
-            full_preflight=None,
-            transition_receipt_callback=(
-                _persist_claude_elevation if safe_to_full else None
+            preauthorized_full=(
+                str(permission.get("effective_mode") or "").strip().lower() == "full"
             ),
+            path_plan_digest=live_path_digest,
+            containment_profile_digest=live_profile_digest,
+            full_preflight=live_preflight,
+            transition_receipt_callback=None,
         )
         if self._full_is_declared_base(permission):
             # GGQN-002: explicit full and inherited full run bypassPermissions
@@ -1496,28 +1469,14 @@ class ClaudeExecutor(CLIExecutorBase):
         """
         permission = permission_record_from_extensions(task_packet.get("extensions"))
         effective = str(permission.get("effective_mode") or "").strip().lower()
-        # A consumed one-shot grant marks this run as a trusted temporary
-        # full: the base record stays safe/inherit and the session-scoped
-        # setMode update inside the live SDK session is authoritative.
-        temporary = permission.get("temporary") is True
         sdk_mode = "default"
-        if effective == "full" and not temporary:
+        if effective == "full":
             full_flags = permission_flags("claude", "full")
             if full_flags:
                 sdk_mode = SDK_PERMISSION_MODE_BY_FLAG.get(
                     full_flags[0], "bypassPermissions"
                 )
-        capability = (
-            claude_ephemeral_path_capability(task_packet, execution_root=execution_root)
-            if effective != "full" and _claude_session_is_ephemeral(task_packet)
-            else None
-        )
-        additions = [item for item in claude_path_capability_args(capability) or []]
-        add_dirs = [
-            str(additions[index + 1])
-            for index, flag in enumerate(additions)
-            if flag == "--add-dir" and index + 1 < len(additions)
-        ]
+        add_dirs: list[str] = []
         max_budget_usd = _claude_max_budget_usd(task_packet, self.max_budget_usd)
         hooks = None
         task_id = str(task_packet.get("task_id") or "").strip()
@@ -1579,11 +1538,11 @@ class ClaudeExecutor(CLIExecutorBase):
             can_use_tool=self._transport.can_use_tool,
             permission_mode=sdk_mode,
             session_id=execution_session_id,
-            tools=self.tools if effective != "full" else [],
-            allowed_tools=self.auto_approve_tools if effective != "full" else [],
+            tools=self.tools,
+            allowed_tools=self.auto_approve_tools,
             model=self.model,
             max_budget_usd=max_budget_usd,
-            add_dirs=add_dirs if effective != "full" else [],
+            add_dirs=add_dirs,
             hooks=hooks,
         )
 
@@ -1596,19 +1555,9 @@ class ClaudeExecutor(CLIExecutorBase):
         permission: dict[str, Any],
     ) -> dict[str, Any]:
         """Describe the exact SDK launch contract for Runner verification."""
-        capability = (
-            claude_ephemeral_path_capability(
-                task_packet,
-                execution_root=execution_root,
-            )
-            if permission.get("effective_mode") != "full"
-            and _claude_session_is_ephemeral(task_packet)
-            else None
-        )
-        temporary = permission.get("temporary") is True
         sdk_mode = (
             "bypassPermissions"
-            if permission.get("effective_mode") == "full" and not temporary
+            if permission.get("effective_mode") == "full"
             else "default"
         )
         return {
@@ -1620,13 +1569,9 @@ class ClaudeExecutor(CLIExecutorBase):
                 _claude_max_budget_usd(task_packet, self.max_budget_usd)
             ),
             "permission_mode": sdk_mode,
-            "session_mode_update": "bypassPermissions" if temporary else "",
-            "settings_json": (
-                "" if capability is None else str(capability["settings_json"])
-            ),
-            "additional_dirs": (
-                [] if capability is None else list(capability["additional_dirs"])
-            ),
+            "session_mode_update": "",
+            "settings_json": "",
+            "additional_dirs": [],
         }
 
     def _build_control_command(
@@ -1652,8 +1597,10 @@ class ClaudeExecutor(CLIExecutorBase):
                 task_packet,
                 execution_root=_claude_execution_root(task_packet, workspace_root),
             )
-            if selected["effective_mode"] != "full"
-            and _claude_session_is_ephemeral(task_packet)
+            if (
+                selected["effective_mode"] != "full"
+                and _claude_session_is_ephemeral(task_packet)
+            )
             else None
         )
         command.extend(claude_path_capability_args(capability))
@@ -1678,11 +1625,11 @@ class ClaudeExecutor(CLIExecutorBase):
         max_budget_usd = _claude_max_budget_usd(task_packet, self.max_budget_usd)
         if max_budget_usd is not None:
             command.extend(["--max-budget-usd", str(max_budget_usd)])
-        if selected["effective_mode"] != "full" and self.tools:
+        if self.tools and selected["effective_mode"] != "full":
             tools_arg = _claude_tools_argument(self.tools)
             if tools_arg:
                 command.extend(["--tools", tools_arg])
-        if selected["effective_mode"] != "full" and self.auto_approve_tools:
+        if self.auto_approve_tools and selected["effective_mode"] != "full":
             command.extend(["--allowedTools", ",".join(self.auto_approve_tools)])
         if selected["effective_mode"] != "full":
             command.extend(["--disallowedTools", "TaskCreate,TaskUpdate,TodoWrite"])
@@ -1775,8 +1722,10 @@ class ClaudeExecutor(CLIExecutorBase):
                 task_packet,
                 execution_root=_claude_execution_root(task_packet, workspace_root),
             )
-            if selected["effective_mode"] != "full"
-            and _claude_session_is_ephemeral(task_packet)
+            if (
+                selected["effective_mode"] != "full"
+                and _claude_session_is_ephemeral(task_packet)
+            )
             else None
         )
         command.extend(claude_path_capability_args(capability))
@@ -2186,8 +2135,8 @@ def _claude_execution_root(task_packet: dict[str, Any], workspace_root: Path) ->
 
     if session.get("project_mode") != "ephemeral":
         raise ValueError("non-retained Claude sessions must use ephemeral project mode")
-    permission = permission_record_from_extensions(task_packet.get("extensions"))
-    if permission.get("effective_mode") != "full":
+    permission = resolve_effective_permission(task_packet, "claude", "project-routing")
+    if permission["effective_mode"] != "full":
         try:
             validate_path_plan_workspace(workspace)
         except ABCError as exc:
@@ -2292,7 +2241,12 @@ def _find_claude_binary() -> Path | None:
 
 
 def _claude_control_required(task_packet: dict[str, Any]) -> bool:
-    """Use SDK control only while safe/inherit may need one elevation."""
+    """Use SDK control only while safe/inherit may need one elevation.
+
+    Direct or already elevated full runs use Claude's native CLI
+    ``bypassPermissions`` mode and never enter AgentBC's SDK control,
+    capability, hook, or sandbox layers.
+    """
     if task_packet.get("runner_authorization_required") is not True:
         return False
     extensions = (
@@ -2300,13 +2254,14 @@ def _claude_control_required(task_packet: dict[str, Any]) -> bool:
         if isinstance(task_packet.get("extensions"), dict)
         else {}
     )
-    if not isinstance(extensions.get("agentbc.permission"), dict):
-        # Prompt construction is also used by protocol-shape fixtures that do
-        # not carry a task permission snapshot.  Production Runner packets
-        # always have one and are validated before execution.
-        return True
-    permission = permission_record_from_extensions(extensions, allow_legacy=False)
-    return permission.get("effective_mode") != "full"
+    base = permission_record_from_extensions(extensions, allow_legacy=True)
+    if base.get("effective_mode") == "full":
+        return False
+    elevation = permission_elevation_from_extensions(extensions)
+    return not (
+        elevation is not None
+        and elevation["state"]["status"] in {"approved", "active", "verified"}
+    )
 
 
 def _normalize_allowed_tools(value: list[str] | tuple[str, ...] | str | None) -> list[str]:

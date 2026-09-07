@@ -289,9 +289,6 @@ def build_session_snapshot(
         "project_mode": normalized_mode,
         "project_path": str(project_path or "").strip(),
         "run_ids": [str(item).strip() for item in (run_ids or []) if str(item).strip()],
-        # This is the immutable fact captured immediately before each run ID
-        # is appended.  Runner and adapters must consult this map rather than
-        # inferring a resume from the post-registration run list.
         "run_resume_facts": {},
         "resume_count": 0,
         "cleanup": build_session_cleanup_receipt(),
@@ -840,21 +837,21 @@ def validate_session_snapshot(
         or len(run_ids) != len(set(run_ids))
     ):
         errors.append(f"{SESSION_EXTENSION_KEY}.run_ids must contain unique non-empty strings")
-    run_resume_facts = value.get("run_resume_facts", {})
-    if not isinstance(run_resume_facts, dict):
-        errors.append(f"{SESSION_EXTENSION_KEY}.run_resume_facts must be an object")
-    else:
-        for run_id, resumed in run_resume_facts.items():
-            if (
-                not isinstance(run_id, str)
-                or not run_id.strip()
-                or run_id not in run_ids
-                or type(resumed) is not bool
-            ):
-                errors.append(
-                    f"{SESSION_EXTENSION_KEY}.run_resume_facts must bind each recorded run to a boolean"
-                )
-                break
+    run_resume_facts = value.get("run_resume_facts")
+    if run_resume_facts is not None:
+        if not isinstance(run_resume_facts, dict):
+            errors.append(f"{SESSION_EXTENSION_KEY}.run_resume_facts must be an object")
+        elif any(
+            not isinstance(run_id, str)
+            or not run_id.strip()
+            or type(resumed) is not bool
+            or not isinstance(run_ids, list)
+            or run_id not in run_ids
+            for run_id, resumed in run_resume_facts.items()
+        ):
+            errors.append(
+                f"{SESSION_EXTENSION_KEY}.run_resume_facts must map recorded run IDs to booleans"
+            )
     resume_count = value.get("resume_count")
     if (
         isinstance(resume_count, bool)

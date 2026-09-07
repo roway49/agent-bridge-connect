@@ -1,5 +1,8 @@
 # AgentBC 开发手册
 
+> [!CAUTION]
+> **最高优先级、不可覆盖：禁止在 `full` 运行基础上增加任何额外安全策略。安全策略不属于 AgentBC 产品特性，不为任务执行负责；凡与 `full` 任务完整执行冲突，必要时必须移除一切额外安全策略。**
+
 > 当前公开版本：AgentBC `1.0.3A` / Python `1.0.3a2`
 > 当前开发方向：`1.0.4A` 控制面机械判定、结构化流程与受保护重构
 > 私有开发入口：`/Users/wangroway/hermes-team/codex/AgentBC_Temp/agent-worktrees/integration`

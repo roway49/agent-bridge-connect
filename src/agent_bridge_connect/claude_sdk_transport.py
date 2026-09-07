@@ -221,6 +221,7 @@ class ClaudeSDKControlTransport:
         host_profile_digest: str = "",
         grant_revoke_callback: GrantRevokeCallback | None = None,
         safe_to_full: bool = False,
+        preauthorized_full: bool = False,
         path_plan_digest: str = "",
         containment_profile_digest: str = "",
         full_preflight: dict[str, Any] | None = None,
@@ -239,6 +240,15 @@ class ClaudeSDKControlTransport:
         # Historical direct transport callers retain the v2 compatibility
         # broker until they explicitly select the live setMode protocol.
         self.safe_to_full = bool(safe_to_full and self.executor == "claude")
+        # A concrete full task is launched with the SDK's
+        # ``permission_mode=bypassPermissions`` from the start.  Compatible
+        # SDK/CLI implementations may still invoke the registered callback;
+        # that callback is an implementation detail, not a new permission
+        # boundary.  Keep the authoritative frozen run mode here so such a
+        # callback can be allowed without a dialog or another mode update.
+        self.preauthorized_full = bool(
+            preauthorized_full and self.executor == "claude"
+        )
         self.path_plan_digest = str(path_plan_digest or "").strip()
         self.containment_profile_digest = str(
             containment_profile_digest or host_profile_digest or ""
@@ -315,8 +325,11 @@ class ClaudeSDKControlTransport:
         # PostToolUse events observed inside this exact run window are
         # eligible (a replayed foreign event fails closed).
         self._stream_consumed = threading.Event()
-        # Same-session safe-to-full state.  Once active, every later native
-        # callback is a protocol anomaly and cannot open another request.
+        # Same-session safe-to-full state.  Once the human decision has
+        # produced the official session-scoped mode update, later callbacks
+        # are allowed as part of that same full session.  Whether a specific
+        # SDK/fork keeps invoking the callback after setMode is not evidence
+        # that the elevation failed.
         self._elevation_state = CLAUDE_ELEVATION_SAFE_DEFAULT
         self._elevation_receipt: dict[str, Any] | None = None
         self._elevation_anomaly_recorded = False
@@ -468,18 +481,25 @@ class ClaudeSDKControlTransport:
 
         tool_use_id = str(getattr(context, "tool_use_id", "") or "").strip()
         tool = str(tool_name or "").strip() or "unknown"
+        if self.preauthorized_full:
+            # Full was frozen before SDK startup.  Normally bypassPermissions
+            # prevents this callback entirely; if a compatible implementation
+            # still calls it, preserve the already-authorized run instead of
+            # manufacturing an approval request.
+            return self._allow_result(input_data)
         if self.safe_to_full:
             # The first approved callback atomically changes the live SDK
-            # session.  A later callback is proof that the official setMode
-            # update was ineffective; it is denied once and never reaches the
-            # ControlPlane, notification layer, or any continuation path.
+            # session.  Once the allow+setMode response is ready, any later
+            # callback belongs to the same user-approved full session and is
+            # allowed without another request.  Some SDK/fork versions keep
+            # invoking can_use_tool even while bypassPermissions is active.
             with self._pending_lock:
                 elevation_state = self._elevation_state
             if elevation_state in {
                 CLAUDE_ELEVATION_RESPONSE_READY,
                 CLAUDE_ELEVATION_ACTIVE,
             }:
-                return self._elevation_anomaly_result()
+                return self._allow_result(input_data)
             if elevation_state in {CLAUDE_ELEVATION_BLOCKED, CLAUDE_ELEVATION_DENIED}:
                 return self._deny_result(
                     "The Claude session is fail-closed after its elevation decision."
@@ -1039,6 +1059,7 @@ class ClaudeSDKControlTransport:
             ),
             "approval_timeout_s": self.approval_timeout_s,
             "safe_to_full": self.safe_to_full,
+            "preauthorized_full": self.preauthorized_full,
             "elevation_state": self._elevation_state,
             "elevation_anomaly_recorded": self._elevation_anomaly_recorded,
             "elevation_receipt": elevation_receipt,

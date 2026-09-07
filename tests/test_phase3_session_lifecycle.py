@@ -118,6 +118,8 @@ class Phase3SessionLifecycleTests(unittest.TestCase):
         task = self._task(service, "hermes")
         service.start_task_run(task.id, "hermes")
         service.record_executor_run_started(task.id, "hermes-run-1")
+        first_session = service.get_task(task.id).extensions[SESSION_EXTENSION_KEY]
+        self.assertEqual(first_session["run_resume_facts"], {"hermes-run-1": False})
         receipt = self._receipt("hermes", "20260810_010203_a1b2c3", resumed=False)
         service.validate_executor_session_result(task.id, "hermes-run-1", receipt)
         service.mark_task_needs_recovery(
@@ -130,6 +132,18 @@ class Phase3SessionLifecycleTests(unittest.TestCase):
         session = service.get_task(task.id).extensions[SESSION_EXTENSION_KEY]
         self.assertEqual(session["session_id"], "20260810_010203_a1b2c3")
         self.assertEqual(session["session_state"], "needs_recovery")
+
+    def test_duplicate_run_registration_preserves_frozen_resume_fact(self) -> None:
+        service = self._service(retain=False)
+        task = self._task(service, "hermes")
+        first = service.record_executor_run_started(task.id, "hermes-run-1")
+        duplicate = service.record_executor_run_started(task.id, "hermes-run-1")
+
+        self.assertFalse(first["resumed"])
+        self.assertFalse(duplicate["resumed"])
+        session = service.get_task(task.id).extensions[SESSION_EXTENSION_KEY]
+        self.assertEqual(session["run_ids"], ["hermes-run-1"])
+        self.assertEqual(session["run_resume_facts"], {"hermes-run-1": False})
 
     def test_mismatched_resume_receipt_is_rejected_without_overwrite(self) -> None:
         service = self._service()

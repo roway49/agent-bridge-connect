@@ -1,4 +1,4 @@
-r"""Task-scoped native-full permission elevation.
+"""Task-scoped native-full permission elevation.
 
 This module is the durable v1 capability which replaces the old one-shot
 ``agentbc.permission_grant`` write path for new approvals.  It intentionally
@@ -107,11 +107,7 @@ def build_permission_elevation(
     elevation_id: str | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
-    """Build a pending task elevation bound to one native request.
-
-    The empty digest fields used by Plan D full are intentional.  The legacy
-    contained-full envelope remains readable for historical records only.
-    """
+    """Build a pending task elevation bound to one request and PathPlan."""
     clean_profile = str(containment_profile_digest or profile_digest or "").strip()
     authority_value = dict(authority or {})
     clean_executor = str(executor or "").strip().lower()
@@ -386,10 +382,12 @@ def full_capability_preflight(
     executor: str,
     executable: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Read the historical full-capability gate for a legacy record.
+    """Run the no-UI structural/full-capability gate for one native block.
 
-    This compatibility helper is retained for old persisted envelopes and
-    tests.  Plan D production full does not call it or require its receipt.
+    The result is intentionally a bounded receipt: only pass/fail, executor,
+    mode, and frozen digests cross the adapter boundary. If an executable is
+    supplied, its documented full capability is checked mechanically before a
+    request can be shown to a user.
     """
     from .path_model import validate_path_plan_workspace
     from .permission_modes import assert_executor_permission_supported
@@ -710,7 +708,6 @@ __all__ = [
     "PERMISSION_ELEVATION_EXTENSION_KEY",
     "PERMISSION_ELEVATION_FILENAME",
     "PERMISSION_ELEVATION_MODE",
-    "LEGACY_PERMISSION_ELEVATION_MODE",
     "PERMISSION_ELEVATION_SOURCE",
     "PERMISSION_ELEVATION_STATES",
     "PERMISSION_ELEVATION_VERSION",

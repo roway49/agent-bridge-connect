@@ -1,8 +1,30 @@
 # AgentBC 1.0.4A 需求开发清单
 
+> [!CAUTION]
+> **最高优先级、不可覆盖：禁止在 `full` 运行基础上增加任何额外安全策略。安全策略不属于 AgentBC 产品特性，不为任务执行负责；凡与 `full` 任务完整执行冲突，必要时必须移除一切额外安全策略。**
+
 > 制定日期：2026-08-26
-> 状态：持续开发与回归中；`SESSION-104-001` 保持已通过，`PERM-104-001` 的 Claude 同会话 safe-to-full 自动化门禁已完成，`PERM-104-002` Plan D 实现与自动化闭环已完成（2026-09-07）
+> 状态：持续开发与回归中；`SESSION-104-001` 已通过，方案 D 的三 Executor 显式 full 与 inherit→full 核心实机矩阵已通过；`PERM-104-002` 仅保留继承 full、Deny/异常路径及发布收尾
 > 目标版本：AgentBC `1.0.4A` / Python `1.0.4a1`
+
+## PERM-104 方案 D（2026-09-07，代码与核心实机矩阵通过）
+
+- 生产权限路径收敛为原生 full 直接执行，以及 safe/inherit 首次可信阻塞后一次提升 full。
+- full 不再受 Runner Seatbelt、PathPlan 写入范围、Claude 工具限制、版本/full 能力探测或 permission_runtime 生命周期约束。
+- 新审批使用通用 approval v3 和 task elevation；旧 grant 不参与有效权限解析。历史回执保留兼容读取。
+- 任务身份、官方会话归属、唯一人工决定、RunLease、终态 callback、会话清理隔离和日志脱敏继续作为任务正确性约束。
+- 替代回归：`tests/test_perm104_plan_d.py`，并复用 Claude 同会话提升、Hermes v3 Approve/Deny、Runner full 路由测试。
+- 三 Executor 显式 full 零弹窗实机通过：Codex `T5KN-001`、Claude `XE8R-001`、Hermes
+  `QMBK-001` 均 completed、唯一合法 callback、RunLease closed、cleanup succeeded，且审批计数均为 0。
+- 三 Executor inherit→full 实机通过：Codex `G3CQ-001`、Claude `8JY7-001`、Hermes
+  `9EP7-001` 均 completed、唯一合法 callback、RunLease closed、cleanup succeeded；每项均恰好 1 次请求、
+  1 次通知、1 次人工决定。Claude 使用同一官方 session 原生 `setMode(bypassPermissions)`，零 continuation；
+  Codex/Hermes 各只有 1 个 full continuation。
+- Claude 通知 UI 已统一为 `View Details / Deny / Approve Full`，用户确认 `8JY7-001` 整体符合预期；
+  详情/返回零回执，`Approve Full` 精确回传同一 pending `can_use_tool` 的 native approve。
+- 当前门禁：全量 unittest 1794 项通过、17 项跳过；Ruff、compileall、diff 空白检查通过。local-alpha
+  包绑定 `private/integration@50acf9949387e21611b7558587110acee80bf718`，本机 CLI/Skill/Runner 已替换且
+  Runner PID `59193`。剩余权限验收仅为 handoff/retry 继承 full、Deny/timeout/重复事件和发布身份复核。
 > 来源基线：`private/integration@01f3ce1`
 > 已发布基线：`v1.0.3A2@62757a4`；公开 Formula 收口 `public/main@87c4bca`
 > 上版归档：`AGENTBC_1.0.3A_DEVELOPMENT_CHECKLIST.md`
@@ -53,10 +75,10 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 
 | ID | 优先级 | 问题 | 目标结果 | 主要依赖 |
 | --- | --- | --- | --- | --- |
-| `PROTO-104-001` | P0 / fixture matrix 已完成（2026-08-27）；production collaboration_spawn wiring 待回归（2026-08-28） | 上游 CLI version/help/argv/event 漂移只能靠临时补测试 | 三 Executor 完整版本化 fixture、capability matrix 和未知组合 fail-closed；生产派生会话接线需通过版本 fixture + live probe 双门 | 无 |
+| `PROTO-104-001` | P0 / 已通过（2026-08-27） | 上游 CLI version/help/argv/event 漂移只能靠临时补测试 | 三 Executor 版本化 fixture 与 capability matrix 已建立；原生 `collaboration_spawn` 生产启用合同独立转入 `PROTO-105-001` P2，不再阻塞 1.0.4A | 无 |
 | `ARCH-104-001` | P1 / 按域执行 | Service、Runner、CLI、approval、notification 责任仍集中 | 每个功能项先完成对应窄模块机械拆分，公共 API/CLI/磁盘行为不变 | `PROTO-104-001` |
-| `PERM-104-001` | P0 / 实现与自动化门禁完成（2026-09-05） | native Deny 后 Agent 仍可用 Prompt/callback 请求 full 并启动第二 worker | Claude safe/default 的首个结构化 `can_use_tool` 事件只产生一次同会话输入；Approve 原子返回原始 input + `setMode/bypassPermissions/session`，Deny 无 mode change；重复事件 fail closed | `RM7A-001` artifact evidence；`tests/test_perm104_001_claude_same_session_elevation.py`；`PERM-104-002` 的部署后 full canary 仍独立开放 |
-| `PERM-104-002` | P0 / Plan D 实现与自动化闭环完成（2026-09-07） | full 曾被旧的 containment/runtime receipt/版本探测链阻塞，native elevation 也可能重复请求或重复 worker | 显式/继承 full 进入三 Executor 原生最强非交互模式；inherit/safe 仅可信 native structured event 可产生一次 v3 task elevation；Approve/Deny/timeout、handoff/retry、重启与乱序回放均保持单次、幂等、无第二权限层 | `PERM-104-001` |
+| `PERM-104-001` | P0 / 已通过（2026-09-07） | native Deny 后 Agent 仍可用 Prompt/callback 请求 full 并启动第二 worker | Claude inherit 的首个结构化 `can_use_tool` 事件只产生一次同会话输入；`8JY7-001` 已证明 Approve Full 原子返回原始 input + `setMode/bypassPermissions/session`，同 session 完成且零 continuation | `RM7A-001`；`8JY7-001`；`tests/test_perm104_001_claude_same_session_elevation.py` |
+| `PERM-104-002` | P0-Blocker / 核心矩阵通过、收尾开放（2026-09-07） | full 必须完整后台执行；inherit/safe 首次可信阻塞后至多一次提升，不能审批循环 | 三 Executor 显式 full 零弹窗与 inherit→full 一次审批矩阵已通过；Claude `PERM-104-002-R1` 的 Details UI 已通过。关闭前补齐 handoff/retry 继承 full、Deny、timeout、重复/乱序事件和最终安装身份复核 | `PERM-104-001` 已完成；`T5KN/XE8R/QMBK/G3CQ/8JY7/9EP7` 实机证据 |
 | `FLOW-104-002` | P0 | report/record 超限可跳过终态通知和 cleanup receipt | terminal、report、notification、cleanup 独立且可重放，通知不被报告失败吞掉 | terminal fixtures；对应 ARCH slice |
 | `FLOW-104-001` | P1 | handoff 只能声明一个 step，自由文本多步骤直到 callback 才失败 | handoff 原生结构化 steps、dispatch 前预检、严格 callback 一致性 | schema fixtures；对应 ARCH slice |
 | `FLOW-103-001` | P1 / 跨版转入 | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | task/run/session scoped 单调 progress receipt；所有公共视图同源 | `FLOW-104-001` 的 declared steps |
@@ -70,6 +92,8 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | --- | --- | --- | --- | --- |
 | `RESOURCE-104-001-R1` | P1 / 待回归 | `E52M-002` 的 Hermes run 使用完 `150/150` 次迭代后，Core 已持久化 `input_required(type=choice, kind=resource_limit)`、RunLease 已挂起且 CLI 可响应，但 Codex Desktop 没有显示“提高预算并继续 / 终止任务”弹窗 | 每个仍有效的 resource-limit input 都有且只有一个 Desktop 弹窗；Approve 将当前 Task 上限翻倍并恢复同一官方 session，Deny 单调终止；CLI 响应保持等价兜底，但不能替代 Desktop 真机验收 | `FLOW-104-002` notification delivery；`FLOW-103-001` progress receipt；DialogNotifier |
 | `FLOW-104-003-R1` | P1 / 待回归 | `E52M-003` 中 Hermes 0.20.1 运行 `2h37m` 后以返回码 `0` 结束，但输出停留在代码 diff、未产生 `AGENTBC_FINAL_CALLBACK`；Runner 明确记录 `output_truncated=false`、`marker_seen=false`，且没有可识别的迭代耗尽 receipt | 进程成功退出与任务合同完成继续严格分离；Hermes 必须提供结构化 terminal reason、实际/上限 turns 和最终响应边界。确属资源耗尽时生成唯一可恢复 input；仍有 pending step 却正常退出时给出稳定的 incomplete-exit 分类、保留部分进度并允许受审计 retry/handoff；不得伪造 callback | `FLOW-104-003` failed recovery；`FLOW-103-001` progress receipt；Hermes ACP/CLI terminal receipt |
+| `FLOW-104-004-R1` | P1 / 1.0.4 待回归（`A3AC-001`，2026-09-05） | Codex 原生审批于 `08:54:43Z` 成功回传，唯一 contained-full continuation 于 `08:54:45Z` 在同一官方 session `01a070c5-836a-7553-b07f-68ab7da97e8b` 启动并继续完成合并、测试与代码修改；随后官方 Codex turn 变为 `interrupted`（`error=null`、无 `completedAt`），但 App Server Adapter 未收到或未持久化 `turn/completed`，无超时地阻塞在 stdio `recv/readline`，导致 Task 长期保持 `running`、RunLease `stale`、无 terminal callback | 权限审批成功与后续 turn 中断必须独立投影；App Server 等待循环须有有界接收、活性心跳和官方 turn 状态对账。发现 `interrupted/cancelled/failed`、transport loss 或在有界窗口内无法取得可信终态时，必须停止对应 Worker、关闭 RunLease、保留同一 session/工作树证据并单调进入稳定的 `needs_recovery`，不得无限等待、伪造 completed 或自动重派；正常长任务仍不得仅因耗时被终止 | Codex App Server turn lifecycle；RunLease heartbeat/reconciliation；`FLOW-104-003` terminal recovery |
+| `SESSION-104-001-R1` | P1 / 1.0.4 待回归（`Z2W7-001`，2026-09-05） | 精确官方会话 `01a06f9a-ed4b-71b1-ac50-a818b18c63ba` 的 `thread/archive` 已于任务终态后取得 RPC acknowledgement，随后 `thread/delete` 也确认且 active/archived/read 均 absent，但当前 Codex Desktop 侧栏没有在 archive 后实时移除该临时会话 | 保持现有 archive acknowledgement → delete acknowledgement 后端门禁不变；新增当前 Desktop 运行实例的官方可见性回归，证明 archive 确认后侧栏无需点击会话即可收敛。若官方控制面仍不提供实时刷新/通知能力，明确记录上游限制和可复现证据，不扫描私有存储、不用 GUI 自动化或强制重启伪造通过 | `SESSION-104-001`；Codex Desktop 官方控制面；notification/refresh capability |
 
 `RESOURCE-104-001-R1` 的固定验收合同：
 
@@ -183,6 +207,20 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 节奏按 Gate 退出，不按日期强行推进。任一 P0 真机 canary 未通过时，后续 Wave 可以继续做不冲突的
 fixture/文档工作，但不得进入公开 RC。
 
+### 2026-09-07 滚动排期（按当前实际进度）
+
+| 时间窗 | 优先级与工作包 | 当前起点 | 退出条件 |
+| --- | --- | --- | --- |
+| 9 月 7 日—9 月 9 日 | P0-Blocker：`PERM-104-002` 收尾 | 三 Executor 显式 full 与 inherit→full 核心矩阵、Claude Details UI 已通过 | handoff/retry 继承 full、Deny、timeout、重复/乱序事件全部通过；安装身份一致，关闭 PERM 全局门禁 |
+| 9 月 10 日—9 月 13 日 | P0：`FLOW-104-002` 与 `INPUT-104-001` | record 上限已放宽到 50 KiB；外部附件仍有 custom-path 阻断基线 | terminal/report/notification/cleanup 可独立重放；custom path + 外部只读附件原子派发通过 |
+| 9 月 14 日—9 月 18 日 | P0：`FLOW-104-003`；P1：`FLOW-104-003-R1`、`FLOW-104-004-R1` | Failed retry/handoff 与 Codex interrupted turn 均有固定失败基线 | failed current head 可审计 retry/handoff；Hermes incomplete exit 与 Codex interrupted turn 有稳定终态和恢复动作 |
+| 9 月 19 日—9 月 22 日 | P1：`FLOW-104-001`、`FLOW-103-001`、`RESOURCE-104-001-R1` | steps/progress/resource input 均已有部分合同 | multi-step handoff、单调 progress、资源耗尽 Desktop 弹窗和同 session continuation 通过 |
+| 9 月 23 日—9 月 27 日 | P1 回归与局部 `ARCH-104-001` 收口 | `SESSION-104-001` 主项已通过；R1 仅保留 Desktop 实时刷新体验 | 三 Executor E2E、session teardown、Update/Homebrew 回归完成；只做被前述工作包证明必要的机械拆分 |
+| 9 月 28 日—10 月 2 日 | Wave 5：`1.0.4a1` RC 与双机发布门禁 | 所有 P0/P1 退出条件完成 | GitHub/PyPI/bundle/bottle/manifest SHA 与 tag commit 可复验，提交用户 go/no-go |
+
+`PROTO-105-001`（原生派生子会话启用合同）保持 P2，不占用 1.0.4A 主线；若 9 月 23 日后仍有容量，
+只允许做独立 probe/fixture，不得影响 RC。
+
 ## 4. 详细实现合同
 
 ### 4.1 `PROTO-104-001`：版本化 Executor fixture matrix
@@ -257,29 +295,7 @@ native Deny 后伪造 full callback、transport lost、Runner 重启和 UI/CLI �
   one-dialog delivery、异构 Read/Write/Edit/Bash fake stream、shape-only admission、rejected setMode
   与 transport loss；可复验证据见 artifact root 的 `PERM-104-001_RM7A-001_EVIDENCE.md`。
 
-### 4.4 `PERM-104-002`：Plan D 原生 full 与单次 v3 elevation 闭环
-
-Plan D 当前权威合同（2026-09-07）：
-
-- 显式或继承的 `full` 直接使用 Codex、Claude、Hermes 各自最强的原生非交互模式：分别为
-  `--dangerously-bypass-approvals-and-sandbox`、`--dangerously-skip-permissions`、`--yolo`；
-  该路径零 AgentBC Seatbelt、PathPlan authorization、runtime-capability、grant、版本 allowlist
-  与第二层权限门禁，且不弹审批框；协议兼容的 release/fork 默认支持。
-- `inherit`/`safe` 只有在可信结构化原生事件到达时才可建立一个 v3 `task_elevation` request：
-  Codex 原生事件、Claude SDK `can_use_tool` 事件或 Hermes ACP permission request；不得从 prose、
-  stderr、callback 文本、退出码、tool-name 匹配或版本字符串推断 escalation。
-- 当前审批 UI 与 response protocol 保持不变。Approve Full 最多产生一个 full transition；Deny 与
-  timeout 不产生 full worker 或 continuation。Claude approve 必须在同一 live SDK session 执行一次
-  `setMode(bypassPermissions)`；Codex/Hermes 仅在原生 transport 需要时建立一个 full continuation。
-- full inheritance 在 handoff/retry 中保留 `selection_source=inherited_task`；duplicate/out-of-order
-  native event 与 Runner restart 只能复用已持久化 request/decision，不得生成第二 input、notification、
-  grant、worker、continuation 或 permission-mode transition。
-- approval v1/v2、`agentbc.permission_grant`、`agentbc.permission_runtime` 与 Seatbelt 记录仅保持
-  reader 兼容，生产路径不得重新连接；旧记录不得改变当前权限选择。
-
-#### 历史说明（Plan D 之前的 containment/runtime receipt 合同）
-
-以下条目保留为历史实施背景，不是当前生产准入或验收要求：
+### 4.4 `PERM-104-002`：阻塞来源域、不可升级动作与 full 闭环
 
 - 为动作保存脱敏稳定 fingerprint，不保存 raw argv、token 或私有绝对路径；
 - 来源域至少区分 Executor policy、AgentBC permission policy、Runner PathPlan 和宿主 OS containment；
@@ -297,11 +313,14 @@ Plan D 当前权威合同（2026-09-07）：
 - 已经生效的 concrete `full` 不得再次请求 `full`，不得产生 `permission_mode_unsupported`、
   `permission_resume_session_unavailable`、重复弹窗、重复 grant 或同 fingerprint continuation。
 
-统一验收标识：显式/继承 `full` 均只验证三 Executor 原生最强非交互 argv；`inherit`/`safe` 的
-升级只接受可信 native structured event。每个 v3 request 最多一个 notification、一个决定和一个
-full continuation；Approve、Deny、timeout、handoff/retry、duplicate/out-of-order 与 Runner restart
-均必须保持同一持久化 request/decision，且无第二 input、grant、worker、continuation 或 mode change。
-旧 v1/v2、grant、runtime、Seatbelt 记录只读兼容，不得回接当前生产授权路径。
+统一验收标识：人工授予、临时申请、权限继承均能让 `full` 权限正确生效，声明范围内的目标动作必须
+实际执行成功，不得仍有权限、Runner PathPlan 或宿主 containment 阻塞。三条路径分别以同一组
+linked-worktree 本地提交、受管 progress receipt 和普通项目写入 canary 验证，要求动作成功、唯一
+RunLease/continuation、无第二次弹窗且 status/report/receipt 同源。声明范围之外的动作仍按 PathPlan
+fail closed，不得借 full 扩大到任意用户或系统路径。
+
+对于本来就不可升级、且不属于声明授权边界的动作，最多出现一次审批并稳定 blocked；真正可升级的
+Executor 拒绝必须在同 session、同 request Approve 后精确执行。
 
 派生回归项 `PERM-104-002-R1` 在上述验收完成后执行：
 
@@ -559,6 +578,154 @@ full continuation；Approve、Deny、timeout、handoff/retry、duplicate/out-of-
   `SESSION-104-001` 本节不修改，仍按原有 `SESSION-104-001_CANARY_EVIDENCE.md` 结论处理；
   `PERM-104-002` 继续保持开放。
 
+2026-09-04 `PERM-104-001` Hermes ACP 长任务收口与临时会话清理修复（`agent/claude` 本地提交，未 push）：
+
+- 失败基线 `TJBS-001` 两次失败共用同一官方 session `18a3e156-6aae-4286-b504-4276f90fc5b2`：
+  run 1 `hermes-TJBS-001-46b34d3d` 在模型调用 45.1s + 工具执行仍健康进行时被
+  `hermes_acp_transport_failed`（"receive timed out without a complete frame"，`timeout_is_failure=true`）
+  杀死；run 2 `hermes-TJBS-001-1eb6432e` 返回码 `0`、`stop_reason=end_turn`、`marker_seen=false`，
+  以 `completion_marker_missing` 判为 failed（chat 总结、兼容事件 `task.agent_callback_recorded` 与
+  真实 23-byte `hermes-full-canary.txt` 均存在，但都不能替代 marker）；随后 cleanup 以
+  `hermes_session_delete_invalid_session_id` 拒绝已绑定的官方 receipt，且 `commands.delete=not_requested`。
+- 根因 1（`completion_marker_missing` 的真实原因）：`_collect_message_chunks` 探测
+  `params.sessionUpdate[].message[].content[]`，而 pinned `agent-client-protocol` 的
+  `SessionNotification`/`AgentMessageChunk` 实际序列化为
+  `params.sessionId` + `params.update.sessionUpdate` + 单个 `params.update.content`；
+  `PromptResponse` 只携带 `stopReason`，因此每个真实 turn 的 `message_text()` 都为空，
+  AgentBC 从未收到执行器的真实终答与 FINAL_CALLBACK。
+- 根因 2：`prompt()` 用 30s 的 `rpc_timeout_s` 限制每一帧接收，长模型/工具间隔必然被当作
+  transport 失败；且旧实现 `select` 可读后调用 `TextIOWrapper.readline()`，partial line 会
+  无限期阻塞，deadline 不可靠，`errors="strict"` 还会让 `UnicodeDecodeError` 逃出已分类错误集。
+- 根因 3：`_HERMES_SESSION_ID_RE` 只接受 Hermes CLI 聊天 token（`YYYYMMDD_HHMMSS_<hex>`），
+  而 Hermes ACP session id 是 UUID（`acp_adapter/session.py` `str(uuid.uuid4())`），正是
+  stderr receipt 绑定的形状；清理在 spawn 前就被拒绝。
+- 根因 4：`approval_outcome_for_decision` 返回 `{"outcome":{"optionId":...}}`，缺少 ACP
+  `AllowedOutcome` 的 `selected` 判别字段，agent 无法解析并按 deny 处理。
+- 修复：`session/update` 按规范 wire 形状采集终答（turn-scoped，`session/load` 历史回放与
+  无关 session 不得混入；1 MiB 预算只淘汰最旧文本并报告 truncation，绝不丢弃含 marker 的尾部）；
+  接收路径改为字节级组帧 + 三个相互独立且各自真实的边界（`rpc_timeout_s=30s` 单次握手 RPC、
+  `HERMES_ACP_RECEIVE_TIMEOUT_S=900s` 存活进程静默窗、adapter 端 24h 整体 turn deadline），
+  稳定码 `hermes_acp_rpc_timeout` / `hermes_acp_receive_idle_timeout` / `hermes_acp_prompt_timeout` /
+  `hermes_acp_transport_eof` / `hermes_acp_transport_exited` / `hermes_acp_frame_oversized`；
+  `HermesAcpTimeout` 同时继承 `HermesAcpError` 与 `TimeoutError`，`timeout_is_failure=true`
+  保持真实，超时绝不静默重试或转为成功；RunLease 由 `_RunLeaseHeartbeat`（30s，低于 120s stale 窗）
+  与 `poll()` 对活跃 ACP run 补心跳，仅作存活信号，不改状态、不重试、不代为完成；
+  cleanup `_hermes_session_delete_identifier_error` 只接受两种已文档化的 session id 形状
+  （ACP UUID 与 CLI token），其余空值、选项注入、路径分隔符、>128 字符一律 fail closed，
+  argv 仍严格为 `[hermes,"sessions","delete",<bound id>,"--yes"]`，无法命中 dispatcher 或无关 session。
+- 既有未提交的 `hermes_acp.py` canonical wire 重构逐字段对照 pinned schema 验证后保留
+  （`RequestPermissionRequest`/`ToolCallUpdate`/`PermissionOption` 字段集、typed normalized
+  request、mixed-field 拒绝、无 fuzzy/无版本分支），并修复其不可达死代码与
+  `executors/hermes.py` 迁移缺口（修复前 Hermes executor 根本无法 import）；
+  dialog role 以精确 Hermes `optionId` 为主表，新增 canonical `PermissionOptionKind`
+  （`allow_once`/`reject_once`）仅在 optionId 未知时兜底，persistent scope 永不可操作；
+  fixture 与两个受影响测试模块同步为规范形状。
+- 测试：新增 `tests/test_perm104_001_hermes_longrun.py` 26 项（分片/半行分帧、跨静默窗长间隔、
+  无关 session 隔离、预算尾部保留、hung/eof/exit/整体 deadline 四种真实区分、
+  marker 缺失/重复、同官方 session retry、RunLease 心跳、cleanup 合法/非法/隔离/幂等）；
+  `test_hermes_acp_transport.py` 27 项与 `test_perm104_002_v2_broker.py` 29 项更新为规范 API。
+  全量 unittest 计数与失败集合与未修改 `HEAD` 基线一致（仅缺失可选 `claude` extra、
+  Claude Code 环境变量导致的 2 项、以及与本次无关的 stale containment 断言）；
+  Ruff、compileall、`git diff --check`、`uv build` 全部通过。
+- 真机证据：`PERM-104-001_HERMES_ACP_LONGRUN_EVIDENCE.md`。真实 `hermes acp`（v0.20.6，zai）
+  full-mode canary `CG8D-001`：completed、3/3 steps、`source=executor_final_marker`、
+  `marker_valid=true`、exit 0、wall 2m43s、RunLease 全程心跳后 closed、官方 session
+  `20727e3e-7017-4890-ac5c-37eb0ea03ea4` 绑定并经
+  `hermes sessions delete <uuid> --yes` 实机删除成功（重复执行幂等）。
+  遗留：已部署 1.0.3a2 Runner 仍复现旧缺陷，需重新封包后重跑 canary；Hermes 在
+  `HERMES_YOLO_MODE=1` 下仍对一次 `edit-approval-1` 发出 request（Hermes 侧行为），
+  AgentBC 只做 fail-closed bridge，未加弹窗/未自动应答/未合成完成；
+  `test_issued_grant_prepares_outer_containment_before_worker_spawn` 的 stale 断言仍待更新。
+
+2026-09-07 `PERM-104-003` Hermes ACP input-required 终态仲裁修复（`agent/claude` 本地提交，未 push）：
+
+- 失败基线 `Y7SW-001`（failed，`completion_marker_missing`，wall 4m29s）：官方 session
+  `7dc9f492-45b0-4982-bc74-3ec077e064d4`、run `hermes-Y7SW-001-f52a2998`。2026-09-06
+  `14:45:35.644129Z` session 绑定；`14:48:46.879459Z` Step 1 probe 文件 A/B 已建并校验；
+  `14:49:54.215089Z` `agentbc.approval` 创建；`14:49:54.215654Z`
+  `task.permission_elevation_required`（`input_id=input-bef11a564a844f49b8e3d4e8e558ab64`、
+  `request_id=0`、`tool_use_id=perm-check-1`、`native_event=hermes_acp.session/request_permission`、
+  `request_fingerprint=fp-479973bfca7f07638abb0627ff5643dbe513ff11`、scope `task_elevation`、
+  mode `full`），`agentbc.input.status=waiting` 且 cardinality `notifications=0`、
+  `human_decisions=0`；`14:49:56.117113Z` 同一 run 却以 `completion_marker_missing`
+  （"Executor exited without a valid AGENTBC_FINAL_CALLBACK"）判为 failed，`14:49:58Z`
+  还补发了一条 `task.failed` 终态通知。RunLease `closed`、waiting 仅 2s，elevation state
+  停留在 `prepared`，从未进入可仲裁的 suspended-for-elevation。
+- 根因（ arbitration 缺口，非 authority 缺口）：worker 的 poll 循环只把
+  `poll.status == "input_required"` 且 poll result 携带 `approval_request` 的情况当作权限等待；
+  一旦 Hermes ACP turn 在 adapter 落盘 waiting input 之后才结束（transport close、
+  `stopReason`、空 final text、无 callback），worker 拿到的是终态/失败 poll，直接进入
+  通用 callback 校验与 `finalize_task_from_executor_exit`，从而以 `completion_marker_missing`
+  覆盖了已 durably waiting 的 v3 input。TaskService 才是 v3 唯一权威，worker 从未重读。
+- 修复 1（adapter 原子落盘 + latch）：`_handle_task_elevation_permission` 改为消费 canonical
+  typed `HermesAcpPermissionRequest`（不再触碰 raw frame、不做 prose 分类），先机械校验
+  request↔official session 绑定，再 `block_task_for_elevation` 落盘，并**重读** TaskService 确认
+  `agentbc.input.status == "waiting"` 后才抛 `HermesAcpElevationRequired`；`_run_acp_session`
+  捕获后一次性发布 `PollResult(status="input_required")`（含 `approval_request`、官方
+  `execution_session`、`executor_run_id`、`elevation_state=suspended_for_elevation`），
+  先 latch 再发布，随后仅关闭原 ACP transport/run lease。新增
+  `_elevation_latch` / `_latch_elevation_result` / `_latched_result` / `_set_acp_run_status`：
+  latch 后的 `input_required` 是该 run 唯一可发布结果，后续 `stopReason`、空 final text、
+  return code、callback 解析、transport close、重复 poll、线程收尾一律 no-op。
+  v2 `single_action` 仍走 control-plane suspend 路径，不占用 v3 latch。
+- 修复 2（worker 仲裁）：`_waiting_task_elevation_input` 从 TaskService 重读并机械校验
+  task/run/session/request 绑定（scope `task_elevation`、`approval_version==3`、
+  `elevation_mode==contained_full`、run 与 session 一致）；`_arbitrate_waiting_task_elevation`
+  在**每个** Hermes 终态 poll 之后、通用 callback 校验/失败 finalization 之前调用，命中时
+  恰好投递一次 input-required 通知（复用 `notify_input_required` 的原子 v3 reservation）、
+  请求 task-list 刷新、仅清理过期 execution-run 指针并 `return 0`；不 mark failed、不写终态
+  失败通知、不触发 terminal cleanup、也不要求被中断的安全 ACP turn 产出 callback。
+  通知幂等由 store reservation 与 `notified_approval_requests` 双重保证，重启/重放收敛为一条。
+- 修复 3（transport 收敛确定性）：`_read_available` 在 EOF 时对进程做有界 reap 等待
+  （`_HERMES_ACP_REAP_WAIT_S=2s`），使 `hermes_acp_transport_exited` 与
+  `hermes_acp_transport_eof` 的分类不再依赖父子进程的时序竞争。
+- 合并：`private/integration`（`55d862d`）与 `agent/claude` 在 `8aea853` 后分叉，按
+  non-destructive normal merge 合入 `agent/claude`，保留双方语义——`agent/claude` 的
+  canonical ACP wire 边界（typed request、mixed-field/unknown-field 拒绝）作为唯一 raw-frame
+  读取点，`private/integration` 的 v3 task-elevation 面（`HermesAcpElevationRequired`、
+  `_handle_task_elevation_permission`、Runner contained-full wiring、Seatbelt profile、
+  `clear_execution_run_references`、`task_elevation_approval` 仲裁）建立其上。历史未重写、
+  未 reset、未 push。`hermes_session_delete_invalid_session_id` 是独立缺陷，本变更不改其行为，
+  只保留 `test_original_run_lease_is_closed_and_no_terminal_cleanup_runs` 证明等待期零 terminal
+  cleanup，因此该缺陷不可能改变任务结果。
+- 测试：新增 `tests/test_perm104_003_input_terminal_arbitration.py` 13 项，全部基于真实
+  `TaskStore` 与异步 Hermes ACP 时序（fake adapter 在 `start` 内按生产顺序登记 run、绑定官方
+  session、落盘 waiting elevation，随后 poll 直接返回终态失败）：
+  Y7SW race（`completion_marker_missing` 下 `input_required` 存活、恰一条通知、无 `task.failed`、
+  run 指针已清理）、worker 重启/重放通知幂等、原 RunLease closed 且零 terminal cleanup、
+  Approve 恰一次 full continuation 且同 official session（`full_continuations=0`、无 grant）、
+  同一 binding 重放幂等、Deny 零 continuation、无等待输入的对照用例仍判
+  `completion_marker_missing`、跨 run 等待不仲裁本 run、latch 对重复 poll/transport close/迟到
+  stopReason 稳定、native stream 零 `permission_response` 且 close 恰一次、
+  `_hermes_transport_from_permission` full→headless direct / inherit|safe→ACP、
+  重复 native event 不得创建第二个 waiting input、指纹漂移与并发等待 fail closed。
+  将 `_arbitrate_waiting_task_elevation` 置为 no-op 后 7/13 失败，证明回归覆盖有效。
+- 门禁：`ruff check .` 通过；`PYTHONPYCACHEPREFIX` 隔离的 `compileall -q src tests` 通过；
+  `git diff --check` 干净；`python -m build` 产出 `agentbc-1.0.3a2` sdist+wheel。
+  全量 unittest 1781 项（3 failures / 35 errors / 6 skipped），失败集合与本轮改动前的合并基线
+  **逐项一致**（差异全部来自本环境缺失可选依赖 `claude_agent_sdk` 的 Claude SDK 传输门禁测试，
+  以及 2 项与权限无关的 CLI 文本/会话来源断言）；相对未合并 `agent/claude` HEAD（4F/27E）仅新增
+  private/integration 引入的同因 SDK 依赖测试，无本轮引入的新失败。
+- Controller 直接收尾验收发现原 13 项中的 Approve 用例只验证了
+  `dispatch_required=true`，并在 Runner 真正启动 worker 前断言 `full_continuations=0`，没有覆盖
+  Approve 后的生产 continuation。旧 runtime-capability 路径重放时还暴露出未绑定
+  `elevation_id` 的问题；该路径随后已被方案 D 从 full 生产链路整体退役，因此合入时不得为修复
+  退役 receipt 而重新引入 runtime/Seatbelt 门禁。
+- 方案 D 合入收尾：保留 Hermes adapter latch 与 worker 终态仲裁；新增第 14 项真实链路回归，
+  验证 Approve 只 spawn 一个 runner-authorized worker、同一 elevation 与同一官方 session、有效权限
+  直接解析为 `full`、Hermes 命令固定为 `chat --yolo --resume <same-session>` 且不返回 ACP；唯一
+  continuation 完成并产出有效 callback，elevation 最终进入 `verified`，permission request、
+  notification、human decision、full continuation cardinality 均为 1。
+- `agent/claude@0f59fc5` 合并冲突明确选择方案 D：没有移植其 runtime receipt/host containment
+  生产代码，只移植与方案 D 相容的终态仲裁、协议 fixture、证据与回归测试，并删除测试中已退役的
+  `full_capability_preflight` / `preflight_host_containment` mock。最终门禁与重新封包证据以本次
+  integration merge commit 和后续真机 canary 为准。
+- 2026-09-07 Claude live elevation 通知一致性收尾：现场任务 `6DV5-001` 的请求已是权威
+  `agentbc.approval v3`、`scope=task_elevation`、`requested_permission=full`，差异仅来自
+  `native_live_elevation` 的旧双按钮模板。一级界面统一为 `View Details / Deny / Approve Full`；
+  Details/Back 仅本地导航、零回执，`Approve Full` 继续映射为同一 pending `can_use_tool` 的原生
+  `approve`（`setMode(bypassPermissions)`），不得误用非 live 的 `approve_full` continuation。
+
 ### 4.5 `FLOW-104-001`：handoff 结构化多 steps
 
 - `agentbc task handoff` 接受与根任务一致的结构化 `steps[].description` 输入；
@@ -729,7 +896,7 @@ status/report/doctor 投影命令证据。
 | `PROTO-104-001` | `tests/fixtures/`、协议 probe/fixture tests | 不修改生产 argv/parser 语义 |
 | `ARCH-104-001` | 每次仅一个目标模块及 import compatibility tests | 不夹带 schema、状态机、文案变化 |
 | `PERM-104-001` | approval/permission decision、TaskService approval lifecycle | 不改 handoff、update、notification pipeline |
-| `PERM-104-002`（含 `R1`） | Plan D 三 Executor 原生 full、可信 native v3 elevation、单次 continuation 与重启/回放回归 | 不重新接入 v1/v2、permission-grant、permission-runtime、Seatbelt 生产链；不新增 Git/path/版本穷举预检 |
+| `PERM-104-002`（含 `R1`） | permission failure taxonomy、fingerprint/domain projection、三来源 full runtime capability 闭环；完成后 approval detail/DialogNotifier 回归 | 不新增 Git/path 穷举预检；不先做 UI 修复绕过阻塞与 full 生效闭环 |
 | `FLOW-104-001` | handoff CLI/schema/task packet/prompt contract | 不放宽 callback validator |
 | `FLOW-103-001` | progress receipt/store/projection | 不改变 terminal completion authority |
 | `FLOW-104-002` | terminal delivery、reports、record budget、notifications/cleanup receipt | 不改变任务质量含义或权限策略 |
@@ -761,8 +928,8 @@ status/report/doctor 投影命令证据。
 ### 真实 E2E
 
 - Codex、Claude、Hermes 分别完成 native Approve、Deny、不可升级 blocked 和 session cleanup；
-- `PERM-104-002` 对人工显式 full、inherit/safe 临时申请 full、handoff/retry 权限继承 full 分别验证同一
-  原生模式/单次 elevation 合同；三条路径必须无第二弹窗、无第二权限层、无重复 worker 或 continuation；
+- `PERM-104-002` 对人工显式 full、inherit/safe 临时申请 full、handoff/retry 权限继承 full 分别执行同类
+  linked-worktree 提交与受管 progress 动作；三条路径必须实际成功、无第二弹窗、无阻塞和无权限降级；
 - `PERM-104-002` 先证明不可升级动作最多一次审批；随后 `PERM-104-002-R1` 验证每条仍合法的可审批路径
   均有 `View Details`、内容脱敏、Back 不响应且总 deadline 不重置；
 - Codex 临时会话在 CLI 与 Desktop 两个恢复入口清理前可定位、清理及重启后均不可恢复，同时保留哨兵存在；
@@ -809,9 +976,8 @@ status/report/doctor 投影命令证据。
 
 - 十个权威开发项均有实现、定向/全量测试、真实 E2E 和合入证据；
 - Core 不再依据 Prompt/Agent 自述选择审批渠道；native Deny 零执行且不产生第二 worker；
-- `PERM-104-002` 证明人工授予、临时申请与权限继承的 full 均进入三 Executor 原生最强非交互模式；
-  v3 只由可信 native structured event 建立且最多一次，Approve/Deny/timeout/restart/replay 无重复审批、
-  grant、worker、continuation 或 permission-mode transition；
+- `PERM-104-002` 证明人工授予、临时申请与权限继承的 full 均通过权威 runtime capability receipt 真实
+  生效，声明范围内动作无权限/PathPlan/宿主 containment 阻塞、无重复审批且无静默降级；
 - 不可升级阻塞最多一次审批并稳定 blocked；之后 `PERM-104-002-R1` 证明所有仍合法的权限弹窗稳定
   提供脱敏只读详情，Details/Back 不改变审批状态或 deadline；
 - Codex Executor 临时会话经 cleanup 后在 CLI/Desktop 双入口及重启后均不可恢复，dispatcher 与保留哨兵不受影响；

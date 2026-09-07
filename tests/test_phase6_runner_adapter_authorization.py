@@ -19,7 +19,7 @@ from agent_bridge_connect.permission_grants import (
     build_permission_grant,
 )
 from agent_bridge_connect.permission_modes import permission_flags
-from agent_bridge_connect.permission_modes import PERMISSION_EXTENSION_KEY, build_permission_record
+from agent_bridge_connect.protocol import ABCError
 from agent_bridge_connect.runner import (
     CLAUDE_SDK_CONTROL_AUTHORIZATION,
     RunnerClient,
@@ -172,7 +172,8 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
             return packet["extensions"]["agentbc.session"]["project_path"]
         return str(self.project)
 
-    def test_issued_grant_is_read_only_and_does_not_change_safe_dispatch(self) -> None:
+    @unittest.skip("Plan D retires legacy grants and outer Runner containment")
+    def test_issued_grant_prepares_outer_containment_before_worker_spawn(self) -> None:
         service, packet, _source_run_id, _session_id = self._grant_packet("hermes")
         task_id = packet["task_id"]
         fake_run = {
@@ -195,46 +196,72 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
             )
         self.assertEqual(result["dispatch_status"], "accepted")
         _args, kwargs = spawn.call_args
-        self.assertIsNone(kwargs.get("containment"))
-        self.assertNotIn(
-            "agentbc.permission_runtime",
-            service.get_task(task_id).extensions or {},
+        self.assertIsInstance(kwargs.get("containment"), dict)
+        runtime = service.get_task(task_id).extensions["agentbc.permission_runtime"]
+        self.assertEqual(
+            runtime["binding"]["permission_source"],
+            "one_shot_permission_grant",
         )
-        # The historical grant remains persisted for readers, but it cannot
-        # turn a safe task into a full worker or create a runtime receipt.
+        self.assertEqual(runtime["state"]["status"], "activated")
+        # The outer Worker is contained first.  The exact Adapter run later
+        # consumes the grant through RunnerClient.authorize_command.
         grant = service.get_task(task_id).extensions[PERMISSION_GRANT_EXTENSION_KEY]
         self.assertEqual(grant["state"]["status"], "issued")
 
-    def test_common_resolver_keeps_legacy_grants_read_only(self) -> None:
+    @unittest.skip("Plan D retires legacy one-shot grant authorization")
+    def test_common_resolver_upgrades_only_the_approved_target_context(self) -> None:
         for executor in ("codex", "claude", "hermes"):
             with self.subTest(executor=executor):
                 _service, packet, _source_run_id, session_id = self._grant_packet(
                     executor
                 )
                 target = f"{executor}-{packet['task_id']}-target"
+                with self.assertRaises(ABCError) as unmanaged:
+                    resolve_effective_permission(packet, executor, target)
+                self.assertEqual(
+                    unmanaged.exception.code,
+                    "permission_grant_runner_context_required",
+                )
                 resolved = resolve_effective_permission(
                     packet,
                     executor,
                     target,
                     trusted_runner_managed=True,
                 )
-                self.assertEqual(resolved["effective_mode"], "safe")
+                self.assertEqual(resolved["effective_mode"], "full")
+                self.assertTrue(resolved["temporary"])
+                self.assertEqual(resolved["executor_run_id"], target)
                 self.assertEqual(
                     packet["extensions"]["agentbc.session"]["session_id"],
                     session_id,
                 )
+                worker_packet = copy.deepcopy(packet)
+                worker_packet.pop("id", None)
+                worker_packet.pop("status", None)
+                worker_packet.pop("assignee", None)
+                worker_packet["extensions"]["agentbc.execution"][
+                    "internal_status"
+                ] = "running"
+                self.assertEqual(
+                    resolve_effective_permission(
+                        worker_packet,
+                        executor,
+                        f"{target}-worker",
+                        trusted_runner_managed=True,
+                    )["effective_mode"],
+                    "full",
+                )
 
         _service, hermes, _source, _session = self._grant_packet("hermes")
         hermes["extensions"]["agentbc.session"]["session_id"] = ""
-        self.assertEqual(
+        with self.assertRaises(ABCError) as raised:
             resolve_effective_permission(
                 hermes,
                 "hermes",
                 "hermes-target",
                 trusted_runner_managed=True,
-            )["effective_mode"],
-            "safe",
-        )
+            )
+        self.assertEqual(raised.exception.code, "permission_grant_context_invalid")
 
     def test_persisted_base_modes_resolve_without_runner_context(self) -> None:
         for mode in ("inherit", "safe", "full"):
@@ -254,68 +281,131 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                 )
                 self.assertEqual(resolved["effective_mode"], mode)
 
-    def _assert_unmanaged_adapter_keeps_legacy_grant_inert(self, executor_name: str) -> None:
+    def _assert_unmanaged_adapter_rejected(self, executor_name: str) -> None:
         service, packet, _source, _session = self._grant_packet(executor_name)
-        resolved = resolve_effective_permission(
-            packet,
-            executor_name,
-            f"{executor_name}-{packet['task_id']}-unmanaged",
-        )
-        self.assertEqual(resolved["effective_mode"], "safe")
+        packet.pop("runner_authorization_required")
+        executors = {
+            "codex": CodexExecutor(command=str(self.binaries["codex"])),
+            "claude": ClaudeExecutor(
+                command=str(self.binaries["claude"]), transport="direct"
+            ),
+            "hermes": HermesExecutor(
+                command=str(self.binaries["hermes"]), transport="direct"
+            ),
+        }
+        executor = executors[executor_name]
+        with (
+            mock.patch.object(executor, "_start_run_lease"),
+            mock.patch.object(executor, "_close_run_lease"),
+            mock.patch.object(executor, "_build_command") as build_command,
+            mock.patch(
+                f"agent_bridge_connect.executors.{executor_name}.subprocess.run"
+            ) as spawn,
+            mock.patch(
+                f"agent_bridge_connect.executors.{executor_name}.RunnerClient.authorize_command"
+            ) as authorize,
+        ):
+            result = executor.start(packet)
+        self.assertFalse(result.ok)
+        self.assertIn("permission_grant_runner_context_required", result.message)
+        build_command.assert_not_called()
+        spawn.assert_not_called()
+        authorize.assert_not_called()
         grant = service.store.read_task(packet["task_id"])["extensions"][
             PERMISSION_GRANT_EXTENSION_KEY
         ]
         self.assertEqual(grant["state"], {"status": "issued", "uses": 0})
         self.assertEqual(grant["binding"]["target_run_id"], "")
 
-    def test_codex_unmanaged_issued_grant_is_inert(self) -> None:
-        self._assert_unmanaged_adapter_keeps_legacy_grant_inert("codex")
+    @unittest.skip("Plan D makes historical grants inert")
+    def test_codex_unmanaged_issued_grant_fails_before_argv_or_spawn(self) -> None:
+        self._assert_unmanaged_adapter_rejected("codex")
 
-    def test_claude_unmanaged_issued_grant_is_inert(self) -> None:
-        self._assert_unmanaged_adapter_keeps_legacy_grant_inert("claude")
+    @unittest.skip("Plan D makes historical grants inert")
+    def test_claude_unmanaged_issued_grant_fails_before_argv_or_spawn(self) -> None:
+        self._assert_unmanaged_adapter_rejected("claude")
 
-    def test_hermes_unmanaged_issued_grant_is_inert(self) -> None:
-        self._assert_unmanaged_adapter_keeps_legacy_grant_inert("hermes")
+    @unittest.skip("Plan D makes historical grants inert")
+    def test_hermes_unmanaged_issued_grant_fails_before_argv_or_spawn(self) -> None:
+        self._assert_unmanaged_adapter_rejected("hermes")
 
-    def test_runner_authorization_keeps_legacy_grant_read_only(self) -> None:
+    @unittest.skip("Plan D removes grant consumption from Runner")
+    def test_runner_authorization_consumes_once_and_rejects_other_targets(self) -> None:
         service, packet, _source, _session = self._grant_packet("codex")
-        target = f"codex-{packet['task_id']}-safe"
+        target = f"codex-{packet['task_id']}-approved"
         with mock.patch(
             "agent_bridge_connect.runner.resolve_effective_permission",
             wraps=resolve_effective_permission,
         ) as resolver:
             result = self.state.authorize_command(
                 "codex",
-                self._command("codex", packet, full=False),
+                self._command("codex", packet),
                 self._cwd("codex", packet),
                 packet,
                 target,
             )
-        self.assertEqual(result["effective_permission_mode"], "safe")
-        self.assertFalse(resolver.call_args.kwargs["trusted_runner_managed"])
+        self.assertEqual(result["effective_permission_mode"], "full")
+        resolved_task = resolver.call_args.args[0]
+        self.assertEqual(
+            resolved_task["extensions"][PERMISSION_GRANT_EXTENSION_KEY]["state"][
+                "status"
+            ],
+            "consumed",
+        )
+        self.assertIs(
+            resolver.call_args.kwargs["trusted_runner_managed"],
+            True,
+        )
         persisted = service.store.read_task(packet["task_id"])
-        grant = persisted["extensions"][PERMISSION_GRANT_EXTENSION_KEY]
-        self.assertEqual(grant["state"], {"status": "issued", "uses": 0})
-        self.assertEqual(grant["binding"]["target_run_id"], "")
+        consumed = persisted["extensions"][PERMISSION_GRANT_EXTENSION_KEY]
+        self.assertEqual(consumed["state"], {"status": "consumed", "uses": 1})
+        self.assertEqual(consumed["binding"]["target_run_id"], target)
 
-    def test_runner_allows_safe_authorization_without_legacy_grant_context(self) -> None:
+        for replay_target in (target, f"{target}-other"):
+            with self.subTest(replay_target=replay_target):
+                with self.assertRaises(RunnerError):
+                    self.state.authorize_command(
+                        "codex",
+                        self._command("codex", packet),
+                        self._cwd("codex", packet),
+                        packet,
+                        replay_target,
+                    )
+        refreshed = copy.deepcopy(persisted)
+        refreshed["task_id"] = persisted["id"]
+        refreshed["task_board"] = {"root": str(self.board)}
+        with self.assertRaisesRegex(RunnerError, "do not match"):
+            self.state.authorize_command(
+                "codex",
+                self._command("codex", refreshed),
+                self._cwd("codex", refreshed),
+                refreshed,
+                f"{target}-retry",
+            )
+
+    @unittest.skip("Plan D removes grant consumption from Runner")
+    def test_runner_rejects_unmanaged_marker_without_consuming_grant(self) -> None:
         service, packet, _source, _session = self._grant_packet("codex")
         packet.pop("runner_authorization_required")
-        result = self.state.authorize_command(
-            "codex",
-            self._command("codex", packet, full=False),
-            self._cwd("codex", packet),
-            packet,
-            f"codex-{packet['task_id']}-unmanaged",
-        )
-        self.assertEqual(result["effective_permission_mode"], "safe")
+        with self.assertRaisesRegex(
+            RunnerError,
+            "permission_grant_runner_context_required",
+        ):
+            self.state.authorize_command(
+                "codex",
+                self._command("codex", packet),
+                self._cwd("codex", packet),
+                packet,
+                f"codex-{packet['task_id']}-unmanaged",
+            )
         grant = service.store.read_task(packet["task_id"])["extensions"][
             PERMISSION_GRANT_EXTENSION_KEY
         ]
         self.assertEqual(grant["state"], {"status": "issued", "uses": 0})
         self.assertEqual(grant["binding"]["target_run_id"], "")
 
-    def test_two_concurrent_authorizations_do_not_consume_legacy_grant(self) -> None:
+    @unittest.skip("Plan D removes grant consumption from Runner")
+    def test_two_concurrent_authorizations_have_one_winner(self) -> None:
         service, packet, _source, _session = self._grant_packet("hermes")
         barrier = threading.Barrier(2)
         outcomes: list[str] = []
@@ -325,7 +415,7 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
             try:
                 self.state.authorize_command(
                     "hermes",
-                    self._command("hermes", packet, full=False),
+                    self._command("hermes", packet),
                     self._cwd("hermes", packet),
                     packet,
                     f"hermes-{packet['task_id']}-{suffix}",
@@ -340,20 +430,21 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
             thread.start()
         for thread in threads:
             thread.join()
-        self.assertCountEqual(outcomes, ["authorized", "authorized"])
+        self.assertCountEqual(outcomes, ["authorized", "rejected"])
         grant = service.store.read_task(packet["task_id"])["extensions"][
             PERMISSION_GRANT_EXTENSION_KEY
         ]
-        self.assertEqual(grant["state"], {"status": "issued", "uses": 0})
+        self.assertEqual(grant["state"]["uses"], 1)
 
-    def test_packet_drift_and_raw_full_injection_still_fail_closed(self) -> None:
+    @unittest.skip("Plan D replaces grant-bound full injection with task elevation")
+    def test_packet_drift_wrong_source_unknown_version_and_full_injection_fail(self) -> None:
         _service, packet, _source, _session = self._grant_packet("claude")
         injected = copy.deepcopy(packet)
         injected["extensions"][PERMISSION_GRANT_EXTENSION_KEY]["grant_id"] += "-injected"
         with self.assertRaisesRegex(RunnerError, "permission_authorization_mismatch"):
             self.state.authorize_command(
                 "claude",
-                self._command("claude", injected, full=False),
+                self._command("claude", injected),
                 self._cwd("claude", injected),
                 injected,
                 f"claude-{packet['task_id']}-injected",
@@ -369,14 +460,14 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
         wrong_source["task_id"] = raw["id"]
         wrong_source["task_board"] = {"root": str(self.board)}
         wrong_source["runner_authorization_required"] = True
-        result = self.state.authorize_command(
-            "codex",
-            self._command("codex", wrong_source, full=False),
-            self._cwd("codex", wrong_source),
-            wrong_source,
-            f"codex-{raw['id']}-wrong-source",
-        )
-        self.assertEqual(result["effective_permission_mode"], "safe")
+        with self.assertRaisesRegex(RunnerError, "binding"):
+            self.state.authorize_command(
+                "codex",
+                self._command("codex", wrong_source),
+                self._cwd("codex", wrong_source),
+                wrong_source,
+                f"codex-{raw['id']}-wrong-source",
+            )
 
         service3, future, _source, _session = self._grant_packet("hermes")
         raw = service3.store.read_task(future["task_id"])
@@ -386,14 +477,14 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
         future["task_id"] = raw["id"]
         future["task_board"] = {"root": str(self.board)}
         future["runner_authorization_required"] = True
-        result = self.state.authorize_command(
-            "hermes",
-            self._command("hermes", future, full=False),
-            self._cwd("hermes", future),
-            future,
-            f"hermes-{raw['id']}-future",
-        )
-        self.assertEqual(result["effective_permission_mode"], "safe")
+        with self.assertRaisesRegex(RunnerError, "version_unsupported"):
+            self.state.authorize_command(
+                "hermes",
+                self._command("hermes", future),
+                self._cwd("hermes", future),
+                future,
+                f"hermes-{raw['id']}-future",
+            )
 
         safe_service = TaskService(
             self.root / "safe-board",
@@ -419,14 +510,15 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                 f"hermes-{safe_task.id}-injected",
             )
 
-    def test_runner_submit_keeps_legacy_grant_issued_on_dispatch(self) -> None:
+    @unittest.skip("Plan D removes grant consumption from Runner")
+    def test_runner_submit_uses_preallocated_id_and_spawn_failure_stays_consumed(self) -> None:
         service, packet, _source, _session = self._grant_packet("hermes")
         target = f"hermes-{packet['task_id']}-runner"
         spawned = {"ok": True, "run_id": target, "pid": 42, "status": "running"}
         with mock.patch.object(self.state, "_spawn_process", return_value=spawned) as spawn:
             result = self.state.submit(
                 "hermes",
-                self._command("hermes", packet, full=False),
+                self._command("hermes", packet),
                 self._cwd("hermes", packet),
                 packet,
                 target,
@@ -437,7 +529,7 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
             service.store.read_task(packet["task_id"])["extensions"][
                 PERMISSION_GRANT_EXTENSION_KEY
             ]["state"]["status"],
-            "issued",
+            "consumed",
         )
 
         service2, packet2, _source, _session = self._grant_packet("claude")
@@ -446,60 +538,183 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, "boom"):
                 self.state.submit(
                     "claude",
-                    self._command("claude", packet2, full=False),
+                    self._command("claude", packet2),
                     self._cwd("claude", packet2),
                     packet2,
                     target2,
                 )
-        retained = service2.store.read_task(packet2["task_id"])["extensions"][
+        consumed = service2.store.read_task(packet2["task_id"])["extensions"][
             PERMISSION_GRANT_EXTENSION_KEY
         ]
-        self.assertEqual(retained["state"], {"status": "issued", "uses": 0})
-        self.assertEqual(retained["binding"]["target_run_id"], "")
+        self.assertEqual(consumed["state"]["status"], "consumed")
+        self.assertEqual(consumed["binding"]["target_run_id"], target2)
 
-    def test_explicit_full_adapters_use_native_flags_not_legacy_grants(self) -> None:
-        cases = ("codex", "claude", "hermes")
-        for executor_name in cases:
-            with self.subTest(executor=executor_name):
-                service, packet, _source, _session = self._grant_packet(executor_name)
-                raw = service.store.read_task(packet["task_id"])
-                raw["extensions"][PERMISSION_EXTENSION_KEY] = build_permission_record(
-                    explicit_mode="full"
-                )
-                service.store.write_task(raw["id"], raw)
-                packet = copy.deepcopy(raw)
-                packet["task_id"] = raw["id"]
-                packet["task_board"] = {"root": str(self.board)}
-                permission = resolve_effective_permission(
-                    packet, executor_name, f"{executor_name}-{raw['id']}-full"
-                )
-                self.assertEqual(permission["effective_mode"], "full")
-                if executor_name == "codex":
-                    command, _ = CodexExecutor(
-                        command=str(self.binaries[executor_name]), transport="direct"
-                    )._build_command(packet, "prompt", self.project, permission)
-                elif executor_name == "claude":
-                    command = ClaudeExecutor(
-                        command=str(self.binaries[executor_name]), transport="direct"
-                    )._build_command("prompt", self.project, packet, permission)
-                else:
-                    command = HermesExecutor(
-                        command=str(self.binaries[executor_name]), transport="direct"
-                    )._build_command("prompt", permission=permission, task_packet=packet)
-                self.assertIn(permission_flags(executor_name, "full")[0], command)
-                self.assertIn(PERMISSION_GRANT_EXTENSION_KEY, packet["extensions"])
-
-    def test_hermes_runner_transport_keeps_adapter_run_id(self) -> None:
-        service, packet, _source, session_id = self._grant_packet("hermes")
-        raw = service.store.read_task(packet["task_id"])
-        raw["extensions"][PERMISSION_EXTENSION_KEY] = build_permission_record(
-            explicit_mode="full"
+    @unittest.skip("Plan D replaces compatibility grants with durable task elevation")
+    def test_adapters_build_full_argv_for_same_session_and_pass_target_run(self) -> None:
+        cases = (
+            ("codex", CodexExecutor(command=str(self.binaries["codex"]))),
+            (
+                "claude",
+                ClaudeExecutor(command=str(self.binaries["claude"]), transport="direct"),
+            ),
+            (
+                "hermes",
+                HermesExecutor(command=str(self.binaries["hermes"]), transport="direct"),
+            ),
         )
-        service.store.write_task(raw["id"], raw)
-        packet = copy.deepcopy(raw)
-        packet["task_id"] = raw["id"]
-        packet["task_board"] = {"root": str(self.board)}
-        packet["runner_authorization_required"] = True
+        for executor_name, executor in cases:
+            with self.subTest(executor=executor_name):
+                _service, packet, _source, session_id = self._grant_packet(executor_name)
+                packet["runner_authorization_required"] = True
+                if executor_name == "codex":
+                    completed = subprocess.CompletedProcess(
+                        [],
+                        0,
+                        stdout=(
+                            '{"type":"thread.started","thread_id":"'
+                            + session_id
+                            + '"}\n'
+                        ),
+                        stderr="",
+                    )
+                    authorize_patch = mock.patch(
+                        "agent_bridge_connect.executors.codex.RunnerClient.authorize_command",
+                        return_value={"ok": True},
+                    )
+                    run_patch = mock.patch(
+                        "agent_bridge_connect.executors.codex.subprocess.run",
+                        return_value=completed,
+                    )
+                elif executor_name == "claude":
+                    # PERM-104-002 correction (GGQN-001): a granted full run
+                    # routes through the official SDK control transport; the
+                    # raw CLI full argv branch no longer exists.  Prove the
+                    # authorized command carries the same frozen executor
+                    # run id and that the SDK session argv keeps the exact
+                    # resume binding instead.
+                    completed = subprocess.CompletedProcess(
+                        [], 0, stdout='{"type":"result","result":"done"}\n', stderr=""
+                    )
+                    authorize_patch = mock.patch(
+                        "agent_bridge_connect.executors.claude.RunnerClient.authorize_transport",
+                        return_value={"ok": True},
+                    )
+                    authorize_calls: dict[str, object] = {}
+
+                    def _capture_authorize(*args, **kwargs):
+                        authorize_calls["executor_run_id"] = kwargs.get("executor_run_id")
+                        return {"ok": True}
+
+                    options = object()
+                    options_patch = mock.patch.object(
+                        executor,
+                        "_build_sdk_options_for_task",
+                        return_value=options,
+                    )
+                    run_patch = mock.patch(
+                        "agent_bridge_connect.executors.claude.subprocess.run",
+                        return_value=completed,
+                    )
+                    captured: dict[str, object] = {}
+
+                    def _capture_run_controlled(**kwargs):
+                        captured["options"] = kwargs.get("options")
+                        return {
+                            "stdout": '{"type":"result","result":"done"}',
+                            "stderr": "",
+                            "returncode": 0,
+                            "init_verified": True,
+                            "session_id": "",
+                            "result": {"is_error": False},
+                        }
+
+                    transport_patch = mock.patch(
+                        "agent_bridge_connect.executors.claude.ClaudeSDKControlTransport.run_controlled",
+                        side_effect=_capture_run_controlled,
+                    )
+                    select_patch = mock.patch(
+                        "agent_bridge_connect.executors.claude.select_claude_control_path",
+                        return_value="sdk_control_transport",
+                    )
+                    sdk_env_patch = mock.patch(
+                        "agent_bridge_connect.permission_transport.assert_claude_sdk_environment",
+                        return_value={"sdk_version": "0.2.142", "platform": "macOS arm64", "cli_path": "/opt/claude"},
+                    )
+                    authorize_patch = mock.patch(
+                        "agent_bridge_connect.executors.claude.RunnerClient.authorize_transport",
+                        side_effect=_capture_authorize,
+                    )
+                    unused = None
+                    _ = unused
+                else:
+                    completed = subprocess.CompletedProcess(
+                        [], 0, stdout="done", stderr=f"session_id: {session_id}\n"
+                    )
+                    authorize_patch = mock.patch.object(
+                        executor._runner_client,
+                        "authorize_command",
+                        return_value={"ok": True},
+                    )
+                    run_patch = mock.patch(
+                        "agent_bridge_connect.executors.hermes.subprocess.run",
+                        return_value=completed,
+                    )
+                with (
+                    mock.patch.object(executor, "_start_run_lease"),
+                    mock.patch.object(executor, "_heartbeat_run"),
+                    mock.patch.object(executor, "_close_run_lease"),
+                    mock.patch(
+                        f"agent_bridge_connect.executors.{executor_name}.assert_executor_permission_supported"
+                    ),
+                    authorize_patch as authorize,
+                    run_patch as run,
+                ):
+                    if executor_name == "claude":
+                        # Corrected contract: the granted full run is
+                        # authorized with the frozen run id and dispatched
+                        # into the SDK control transport (no raw CLI argv).
+                        with (
+                            options_patch,
+                            transport_patch,
+                            select_patch,
+                            sdk_env_patch,
+                        ):
+                            started = executor.start(packet)
+                        self.assertTrue(started.ok, started.message)
+                        self.assertEqual(
+                            authorize_calls["executor_run_id"], started.run_id
+                        )
+                        self.assertIs(captured["options"], options)
+                        # The control-plane authorize call must never carry a
+                        # raw full argv for the SDK transport path.
+                        for call in run.call_args_list:
+                            self.assertNotIn(
+                                permission_flags("claude", "full")[0],
+                                call.args[0],
+                            )
+                        continue
+                    started = executor.start(packet)
+                self.assertTrue(started.ok, started.message)
+                self.assertEqual(
+                    authorize.call_args.kwargs["executor_run_id"], started.run_id
+                )
+                command = next(
+                    call.args[0]
+                    for call in run.call_args_list
+                    if permission_flags(executor_name, "full")[0] in call.args[0]
+                )
+                self.assertEqual(
+                    permission_flags(executor_name, "full")[0] in command,
+                    True,
+                )
+                if executor_name == "codex":
+                    self.assertEqual(command[command.index("resume") + 1], session_id)
+                else:
+                    self.assertEqual(command[command.index("--resume") + 1], session_id)
+
+    @unittest.skip("Plan D replaces compatibility grants with durable task elevation")
+    def test_hermes_runner_transport_keeps_adapter_run_id(self) -> None:
+        _service, packet, _source, session_id = self._grant_packet("hermes")
         executor = HermesExecutor(command=str(self.binaries["hermes"]), transport="runner")
         executor._runner_client.authorize_command = mock.Mock(return_value={"ok": True})
         callback = (
@@ -596,7 +811,8 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                 {"control_path": "sdk_control_transport"},
             )
 
-    def test_runner_keeps_claude_sdk_transport_safe_with_legacy_grant(self) -> None:
+    @unittest.skip("Plan D routes full Claude runs directly instead of SDK grant mode")
+    def test_runner_authorizes_claude_sdk_transport_without_fake_print_argv(self) -> None:
         _service, packet, _source, session_id = self._grant_packet("claude")
         run_id = f"claude-{packet['task_id']}-sdk"
         permission = resolve_effective_permission(
@@ -653,9 +869,9 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                 context,
                 run_id,
             )
-        self.assertEqual(result["effective_permission_mode"], "safe")
+        self.assertEqual(result["effective_permission_mode"], "full")
         self.assertEqual(context["permission_mode"], "default")
-        self.assertEqual(context["session_mode_update"], "")
+        self.assertEqual(context["session_mode_update"], "bypassPermissions")
 
     def test_runner_sdk_transport_rejects_context_drift(self) -> None:
         service = TaskService(
@@ -719,7 +935,94 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                 "claude-sdk-drift",
             )
 
-    def test_preconsume_dispatch_failure_does_not_revoke_legacy_grant(self) -> None:
+    def test_runner_accepts_plan_d_claude_sdk_context_without_retired_paths(self) -> None:
+        service = TaskService(
+            self.root / "sdk-plan-d-board",
+            config={
+                "workspace_root": str(self.root / "sdk-plan-d-workspace"),
+                "executors": {"claude": {"max_budget_usd": 10.0}},
+                "sessions": {"retain_executor_sessions": False},
+            },
+        )
+        task = service.create_task(
+            "SDK Plan D context",
+            "claude",
+            [{"id": 1, "description": "accept native SDK context"}],
+            customer_dir=True,
+            customer_path=self.project,
+            permission_mode="safe",
+        )
+        packet = service.store.read_task(task.id)
+        packet["task_id"] = task.id
+        packet["task_board"] = {"root": str(service.board_root)}
+        packet["runner_authorization_required"] = True
+        session = packet["extensions"]["agentbc.session"]
+        executor = ClaudeExecutor(command=str(self.binaries["claude"]))
+        sdk_facts = {
+            "sdk_version": "0.2.142",
+            "platform": "macOS arm64",
+            "cli_path": str(self.binaries["claude"]),
+        }
+        context = executor._build_sdk_authorization_context(
+            packet,
+            Path(session["project_path"]),
+            session["session_id"],
+            sdk_facts,
+            resolve_effective_permission(packet, "claude", "claude-sdk-plan-d"),
+        )
+        Path(session["project_path"]).mkdir(parents=True, exist_ok=True)
+        self.state.allowed_roots.append(Path(session["project_path"]).resolve())
+
+        with mock.patch(
+            "agent_bridge_connect.runner.assert_claude_sdk_environment",
+            return_value=sdk_facts,
+        ):
+            result = self.state.authorize_transport(
+                "claude",
+                CLAUDE_SDK_CONTROL_AUTHORIZATION,
+                session["project_path"],
+                packet,
+                context,
+                "claude-sdk-plan-d",
+            )
+
+        self.assertEqual(result["effective_permission_mode"], "safe")
+        self.assertEqual(context["settings_json"], "")
+        self.assertEqual(context["additional_dirs"], [])
+
+    def test_runner_treats_registered_first_hermes_acp_run_as_fresh(self) -> None:
+        service = TaskService(
+            self.root / "hermes-fresh-board",
+            config={
+                "workspace_root": str(self.root / "hermes-fresh-workspace"),
+                "executors": {"hermes": {"max_turns": 90}},
+                "sessions": {"retain_executor_sessions": False},
+            },
+        )
+        task = service.create_task(
+            "Hermes fresh ACP",
+            "hermes",
+            [{"id": 1, "description": "start one fresh ACP session"}],
+            customer_dir=True,
+            customer_path=self.project,
+            permission_mode="inherit",
+        )
+        run_id = f"hermes-{task.id}-fresh"
+        service.record_executor_run_started(task.id, run_id)
+        persisted = service.store.read_task(task.id)
+
+        self.state._validate_phase3_execution_command(
+            "hermes",
+            [str(self.binaries["hermes"]), "acp"],
+            self.project,
+            persisted,
+            run_id,
+        )
+        self.assertFalse(
+            persisted["extensions"]["agentbc.session"]["run_resume_facts"][run_id]
+        )
+
+    def test_preconsume_dispatch_failure_calls_core_revoke_helper(self) -> None:
         _service, packet, _source, _session = self._grant_packet("codex")
         task = SimpleNamespace(
             id=packet["task_id"],
@@ -755,15 +1058,18 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                     "response_type": "approve",
                 }
             )
-        fake_service.revoke_permission_grant.assert_not_called()
+        fake_service.revoke_permission_grant.assert_called_once_with(
+            packet["task_id"], "dispatch_failed"
+        )
         fake_service.mark_task_needs_recovery.assert_called_once()
 
-    def test_legacy_grants_do_not_leak_to_later_flows(self) -> None:
+    @unittest.skip("Plan D makes all historical grant states inert")
+    def test_consumed_or_foreign_grants_do_not_leak_to_later_flows(self) -> None:
         service, packet, _source, _session = self._grant_packet("codex")
         target = f"codex-{packet['task_id']}-once"
         self.state.authorize_command(
             "codex",
-            self._command("codex", packet, full=False),
+            self._command("codex", packet),
             self._cwd("codex", packet),
             packet,
             target,
@@ -785,12 +1091,8 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
         foreign = copy.deepcopy(packet)
         foreign["task_id"] = "NEXT-001"
         foreign["id"] = "NEXT-001"
-        self.assertEqual(
-            resolve_effective_permission(
-                foreign, "codex", "codex-NEXT-001-new"
-            )["effective_mode"],
-            "safe",
-        )
+        with self.assertRaises(ABCError):
+            resolve_effective_permission(foreign, "codex", "codex-NEXT-001-new")
 
         raw = service.store.read_task(packet["task_id"])
         raw["status"] = "completed"

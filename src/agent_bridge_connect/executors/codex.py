@@ -52,7 +52,10 @@ from agent_bridge_connect.permission_modes import (
     permission_flags,
     permission_record_from_extensions,
 )
-from agent_bridge_connect.permission_elevation import task_elevation_protocol_enabled
+from agent_bridge_connect.permission_elevation import (
+    permission_elevation_from_extensions,
+    task_elevation_protocol_enabled,
+)
 from agent_bridge_connect.prompt_contract import (
     PromptPlatformExtras,
     build_prompt_contract,
@@ -542,9 +545,10 @@ class CodexExecutor(CLIExecutorBase):
             self._close_run_lease(run_id)
             return StartResult(ok=False, run_id="", message=f"{exc.code}: {exc}")
         try:
-            assert_executor_permission_supported(
-                "codex", permission["effective_mode"], self.agent_bin
-            )
+            if permission["effective_mode"] != "full":
+                assert_executor_permission_supported(
+                    "codex", permission["effective_mode"], self.agent_bin
+                )
             resumed, _ = _codex_resume_context(task_packet)
             command, prompt_input = self._build_command(
                 task_packet,
@@ -663,21 +667,35 @@ class CodexExecutor(CLIExecutorBase):
         if transport in {"cli", "direct"}:
             return False
         extensions = (task_packet or {}).get("extensions")
-        try:
-            permission = permission_record_from_extensions(
-                extensions,
-                allow_legacy=False,
-            )
-        except ABCError:
-            # Capability introspection is also used by legacy/minimal packets
-            # and terminal diagnostics. Missing permission metadata must not
-            # turn that read-only path into an executor crash; actual
-            # authorization still validates the persisted task snapshot.
-            return transport == "auto" or transport in CODEX_APP_SERVER_TRANSPORT_ALIASES
-        # Plan D full always uses Codex's native strongest noninteractive CLI;
-        # App Server remains the structured permission transport for safe and
-        # inherit only.
-        if permission["effective_mode"] == "full":
+        extensions = extensions if isinstance(extensions, dict) else {}
+        elevation = permission_elevation_from_extensions(extensions)
+        session = (
+            extensions.get(SESSION_EXTENSION_KEY)
+            if isinstance(extensions, dict)
+            else None
+        )
+        official_receipt = (
+            isinstance(session, dict)
+            and session.get("official_receipt_bound") is True
+            and bool(str(session.get("session_id") or "").strip())
+        )
+        if elevation is not None and elevation["state"]["status"] in {
+            "approved",
+            "active",
+            "verified",
+        }:
+            # Plan D: once elevated, use Codex's native strongest CLI mode.
+            # Historical permission grants are deliberately ignored.
+            return False
+        permission = permission_record_from_extensions(
+            extensions,
+            allow_legacy=True,
+        )
+        # Once an official receipt exists, auto/app-server must use the same
+        # App Server transport for every continuation, including full mode.
+        # The fresh full task exception above avoids creating a resumable
+        # session through a path that has no official receipt yet.
+        if permission["effective_mode"] == "full" and not official_receipt:
             return False
         return transport == "auto" or transport in CODEX_APP_SERVER_TRANSPORT_ALIASES
 
@@ -890,13 +908,15 @@ class CodexExecutor(CLIExecutorBase):
                     task_packet.get("runner_authorization_required") is True
                 ),
             )
-            assert_executor_permission_supported(
-                "codex", permission["effective_mode"], self.agent_bin
-            )
+            if permission["effective_mode"] != "full":
+                assert_executor_permission_supported(
+                    "codex", permission["effective_mode"], self.agent_bin
+                )
             # Capability gate is transport- and receipt-based. Inherit keeps
             # native permission settings, safe supplies the conservative
             # workspace policy, and full keeps the CLI fallback.
-            self._freeze_app_server_capability(permission)
+            if permission["effective_mode"] != "full":
+                self._freeze_app_server_capability(permission)
             collaboration_capability = {
                 "enabled": False,
                 "reason": "collaboration_spawn_not_requested",

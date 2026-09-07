@@ -21,7 +21,28 @@
   },
   "help_entry_captured": true,
   "help_excerpt_ref": "sessions_delete_help.txt",
-  "session_id_format_regex": "^\\d{8}_\\d{6}_[0-9a-fA-F]{6,32}$",
+  "session_id_contract": {
+    "rule": "single safe positional argv token; the exact officially bound receipt identifier",
+    "shapes": {
+      "acp_session": {
+        "origin": "hermes acp session/new + session/load (acp_adapter/session.py str(uuid.uuid4()))",
+        "example": "18a3e156-6aae-4286-b504-4276f90fc5b2",
+        "note": "the shape bound by the Hermes ACP stderr receipt"
+      },
+      "cli_session": {
+        "origin": "hermes CLI chat session token",
+        "example": "20260904_151900_1a2b3c",
+        "note": "the shape the pre-PERM-104-001 regex accepted exclusively"
+      }
+    },
+    "validation_regex": "^[0-9A-Za-z][0-9A-Za-z._:@+-]{5,127}$",
+    "rejects": [
+      "empty identifier",
+      "leading dash (option injection)",
+      "whitespace or path separators",
+      "identifier above 128 characters"
+    ]
+  },
   "strategy": "official_session_delete",
   "surface": "session_delete"
 }

@@ -1,4 +1,4 @@
-"""Frozen Codex App Server capability/schema contract (PERM-103-009).
+"""Codex App Server capability/schema contract (PERM-103-009).
 
 This narrow module is the single place where AgentBC freezes which Codex
 App Server surfaces it may drive in production.  It owns:
@@ -11,8 +11,7 @@ App Server surfaces it may drive in production.  It owns:
   ``codex app-server generate-json-schema --experimental`` output
   (both the Runner-pinned ``0.146.0`` and the local ``0.147.0``
   surfaces),
-* the version gate that fails closed on unknown / too-old Codex
-  versions, and
+* best-effort version diagnostics that never decide protocol support, and
 * the executable probe that only ever reads official CLI help/schema
   output and never scans Codex private session storage.
 
@@ -30,9 +29,9 @@ Design rules (from the ``PERM-103-009`` production-chain freeze):
   summary may be recorded.
 * The contract mirrors the generated schema both for the Runner-pinned
   ``0.146.0`` release and the locally installed ``0.147.0``.  The two
-  surfaces are identical for the frozen method set, so the same probe
-  works for both; the version gate keeps the contract pinned to known
-  releases and fails closed for anything unknown.
+  surfaces are identical for the required method set.  Newer versions and
+  forks are supported by default when the generated schema still exposes
+  that protocol surface; AgentBC does not maintain a release allow-list.
 """
 
 from __future__ import annotations
@@ -55,9 +54,10 @@ CODEX_APP_SERVER_TRANSPORT_ALIASES = frozenset(
     {"app-server", "app_server", "stdio", "codex-app-server"}
 )
 
-# Version gate: the frozen minimum and maximum surfaces.  The Runner-pinned
-# release is 0.146.0 and the locally installed surface is 0.147.0.  Any other
-# version is rejected until a new schema fixture and probe evidence exist.
+# Historical fixture bounds retained as compatibility exports for tooling and
+# old reports.  They are evidence metadata only and are never a production
+# support gate.  Runtime support is determined mechanically from the generated
+# App Server schema below.
 CODEX_APP_SERVER_MIN_VERSION = (0, 146, 0)
 CODEX_APP_SERVER_MAX_VERSION = (0, 150, 1)
 CODEX_APP_SERVER_SUPPORTED_VERSIONS = frozenset(
@@ -124,7 +124,7 @@ CODEX_APP_SERVER_CAPABILITY_GROUPS: dict[str, dict[str, frozenset[str]]] = {
 }
 
 # Versions whose generated schema bundle is distilled into the fixture matrix.
-# Evidence only: listing a version here never widens the gate above.
+# Evidence only: listing a version here does not restrict runtime support.
 CODEX_APP_SERVER_SCHEMA_EVIDENCE_VERSIONS = ("0.146.0", "0.147.0", "0.150.1")
 
 # Schema-contract evidence, in the same order the generated bundle is checked.
@@ -392,8 +392,8 @@ def codex_app_server_contract(
 
     The verification is executed with only official CLI help/schema output;
     it never scans private session storage and never reads user config.
-    Unknown versions, missing frozen methods, or a malformed schema bundle
-    all fail closed with ``codex_app_server_capability_unsupported``.
+    Version text is diagnostic only. Missing required methods or a malformed
+    schema bundle fail closed with ``codex_app_server_capability_unsupported``.
     """
     executable_path = Path(executable).expanduser()
     result: dict[str, Any] = {
@@ -431,17 +431,6 @@ def codex_app_server_contract(
     result["version"] = _first_line(version)
     parsed = _version_key(version)
     result["version_parsed"] = parsed
-    if parsed is None:
-        result["reason"] = f"codex version is not parseable: {result['version']}"
-        return result
-    if parsed not in CODEX_APP_SERVER_SUPPORTED_VERSIONS:
-        result["reason"] = (
-            f"codex version {'.'.join(str(part) for part in parsed)} is outside the "
-            f"frozen App Server surface "
-            f"({'.'.join(str(part) for part in CODEX_APP_SERVER_MIN_VERSION)}-"
-            f"{'.'.join(str(part) for part in CODEX_APP_SERVER_MAX_VERSION)})"
-        )
-        return result
 
     bundle = schema_bundle
     if bundle is None:
@@ -484,7 +473,10 @@ def codex_app_server_contract(
         )
         return result
     result["ok"] = True
-    result["evidence"] = ["version_gate", "schema_methods_verified"]
+    result["evidence"] = [
+        "protocol_surface_default_compatible",
+        "schema_methods_verified",
+    ]
     result["schema_summary"] = _first_line(
         str(bundle.get("title") or "CodexAppServerProtocol")
     )

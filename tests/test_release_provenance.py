@@ -648,10 +648,13 @@ class NoPublishBehaviourTests(unittest.TestCase):
         """_build_info.json is gitignored and not tracked."""
         gitignore = (_REPO / ".gitignore").read_text(encoding="utf-8")
         self.assertIn("_build_info.json", gitignore)
-        # It should not exist in the committed tree.
-        info_path = _REPO / "src" / "agent_bridge_connect" / "_build_info.json"
+        # A local package build may leave this ignored artifact on disk.
+        tracked = subprocess.run(
+            ["git", "ls-files", "--", "src/agent_bridge_connect/_build_info.json"],
+            cwd=_REPO, capture_output=True, text=True, check=True,
+        )
         self.assertFalse(
-            info_path.exists(),
+            tracked.stdout.strip(),
             "_build_info.json must not be committed; it is a build artifact",
         )
 
