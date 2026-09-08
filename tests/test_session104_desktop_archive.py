@@ -90,8 +90,11 @@ def _context(dispatcher_thread_id: str = DISPATCHER_ID) -> CodexDesktopRouteCont
     return CodexDesktopRouteContext(
         pipe_path="/tmp/codex-app-tools-test.pipe",
         dispatcher_thread_id=dispatcher_thread_id,
-        mcp_runtime="bundled-runtime-test",
-        mcp_resource="bundled-resource-test",
+        mcp_runtime="/Applications/Test.app/Contents/Resources/cua_node/bin/node",
+        mcp_resource=(
+            "/Applications/Test.app/Contents/Resources/plugins/"
+            "openai-bundled/plugins/codex-app-tools/server.mjs"
+        ),
         host=socket.gethostname(),
     )
 
@@ -116,18 +119,43 @@ def _request(**overrides: object) -> SessionCleanupRequest:
 
 
 class DesktopRouteTests(unittest.TestCase):
-    def test_environment_context_requires_pipe_thread_and_mcp_context(self) -> None:
+    def test_environment_context_derives_official_resource_from_node(self) -> None:
         env = {
             "CODEX_APP_TOOLS_PIPE_PATH": "/tmp/app-tools.pipe",
             "CODEX_THREAD_ID": DISPATCHER_ID,
-            "CODEX_APP_TOOLS_MCP_RUNTIME": "runtime",
-            "CODEX_APP_TOOLS_MCP_RESOURCE": "resource",
+            "CODEX_MCP_NODE_PATH": (
+                "/Applications/Test.app/Contents/Resources/cua_node/bin/node"
+            ),
         }
         context = read_desktop_route_context(env)
         self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual(
+            context.mcp_resource,
+            "/Applications/Test.app/Contents/Resources/plugins/"
+            "openai-bundled/plugins/codex-app-tools/server.mjs",
+        )
         self.assertNotIn("app-tools.pipe", repr(context))
         self.assertIsNone(read_desktop_route_context({**env, "CODEX_THREAD_ID": "wrong"}))
-        self.assertIsNone(read_desktop_route_context({k: v for k, v in env.items() if "RESOURCE" not in k}))
+        self.assertIsNone(
+            read_desktop_route_context(
+                {key: value for key, value in env.items() if key != "CODEX_MCP_NODE_PATH"}
+            )
+        )
+
+    def test_registration_rejects_unrelated_facade_resource(self) -> None:
+        invalid = CodexDesktopRouteContext(
+            pipe_path="/tmp/codex-app-tools-test.pipe",
+            dispatcher_thread_id=DISPATCHER_ID,
+            mcp_runtime="/Applications/Test.app/Contents/Resources/cua_node/bin/node",
+            mcp_resource="/tmp/server.mjs",
+            host=socket.gethostname(),
+        )
+        broker = CodexDesktopArchiveBroker(transport_factory=Factory(_route_transport()))
+        self.assertEqual(
+            broker.register(invalid)["error_code"],
+            CODEX_DESKTOP_ARCHIVE_ROUTE_UNAVAILABLE,
+        )
 
     def test_registration_negotiates_tools_without_version_allowlist(self) -> None:
         factory = Factory(_route_transport())

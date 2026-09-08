@@ -12,7 +12,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import selectors
 import socket
+import subprocess
 import threading
 import time
 import uuid
@@ -25,11 +27,11 @@ from .control import TransportClosed
 
 CODEX_APP_TOOLS_PIPE_PATH_ENV = "CODEX_APP_TOOLS_PIPE_PATH"
 CODEX_THREAD_ID_ENV = "CODEX_THREAD_ID"
-CODEX_APP_TOOLS_MCP_CONTEXT_ENV = "CODEX_APP_TOOLS_MCP_CONTEXT"
-CODEX_APP_TOOLS_MCP_RUNTIME_ENV = "CODEX_APP_TOOLS_MCP_RUNTIME"
-CODEX_APP_TOOLS_MCP_RESOURCE_ENV = "CODEX_APP_TOOLS_MCP_RESOURCE"
-CODEX_APP_TOOLS_MCP_RUNTIME_CONTEXT_ENV = "CODEX_APP_TOOLS_MCP_RUNTIME_CONTEXT"
-CODEX_APP_TOOLS_MCP_RESOURCE_CONTEXT_ENV = "CODEX_APP_TOOLS_MCP_RESOURCE_CONTEXT"
+CODEX_MCP_NODE_PATH_ENV = "CODEX_MCP_NODE_PATH"
+
+_APP_TOOLS_RESOURCE = Path(
+    "plugins/openai-bundled/plugins/codex-app-tools/server.mjs"
+)
 
 CODEX_DESKTOP_ARCHIVE_TOOL = "set_thread_archived"
 CODEX_DESKTOP_ARCHIVE_ROUTE_UNAVAILABLE = "codex_desktop_archive_route_unavailable"
@@ -111,8 +113,10 @@ def read_desktop_route_context(
 ) -> CodexDesktopRouteContext | None:
     """Read only mechanically supplied Desktop context from the environment.
 
-    The optional JSON context is accepted only as a transport envelope.  Its
-    values are never logged or included in the returned public route state.
+    Codex Desktop currently supplies the native pipe, dispatcher thread and
+    bundled Node runtime mechanically.  The App Tools MCP resource is derived
+    from that runtime's application Resources root; AgentBC does not require
+    invented environment variables or a version allow-list.
     """
     source = env if env is not None else os.environ
     pipe_path = _bounded_context_value(source.get(CODEX_APP_TOOLS_PIPE_PATH_ENV))
@@ -120,19 +124,8 @@ def read_desktop_route_context(
     if not pipe_path or not Path(pipe_path).is_absolute() or not dispatcher_id:
         return None
 
-    runtime = _bounded_context_value(source.get(CODEX_APP_TOOLS_MCP_RUNTIME_ENV))
-    resource = _bounded_context_value(source.get(CODEX_APP_TOOLS_MCP_RESOURCE_ENV))
-    envelope = _bounded_context_value(source.get(CODEX_APP_TOOLS_MCP_CONTEXT_ENV))
-    if envelope:
-        try:
-            parsed = json.loads(envelope)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            parsed = None
-        if isinstance(parsed, dict):
-            runtime = runtime or _bounded_context_value(parsed.get("runtime"))
-            resource = resource or _bounded_context_value(parsed.get("resource"))
-    runtime = runtime or _bounded_context_value(source.get(CODEX_APP_TOOLS_MCP_RUNTIME_CONTEXT_ENV))
-    resource = resource or _bounded_context_value(source.get(CODEX_APP_TOOLS_MCP_RESOURCE_CONTEXT_ENV))
+    runtime = _bounded_context_value(source.get(CODEX_MCP_NODE_PATH_ENV))
+    resource = _app_tools_resource_for_runtime(runtime)
     if not runtime or not resource:
         return None
     return CodexDesktopRouteContext(
@@ -142,6 +135,45 @@ def read_desktop_route_context(
         mcp_resource=resource,
         host=socket.gethostname(),
     )
+
+
+def _app_tools_resource_for_runtime(runtime: str) -> str:
+    """Derive the bundled App Tools server from a Desktop-owned Node path."""
+    value = _bounded_context_value(runtime)
+    if not value:
+        return ""
+    node = Path(value).expanduser()
+    if not node.is_absolute():
+        return ""
+    for parent in node.parents:
+        if parent.name != "Resources":
+            continue
+        return str(parent / _APP_TOOLS_RESOURCE)
+    return ""
+
+
+def _route_context_paths_valid(
+    context: CodexDesktopRouteContext,
+    *,
+    require_installed: bool,
+) -> bool:
+    runtime = Path(context.mcp_runtime).expanduser()
+    resource = Path(context.mcp_resource).expanduser()
+    expected = _app_tools_resource_for_runtime(str(runtime))
+    if (
+        not runtime.is_absolute()
+        or not resource.is_absolute()
+        or not expected
+        or resource != Path(expected)
+    ):
+        return False
+    if require_installed and (
+        not runtime.is_file()
+        or not os.access(runtime, os.X_OK)
+        or not resource.is_file()
+    ):
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -168,47 +200,74 @@ class CodexDesktopArchiveResult:
         }
 
 
-class _UnixMcpTransport:
-    def __init__(self, path: str, timeout_s: float) -> None:
-        self._path = path
+class _StdioMcpTransport:
+    """Run Codex's bundled MCP facade and let it own native pipe framing.
+
+    The native Desktop socket is *not* an MCP socket: it uses a private framed
+    host protocol.  The bundled facade is the supported adapter from newline
+    delimited MCP stdio to that host protocol and supplies the dispatcher
+    identity required by App Tools.
+    """
+
+    def __init__(self, context: CodexDesktopRouteContext, timeout_s: float) -> None:
+        self._context = context
         self._timeout_s = timeout_s
-        self._socket: socket.socket | None = None
-        self._buffer = b""
+        self._process: subprocess.Popen[bytes] | None = None
 
     def start(self) -> None:
-        if self._socket is not None:
+        if self._process is not None:
             return
-        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        connection.settimeout(self._timeout_s)
         try:
-            connection.connect(self._path)
-        except Exception:
-            connection.close()
-            raise
-        self._socket = connection
+            self._process = subprocess.Popen(
+                [
+                    self._context.mcp_runtime,
+                    self._context.mcp_resource,
+                    "--interaction-client-id",
+                    self._context.dispatcher_thread_id,
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env={
+                    **os.environ,
+                    CODEX_APP_TOOLS_PIPE_PATH_ENV: self._context.pipe_path,
+                },
+            )
+        except OSError as exc:
+            raise TransportClosed("Codex Desktop MCP facade failed to start") from exc
 
     def send(self, message: dict[str, Any]) -> None:
-        if self._socket is None:
+        process = self._process
+        if process is None or process.stdin is None or process.poll() is not None:
             raise TransportClosed("Codex Desktop route is not connected")
         encoded = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(encoded) > _MAX_RESPONSE_BYTES:
             raise TransportClosed("Codex Desktop MCP request is too large")
-        self._socket.sendall(encoded + b"\n")
+        try:
+            process.stdin.write(encoded + b"\n")
+            process.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            raise TransportClosed("Codex Desktop MCP facade closed") from exc
 
     def recv(self, timeout_s: float | None = None) -> dict[str, Any]:
-        if self._socket is None:
+        process = self._process
+        if process is None or process.stdout is None or process.poll() is not None:
             raise TransportClosed("Codex Desktop route is not connected")
-        self._socket.settimeout(max(float(timeout_s or self._timeout_s), 0.01))
-        while b"\n" not in self._buffer:
-            chunk = self._socket.recv(65536)
-            if not chunk:
-                raise TransportClosed("Codex Desktop route closed")
-            self._buffer += chunk
-            if len(self._buffer) > _MAX_RESPONSE_BYTES:
-                raise TransportClosed("Codex Desktop MCP response is too large")
-        line, self._buffer = self._buffer.split(b"\n", 1)
+        wait_s = max(float(timeout_s or self._timeout_s), 0.01)
+        selector = selectors.DefaultSelector()
         try:
-            message = json.loads(line.decode("utf-8"))
+            selector.register(process.stdout, selectors.EVENT_READ)
+            if not selector.select(wait_s):
+                raise TimeoutError("Codex Desktop MCP response timed out")
+            line = process.stdout.readline(_MAX_RESPONSE_BYTES + 1)
+        finally:
+            selector.close()
+        if not line:
+            raise TransportClosed("Codex Desktop MCP facade closed")
+        if len(line) > _MAX_RESPONSE_BYTES:
+            raise TransportClosed("Codex Desktop MCP response is too large")
+        try:
+            message = json.loads(line.decode("utf-8").strip())
         except (UnicodeDecodeError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise TransportClosed("Codex Desktop MCP response is invalid") from exc
         if not isinstance(message, dict):
@@ -216,9 +275,21 @@ class _UnixMcpTransport:
         return message
 
     def close(self) -> None:
-        if self._socket is not None:
-            self._socket.close()
-            self._socket = None
+        process = self._process
+        self._process = None
+        if process is None:
+            return
+        if process.stdin is not None:
+            process.stdin.close()
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=1.0)
+        if process.stdout is not None:
+            process.stdout.close()
 
 
 class CodexDesktopArchiveBroker:
@@ -267,6 +338,10 @@ class CodexDesktopArchiveBroker:
             or not _bounded_context_value(context.mcp_runtime)
             or not isinstance(context.mcp_resource, str)
             or not _bounded_context_value(context.mcp_resource)
+            or not _route_context_paths_valid(
+                context,
+                require_installed=self.transport_factory is None,
+            )
         ):
             with self._lock:
                 stale_events = tuple(self._inflight.values())
@@ -480,7 +555,7 @@ class CodexDesktopArchiveBroker:
     def _new_transport(self, context: CodexDesktopRouteContext) -> Any:
         factory = self.transport_factory
         if factory is None:
-            return _UnixMcpTransport(context.pipe_path, self.timeout_s)
+            return _StdioMcpTransport(context, self.timeout_s)
         attempts = (
             lambda: factory(context=context),
             lambda: factory(context),
