@@ -49,10 +49,10 @@ from .auxiliary_sessions import (
 from .codex_session_cleanup import (
     CODEX_DESKTOP_UI_STALE_CODE,
     CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE,
-    CODEX_SESSION_ARCHIVE_FAILED_CODE,
     CODEX_SESSION_DELETE_FAILED_CODE,
     CODEX_SESSION_DELETE_STILL_PRESENT_CODE,
 )
+from .codex_desktop_archive import CODEX_DESKTOP_ARCHIVE_REJECTED
 from .execution_policy import (
     CLEANUP_STRATEGIES,
     CLEANUP_VERIFICATION_SIDES,
@@ -148,7 +148,7 @@ def _strict_codex_success_result(
     verification: dict[str, dict[str, str]] | None,
     commands: dict[str, dict[str, str]] | None = None,
 ) -> tuple[SessionCleanupResult, dict[str, dict[str, str]], dict[str, dict[str, str]]]:
-    """Fail closed unless both official commands are acknowledged or confirmed.
+    """Fail closed unless Desktop archive and delete are acknowledged.
 
     Under the archive-then-delete strategy the command acknowledgements are
     the success proof; ``desktop_live`` becomes ``not_applicable`` and the
@@ -159,7 +159,7 @@ def _strict_codex_success_result(
     checked_commands = normalize_cleanup_commands(commands) if commands else None
     if _codex_archive_strategy(result.strategy):
         statuses = {
-            (checked_commands or {}).get("archive", {}).get("status"),
+            (checked_commands or {}).get("desktop_archive", {}).get("status"),
             (checked_commands or {}).get("delete", {}).get("status"),
         }
         if statuses <= {"acknowledged", "confirmed"} and None not in statuses:
@@ -168,11 +168,9 @@ def _strict_codex_success_result(
                 "checked_at": checked["desktop_live"]["checked_at"]
                 or (checked_commands or {}).get("delete", {}).get("checked_at", ""),
             }
-            return result, checked, checked_commands or normalize_cleanup_commands(
-                "not_applicable"
-            )
+            return result, checked, checked_commands or normalize_cleanup_commands(None)
         # Command proof missing: choose the stable archive-scoped code.
-        code = CODEX_SESSION_ARCHIVE_FAILED_CODE
+        code = CODEX_DESKTOP_ARCHIVE_REJECTED
         return (
             SessionCleanupResult(
                 state="failed",
@@ -227,11 +225,13 @@ class SessionCleanupCoordinator:
         executor_port: ExecutorPort | None = None,
         port_resolver: Callable[[str], ExecutorPort] | None = None,
         store: TaskStore | None = None,
+        desktop_archive_broker: Any | None = None,
     ) -> None:
         self.board = Path(board_root).expanduser().resolve()
         self.store = store or TaskStore(self.board)
         self._executor_port = executor_port
         self._port_resolver = port_resolver or default_cleanup_port
+        self._desktop_archive_broker = desktop_archive_broker
 
     # ------------------------------------------------------------------ time
     @staticmethod
@@ -239,7 +239,13 @@ class SessionCleanupCoordinator:
         return _utc_now() if value is None else str(value)
 
     # ---------------------------------------------------------------- public
-    def request_cleanup(self, task_id: str, *, now: str | None = None) -> dict[str, Any]:
+    def request_cleanup(
+        self,
+        task_id: str,
+        *,
+        now: str | None = None,
+        force_retry: bool = False,
+    ) -> dict[str, Any]:
         """Run one authoritative cleanup pass for a single exact task.
 
         Re-reads the task/session from disk under the per-task lock, verifies
@@ -260,18 +266,20 @@ class SessionCleanupCoordinator:
             if task is None:
                 return self._result(task_id, "skipped", ["task_read_failed"])
             task_id = str(task.get("id") or task.get("task_id") or task_id)
-            primary = self._request_primary(task, occurred_at)
+            primary = self._request_primary(task, occurred_at, force_retry=force_retry)
             if primary.get("status") == "skipped":
                 # The shared terminal/report/notification/RunLease gates are not
                 # met, so auxiliary sessions remain in use; return the primary
                 # skip without touching the auxiliary ledger.
                 return primary
-            return self._request_auxiliary(task, primary, occurred_at)
+            return self._request_auxiliary(task, primary, occurred_at, force_retry=force_retry)
 
     def _request_primary(
         self,
         task: dict[str, Any],
         occurred_at: str,
+        *,
+        force_retry: bool = False,
     ) -> dict[str, Any]:
         """Run the existing primary ``agentbc.session`` cleanup pass."""
         task_id = str(task.get("id") or task.get("task_id") or "")
@@ -292,6 +300,8 @@ class SessionCleanupCoordinator:
                 return self._result(task_id, "skipped", blockers, receipt=receipt)
             pending = self._to_pending(task, session, occurred_at)
             self._persist_receipt(task, pending, "requested", occurred_at)
+            if self._codex_waiting_for_desktop(session):
+                return self._result(task_id, "waiting_for_desktop", [], receipt=pending)
             return self._execute(task_id, pending, occurred_at)
 
         if state == "failed":
@@ -301,26 +311,41 @@ class SessionCleanupCoordinator:
                 return self._result(task_id, "final", [], receipt=receipt)
             if not receipt["next_attempt_at"] or not _is_iso_utc(receipt["next_attempt_at"]):
                 return self._result(task_id, "waiting", [], receipt=receipt)
-            if _parse_utc(occurred_at) < _parse_utc(receipt["next_attempt_at"]):
+            if (
+                not force_retry
+                and _parse_utc(occurred_at) < _parse_utc(receipt["next_attempt_at"])
+            ):
                 return self._result(task_id, "waiting", [], receipt=receipt)
             if receipt["attempts"] >= MAX_SESSION_CLEANUP_ATTEMPTS:
                 return self._result(task_id, "final", [], receipt=receipt)
             pending = self._to_pending(task, session, occurred_at)
             self._persist_receipt(task, pending, "retry", occurred_at)
+            if self._codex_waiting_for_desktop(session):
+                return self._result(task_id, "waiting_for_desktop", [], receipt=pending)
             return self._execute(task_id, pending, occurred_at)
 
         if state == "pending":
-            # A pending receipt under the lock is always a crashed-process
-            # leftover: form a stable failed/fallback state, then backoff.
             if blockers:
                 return self._result(task_id, "skipped", blockers, receipt=receipt)
+            # Runner restart reconstructs this work from the receipt but must
+            # wait for a newly registered Desktop route. Once available, the
+            # pending request is safe to replay under the same task lock.
+            if self._codex_waiting_for_desktop(session):
+                return self._result(task_id, "waiting_for_desktop", [], receipt=receipt)
+            if str(session.get("executor") or "").strip().lower() == "codex":
+                return self._execute(task_id, receipt, occurred_at)
             failed = self._crash_recovery_receipt(task, session, receipt, occurred_at)
             self._persist_receipt(task, failed, "interrupted", occurred_at)
             return self._result(task_id, "recovered", [], receipt=failed)
 
         return self._result(task_id, "noop", [], receipt=receipt)
 
-    def maintain_board(self, *, now: str | None = None) -> list[dict[str, Any]]:
+    def maintain_board(
+        self,
+        *,
+        now: str | None = None,
+        force_retry: bool = False,
+    ) -> list[dict[str, Any]]:
         """Scan this board for terminal sessions needing a cleanup pass."""
         results: list[dict[str, Any]] = []
         tasks = self._list_tasks()
@@ -334,7 +359,7 @@ class SessionCleanupCoordinator:
             if not isinstance(session, dict):
                 continue
             try:
-                result = self.request_cleanup(task_id, now=now)
+                result = self.request_cleanup(task_id, now=now, force_retry=force_retry)
             except (ABCError, OSError, ValueError, json.JSONDecodeError):
                 continue
             if result.get("actioned"):
@@ -374,6 +399,8 @@ class SessionCleanupCoordinator:
         task: dict[str, Any],
         primary: dict[str, Any],
         occurred_at: str,
+        *,
+        force_retry: bool = False,
     ) -> dict[str, Any]:
         """Process all registered auxiliary sessions deepest/newest first."""
         task_id = str(task.get("id") or task.get("task_id") or "")
@@ -404,7 +431,11 @@ class SessionCleanupCoordinator:
         )
         results: list[dict[str, Any]] = []
         for entry in entries:
-            results.append(self._auxiliary_cleanup_pass(task, entry, occurred_at))
+            results.append(
+                self._auxiliary_cleanup_pass(
+                    task, entry, occurred_at, force_retry=force_retry
+                )
+            )
         return self._auxiliary_aggregate(primary, results, task_id)
 
     def _auxiliary_cleanup_pass(
@@ -412,6 +443,8 @@ class SessionCleanupCoordinator:
         task: dict[str, Any],
         entry: dict[str, Any],
         occurred_at: str,
+        *,
+        force_retry: bool = False,
     ) -> dict[str, Any]:
         aux_id = str(entry.get("aux_id") or "")
         executor = str(entry.get("executor") or "").strip().lower()
@@ -442,6 +475,14 @@ class SessionCleanupCoordinator:
             pending = self._auxiliary_to_pending(task, entry, occurred_at)
             updated = self._auxiliary_with_receipt(entry, pending, occurred_at)
             self._persist_auxiliary(task, updated, "requested", occurred_at)
+            if self._codex_waiting_for_desktop(entry):
+                return {
+                    **base,
+                    "status": "waiting_for_desktop",
+                    "actioned": True,
+                    "blockers": [],
+                    "receipt": pending,
+                }
             return self._auxiliary_execute(task, updated, occurred_at, base)
 
         if state == "failed":
@@ -451,20 +492,33 @@ class SessionCleanupCoordinator:
                 return {**base, "status": "final", "actioned": False, "blockers": [], "receipt": receipt}
             if not receipt["next_attempt_at"] or not _is_iso_utc(receipt["next_attempt_at"]):
                 return {**base, "status": "waiting", "actioned": False, "blockers": [], "receipt": receipt}
-            if _parse_utc(occurred_at) < _parse_utc(receipt["next_attempt_at"]):
+            if (
+                not force_retry
+                and _parse_utc(occurred_at) < _parse_utc(receipt["next_attempt_at"])
+            ):
                 return {**base, "status": "waiting", "actioned": False, "blockers": [], "receipt": receipt}
             if receipt["attempts"] >= MAX_SESSION_CLEANUP_ATTEMPTS:
                 return {**base, "status": "final", "actioned": False, "blockers": [], "receipt": receipt}
             pending = self._auxiliary_to_pending(task, entry, occurred_at)
             updated = self._auxiliary_with_receipt(entry, pending, occurred_at)
             self._persist_auxiliary(task, updated, "retry", occurred_at)
+            if self._codex_waiting_for_desktop(entry):
+                return {
+                    **base,
+                    "status": "waiting_for_desktop",
+                    "actioned": True,
+                    "blockers": [],
+                    "receipt": pending,
+                }
             return self._auxiliary_execute(task, updated, occurred_at, base)
 
         if state == "pending":
-            # A pending auxiliary receipt under the lock is a crashed-process
-            # leftover: form a stable failed/fallback state, then backoff.
             if blockers:
                 return {**base, "status": "skipped", "actioned": False, "blockers": blockers, "receipt": receipt}
+            if self._codex_waiting_for_desktop(entry):
+                return {**base, "status": "waiting_for_desktop", "actioned": False, "blockers": [], "receipt": receipt}
+            if str(entry.get("executor") or "").strip().lower() == "codex":
+                return self._auxiliary_execute(task, entry, occurred_at, base)
             failed = self._auxiliary_crash_recovery(task, entry, receipt, occurred_at)
             updated = self._auxiliary_with_receipt(entry, failed, occurred_at)
             self._persist_auxiliary(task, updated, "interrupted", occurred_at)
@@ -727,6 +781,7 @@ class SessionCleanupCoordinator:
             executor=str(entry.get("executor") or ""),
             session_id=str(entry.get("session_id") or ""),
             task_id=task_id,
+            executor_run_id=str(entry.get("owner_run_id") or ""),
             retain=retain,
             project_mode=str(entry.get("project_mode") or "none"),
             strategy=self._auxiliary_request_strategy(entry),
@@ -846,7 +901,7 @@ class SessionCleanupCoordinator:
                 # persisted with the same durability rules as the primary.
                 "commands": {
                     command: dict((receipt.get("commands") or {}).get(command) or {})
-                    for command in ("archive", "delete")
+                    for command in ("desktop_archive", "app_server_archive", "delete")
                 },
                 "created_at": occurred_at,
             },
@@ -1039,8 +1094,31 @@ class SessionCleanupCoordinator:
     # --------------------------------------------------------------- helpers
     def _resolve_port(self, executor: str) -> ExecutorPort:
         if self._executor_port is not None:
-            return self._executor_port
-        return self._port_resolver(str(executor or "").strip())
+            port = self._executor_port
+        else:
+            port = self._port_resolver(str(executor or "").strip())
+        if str(executor or "").strip().lower() == "codex" and self._desktop_archive_broker is not None:
+            try:
+                setattr(port, "desktop_archive_broker", self._desktop_archive_broker)
+            except (AttributeError, TypeError):
+                pass
+        return port
+
+    def _codex_waiting_for_desktop(self, session_or_entry: dict[str, Any]) -> bool:
+        if str(session_or_entry.get("executor") or "").strip().lower() != "codex":
+            return False
+        broker = self._desktop_archive_broker
+        if broker is None:
+            return True
+        available = getattr(broker, "route_available", None)
+        if callable(available):
+            try:
+                return not bool(available())
+            except Exception:  # noqa: BLE001 - dead route is unavailable.
+                return True
+        # Test doubles that expose only archive() provide their own bounded
+        # route verdict and should still be exercised.
+        return False
 
     def _build_request(self, task: dict[str, Any], session: dict[str, Any]) -> SessionCleanupRequest:
         task_id = str(task.get("id") or task.get("task_id") or "")
@@ -1048,10 +1126,13 @@ class SessionCleanupCoordinator:
         retain = bool(session.get("retain"))
         project_mode = str(session.get("project_mode") or "none")
         project_path = str(session.get("project_path") or "")
+        extensions = task.get("extensions") if isinstance(task.get("extensions"), dict) else {}
+        execution = extensions.get("agentbc.execution") if isinstance(extensions, dict) else {}
         return SessionCleanupRequest(
             executor=str(session.get("executor") or ""),
             session_id=str(session.get("session_id") or ""),
             task_id=task_id,
+            executor_run_id=str((execution or {}).get("executor_run_id") or ""),
             retain=retain,
             project_mode=project_mode,
             strategy=self._request_strategy(session, retain, project_mode),
@@ -1181,7 +1262,7 @@ class SessionCleanupCoordinator:
                 # an acknowledged archive.
                 "commands": {
                     command: dict((receipt.get("commands") or {}).get(command) or {})
-                    for command in ("archive", "delete")
+                    for command in ("desktop_archive", "app_server_archive", "delete")
                 },
                 "created_at": occurred_at,
             },

@@ -771,9 +771,10 @@ def _render_report_md(report: dict[str, Any]) -> str:
             f"- Cleanup attempts: `{session_cleanup.get('attempts', 0)}`",
             f"- Cleanup error code: `{session_cleanup.get('error_code') or 'none'}`",
             f"- Cleanup retryable: `{'yes' if session_cleanup.get('retryable') else 'no'}`",
+            f"- Cleanup phase: `{session_cleanup.get('phase') or 'unknown'}`",
         ]
     )
-    if session_cleanup.get("version") in (3, 4):
+    if session_cleanup.get("version") in (3, 4, 5):
         verification = session_cleanup.get("verification") or {}
         cli = verification.get("cli") if isinstance(verification, dict) else {}
         desktop_backend = verification.get("desktop_backend") if isinstance(verification, dict) else {}
@@ -796,9 +797,14 @@ def _render_report_md(report: dict[str, Any]) -> str:
                 f"- Desktop verification (aggregate): `{desktop_status}` checked_at=`{desktop_checked_at}`",
             ]
         )
-    if session_cleanup.get("version") == 4:
+    if session_cleanup.get("version") in (4, 5):
         commands = session_cleanup.get("commands") or {}
-        for command in ("archive", "delete"):
+        command_names = (
+            ("archive", "delete")
+            if session_cleanup.get("version") == 4
+            else ("desktop_archive", "app_server_archive", "delete")
+        )
+        for command in command_names:
             entry = commands.get(command) if isinstance(commands, dict) else None
             status = entry.get("status") if isinstance(entry, dict) else "not_requested"
             checked_at = entry.get("checked_at") if isinstance(entry, dict) else ""

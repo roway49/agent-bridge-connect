@@ -997,7 +997,14 @@ class ProductionRoutingTests(TerminalDeliveryBoardSetup):
         with mock.patch(
             "agent_bridge_connect.task_completion.notify_input_required",
             wraps=notify_input_required,
-        ) as notice:
+        ) as notice, mock.patch(
+            "agent_bridge_connect.notifiers.dialog.DialogNotifier.send",
+            return_value=mock.Mock(
+                ok=True,
+                message="dialog shown",
+                details={"action": "dismissed"},
+            ),
+        ):
             result = apply_agent_completion(
                 self.service,
                 task_id,

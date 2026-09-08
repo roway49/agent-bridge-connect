@@ -16,10 +16,11 @@ from .protocol import ABCError
 
 EXECUTION_POLICY_VERSION = 1
 EXECUTION_SESSION_RECEIPT_VERSION = 1
-SESSION_CLEANUP_RECEIPT_VERSION = 4
+SESSION_CLEANUP_RECEIPT_VERSION = 5
 LEGACY_SESSION_CLEANUP_RECEIPT_VERSION = 1
 SESSION_CLEANUP_RECEIPT_VERSION_V2 = 2
 SESSION_CLEANUP_RECEIPT_VERSION_V3 = 3
+SESSION_CLEANUP_RECEIPT_VERSION_V4 = 4
 RESOURCE_EXTENSION_KEY = "agentbc.resources"
 SESSION_EXTENSION_KEY = "agentbc.session"
 RESOURCE_MULTIPLIER = 2
@@ -59,9 +60,20 @@ CLEANUP_COMMAND_STATUSES = frozenset(
         "failed",
         "unverified",
         "not_applicable",
+        "unavailable",
+        "rejected",
     }
 )
-CLEANUP_COMMAND_ENTRY_FIELDS = frozenset({"status", "checked_at"})
+CLEANUP_COMMAND_ENTRY_FIELDS_V4 = frozenset({"status", "checked_at"})
+CLEANUP_COMMAND_ENTRY_FIELDS = frozenset(
+    {
+        "status",
+        "checked_at",
+        "request_digest",
+        "route_digest",
+        "app_instance_digest",
+    }
+)
 RESOLVED_CLEANUP_STATES = frozenset({"retained", "succeeded", "unsupported"})
 CLEANUP_VERIFICATION_SIDES_V2 = frozenset({"cli", "desktop"})
 CLEANUP_VERIFICATION_SIDES = frozenset(
@@ -87,7 +99,8 @@ CLEANUP_RECEIPT_FIELDS_V1 = frozenset(
 )
 CLEANUP_RECEIPT_FIELDS_V2 = CLEANUP_RECEIPT_FIELDS_V1 | {"verification"}
 CLEANUP_RECEIPT_FIELDS_V3 = CLEANUP_RECEIPT_FIELDS_V2
-CLEANUP_RECEIPT_FIELDS = CLEANUP_RECEIPT_FIELDS_V2 | {"commands"}
+CLEANUP_RECEIPT_FIELDS_V4 = CLEANUP_RECEIPT_FIELDS_V2 | {"commands"}
+CLEANUP_RECEIPT_FIELDS = CLEANUP_RECEIPT_FIELDS_V4
 RESOURCE_DECISIONS = frozenset({"", "increase", "terminate"})
 TERMINAL_SESSION_CLEANUP_STATUSES = frozenset(
     {"completed", "failed", "cancelled", "rejected"}
@@ -326,20 +339,54 @@ def _empty_cleanup_commands(
     *,
     checked_at: str = "",
 ) -> dict[str, dict[str, str]]:
-    """Build the bounded v4 per-command evidence object."""
+    """Build the bounded v5 per-command evidence object."""
+    def entry() -> dict[str, str]:
+        return {
+            "status": status,
+            "checked_at": checked_at,
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": "",
+        }
+
+    return {
+        "desktop_archive": entry(),
+        "app_server_archive": entry(),
+        "delete": entry(),
+    }
+
+
+def _empty_cleanup_commands_v4(
+    status: str = "not_requested",
+    *,
+    checked_at: str = "",
+) -> dict[str, dict[str, str]]:
+    """Build the historical v4 archive/delete object without rewriting it."""
     return {
         "archive": {"status": status, "checked_at": checked_at},
         "delete": {"status": status, "checked_at": checked_at},
     }
 
 
-def _valid_cleanup_commands(value: Any) -> bool:
-    """Validate the persisted bounded v4 ``commands`` object."""
-    if not isinstance(value, dict) or set(value) != {"archive", "delete"}:
-        return False
-    for command in ("archive", "delete"):
+def _valid_cleanup_commands(value: Any, *, version: int = SESSION_CLEANUP_RECEIPT_VERSION) -> bool:
+    """Validate v4 history or the current bounded v5 command object."""
+    if version == SESSION_CLEANUP_RECEIPT_VERSION_V4:
+        if not isinstance(value, dict) or set(value) != {"archive", "delete"}:
+            return False
+        entry_fields = CLEANUP_COMMAND_ENTRY_FIELDS_V4
+        command_names = ("archive", "delete")
+    else:
+        if not isinstance(value, dict) or set(value) != {
+            "desktop_archive",
+            "app_server_archive",
+            "delete",
+        }:
+            return False
+        entry_fields = CLEANUP_COMMAND_ENTRY_FIELDS
+        command_names = ("desktop_archive", "app_server_archive", "delete")
+    for command in command_names:
         item = value.get(command)
-        if not isinstance(item, dict) or set(item) != CLEANUP_COMMAND_ENTRY_FIELDS:
+        if not isinstance(item, dict) or set(item) != entry_fields:
             return False
         status = item.get("status")
         if type(status) is not str or status not in CLEANUP_COMMAND_STATUSES:
@@ -349,6 +396,11 @@ def _valid_cleanup_commands(value: Any) -> bool:
             checked_at and not _valid_utc_timestamp(checked_at)
         ):
             return False
+        if version != SESSION_CLEANUP_RECEIPT_VERSION_V4:
+            for digest_name in ("request_digest", "route_digest", "app_instance_digest"):
+                digest = item.get(digest_name)
+                if type(digest) is not str or len(digest) > 64:
+                    return False
     return True
 
 
@@ -421,11 +473,21 @@ def normalize_cleanup_verification(value: Any) -> dict[str, dict[str, str]]:
 
 
 def normalize_cleanup_commands(value: Any) -> dict[str, dict[str, str]]:
-    """Normalize a bounded v4 commands object; unknown shapes fail closed."""
-    if not isinstance(value, dict) or set(value) != {"archive", "delete"}:
+    """Normalize v4/v5 evidence into the current v5 command tuple."""
+    if not isinstance(value, dict):
+        return _empty_cleanup_commands()
+    if set(value) == {"archive", "delete"} and _valid_cleanup_commands(
+        value, version=SESSION_CLEANUP_RECEIPT_VERSION_V4
+    ):
+        result = _empty_cleanup_commands()
+        for name, legacy_name in (("app_server_archive", "archive"), ("delete", "delete")):
+            legacy = value[legacy_name]
+            result[name].update(legacy)
+        return result
+    if set(value) != {"desktop_archive", "app_server_archive", "delete"}:
         return _empty_cleanup_commands()
     result: dict[str, dict[str, str]] = {}
-    for command in ("archive", "delete"):
+    for command in ("desktop_archive", "app_server_archive", "delete"):
         item = value.get(command)
         if not isinstance(item, dict) or set(item) != CLEANUP_COMMAND_ENTRY_FIELDS:
             return _empty_cleanup_commands()
@@ -437,12 +499,18 @@ def normalize_cleanup_commands(value: Any) -> dict[str, dict[str, str]]:
             checked_at and not _valid_utc_timestamp(checked_at)
         ):
             return _empty_cleanup_commands()
-        result[command] = {"status": status, "checked_at": checked_at}
+        result[command] = {
+            "status": status,
+            "checked_at": checked_at,
+            "request_digest": str(item.get("request_digest") or ""),
+            "route_digest": str(item.get("route_digest") or ""),
+            "app_instance_digest": str(item.get("app_instance_digest") or ""),
+        }
     return result
 
 
 def _upgrade_cleanup_receipt(value: Any) -> dict[str, Any]:
-    """Upgrade a valid historical receipt to the v4 transition representation."""
+    """Upgrade a valid historical receipt to the v5 transition representation."""
     if set(value) == {"state", "attempts"}:
         receipt = build_session_cleanup_receipt()
         receipt["state"] = value["state"]
@@ -454,7 +522,22 @@ def _upgrade_cleanup_receipt(value: Any) -> dict[str, Any]:
     receipt = build_session_cleanup_receipt()
     for field in CLEANUP_RECEIPT_FIELDS_V1 - {"version"}:
         receipt[field] = copy.deepcopy(value[field])
-    if version == SESSION_CLEANUP_RECEIPT_VERSION_V2:
+    if version in {SESSION_CLEANUP_RECEIPT_VERSION_V3, SESSION_CLEANUP_RECEIPT_VERSION_V4}:
+        receipt["verification"] = normalize_cleanup_verification(value.get("verification"))
+    if version == SESSION_CLEANUP_RECEIPT_VERSION_V4:
+        legacy_commands = value.get("commands")
+        if _valid_cleanup_commands(legacy_commands, version=SESSION_CLEANUP_RECEIPT_VERSION_V4):
+            receipt["commands"] = normalize_cleanup_commands(legacy_commands)
+            # A historical App Server archive acknowledgement is retained as
+            # diagnostic evidence only; it never becomes Desktop evidence.
+            receipt["commands"]["desktop_archive"] = {
+                "status": "not_requested",
+                "checked_at": "",
+                "request_digest": "",
+                "route_digest": "",
+                "app_instance_digest": "",
+            }
+    elif version == SESSION_CLEANUP_RECEIPT_VERSION_V2:
         legacy_verification = value.get("verification")
         normalized = normalize_cleanup_verification(legacy_verification)
         receipt["verification"] = normalized
@@ -464,7 +547,7 @@ def _upgrade_cleanup_receipt(value: Any) -> dict[str, Any]:
 
 
 def build_session_cleanup_receipt() -> dict[str, Any]:
-    """Build the safe, inert v4 receipt used before cleanup is requested."""
+    """Build the safe, inert v5 receipt used before cleanup is requested."""
     return {
         "version": SESSION_CLEANUP_RECEIPT_VERSION,
         "capability": "unknown",
@@ -483,7 +566,7 @@ def build_session_cleanup_receipt() -> dict[str, Any]:
 
 
 def read_session_cleanup_receipt(value: Any) -> dict[str, Any]:
-    """Read v4 and project v3/v2/v1/minimal receipts into the v4 view."""
+    """Read v1-v5 and project historical receipts into the v5 view."""
     errors = validate_session_cleanup_receipt(value, allow_legacy=True)
     if errors:
         _raise_policy_errors(errors, f"{SESSION_EXTENSION_KEY}.cleanup")
@@ -491,7 +574,7 @@ def read_session_cleanup_receipt(value: Any) -> dict[str, Any]:
 
 
 def upgrade_session_cleanup_receipt(value: Any) -> dict[str, Any]:
-    """Return a v3 transition copy for a valid v1/v2 or minimal receipt."""
+    """Return a v5 transition copy for a valid v1-v4 or minimal receipt."""
     errors = validate_session_cleanup_receipt(value, allow_legacy=True)
     if errors:
         _raise_policy_errors(errors, f"{SESSION_EXTENSION_KEY}.cleanup")
@@ -526,16 +609,43 @@ def session_cleanup_view(value: Any) -> dict[str, Any]:
         }
     if original_version == LEGACY_SESSION_CLEANUP_RECEIPT_VERSION:
         return base
+    if original_version == SESSION_CLEANUP_RECEIPT_VERSION_V4:
+        # v4 history keeps its legacy archive/delete shape. Its archive
+        # acknowledgement is never inferred to be a Desktop acknowledgement.
+        return {
+            **base,
+            "version": SESSION_CLEANUP_RECEIPT_VERSION_V4,
+            "strategy": receipt["strategy"],
+            "verification": cleanup_verification_public_view(receipt.get("verification")),
+            "commands": {
+                command: dict((value.get("commands") or {}).get(command) or {})
+                for command in ("archive", "delete")
+            },
+        }
     if original_version == SESSION_CLEANUP_RECEIPT_VERSION:
-        # v4 projects the full command evidence surface.
+        commands = normalize_cleanup_commands(receipt.get("commands"))
+        desktop_archive = dict(commands["desktop_archive"])
+        if commands["delete"]["status"] in {"acknowledged", "confirmed"}:
+            phase = "delete_acknowledged"
+        elif desktop_archive["status"] in {"acknowledged", "confirmed"}:
+            phase = "desktop_archive_acknowledged"
+        elif receipt["state"] in {"pending", "failed"}:
+            phase = "waiting_for_desktop"
+        else:
+            phase = "waiting_for_cleanup"
         return {
             **base,
             "version": SESSION_CLEANUP_RECEIPT_VERSION,
             "strategy": receipt["strategy"],
+            "phase": phase,
             "verification": cleanup_verification_public_view(receipt.get("verification")),
             "commands": {
-                command: dict((receipt.get("commands") or {}).get(command) or {})
-                for command in ("archive", "delete")
+                "desktop_archive": desktop_archive,
+                "app_server_archive": dict(commands["app_server_archive"]),
+                "delete": dict(commands["delete"]),
+                # Public compatibility projection; v4 App Server evidence is
+                # not copied into this field.
+                "archive": desktop_archive,
             },
         }
     # v2/v3 history keeps its own shape: no commands evidence ever existed
@@ -561,6 +671,8 @@ def _validate_cleanup_fields(
         expected = CLEANUP_RECEIPT_FIELDS_V2
     elif version == SESSION_CLEANUP_RECEIPT_VERSION_V3:
         expected = CLEANUP_RECEIPT_FIELDS_V3
+    elif version == SESSION_CLEANUP_RECEIPT_VERSION_V4:
+        expected = CLEANUP_RECEIPT_FIELDS_V4
     else:
         expected = CLEANUP_RECEIPT_FIELDS
     errors: list[str] = []
@@ -607,12 +719,17 @@ def _validate_cleanup_fields(
             errors.append(f"{prefix}.verification is invalid")
     elif version in {
         SESSION_CLEANUP_RECEIPT_VERSION_V3,
+        SESSION_CLEANUP_RECEIPT_VERSION_V4,
         SESSION_CLEANUP_RECEIPT_VERSION,
     }:
         verification = value.get("verification")
         if not _valid_cleanup_verification(verification, v2=False):
             errors.append(f"{prefix}.verification is invalid")
-    if version == SESSION_CLEANUP_RECEIPT_VERSION:
+    if version == SESSION_CLEANUP_RECEIPT_VERSION_V4:
+        commands = value.get("commands")
+        if not _valid_cleanup_commands(commands, version=SESSION_CLEANUP_RECEIPT_VERSION_V4):
+            errors.append(f"{prefix}.commands is invalid")
+    elif version == SESSION_CLEANUP_RECEIPT_VERSION:
         commands = value.get("commands")
         if not _valid_cleanup_commands(commands):
             errors.append(f"{prefix}.commands is invalid")
@@ -637,6 +754,8 @@ def _validate_cleanup_fields(
             errors.append(f"{prefix}.not_requested receipt uses unsafe verification metadata")
         if version == SESSION_CLEANUP_RECEIPT_VERSION_V2 and value["verification"] != _empty_cleanup_verification_v2():
             errors.append(f"{prefix}.not_requested receipt uses unsafe verification metadata")
+        if version == SESSION_CLEANUP_RECEIPT_VERSION_V4 and value["commands"] != _empty_cleanup_commands_v4():
+            errors.append(f"{prefix}.not_requested receipt uses unsafe command metadata")
         if version == SESSION_CLEANUP_RECEIPT_VERSION and value["commands"] != _empty_cleanup_commands():
             errors.append(f"{prefix}.not_requested receipt uses unsafe command metadata")
     elif state == "retained":
@@ -667,6 +786,7 @@ def _validate_cleanup_fields(
                 errors.append(f"{prefix}.succeeded receipt requires verification timestamps")
         elif version in {
             SESSION_CLEANUP_RECEIPT_VERSION_V3,
+            SESSION_CLEANUP_RECEIPT_VERSION_V4,
             SESSION_CLEANUP_RECEIPT_VERSION,
         }:
             verification = value["verification"]
@@ -675,12 +795,9 @@ def _validate_cleanup_fields(
                 verification["desktop_backend"]["status"],
                 verification["desktop_live"]["status"],
             }
-            if version == SESSION_CLEANUP_RECEIPT_VERSION:
-                # v4 gate: under the archive-then-delete strategy the two
-                # command acknowledgements are the real success proof; the
-                # three verification sides are non-gating diagnostics and
-                # desktop_live is not_applicable.  Other strategies keep the
-                # historical sides and carry not_applicable commands.
+            if version == SESSION_CLEANUP_RECEIPT_VERSION_V4:
+                # v4 remains readable, but its App Server archive acknowledgement
+                # is not a Desktop acknowledgement.
                 commands = value["commands"]
                 command_statuses = {
                     commands["archive"]["status"],
@@ -702,9 +819,33 @@ def _validate_cleanup_fields(
                     errors.append(
                         f"{prefix}.succeeded receipt requires command evidence or not_applicable"
                     )
-                # The backend/read/list sides are non-gating diagnostics under
-                # v4: every bounded status (including the accepted Desktop
-                # refresh delay) is recordable without blocking the receipt.
+                # Backend/read/list sides are diagnostics under v4.
+            elif version == SESSION_CLEANUP_RECEIPT_VERSION:
+                commands = value["commands"]
+                if strategy == "official_session_archive_then_delete":
+                    if commands["desktop_archive"]["status"] not in {
+                        "acknowledged",
+                        "confirmed",
+                    }:
+                        errors.append(
+                            f"{prefix}.succeeded receipt requires Desktop archive acknowledgement"
+                        )
+                    if commands["delete"]["status"] not in {"acknowledged", "confirmed"}:
+                        errors.append(
+                            f"{prefix}.succeeded receipt requires delete acknowledgement"
+                        )
+                    if not commands["desktop_archive"]["checked_at"] or not commands["delete"]["checked_at"]:
+                        errors.append(
+                            f"{prefix}.succeeded receipt requires Desktop and delete timestamps"
+                        )
+                elif {
+                    commands["desktop_archive"]["status"],
+                    commands["app_server_archive"]["status"],
+                    commands["delete"]["status"],
+                } - {"acknowledged", "confirmed", "not_applicable", "not_requested"}:
+                    errors.append(
+                        f"{prefix}.succeeded receipt requires command evidence or not_applicable"
+                    )
             elif statuses != {"absent"} and statuses != {"not_applicable"}:
                 errors.append(f"{prefix}.succeeded receipt requires all verification sides absent")
             elif statuses == {"absent"} and any(
@@ -734,7 +875,7 @@ def validate_session_cleanup_receipt(
     *,
     allow_legacy: bool = False,
 ) -> list[str]:
-    """Validate v4 receipts while accepting exact v1/v2/v3 compatibility forms."""
+    """Validate v5 receipts while accepting exact v1-v4 compatibility forms."""
     prefix = f"{SESSION_EXTENSION_KEY}.cleanup"
     if not isinstance(value, dict):
         return [f"{prefix} must be an object"]
@@ -752,6 +893,7 @@ def validate_session_cleanup_receipt(
         LEGACY_SESSION_CLEANUP_RECEIPT_VERSION,
         SESSION_CLEANUP_RECEIPT_VERSION_V2,
         SESSION_CLEANUP_RECEIPT_VERSION_V3,
+        SESSION_CLEANUP_RECEIPT_VERSION_V4,
         SESSION_CLEANUP_RECEIPT_VERSION,
     }:
         # Unknown versions fail closed; they are only re-labeled to surface
@@ -1297,6 +1439,7 @@ def transition_session_cleanup(
                 "error_code": "",
                 "retryable": False,
                 "verification": _empty_cleanup_verification(),
+                "commands": _empty_cleanup_commands(),
             }
         )
         return _validated_cleanup_transition(updated)
@@ -1312,10 +1455,9 @@ def transition_session_cleanup(
 
     updated = dict(receipt)
     updated["last_attempt_at"] = now
-    # SESSION-104-001 v4 gate: both official commands must be acknowledged
-    # (or officially confirmed) before a Codex cleanup may succeed.  The
-    # backend/read/list sides are diagnostics only and desktop_live is
-    # not_applicable under the archive-then-delete strategy.
+    # SESSION-104-001 v5 gate: the current Desktop App Tools acknowledgement
+    # must precede the unchanged App Server delete acknowledgement. Backend,
+    # read/list, and legacy App Server archive observations are diagnostics.
     executor_is_codex = str(session.get("executor") or "").strip().lower() == "codex"
     is_archive_strategy = (
         (strategy or receipt["strategy"]) == "official_session_archive_then_delete"
@@ -1338,7 +1480,7 @@ def transition_session_cleanup(
             normalized_commands = _empty_cleanup_commands("not_applicable", checked_at=now)
         elif not normalized_commands or all(
             (normalized_commands or {}).get(command, {}).get("status") == "not_requested"
-            for command in ("archive", "delete")
+            for command in ("desktop_archive", "app_server_archive", "delete")
         ):
             # A Codex adapter supplied no command evidence: fail closed to
             # not_applicable rather than leaving invalid not_requested proof.
@@ -1349,19 +1491,19 @@ def transition_session_cleanup(
                     "delete command acknowledgements"
                 )
         if executor_is_codex and is_archive_strategy:
-            archive_status = str(
-                (normalized_commands or {}).get("archive", {}).get("status") or ""
+            desktop_archive_status = str(
+                (normalized_commands or {}).get("desktop_archive", {}).get("status") or ""
             )
             delete_status = str(
                 (normalized_commands or {}).get("delete", {}).get("status") or ""
             )
-            if archive_status not in {"acknowledged", "confirmed"} or delete_status not in {
+            if desktop_archive_status not in {"acknowledged", "confirmed"} or delete_status not in {
                 "acknowledged",
                 "confirmed",
             }:
                 _raise_cleanup_transition(
-                    "Codex cleanup succeeded without both official archive and "
-                    "delete command acknowledgements"
+                    "Codex cleanup succeeded without Desktop archive and delete "
+                    "command acknowledgements"
                 )
             normalized_verification = dict(normalized_verification)
             normalized_verification["desktop_live"] = {

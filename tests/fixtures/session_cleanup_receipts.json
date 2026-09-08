@@ -1,6 +1,6 @@
 {
   "default": {
-    "version": 4,
+    "version": 5,
     "capability": "unknown",
     "strategy": "none",
     "state": "not_requested",
@@ -26,13 +26,26 @@
       }
     },
     "commands": {
-      "archive": {
+      "desktop_archive": {
         "status": "not_requested",
-        "checked_at": ""
+        "checked_at": "",
+        "request_digest": "",
+        "route_digest": "",
+        "app_instance_digest": ""
+      },
+      "app_server_archive": {
+        "status": "not_requested",
+        "checked_at": "",
+        "request_digest": "",
+        "route_digest": "",
+        "app_instance_digest": ""
       },
       "delete": {
         "status": "not_requested",
-        "checked_at": ""
+        "checked_at": "",
+        "request_digest": "",
+        "route_digest": "",
+        "app_instance_digest": ""
       }
     }
   },

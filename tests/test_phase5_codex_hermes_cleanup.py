@@ -7,12 +7,8 @@ from pathlib import Path
 from unittest import mock
 
 from agent_bridge_connect.adapters import SessionCleanupRequest
-from agent_bridge_connect.codex_session_cleanup import (
-    CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE,
-)
 from agent_bridge_connect.executors.codex import (
     CODEX_CLEANUP_UNSUPPORTED_CODE,
-    CODEX_SESSION_DELETE_FAILED_CODE,
     CODEX_SESSION_DELETE_INVALID_ID_CODE,
     CodexExecutor,
     _CODEX_FROZEN_VERSION,
@@ -235,35 +231,23 @@ class CodexExecutorCleanupTests(unittest.TestCase):
     def test_capability_and_cleanup_use_exact_force_uuid_argv(self) -> None:
         with mock.patch(
             "agent_bridge_connect.executors.codex.subprocess.run",
-            side_effect=[self._help_process(), self._help_process(), self._delete_process()],
+            side_effect=[self._help_process()],
         ) as run:
             capability = self.executor.session_cleanup_capability(self.request)
             result = self.executor.cleanup_session(self.request)
         self.assertEqual(capability.capability, "supported")
         self.assertEqual(result.state, "failed")
-        self.assertEqual(result.error_code, CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE)
-        self.assertEqual(
-            run.call_args_list[2].args[0],
-            [str(self.executor.agent_bin), "delete", "--force", CODEX_SESSION_ID],
-        )
-        self.assertIs(run.call_args_list[2].kwargs["shell"], False)
+        self.assertEqual(result.error_code, "codex_desktop_archive_route_unavailable")
+        self.assertEqual(run.call_count, 1)
 
     def test_cleanup_success_is_idempotent_for_absent_session(self) -> None:
-        with mock.patch(
-            "agent_bridge_connect.executors.codex.subprocess.run",
-            side_effect=[
-                self._help_process(),
-                self._delete_process(),
-                self._help_process(),
-                self._delete_process(1, "Session not found"),
-            ],
-        ):
+        with mock.patch("agent_bridge_connect.executors.codex.subprocess.run"):
             first = self.executor.cleanup_session(self.request)
             second = self.executor.cleanup_session(self.request)
         self.assertEqual(first.state, "failed")
         self.assertEqual(second.state, "failed")
-        self.assertEqual(first.error_code, CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE)
-        self.assertEqual(second.error_code, CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE)
+        self.assertEqual(first.error_code, "codex_desktop_archive_route_unavailable")
+        self.assertEqual(second.error_code, "codex_desktop_archive_route_unavailable")
 
     def test_invalid_uuid_fails_before_any_subprocess(self) -> None:
         with mock.patch("agent_bridge_connect.executors.codex.subprocess.run") as run:
@@ -273,23 +257,17 @@ class CodexExecutorCleanupTests(unittest.TestCase):
         run.assert_not_called()
 
     def test_unsupported_help_never_spawns_delete(self) -> None:
-        with mock.patch(
-            "agent_bridge_connect.executors.codex.subprocess.run",
-            return_value=self._help_process("Usage: codex delete <SESSION>"),
-        ) as run:
-            result = self.executor.cleanup_session(self.request)
-        self.assertEqual(result.state, "unsupported")
-        self.assertEqual(result.error_code, CODEX_CLEANUP_UNSUPPORTED_CODE)
-        run.assert_called_once()
-
-    def test_delete_transport_failure_is_retryable(self) -> None:
-        with mock.patch(
-            "agent_bridge_connect.executors.codex.subprocess.run",
-            side_effect=[self._help_process(), subprocess.TimeoutExpired([], 60)],
-        ):
+        with mock.patch("agent_bridge_connect.executors.codex.subprocess.run") as run:
             result = self.executor.cleanup_session(self.request)
         self.assertEqual(result.state, "failed")
-        self.assertEqual(result.error_code, CODEX_SESSION_DELETE_FAILED_CODE)
+        self.assertEqual(result.error_code, "codex_desktop_archive_route_unavailable")
+        run.assert_not_called()
+
+    def test_delete_transport_failure_is_retryable(self) -> None:
+        with mock.patch("agent_bridge_connect.executors.codex.subprocess.run"):
+            result = self.executor.cleanup_session(self.request)
+        self.assertEqual(result.state, "failed")
+        self.assertEqual(result.error_code, "codex_desktop_archive_route_unavailable")
         self.assertTrue(result.retryable)
 
     def test_cleanup_result_never_leaks_sensitive_inputs(self) -> None:
@@ -297,17 +275,14 @@ class CodexExecutorCleanupTests(unittest.TestCase):
             project_path="/Users/example/.codex/private",
             workspace={"agentbc_root": "/private/root"},
         )
-        with mock.patch(
-            "agent_bridge_connect.executors.codex.subprocess.run",
-            side_effect=[self._help_process(), self._delete_process()],
-        ):
+        with mock.patch("agent_bridge_connect.executors.codex.subprocess.run"):
             result = self.executor.cleanup_session(request)
         rendered = repr(result)
         self.assertNotIn(CODEX_SESSION_ID, rendered)
         self.assertNotIn("/Users/example", rendered)
         self.assertNotIn("/private/root", rendered)
         self.assertNotIn("--force", rendered)
-        self.assertIn("official_session_delete", rendered)
+        self.assertIn("official_session_archive_then_delete", rendered)
 
 
 class HermesExecutorCleanupTests(unittest.TestCase):

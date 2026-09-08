@@ -384,6 +384,12 @@ def build_session_cleanup_diagnostics(
                 )
             else:
                 message = "Historical cleanup metadata is unverified."
+        elif state == "pending" and cleanup.get("phase") == "waiting_for_desktop":
+            status = "warning"
+            message = (
+                "Cleanup is waiting for the current Codex Desktop archive route; "
+                "reopen Desktop or run agentbc task status to compensate."
+            )
         elif state == "pending" and _pending_is_stale(
             session.get("cleanup"), current
         ):
@@ -510,7 +516,7 @@ def _one_auxiliary_diagnostic(entry: Any, task_id: str, now: datetime) -> dict[s
         "error_code": cleanup["error_code"],
         "retryable": cleanup["retryable"],
     }
-    for field in ("version", "strategy", "verification", "commands"):
+    for field in ("version", "strategy", "phase", "verification", "commands"):
         if field in cleanup:
             base[field] = cleanup[field]
     if retain:
@@ -567,7 +573,11 @@ def _one_auxiliary_diagnostic(entry: Any, task_id: str, now: datetime) -> dict[s
         }
     message = "Auxiliary executor temporary-session cleanup succeeded."
     if state == "pending":
-        message = "Auxiliary executor temporary-session cleanup is pending."
+        message = (
+            "Auxiliary cleanup is waiting for the current Codex Desktop archive route."
+            if cleanup.get("phase") == "waiting_for_desktop"
+            else "Auxiliary executor temporary-session cleanup is pending."
+        )
     return {**base, "status": "healthy", "message": message}
 
 
@@ -752,9 +762,13 @@ def _render_cleanup(cleanup: dict[str, Any]) -> list[str]:
             )
         if isinstance(commands, dict) and commands:
             archive = commands.get("archive") if isinstance(commands.get("archive"), dict) else {}
+            desktop_archive = commands.get("desktop_archive") if isinstance(commands.get("desktop_archive"), dict) else {}
+            app_server_archive = commands.get("app_server_archive") if isinstance(commands.get("app_server_archive"), dict) else {}
             delete = commands.get("delete") if isinstance(commands.get("delete"), dict) else {}
             detail += (
                 f" archive={_text_value(archive.get('status'))}"
+                f" desktop_archive={_text_value(desktop_archive.get('status'))}"
+                f" app_server_archive={_text_value(app_server_archive.get('status'))}"
                 f" delete={_text_value(delete.get('status'))}"
             )
         lines.append(
