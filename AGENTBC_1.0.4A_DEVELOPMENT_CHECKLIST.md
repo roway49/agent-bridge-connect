@@ -82,20 +82,26 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `FLOW-104-002` | P0 | report/record 超限可跳过终态通知和 cleanup receipt | terminal、report、notification、cleanup 独立且可重放，通知不被报告失败吞掉 | terminal fixtures；对应 ARCH slice |
 | `FLOW-104-001` | P1 | handoff 只能声明一个 step，自由文本多步骤直到 callback 才失败 | handoff 原生结构化 steps、dispatch 前预检、严格 callback 一致性 | schema fixtures；对应 ARCH slice |
 | `FLOW-103-001` | P1 / 跨版转入 | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | task/run/session scoped 单调 progress receipt；所有公共视图同源 | `FLOW-104-001` 的 declared steps |
-| `SESSION-104-001` | **P0-Blocker / 回归失效、重新打开（2026-09-08）** | 后端命令回执仍显示 archive→delete 成功，但当前 Codex Desktop 侧栏继续保留临时会话，用户侧 archive 近似完全失效；近期 `P3FK-002` 的 archive acknowledgement 与 delete acknowledgement 仅相隔约 0.23 秒，且均来自 Executor/App Server 路径，不能证明当前 Desktop 运行实例已消费 archive 状态 | 保留现有精确官方 session 隔离和 delete 实现；优先补齐独立 archive 生产接线，使当前 Desktop 官方控制面能够收到或机械同步 archive。必须分别持久化 archive 触达与 delete 触达；archive 不得由后续 delete 成功反推。至少完成 completed、failed、一次提权 continuation 三类真机回归，并由用户确认侧栏无需点击临时会话即可消失 | 当前开发队列首位；`SESSION-104-001-R1` 已并回主项；原生派生子会话仍归 `PROTO-105-001` P2 |
+| `SESSION-104-001` | **P0-Blocker / 回归失效、重新打开（2026-09-08）** | 后端命令回执仍显示 archive→delete 成功，但 `P3FK-002` 在当前 Codex Desktop 侧栏继续存在；点击后提示该 thread ID 已无 rollout，证明 delete 生效而 archive 没有让当前 UI 收敛。两条 acknowledgement 仅相隔约 0.23 秒，且均来自 Executor/App Server 路径，不能证明当前 Desktop 运行实例已消费 archive 状态 | 保留现有精确官方 session 隔离和 delete 实现；优先补齐独立 archive 生产接线，使当前 Desktop 官方控制面收到 archive 并清除侧栏行后，才允许进入既有 delete。必须分别持久化 archive 后端确认、Desktop 实例触达与 delete 触达；任何 fresh `thread/list` absent 或 delete 成功均不得反推 UI archive 成功。至少完成 completed、failed、一次提权 continuation 三类真机回归，并由用户确认侧栏无需点击临时会话即可消失 | 当前开发队列首位；`SESSION-104-001-R1` 已并回主项；原生派生子会话仍归 `PROTO-105-001` P2 |
 | `FLOW-104-003` | P0 / 恢复闭环 | 当前终态 `failed` 既不能 `task retry`，也不能作为普通 handoff 源，失败后只能人工绕行 | status/report 给出机械可判定的 retry/handoff 动作；同任务重试与新 iteration 交接均保留审计和进度 | failure taxonomy；`FLOW-104-002` terminal receipts；`FLOW-104-001` steps |
 | `INPUT-104-001` | P0 / 派发阻断 | 显式 custom path 时，位于项目根之外的 `--image`/输入文件被 `image input is outside task roots` 原子拒绝 | 项目根与只读附件根分离；Runner 受控导入外部文件且不扩大 Executor 项目权限 | PathPlan v2；atomic dispatch；input manifest |
 
-### 2.0.1 `SESSION-104-001` 2026-09-08 现场重判
+### 2.0.1 `SESSION-104-001` 2026-09-08 现场重判（以用户侧栏证据为准）
 
-- 当前官方 Desktop 任务列表仍显示的代表性 AgentBC 临时会话中，`VEHN-001`、`JF4P-001`、
-  `DRW9-001`、`5MGK-001`、`JPWY-001`、`Y9JS-001` 均为
-  `needs_recovery + retain=false + cleanup=not_requested`；`J48B-001` 为显式 `retain=true`。
-- 最新终态 Codex 任务 `P3FK-002` 的后端回执仍证明 archive acknowledged、delete acknowledged，
-  且其精确官方 session 不在当前 Desktop 官方列表。因此不能把问题继续归类为 archive RPC 全面失效；
-  当前主要产品缺口是 `needs_recovery` 被 `task_not_terminal` / `session_not_terminal` 永久排除在 archive
-  路径之外，导致大量恢复态临时会话长期暴露在侧栏。
-- P0 第一切片采用“恢复态停车”而不是提前删除：当 Codex Task 进入 `needs_recovery`、RunLease 已关闭、
+- `P3FK-002` 是终态 completed、`retain=false`、cleanup succeeded 的直接反例：回执记录精确 session
+  `01a07c73-26c6-7fe2-a994-ff2f484c3c73` 的 archive acknowledged 后 delete acknowledged，但当前 Desktop
+  侧栏仍显示该任务；点击侧栏行后显示 `no rollout found for thread id ...`。因此 delete 确实生效，
+  archive 的后端响应却没有让当前 Desktop 实例移除侧栏缓存行。
+- 先前通过当前 Desktop 列表 API 未读到 `P3FK-002`，只能说明后台/列表数据面已 absent，不能证明当前
+  侧栏渲染面已收敛；该判断已被用户截图纠正。后续验收必须同时保存同一 session 的命令回执和用户侧栏
+  证据，禁止以 fresh `thread/list`、`thread/read` 或 delete 结果代替当前实例的 archive 可见性。
+- 恢复态泄漏仍是第二个独立缺口：当前可见的 `VEHN-001`、`JF4P-001`、`DRW9-001`、`5MGK-001`、
+  `JPWY-001`、`Y9JS-001` 均为 `needs_recovery + retain=false + cleanup=not_requested`；它们被
+  `task_not_terminal` / `session_not_terminal` 排除在 archive 路径之外，会进一步堆积侧栏残留。
+- P0 第一切片先修终态 archive 的 Desktop 触达：在当前 Executor/App Server 的 archive acknowledgement
+  之外增加当前 Desktop 官方控制面触达回执；该回执未确认时不得把 archive 投影为用户面成功，也不得用
+  随后的 delete 掩盖失败。现有 delete RPC、精确 session 绑定和隔离边界不改。
+- P0 第二切片采用“恢复态停车”而不是提前删除：当 Codex Task 进入 `needs_recovery`、RunLease 已关闭、
   `retain=false` 且官方 session receipt 有效时，只发送一次 `thread/archive` 并持久化 `parked` 回执，
   **绝不发送 `thread/delete`**。`input_required`、仍 active 的 RunLease 和 retain=true 会话不停车。
 - `task recover`/同会话 continuation 在执行 `thread/resume` 前必须先以官方 `thread/unarchive`（或当前
@@ -233,7 +239,7 @@ fixture/文档工作，但不得进入公开 RC。
 
 | 时间窗 | 优先级与工作包 | 当前起点 | 退出条件 |
 | --- | --- | --- | --- |
-| 9 月 8 日起立即执行 | **P0-Blocker：`SESSION-104-001` Desktop archive 生产接线回归** | archive/delete 后端回执仍成功，但当前 Desktop 侧栏保留临时会话；`P3FK-002` 两条命令仅相隔约 0.23 秒 | 精确会话的 archive 与 delete 均有独立回执；当前 Desktop 侧栏无需点击即可收敛；completed、failed、一次提权 continuation 三类真机通过；未通过前不进入 RC |
+| 9 月 8 日起立即执行 | **P0-Blocker：`SESSION-104-001` Desktop archive 生产接线回归** | `P3FK-002` archive/delete 后端回执均成功，但当前 Desktop 侧栏仍保留会话；点击后因 delete 已生效而报 `no rollout found` | 精确会话的 archive 后端确认、当前 Desktop 实例触达和 delete 均有独立回执；当前侧栏无需点击即可收敛；completed、failed、一次提权 continuation 三类真机通过；未通过前不进入 RC |
 | 9 月 7 日—9 月 9 日 | P0-Blocker：`PERM-104-002` 收尾 | 三 Executor 显式 full 与 inherit→full 核心矩阵、Claude Details UI 已通过 | handoff/retry 继承 full、Deny、timeout、重复/乱序事件全部通过；安装身份一致，关闭 PERM 全局门禁 |
 | 9 月 10 日—9 月 13 日 | P0：`FLOW-104-002` 与 `INPUT-104-001` | record 上限已放宽到 50 KiB；外部附件仍有 custom-path 阻断基线 | terminal/report/notification/cleanup 可独立重放；custom path + 外部只读附件原子派发通过 |
 | 9 月 14 日—9 月 18 日 | P0：`FLOW-104-003`；P1：`FLOW-104-003-R1`、`FLOW-104-004-R1` | Failed retry/handoff 与 Codex interrupted turn 均有固定失败基线 | failed current head 可审计 retry/handoff；Hermes incomplete exit 与 Codex interrupted turn 有稳定终态和恢复动作 |
