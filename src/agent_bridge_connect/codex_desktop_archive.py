@@ -706,6 +706,8 @@ class AcknowledgedCodexDesktopArchiveBroker:
     task/session/run binding supplied to the acknowledgement operation.
     """
 
+    authoritative_ack = True
+
     def __init__(self, *, task_id: str, executor_run_id: str, session_id: str) -> None:
         self.task_id = str(task_id or "").strip()
         self.executor_run_id = str(executor_run_id or "").strip()
