@@ -32,6 +32,10 @@ RESOURCE_DECISION_KIND = "resource_limit"
 RESOURCE_DECISION_PROTOCOL = "approve_deny"
 PERMISSION_DIALOG_TIMEOUT_RESPONSE = "agentbc_permission_dialog_timeout"
 PERMISSION_DIALOG_CLOSED_RESPONSE = "agentbc_permission_dialog_closed"
+#: Stable marker returned to a contained worker for the board-level file side
+#: channel it is not allowed to write.  The terminal delivery receipt records
+#: that stage as ``deferred`` instead of failed so the Runner can deliver it.
+RUNNER_WORKER_FILE_DEFERRAL = "runner_worker_file_notification_deferred"
 
 
 def _file_notification(service: Any, payload: dict[str, Any]) -> DeliveryResult:
@@ -42,7 +46,7 @@ def _file_notification(service: Any, payload: dict[str, Any]) -> DeliveryResult:
     replay or deliver the notification after it observes the task event.
     """
     if bool(getattr(service, "_runner_worker", False)):
-        return DeliveryResult(False, "runner_worker_file_notification_deferred")
+        return DeliveryResult(False, RUNNER_WORKER_FILE_DEFERRAL)
     return FileNotifier(service.board_root / "notifications.jsonl").send(payload)
 
 
@@ -52,26 +56,82 @@ def notify_terminal(
     event_type: str,
     level: str,
     message: str,
-) -> None:
+) -> dict[str, Any]:
+    result = deliver_terminal_notification(service, task_id, event_type, level, message)
+    record_terminal_notification(
+        service,
+        task_id,
+        event_type,
+        file_ok=bool(result["file_ok"]),
+        dialog_ok=bool(result["dialog_ok"]),
+        dialog_message=str(result["dialog_message"]),
+        dialog_delay_s=int(result["dialog_delay_s"]),
+    )
+    return {key: value for key, value in result.items() if key != "payload"}
+
+
+def deliver_terminal_notification(
+    service: Any,
+    task_id: str,
+    event_type: str,
+    level: str,
+    message: str,
+    *,
+    channels: frozenset[str] | set[str] = frozenset({"file", "dialog"}),
+) -> dict[str, Any]:
+    """Deliver the terminal notification on exactly the requested channels.
+
+    FLOW-104-002: the durable ``agentbc.terminal_delivery`` receipt owns the
+    ``file_notification`` and ``ui_notification`` stages independently, so each
+    stage must be able to deliver *its own channel only*.  A stage that is
+    already confirmed is never re-sent, and no channel is delivered twice.
+    """
     payload = build_notification_payload(service, task_id, event_type, level, message)
-    file_result = _file_notification(service, payload)
+    file_result: DeliveryResult | None = None
+    dialog_result: DeliveryResult | None = None
     delay_s = 0
+    if "file" in channels:
+        file_result = _file_notification(service, payload)
     # Every terminal result must reach the user. Concurrency changes only the
     # delivery timing; suppressing a completed dialog loses it permanently.
-    delay_s = notification_delay_seconds(service, task_id)
-    if delay_s > 0:
-        time.sleep(delay_s)
-    dialog_result = DialogNotifier().send(payload)
+    if "dialog" in channels:
+        delay_s = notification_delay_seconds(service, task_id)
+        if delay_s > 0:
+            time.sleep(delay_s)
+        dialog_result = DialogNotifier().send(payload)
+    return {
+        "payload": payload,
+        "file_ok": None if file_result is None else bool(file_result.ok),
+        "file_deferred": bool(
+            file_result is not None and file_result.message == RUNNER_WORKER_FILE_DEFERRAL
+        ),
+        "dialog_ok": None if dialog_result is None else bool(dialog_result.ok),
+        "dialog_message": "" if dialog_result is None else str(dialog_result.message),
+        "dialog_delay_s": delay_s,
+    }
+
+
+def record_terminal_notification(
+    service: Any,
+    task_id: str,
+    event_type: str,
+    *,
+    file_ok: bool,
+    dialog_ok: bool,
+    dialog_message: str = "",
+    dialog_delay_s: int = 0,
+) -> None:
+    """Append the durable ``notification_delivery`` evidence event."""
     service.store.append_event(
         task_id,
         {
             "event_type": "notification_delivery",
             "task_id": task_id,
             "notification_event": event_type,
-            "file_ok": file_result.ok,
-            "dialog_ok": dialog_result.ok,
-            "dialog_message": dialog_result.message,
-            "dialog_delay_s": delay_s,
+            "file_ok": bool(file_ok),
+            "dialog_ok": bool(dialog_ok),
+            "dialog_message": dialog_message,
+            "dialog_delay_s": int(dialog_delay_s),
             "created_at": utc_now(),
         },
     )

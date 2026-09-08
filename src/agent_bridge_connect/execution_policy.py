@@ -1018,6 +1018,11 @@ def execution_policy_view(extensions: Any) -> dict[str, Any]:
         auxiliary_aggregate_view,
         auxiliary_ledger_view,
     )
+    from .terminal_delivery import (
+        TERMINAL_DELIVERY_EXTENSION_KEY,
+        delivery_health_view,
+        terminal_delivery_view,
+    )
 
     value = extensions if isinstance(extensions, dict) else {}
     resource = value.get(RESOURCE_EXTENSION_KEY)
@@ -1051,6 +1056,12 @@ def execution_policy_view(extensions: Any) -> dict[str, Any]:
         ),
         "auxiliary_sessions": auxiliary_ledger_view(value.get(AUXILIARY_EXTENSION_KEY)),
         "auxiliary_aggregate": auxiliary_aggregate_view(value.get(AUXILIARY_EXTENSION_KEY)),
+        "terminal_delivery": terminal_delivery_view(
+            value.get(TERMINAL_DELIVERY_EXTENSION_KEY)
+        ),
+        "delivery_health": delivery_health_view(
+            value.get(TERMINAL_DELIVERY_EXTENSION_KEY)
+        ),
     }
 
 
@@ -1074,12 +1085,22 @@ def public_extensions_view(extensions: Any) -> dict[str, Any]:
         auxiliary_aggregate_view,
         auxiliary_ledger_view,
     )
+    from .terminal_delivery import (
+        TERMINAL_DELIVERY_EXTENSION_KEY,
+        terminal_delivery_view,
+    )
 
     public = copy.deepcopy(extensions) if isinstance(extensions, dict) else {}
     session = public.get(SESSION_EXTENSION_KEY)
     if isinstance(session, dict):
         session.pop("project_path", None)
         session["cleanup"] = session_cleanup_view(session.get("cleanup"))
+    if TERMINAL_DELIVERY_EXTENSION_KEY in public:
+        # The bounded delivery receipt is projected (never echoed verbatim) so
+        # public status/report never expose internal stage bookkeeping fields.
+        public[TERMINAL_DELIVERY_EXTENSION_KEY] = terminal_delivery_view(
+            public.get(TERMINAL_DELIVERY_EXTENSION_KEY)
+        )
     if AUXILIARY_EXTENSION_KEY in public:
         public[AUXILIARY_EXTENSION_KEY] = {
             "sessions": auxiliary_ledger_view(public[AUXILIARY_EXTENSION_KEY]),
@@ -1127,20 +1148,23 @@ def session_cleanup_blockers(
     *,
     task_status: str,
     lease_state: str,
-    report_written: bool,
-    notification_recorded: bool,
     session: Any,
 ) -> list[str]:
-    """Return the ordered reasons post-terminal session cleanup must not run."""
+    """Return the ordered reasons post-terminal session cleanup must not run.
+
+    FLOW-104-002 removed ``report_written`` and ``notification_recorded`` as
+    cleanup gates: report and notification delivery are now independent
+    ``agentbc.terminal_delivery`` stages, and a report/notifications failure must
+    never block executor-session cleanup or change a task terminal state.
+    Cleanup eligibility requires only a business-terminal task, a closed
+    RunLease, terminal session state, ``retain=false`` and a valid exact
+    official session receipt.
+    """
     blockers: list[str] = []
     if str(task_status or "").strip().lower() not in TERMINAL_SESSION_CLEANUP_STATUSES:
         blockers.append("task_not_terminal")
     if str(lease_state or "").strip().lower() != "closed":
         blockers.append("run_lease_not_closed")
-    if report_written is not True:
-        blockers.append("report_not_written")
-    if notification_recorded is not True:
-        blockers.append("notification_not_recorded")
     session_errors = validate_session_snapshot(session)
     if session_errors:
         blockers.append("session_receipt_invalid")
@@ -1189,8 +1213,6 @@ def transition_session_cleanup(
     *,
     task_status: str,
     lease_state: str,
-    report_written: bool,
-    notification_recorded: bool,
     capability: str | None = None,
     strategy: str | None = None,
     error_code: str = "",
@@ -1225,8 +1247,6 @@ def transition_session_cleanup(
     blockers = session_cleanup_blockers(
         task_status=task_status,
         lease_state=lease_state,
-        report_written=report_written,
-        notification_recorded=notification_recorded,
         session=session,
     )
     if target_state == "retained":

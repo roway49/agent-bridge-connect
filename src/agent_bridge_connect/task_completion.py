@@ -5,10 +5,42 @@ from typing import Any
 from .execution_contract import AGENT_FINAL_STATES, FINAL_CALLBACK_VERSION
 from .notifications import notify_input_required, notify_terminal
 from .protocol import ABCError
-from .reports import write_report_files
 
 
 AGENT_COMPLETION_STATES = frozenset({*AGENT_FINAL_STATES, "needs_recovery"})
+
+
+def _deliver_terminal_side_effects(
+    service: Any,
+    task_id: str,
+    *,
+    event_type: str,
+    level: str,
+    message: str,
+) -> bool:
+    """Route the terminal side effects through the durable stage receipt.
+
+    FLOW-104-002: the receipt is the production authority for the report, record,
+    index, file-notification and UI-notification stages of a business terminal
+    outcome.  Delivering them here records each stage on the receipt, so Runner
+    maintenance replays only the unconfirmed stages instead of repeating a
+    terminal notification the user has already seen.
+
+    ``input_required`` is never routed here: the actionable nonterminal input
+    notice stays owned by :func:`notify_input_required`.  A task without a
+    receipt (``needs_recovery``, cancelled, or a legacy record) returns ``False``
+    and keeps the historical direct behaviour.
+    """
+    from .terminal_delivery_coordinator import deliver_terminal_outcome
+
+    outcome = deliver_terminal_outcome(
+        service,
+        task_id,
+        event_type=event_type,
+        level=level,
+        message=message,
+    )
+    return bool(outcome.get("routed"))
 
 
 def apply_agent_completion(
@@ -39,7 +71,11 @@ def apply_agent_completion(
             {"source": "agent_callback", "executor_run_id": str(executor_run_id or "")},
         )
         if finalized:
-            write_report_files(task_id, service.board_root)
+            # FLOW-104-002: ``mark_task_needs_recovery`` already ran the report,
+            # record and index stages through the durable stage split.  Re-running
+            # the composed report entry point here duplicated them outside the
+            # receipt.
+            service.run_terminal_side_effects(task_id)
         event_type = "task.recovery_required"
         level = "warning"
     else:
@@ -65,16 +101,29 @@ def apply_agent_completion(
             level = "done" if final_state == "completed" else "info"
 
     task = service.get_task(task_id)
+    notified = False
     if notify and finalized:
         if final_state == "input_required":
+            # FLOW-104-002 never touches the approval flow: an ``input_required``
+            # notice is not a terminal notification and keeps its own path.
             notify_input_required(service, task_id)
+            notified = True
+        elif _deliver_terminal_side_effects(
+            service,
+            task_id,
+            event_type=event_type,
+            level=level,
+            message=clean_summary,
+        ):
+            notified = True
         else:
             notify_terminal(service, task_id, event_type, level, clean_summary)
+            notified = True
     return {
         "ok": True,
         "task_id": task.id,
         "status": task.status,
         "event_type": event_type,
-        "notified": bool(notify and finalized),
+        "notified": notified,
         "report_file": (task.workspace or {}).get("report_file", ""),
     }

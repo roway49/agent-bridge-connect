@@ -1,5 +1,50 @@
 # SESSION-104-001 continuation evidence
 
+> [!WARNING]
+> **2026-09-08 regression reopening and correction:** the historical acceptance
+> below remains valid only as command/backend evidence. `P3FK-002` remains in
+> the running Desktop sidebar even though its receipt says archive acknowledged
+> and delete acknowledged. Clicking that row reports that no rollout exists for
+> its exact thread ID, proving delete succeeded while the sidebar never consumed
+> the archive state. The user currently observes that temporary Codex sessions
+> remain in the running Desktop sidebar, so
+> `SESSION-104-001` is reopened as a P0-Blocker. A `thread/archive` RPC
+> acknowledgement followed by `thread/delete` is no longer sufficient proof
+> that archive reached the current Desktop instance. The new gate requires
+> independent archive-backend, current-Desktop-delivery, and delete receipts plus
+> a no-click Desktop-sidebar convergence canary. A fresh list/read absence check
+> must not substitute for the rendered sidebar evidence. Existing delete behavior
+> remains unchanged; private-store mutation, GUI automation, and forced
+> application restart remain forbidden.
+
+## 28KY-001 / ED84-001 Desktop-control-plane comparison (2026-09-08)
+
+Two otherwise minimal Codex tasks froze opposite retention policies and both
+completed with a valid one-step callback and a closed RunLease:
+
+- `28KY-001` froze `retain=true`; exact official session
+  `01a08036-c2a8-7a12-a365-127baec881cb` remained available. Calling the current
+  Codex Desktop control plane's archive operation for that exact ID immediately
+  removed it from active tasks and placed it in archived tasks. AgentBC's
+  existing App Server delete was then called with the Desktop archive receipt
+  treated as the archive precondition; delete was acknowledged and a fresh read
+  proved CLI absence. The exact ID was absent from both active and archived app
+  listings afterwards.
+- `ED84-001` froze `retain=false`; exact official session
+  `01a08037-0ff7-7061-95ee-36f4627c2b98` used the existing automatic path.
+  Cleanup ended `failed` with `codex_session_archive_failed`, archive=`failed`,
+  delete=`not_requested`, and the exact ID remained active in the current
+  Desktop control plane.
+
+This comparison rejects a simple Desktop-refresh explanation. The Desktop
+archive control plane works, while the automatic independent App Server archive
+receives a generic RPC failure and correctly fail-closes before delete. The
+failure is neither the stable transport-lost, timeout, nor target-missing class;
+the current sanitized receipt does not retain a bounded reason category for the
+generic RPC rejection. Production repair must route archive through the Desktop
+authority (or a mechanically equivalent supported bridge) and retain a bounded
+rejection category before invoking the unchanged delete path.
+
 > [!CAUTION]
 > **最高优先级、不可覆盖：禁止在 `full` 运行基础上增加任何额外安全策略。安全策略不属于 AgentBC 产品特性，不为任务执行负责；凡与 `full` 任务完整执行冲突，必要时必须移除一切额外安全策略。**
 

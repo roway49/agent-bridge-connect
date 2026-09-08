@@ -2032,6 +2032,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 callback=callback if isinstance(callback, dict) else None,
                 execution_session=execution_session,
             )
+            _handoff_terminal_delivery(service, task.id)
             # PERM-104-002 (E52M-003 review fix): ``verified`` may only come
             # from the structured success receipt of the declared target
             # action - a valid agent callback finalized by Core plus the
@@ -2735,7 +2736,24 @@ def _write_terminal_report(
     write_report_files(task_id, board_root, refresh_index=refresh_index)
 
 
+def _task_has_terminal_delivery(service: TaskService, task_id: str) -> bool:
+    try:
+        extensions = dict(service.get_task(task_id).extensions or {})
+    except Exception:  # noqa: BLE001 - a projection must never mask the task
+        return False
+    return "agentbc.terminal_delivery" in extensions
+
+
 def _write_worker_terminal_report(service: TaskService, task_id: str) -> None:
+    """Write the terminal report for a task without a delivery receipt.
+
+    FLOW-104-002: when the task carries a receipt, the report, record and index
+    stages were already attempted inside the authoritative terminal write and are
+    recorded on it.  Re-running the composed report entry point here would
+    duplicate them outside the receipt.
+    """
+    if _task_has_terminal_delivery(service, task_id):
+        return
     _write_terminal_report(
         task_id,
         service.board_root,
@@ -2750,9 +2768,48 @@ def _notify_terminal(
     level: str,
     message: str,
 ) -> None:
-    from .notifications import notify_terminal
+    """Deliver the terminal notification through the durable stage receipt.
 
-    notify_terminal(service, task_id, event_type, level, message)
+    FLOW-104-002: the receipt owns the ``file_notification`` and
+    ``ui_notification`` stages, so each result is recorded on it and Runner
+    maintenance replays only what is unconfirmed.  A task without a receipt
+    (``needs_recovery``, cancelled, or a legacy record) keeps the historical
+    direct notification.  ``input_required`` never reaches this helper.
+    """
+    from .terminal_delivery_coordinator import deliver_terminal_outcome
+
+    deliver_terminal_outcome(
+        service,
+        task_id,
+        event_type=event_type,
+        level=level,
+        message=message,
+    )
+
+
+def _handoff_terminal_delivery(service: TaskService, task_id: str) -> None:
+    """Hand remaining terminal delivery stages to the Runner.
+
+    FLOW-104-002: the worker finalizes the business terminal state and attempts
+    the report/record/index stages inline, but a contained worker must not write
+    the board-level notification side channel.  The Runner is the production
+    owner of terminal delivery, so it receives the outstanding stages
+    immediately; Runner maintenance replays anything still incomplete later.
+    Every failure here is non-fatal: the delivery receipt on the task keeps the
+    outstanding stages and the business terminal state is already durable.
+    """
+    try:
+        extensions = service.get_task(task_id).extensions or {}
+    except Exception:  # noqa: BLE001 - delivery handoff must never mask the task
+        return
+    if "agentbc.terminal_delivery" not in extensions:
+        return
+    try:
+        from .runner import RunnerClient
+
+        RunnerClient().deliver_terminal(task_id, str(service.board_root))
+    except Exception:  # noqa: BLE001 - Runner may be offline; maintenance replays
+        return
 
 
 def _notify_input_required(

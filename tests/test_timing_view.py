@@ -244,6 +244,23 @@ class TimingViewTests(unittest.TestCase):
         self.assertEqual(view["execution_duration_s"], 2 * 60 * 60)
         self.assertEqual(view["evidence_quality"], "estimated")
 
+    def test_closed_lease_replaces_same_run_active_ledger_interval(self) -> None:
+        self._write_task(status="completed", created_at=_hour(0), updated_at=_hour(2))
+        active = self._interval("run-final", 0, 1)
+        active["state"] = RunLeaseState.ACTIVE
+        self._set_ledger([active])
+        self._write_lease(
+            "run-final", _hour(0), _hour(2), state=RunLeaseState.CLOSED
+        )
+
+        view = self._view()
+
+        self.assertEqual(view["lease_state"], RunLeaseState.CLOSED)
+        self.assertEqual(view["run_count"], 1)
+        self.assertEqual(view["run_intervals"][0]["state"], RunLeaseState.CLOSED)
+        self.assertEqual(view["execution_duration_s"], 2 * 60 * 60)
+        self.assertEqual(view["evidence_quality"], "authoritative")
+
     def test_missing_run_lease_reads_as_closed(self) -> None:
         # Stale extension snapshot claims "active" but no run_lease.json exists.
         self._write_task(status="completed", created_at=_hour(0), updated_at=_hour(1))

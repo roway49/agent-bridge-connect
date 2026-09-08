@@ -155,8 +155,6 @@ class CleanupTransitionTests(unittest.TestCase):
         defaults = {
             "task_status": "completed",
             "lease_state": "closed",
-            "report_written": True,
-            "notification_recorded": True,
             "occurred_at": T1,
         }
         defaults.update(kwargs)
@@ -292,8 +290,6 @@ class CleanupTransitionTests(unittest.TestCase):
             ({"task_status": "running"}, "task_not_terminal"),
             ({"lease_state": "active"}, "run_lease_not_closed"),
             ({"lease_state": "stale"}, "run_lease_not_closed"),
-            ({"report_written": False}, "report_not_written"),
-            ({"notification_recorded": False}, "notification_not_recorded"),
         )
         for override, expected in cases:
             with self.subTest(override=override):
@@ -301,8 +297,6 @@ class CleanupTransitionTests(unittest.TestCase):
                 blockers = session_cleanup_blockers(
                     task_status=str(override.get("task_status", "completed")),
                     lease_state=str(override.get("lease_state", "closed")),
-                    report_written=bool(override.get("report_written", True)),
-                    notification_recorded=bool(override.get("notification_recorded", True)),
                     session=session,
                 )
                 self.assertIn(expected, blockers)

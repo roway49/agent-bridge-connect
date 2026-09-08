@@ -112,6 +112,7 @@ from .state_machine import validate_transition
 from .task_id import format_task_id, is_task_like, split_task_ref, task_iteration
 from .task_index import refresh_task_index
 from .task_store import TaskStore
+from .terminal_delivery import TERMINAL_DELIVERY_EXTENSION_KEY
 from .terminal_states import TASK_TERMINAL_STATES
 
 # The core service keeps the executor-specific receipt adapter out of its
@@ -916,8 +917,11 @@ class TaskService:
         *,
         execution_session: dict[str, Any] | None = None,
     ) -> bool:
-        from .reports import write_report_files
         from .task_health import clear_task_progress
+        from .terminal_delivery import (
+            TERMINAL_DELIVERY_EXTENSION_KEY,
+            build_terminal_delivery_receipt,
+        )
 
         task = self.get_task(task_id)
         task_id = task.id
@@ -1105,6 +1109,16 @@ class TaskService:
         task.extensions = _merge_execution(task.extensions, {"internal_status": final_state})
         self.revoke_permission_grant(task.id, "task_terminal", model=task)
         self._release_lease(task_id)
+        # FLOW-104-002: the durable terminal-delivery receipt is created inside
+        # this same authoritative task write as the business terminal state so
+        # a later report/record/index/notification failure can never lose the
+        # fact that this terminal outcome still needs delivery.
+        task.extensions[TERMINAL_DELIVERY_EXTENSION_KEY] = build_terminal_delivery_receipt(
+            task_id,
+            terminal_state=final_state,
+            terminal_event="task.finalized",
+            committed_at=task.updated_at,
+        )
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)
         self.store.append_event(
@@ -1117,40 +1131,17 @@ class TaskService:
                 "summary": summary,
             },
         )
-        try:
-            write_report_files(
-                task_id,
-                self.board_root,
-                refresh_index=not self._runner_worker,
-            )
-        except (ABCError, OSError, PermissionError) as exc:
-            # Report generation writes the canonical Markdown before compacting
-            # Record state and refreshing indexes. A later bookkeeping failure
-            # must not rewrite a confirmed normal executor exit as task failure.
-            if Path(report_file).expanduser().is_file():
-                self._cleanup_empty_managed_artifacts(task_id)
-                try:
-                    self._refresh_task_index()
-                except (OSError, PermissionError):
-                    pass
-                return True
-            self.mark_task_failed(
-                task_id,
-                "report_contract_missing",
-                f"Agent callback received but report contract failed: {exc}",
-                {"callback": task.extensions.get("agentbc.final_callback") or {}},
-            )
-            return True
-        if not Path(report_file).expanduser().exists():
-            self.mark_task_failed(
-                task_id,
-                "report_contract_missing",
-                "Agent callback received but report file is missing after report generation",
-                {"callback": task.extensions.get("agentbc.final_callback") or {}},
-            )
-            return True
+        # FLOW-104-002: report writing, record compaction and index refresh are
+        # three independently catchable operations.  None of them may rewrite a
+        # valid terminal task to ``failed`` only because the report is
+        # unavailable; every failure is recorded on the delivery receipt and
+        # replayed by Runner maintenance.
+        self._run_terminal_delivery_stages(
+            task_id,
+            executors=self._terminal_delivery_executors(task_id, report_file),
+            refresh_index=not self._runner_worker,
+        )
         self._cleanup_empty_managed_artifacts(task_id)
-        self._refresh_task_index()
         return True
 
     def revoke_permission_grant(
@@ -4529,6 +4520,21 @@ class TaskService:
         task.extensions = _merge_execution(task.extensions, execution_updates)
         self.revoke_permission_grant(task.id, code, model=task)
         self._release_lease(task_id)
+        # FLOW-104-002: create the terminal-delivery receipt inside this same
+        # authoritative task write as the ``failed`` terminal state.
+        from .terminal_delivery import (
+            TERMINAL_DELIVERY_EXTENSION_KEY,
+            build_terminal_delivery_receipt,
+        )
+
+        task.extensions[TERMINAL_DELIVERY_EXTENSION_KEY] = (
+            build_terminal_delivery_receipt(
+                task_id,
+                terminal_state="failed",
+                terminal_event="task.failed",
+                committed_at=now,
+            )
+        )
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)
         self.store.append_event(
@@ -5032,17 +5038,248 @@ class TaskService:
         return result
 
     def _sync_terminal_report(self, task_id: str) -> None:
-        try:
-            from .reports import write_report_files
+        """Run the local terminal side effects and record each independently.
 
-            write_report_files(
-                task_id,
-                self.board_root,
-                refresh_index=not self._runner_worker,
-            )
-        except (ABCError, OSError, PermissionError):
-            pass
+        FLOW-104-002: this never changes the task terminal state.  When the task
+        carries a ``agentbc.terminal_delivery`` receipt, a report, record or
+        index failure is recorded on it so Runner maintenance can replay only
+        the incomplete stages.  Tasks without a receipt (cancelled, recovered or
+        legacy records) keep the historical direct behaviour.
+        """
+        try:
+            task = self.get_task(task_id)
+            has_receipt = TERMINAL_DELIVERY_EXTENSION_KEY in dict(task.extensions or {})
+        except ABCError:
+            has_receipt = False
+        if has_receipt:
+            try:
+                self._run_terminal_delivery_stages(
+                    task_id,
+                    executors=self._terminal_delivery_executors(task_id),
+                    refresh_index=not self._runner_worker,
+                )
+            except (ABCError, OSError, PermissionError):
+                pass
+        else:
+            try:
+                from .reports import (
+                    compact_task_record,
+                    refresh_board_index,
+                    write_report_markdown,
+                )
+
+                write_report_markdown(task_id, self.board_root)
+                compact_task_record(task_id, self.board_root)
+                if not self._runner_worker:
+                    refresh_board_index(self.board_root)
+            except (ABCError, OSError, PermissionError):
+                pass
         self._cleanup_empty_managed_artifacts(task_id)
+
+    # ------------------------------------------------- terminal delivery (v1)
+    def run_terminal_side_effects(self, task_id: str) -> None:
+        """Run the local terminal side effects through the durable stage split.
+
+        FLOW-104-002 public wrapper around :meth:`_sync_terminal_report`.  When
+        the task carries a ``agentbc.terminal_delivery`` receipt the report,
+        record and index stages are attempted under it and recorded, so Runner
+        maintenance replays only the unconfirmed ones.  Tasks without a receipt
+        (``needs_recovery``, cancelled, or legacy records) keep the historical
+        direct behaviour and never gain a receipt: the terminal coordinator must
+        not touch a ``needs_recovery`` session.
+        """
+        self._sync_terminal_report(task_id)
+
+    def _terminal_delivery_executors(
+        self,
+        task_id: str,
+        report_file: str = "",
+    ) -> dict[str, Any]:
+        """Build the locally owned terminal delivery stage handlers.
+
+        Handlers are zero-argument callables bound to ``task_id`` so Core and the
+        Runner share one :class:`StageExecutors` calling convention.
+
+        FLOW-104-002: Runner is the production owner of terminal delivery, so
+        Core only executes the three idempotent local projections (report,
+        record, index) inline.  The notification stage handlers are deliberately
+        omitted: a missing handler leaves that stage ``pending`` without
+        consuming an attempt, and the Runner delivers it immediately when handed
+        the task and replays it during maintenance until confirmed.
+        """
+        from .reports import (
+            compact_task_record,
+            refresh_board_index,
+            write_report_markdown,
+        )
+        from .terminal_delivery import StageOutcome
+
+        board_root = self.board_root
+
+        def _report() -> Any:
+            report, _markdown = write_report_markdown(task_id, board_root)
+            target = str(
+                report_file
+                or (report.get("workspace") or {}).get("report_file")
+                or ""
+            )
+            if target and not Path(target).expanduser().is_file():
+                return StageOutcome(False, error_code="report_missing")
+            return StageOutcome(True)
+
+        def _record() -> Any:
+            compact_task_record(task_id, board_root)
+            return StageOutcome(True)
+
+        def _index() -> Any:
+            refresh_board_index(board_root)
+            return StageOutcome(True)
+
+        return {
+            "report": _report,
+            "record": _record,
+            "index": _index,
+        }
+
+    def _run_terminal_delivery_stages(
+        self,
+        task_id: str,
+        *,
+        executors: dict[str, Any] | None = None,
+        refresh_index: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Attempt the incomplete delivery stages and persist the receipt.
+
+        Every stage runs inside its own ``try``/``except`` boundary; a failure is
+        recorded on the receipt and never raised into the caller's terminal
+        state transition.
+        """
+        from .terminal_delivery import (
+            TERMINAL_DELIVERY_EXTENSION_KEY,
+            TERMINAL_DELIVERY_STAGES,
+            StageOutcome,
+            read_terminal_delivery_receipt,
+            transition_terminal_delivery_stage,
+        )
+
+        try:
+            task = self.get_task(task_id)
+        except ABCError:
+            return []
+        extensions = dict(task.extensions or {})
+        stored = extensions.get(TERMINAL_DELIVERY_EXTENSION_KEY)
+        if not isinstance(stored, dict):
+            return []
+        try:
+            receipt = read_terminal_delivery_receipt(stored)
+        except ABCError:
+            return []
+        handlers = executors or self._terminal_delivery_executors()
+
+        results: list[dict[str, Any]] = []
+        for stage in TERMINAL_DELIVERY_STAGES:
+            entry = receipt["stages"][stage]
+            if entry["state"] in {"succeeded", "not_applicable"}:
+                # Confirmed stages must never repeat.
+                continue
+            if stage == "index" and not refresh_index:
+                continue
+            handler = handlers.get(stage)
+            if handler is None:
+                # Core does not own this stage (the notification stages belong to
+                # the Runner).  It must stay ``pending`` with no attempt consumed
+                # so the Runner can deliver it immediately: reserving it here
+                # would force every delivery through the 300s uncertain-retry
+                # backoff instead.
+                continue
+            if entry["state"] != "in_progress":
+                try:
+                    receipt = transition_terminal_delivery_stage(
+                        receipt, stage, "in_progress"
+                    )
+                except ABCError:
+                    # Attempt limit reached for this stage.
+                    continue
+            try:
+                outcome = handler()
+            except ABCError as exc:
+                outcome = StageOutcome(
+                    False,
+                    error_code=str(getattr(exc, "code", "") or f"{stage}_failed"),
+                )
+            except (OSError, PermissionError, ValueError):
+                outcome = StageOutcome(False, error_code=f"{stage}_failed")
+            if outcome is None or isinstance(outcome, dict):
+                outcome = StageOutcome(False, error_code=f"{stage}_failed")
+            if outcome.ok:
+                receipt = transition_terminal_delivery_stage(
+                    receipt, stage, "succeeded"
+                )
+                results.append(
+                    {"stage": stage, "status": "succeeded", "error_code": ""}
+                )
+            elif outcome.not_applicable:
+                receipt = transition_terminal_delivery_stage(
+                    receipt, stage, "not_applicable", not_applicable=True
+                )
+                results.append(
+                    {"stage": stage, "status": "not_applicable", "error_code": ""}
+                )
+            else:
+                code = outcome.error_code or f"{stage}_failed"
+                receipt = transition_terminal_delivery_stage(
+                    receipt,
+                    stage,
+                    "retry_wait",
+                    error_code=code,
+                    delivery_uncertain=outcome.delivery_uncertain,
+                )
+                results.append(
+                    {
+                        "stage": stage,
+                        "status": "retry_wait",
+                        "error_code": code,
+                        "delivery_uncertain": outcome.delivery_uncertain,
+                    }
+                )
+        if results:
+            self._persist_terminal_delivery_receipt(task_id, receipt, results)
+        return results
+
+    def _persist_terminal_delivery_receipt(
+        self,
+        task_id: str,
+        receipt: dict[str, Any],
+        results: list[dict[str, Any]],
+    ) -> None:
+        from .record_management import append_bounded_jsonl
+        from .terminal_delivery import (
+            TERMINAL_DELIVERY_EXTENSION_KEY,
+            delivery_event_payload,
+        )
+
+        # Re-read the authoritative record and change only the receipt extension:
+        # the stages ran against an older snapshot, so writing it back verbatim
+        # could revert a concurrently recorded execution interval.
+        task = self.get_task(task_id)
+        task.extensions = dict(task.extensions or {})
+        task.extensions[TERMINAL_DELIVERY_EXTENSION_KEY] = receipt
+        self.store.write_task(task_id, _without_none(task.to_dict()))
+        task_dir = self.store.task_dir(task_id)
+        task_dir.mkdir(parents=True, exist_ok=True)
+        append_bounded_jsonl(
+            task_dir / "delivery.jsonl",
+            delivery_event_payload(receipt, results, occurred_at=_utc_now()),
+        )
+
+    def _terminal_delivery_result(
+        self, results: list[dict[str, Any]], task_id: str
+    ) -> bool:
+        """Return the historical ``finalized`` flag without mutating state."""
+        return True
+
+    def task_id_or(self, board_root: Any) -> str:  # pragma: no cover - unused helper
+        raise NotImplementedError
 
     def _cleanup_empty_managed_artifacts(self, task_id: str) -> None:
         try:

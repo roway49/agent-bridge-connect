@@ -752,6 +752,22 @@ class RunnerClient:
     def write_report(self, path: str | Path, content: str) -> dict[str, Any]:
         return self._request({"op": "write_report", "path": str(Path(path).expanduser()), "content": content})
 
+    def deliver_terminal(self, task_id: str, board_root: str | Path) -> dict[str, Any]:
+        """Ask the Runner (the production delivery owner) to deliver one task now.
+
+        FLOW-104-002: a contained worker finalizes the task and attempts the
+        report/record/index stages, but must not write the board-level
+        notification side channel.  It hands the remaining stages to the Runner,
+        which owns every terminal delivery replay.
+        """
+        return self._request(
+            {
+                "op": "terminal_delivery",
+                "task_id": task_id,
+                "board_root": str(Path(board_root).expanduser()),
+            }
+        )
+
     def agent_callback(
         self,
         task_id: str,
@@ -1812,9 +1828,8 @@ class RunnerState:
     def respond_and_dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
         """Record an input answer and launch the same task under one Runner lock."""
         from .config import load_config
-        from .notifications import notify_terminal
-        from .reports import write_report_files
         from .service import TaskService
+        from .terminal_delivery_coordinator import deliver_terminal_outcome
 
         board = self._atomic_board(str(request.get("board_root") or ""))
         config = self._atomic_config(str(request.get("config_path") or ""))
@@ -1837,13 +1852,14 @@ class RunnerState:
                     if timed_out_permission
                     else "Input response deadline expired"
                 )
-                write_report_files(task_id, board)
-                notify_terminal(
+                # FLOW-104-002: the durable stage receipt owns every terminal
+                # side effect, so Runner maintenance can never repeat it.
+                deliver_terminal_outcome(
                     service,
                     task_id,
-                    event_type,
-                    level,
-                    message,
+                    event_type=event_type,
+                    level=level,
+                    message=message,
                 )
                 self._refresh_task_list_dashboard(board)
                 raise RunnerError(f"input deadline expired for task {task_id}")
@@ -1935,13 +1951,12 @@ class RunnerState:
                             failure.get("message")
                             or "User denied contained-full task elevation"
                         )
-                        write_report_files(task_id, board)
-                        notify_terminal(
+                        deliver_terminal_outcome(
                             service,
                             task_id,
-                            "task.failed",
-                            "error",
-                            failure_message,
+                            event_type="task.failed",
+                            level="error",
+                            message=failure_message,
                         )
                         self._refresh_task_list_dashboard(board)
                     return result
@@ -2014,13 +2029,12 @@ class RunnerState:
                         },
                         executor_run_id=executor_run_id,
                     )
-                    write_report_files(task_id, board)
-                    notify_terminal(
+                    deliver_terminal_outcome(
                         service,
                         task_id,
-                        "task.recovery_required",
-                        "warning",
-                        f"Native approval response failed: {exc}",
+                        event_type="task.recovery_required",
+                        level="warning",
+                        message=f"Native approval response failed: {exc}",
                     )
                     self._refresh_task_list_dashboard(board)
                     raise
@@ -2064,13 +2078,12 @@ class RunnerState:
                         failure.get("message")
                         or "Task terminated after executor resource exhaustion"
                     )
-                    write_report_files(task_id, board)
-                    notify_terminal(
+                    deliver_terminal_outcome(
                         service,
                         task_id,
-                        "task.failed",
-                        "error",
-                        failure_message,
+                        event_type="task.failed",
+                        level="error",
+                        message=failure_message,
                     )
                     self._refresh_task_list_dashboard(board)
                 return result
@@ -2110,13 +2123,12 @@ class RunnerState:
                         "phase": "resume_dispatch",
                     },
                 )
-                write_report_files(task.id, board)
-                notify_terminal(
+                deliver_terminal_outcome(
                     service,
                     task.id,
-                    "task.recovery_required",
-                    "warning",
-                    f"Resume dispatch failed: {exc}",
+                    event_type="task.recovery_required",
+                    level="warning",
+                    message=f"Resume dispatch failed: {exc}",
                 )
                 self._refresh_task_list_dashboard(board)
                 raise
@@ -2131,9 +2143,8 @@ class RunnerState:
 
     def maintain_waiting_inputs(self, *, now: str | None = None) -> list[dict[str, Any]]:
         """Expire durable input waits only from Runner-owned maintenance."""
-        from .notifications import notify_terminal
-        from .reports import write_report_files
         from .service import TaskService
+        from .terminal_delivery_coordinator import deliver_terminal_outcome
 
         expired: list[dict[str, Any]] = []
         with self.lock:
@@ -2153,17 +2164,21 @@ class RunnerState:
                             and expired_task.errors[-1].get("code")
                             == "permission_denied_by_timeout"
                         )
-                        write_report_files(task_id, board)
-                        notify_terminal(
+                        deliver_terminal_outcome(
                             service,
                             task_id,
-                            "task.failed" if timed_out_permission else "task.recovery_required",
-                            "error" if timed_out_permission else "warning",
-                            (
+                            event_type=(
+                                "task.failed"
+                                if timed_out_permission
+                                else "task.recovery_required"
+                            ),
+                            level="error" if timed_out_permission else "warning",
+                            message=(
                                 "Permission request timed out and was automatically denied"
                                 if timed_out_permission
                                 else "Input response deadline expired"
                             ),
+                            now=now,
                         )
                         self._refresh_task_list_dashboard(board)
                     except (ABCError, OSError, ValueError):
@@ -2188,6 +2203,29 @@ class RunnerState:
         for board in boards:
             try:
                 coordinator = SessionCleanupCoordinator(board)
+                processed.extend(coordinator.maintain_board(now=now))
+            except (ABCError, OSError, ValueError):
+                continue
+        return processed
+
+    def maintain_terminal_delivery(self, *, now: str | None = None) -> list[dict[str, Any]]:
+        """Runner-owned replay of incomplete terminal delivery stages.
+
+        FLOW-104-002: Runner is the production owner of terminal delivery.  It
+        attempts delivery immediately when a terminal task write lands and then
+        replays only the stages that are not confirmed and whose backoff has
+        elapsed (immediate, then earliest 60s, then capped at 300s).  Confirmed
+        stages never repeat.  ``input_required`` tasks are never processed and
+        ``needs_recovery`` sessions are never mutated here.
+        """
+        from .terminal_delivery_coordinator import TerminalDeliveryCoordinator
+
+        processed: list[dict[str, Any]] = []
+        with self.lock:
+            boards = tuple(sorted(self.known_boards, key=str))
+        for board in boards:
+            try:
+                coordinator = TerminalDeliveryCoordinator(board)
                 processed.extend(coordinator.maintain_board(now=now))
             except (ABCError, OSError, ValueError):
                 continue
@@ -2227,7 +2265,6 @@ class RunnerState:
         request: dict[str, Any],
     ) -> dict[str, Any]:
         from .execution_policy import execution_policy_view, public_workspace_view
-        from .reports import write_report_files
 
         try:
             dispatched = self.dispatch_worker(
@@ -2245,7 +2282,10 @@ class RunnerState:
                 str(exc),
                 {"executor": task.assignee},
             )
-            write_report_files(task.id, service.board_root)
+            # FLOW-104-002: ``mark_task_needs_recovery`` already ran the report,
+            # record and index stages through the durable stage split; the
+            # composed report entry point must not duplicate them.
+            service.run_terminal_side_effects(task.id)
             self._refresh_task_list_dashboard(service.board_root)
             raise
         self._ensure_task_list_dashboard(service.board_root, task_id=task.id)
@@ -2765,6 +2805,23 @@ class RunnerState:
             "notified": False,
             "report_file": (current.workspace or {}).get("report_file", ""),
         }
+
+    def terminal_delivery(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Attempt terminal delivery immediately for one exact terminal task.
+
+        FLOW-104-002: the Runner is the production owner of terminal delivery.
+        This op delivers the incomplete stages right away; Runner maintenance
+        later replays anything still outstanding.  ``input_required`` tasks are
+        never processed and ``needs_recovery`` sessions are never mutated.
+        """
+        from .terminal_delivery_coordinator import TerminalDeliveryCoordinator
+
+        task_id = str(request.get("task_id") or "")
+        board = self._atomic_board(str(request.get("board_root") or ""))
+        try:
+            return TerminalDeliveryCoordinator(board).deliver_now(task_id)
+        except (ABCError, OSError, ValueError) as exc:
+            raise RunnerError(f"terminal delivery failed: {exc}") from exc
 
     def show_task(self, task_id: str, board_root: str) -> dict[str, Any]:
         board = self._atomic_board(board_root)
@@ -3544,10 +3601,11 @@ class RunnerState:
             service.block_permission_runtime_after_failure(task_id)
             service.clear_execution_run_references(task_id)
             if marked:
-                from .reports import write_report_files
-
+                # FLOW-104-002: the durable stage split replaces the composed
+                # report entry point so a report failure stays independently
+                # catchable and never rewrites the recovery state.
                 try:
-                    write_report_files(task_id, board)
+                    service.run_terminal_side_effects(task_id)
                 except (OSError, ValueError):
                     pass
         except Exception:
@@ -3753,6 +3811,7 @@ class RunnerService:
         now = time.monotonic()
         if now - self._last_maintenance_at >= 60.0:
             self.runner_state.maintain_waiting_inputs()
+            self.runner_state.maintain_terminal_delivery()
             self.runner_state.maintain_session_cleanup()
             self._last_maintenance_at = now
         handled = False
@@ -4017,6 +4076,8 @@ def _dispatch_request(state: RunnerState, request: dict[str, Any]) -> dict[str, 
         return state.cancel(str(request.get("run_id") or ""))
     if operation == "write_report":
         return state.write_report(str(request.get("path") or ""), str(request.get("content") or ""))
+    if operation == "terminal_delivery":
+        return state.terminal_delivery(request)
     if operation == "agent_callback":
         return state.agent_callback(request)
     if operation == "show_task":
