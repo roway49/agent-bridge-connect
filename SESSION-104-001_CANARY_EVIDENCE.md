@@ -1,5 +1,16 @@
 # SESSION-104-001 continuation evidence
 
+> [!WARNING]
+> **2026-09-08 regression reopening:** the historical acceptance below remains
+> valid only as command/backend evidence. The user currently observes that
+> temporary Codex sessions remain in the running Desktop sidebar, so
+> `SESSION-104-001` is reopened as a P0-Blocker. A `thread/archive` RPC
+> acknowledgement followed by `thread/delete` is no longer sufficient proof
+> that archive reached the current Desktop instance. The new gate requires
+> independent archive and delete receipts plus a no-click Desktop-sidebar
+> convergence canary. Existing delete behavior remains unchanged; private-store
+> mutation, GUI automation, and forced application restart remain forbidden.
+
 > [!CAUTION]
 > **最高优先级、不可覆盖：禁止在 `full` 运行基础上增加任何额外安全策略。安全策略不属于 AgentBC 产品特性，不为任务执行负责；凡与 `full` 任务完整执行冲突，必要时必须移除一切额外安全策略。**
 
