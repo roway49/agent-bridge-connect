@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent_bridge_connect.adapters import SessionCleanupRequest
+from agent_bridge_connect.adapters import SessionCleanupRequest, SessionCleanupResult
 from agent_bridge_connect.codex_session_cleanup import (
     CODEX_SESSION_ARCHIVE_FAILED_CODE,
     CODEX_SESSION_ARCHIVE_INVALID_ID_CODE,
@@ -27,7 +27,7 @@ from agent_bridge_connect.codex_session_cleanup import (
     CodexSessionCleanupError,
 )
 from agent_bridge_connect.codex_session_cleanup import (
-    CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE,
+    CodexSessionCleanupClient,
     CODEX_SESSION_DELETE_STILL_PRESENT_CODE,
     CODEX_SESSION_DELETE_TIMEOUT_CODE,
     CODEX_SESSION_DELETE_TRANSPORT_LOST_CODE,
@@ -50,6 +50,27 @@ CHILD_SESSION_ID = "019fef10-2f46-7c40-90c8-6d6ebd3cc7d7"
 T0 = "2026-08-27T00:00:00Z"
 ARCHIVE_THEN_DELETE = "official_session_archive_then_delete"
 FIXTURES = Path(__file__).parent / "fixtures" / "session_cleanup_receipts.json"
+
+
+def _v5_commands(
+    desktop_archive: str = "not_requested",
+    delete: str = "not_requested",
+    app_server_archive: str = "not_requested",
+) -> dict[str, dict[str, str]]:
+    def command(status: str) -> dict[str, str]:
+        return {
+            "status": status,
+            "checked_at": T0 if status != "not_requested" else "",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": "",
+        }
+
+    return {
+        "desktop_archive": command(desktop_archive),
+        "app_server_archive": command(app_server_archive),
+        "delete": command(delete),
+    }
 
 
 class FakeTransport:
@@ -148,13 +169,80 @@ def _request(**overrides: object) -> SessionCleanupRequest:
 
 
 def _executor(factory: TransportFactory, desktop: str | None = "absent") -> CodexExecutor:
-    verifier = None if desktop is None else lambda _: {"status": desktop, "checked_at": T0}
-    return CodexExecutor(
-        command=sys.executable,
-        transport="app-server",
-        transport_factory=factory,
-        desktop_verifier=verifier,
-    )
+    """Exercise the legacy App Server client without bypassing the new gate.
+
+    The production ``CodexExecutor`` now requires a live Desktop broker.  The
+    historical tests in this module intentionally remain focused on the
+    unchanged App Server delete/read/list protocol, so they use the client
+    directly through this small test-only adapter.  New Desktop-gate coverage
+    lives in ``test_session104_desktop_archive.py``.
+    """
+    return _LegacyCleanupHarness(factory, desktop)  # type: ignore[return-value]
+
+
+class _LegacyCleanupHarness:
+    def __init__(self, factory: TransportFactory, desktop: str | None) -> None:
+        self.client = CodexSessionCleanupClient(
+            sys.executable,
+            cwd=Path.cwd(),
+            transport_factory=factory,
+        )
+        self.desktop = desktop
+
+    def cleanup_session(self, request: SessionCleanupRequest) -> SessionCleanupResult:
+        try:
+            observation = self.client.delete_and_verify(
+                request.session_id,
+                archive_acknowledged=request.archive_acknowledged,
+                archive_checked_at=request.archive_checked_at,
+            )
+        except CodexSessionCleanupError as exc:
+            checked_at = exc.cli_checked_at or T0
+            commands = exc.commands or {
+                "archive": {"status": "unverified", "checked_at": checked_at},
+                "delete": {"status": "not_requested", "checked_at": checked_at},
+            }
+            return SessionCleanupResult(
+                "failed",
+                "supported",
+                request.strategy,
+                exc.code,
+                exc.retryable,
+                verification={
+                    "cli": {"status": exc.cli_status, "checked_at": checked_at},
+                    "desktop_backend": {"status": "unavailable", "checked_at": checked_at},
+                    "desktop_live": {"status": "unavailable", "checked_at": checked_at},
+                },
+                commands=commands,
+            )
+
+        verification = observation.verification()
+        try:
+            backend = self.client.verify_desktop_absence(request.session_id)
+        except (CodexSessionCleanupError, OSError, RuntimeError):
+            backend = {"status": "unavailable", "checked_at": T0}
+        live_status = (
+            "not_applicable"
+            if observation.cli_status == "absent"
+            else self.desktop
+            if self.desktop in {"absent", "present"}
+            else "unavailable"
+        )
+        verification.update(
+            {
+                "desktop_backend": backend,
+                "desktop_live": {"status": live_status, "checked_at": T0},
+            }
+        )
+        return SessionCleanupResult(
+            "succeeded" if observation.cli_status == "absent" else "failed",
+            "supported",
+            request.strategy,
+            "" if observation.cli_status == "absent" else CODEX_SESSION_DELETE_STILL_PRESENT_CODE,
+            False,
+            verification=verification,
+            commands=observation.commands(),
+        )
 
 
 class ArchiveThenDeleteOrderTests(unittest.TestCase):
@@ -459,26 +547,25 @@ class CodexCleanupContractTests(unittest.TestCase):
                 ):
                     result = executor.cleanup_session(_request())
                 self.assertEqual(result.state, "failed")
-                self.assertEqual(result.error_code, CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE)
-                # The explicit fallback keeps the historical strategy name.
-                self.assertEqual(result.strategy, "official_session_delete")
+                self.assertEqual(result.error_code, "codex_desktop_archive_route_unavailable")
+                # The current Desktop gate is authoritative even for an
+                # explicit CLI/direct transport selection.
+                self.assertEqual(result.strategy, ARCHIVE_THEN_DELETE)
 
     def test_v4_receipt_contains_bounded_commands(self) -> None:
         receipt = build_session_cleanup_receipt()
         self.assertEqual(receipt["version"], SESSION_CLEANUP_RECEIPT_VERSION)
         self.assertEqual(
             receipt["commands"],
-            {
-                "archive": {"status": "not_requested", "checked_at": ""},
-                "delete": {"status": "not_requested", "checked_at": ""},
-            },
+            _v5_commands(),
         )
         self.assertEqual(validate_session_cleanup_receipt(receipt), [])
-        receipt["commands"]["archive"]["status"] = "raw_state"
+        receipt["commands"]["desktop_archive"]["status"] = "raw_state"
         self.assertTrue(validate_session_cleanup_receipt(receipt))
 
     def test_v4_succeeded_requires_both_command_acknowledgements(self) -> None:
         receipt = build_session_cleanup_receipt()
+        receipt["version"] = 4
         receipt.update(
             {
                 "capability": "supported",
@@ -648,34 +735,33 @@ class V4TransitionGateTests(unittest.TestCase):
         for commands, expect_error in (
             (
                 {
-                    "archive": {"status": "acknowledged", "checked_at": T0},
-                    "delete": {"status": "acknowledged", "checked_at": T0},
+                    **_v5_commands("acknowledged", "acknowledged"),
                 },
                 False,
             ),
             (
                 {
-                    "archive": {"status": "confirmed", "checked_at": T0},
-                    "delete": {"status": "acknowledged", "checked_at": T0},
+                    **_v5_commands("confirmed", "acknowledged"),
                 },
                 False,
             ),
             (
                 {
-                    "archive": {"status": "unverified", "checked_at": T0},
-                    "delete": {"status": "acknowledged", "checked_at": T0},
+                    **_v5_commands("unverified", "acknowledged"),
                 },
                 True,
             ),
             (
                 {
-                    "archive": {"status": "acknowledged", "checked_at": T0},
-                    "delete": {"status": "not_requested", "checked_at": T0},
+                    **_v5_commands("acknowledged"),
                 },
                 True,
             ),
         ):
-            with self.subTest(archive=commands["archive"]["status"], delete=commands["delete"]["status"]):
+            with self.subTest(
+                archive=commands["desktop_archive"]["status"],
+                delete=commands["delete"]["status"],
+            ):
                 fresh = self._session()
                 self._transition(
                     fresh,
@@ -717,10 +803,7 @@ class V4TransitionGateTests(unittest.TestCase):
             capability="supported",
             strategy=ARCHIVE_THEN_DELETE,
         )
-        partial = {
-            "archive": {"status": "unverified", "checked_at": T0},
-            "delete": {"status": "not_requested", "checked_at": T0},
-        }
+        partial = _v5_commands("unverified")
         failed = self._transition(
             session,
             "failed",
@@ -782,7 +865,7 @@ class V4TransitionGateTests(unittest.TestCase):
             capability="supported",
             strategy="official_session_delete",
         )
-        self.assertEqual(receipt["commands"]["archive"]["status"], "not_applicable")
+        self.assertEqual(receipt["commands"]["desktop_archive"]["status"], "not_applicable")
         self.assertEqual(receipt["commands"]["delete"]["status"], "not_applicable")
 
 
@@ -821,10 +904,7 @@ class PrimaryAuxiliaryIsolationTests(unittest.TestCase):
         )
         # Partial evidence: the archive was acknowledged before the transport
         # died; a retry or Runner restart must still see it.
-        receipt["commands"] = {
-            "archive": {"status": "acknowledged", "checked_at": T0},
-            "delete": {"status": "not_requested", "checked_at": T0},
-        }
+        receipt["commands"] = _v5_commands("acknowledged")
         entry = {
             "version": 1,
             "aux_id": "a" * 32,
@@ -884,7 +964,10 @@ class CommandEvidenceRedactionTests(unittest.TestCase):
             "archive": {"status": "acknowledged", "checked_at": T0},
             "delete": {"status": "not_requested", "checked_at": ""},
         }
-        self.assertEqual(normalize_cleanup_commands(good), good)
+        self.assertEqual(
+            normalize_cleanup_commands(good),
+            _v5_commands(app_server_archive="acknowledged"),
+        )
         polluted = copy.deepcopy(good)
         polluted["archive"]["threadId"] = SESSION_ID
         self.assertEqual(normalize_cleanup_commands(polluted), normalize_cleanup_commands(None))

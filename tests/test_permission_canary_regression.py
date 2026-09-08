@@ -178,10 +178,14 @@ class PermissionCanaryRegressionTests(unittest.TestCase):
                 board,
                 executor_port=_UnsupportedCleanupExecutor(),
             ).request_cleanup(task.id)
-            self.assertEqual(result["receipt"]["state"], "unsupported", result)
+            # A terminal Codex cleanup with no current Desktop route remains
+            # pending and retryable; the legacy App Server/CLI capability must
+            # not bypass the Desktop acknowledgement gate.
+            self.assertEqual(result["status"], "waiting_for_desktop", result)
+            self.assertEqual(result["receipt"]["state"], "pending", result)
             self.assertEqual(
                 service.get_task(task.id).extensions["agentbc.session"]["cleanup"]["state"],
-                "unsupported",
+                "pending",
             )
 
 

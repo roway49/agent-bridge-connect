@@ -952,6 +952,7 @@ def transition_auxiliary_cleanup(
                 "error_code": "",
                 "retryable": False,
                 "verification": _empty_cleanup_verification(),
+                "commands": _empty_cleanup_commands(),
             }
         )
         return _validated_cleanup_transition(updated)
@@ -967,8 +968,9 @@ def transition_auxiliary_cleanup(
 
     updated = dict(receipt)
     updated["last_attempt_at"] = now
-    # SESSION-104-001 v4 gate: same archive+delete acknowledgement proof for
-    # registered auxiliary Codex sessions; desktop_live is not_applicable.
+    # SESSION-104-001 v5 gate: the current Desktop archive acknowledgement and
+    # the unchanged delete acknowledgement are required for auxiliary Codex
+    # sessions; legacy App Server archive evidence is diagnostic only.
     executor_is_codex = str(entry.get("executor") or "").strip().lower() == "codex"
     is_archive_strategy = (
         (strategy or receipt["strategy"]) == "official_session_archive_then_delete"
@@ -991,30 +993,30 @@ def transition_auxiliary_cleanup(
             normalized_commands = _empty_cleanup_commands("not_applicable", checked_at=now)
         elif not normalized_commands or all(
             (normalized_commands or {}).get(command, {}).get("status") == "not_requested"
-            for command in ("archive", "delete")
+            for command in ("desktop_archive", "app_server_archive", "delete")
         ):
             # A Codex adapter supplied no command evidence: fail closed to
             # not_applicable rather than leaving invalid not_requested proof.
             normalized_commands = _empty_cleanup_commands("not_applicable", checked_at=now)
             if is_archive_strategy:
                 _raise_cleanup_transition(
-                    "Codex auxiliary cleanup succeeded without both official archive "
-                    "and delete command acknowledgements"
+                    "Codex auxiliary cleanup succeeded without Desktop archive and "
+                    "delete command acknowledgements"
                 )
         if executor_is_codex and is_archive_strategy:
-            archive_status = str(
-                (normalized_commands or {}).get("archive", {}).get("status") or ""
+            desktop_archive_status = str(
+                (normalized_commands or {}).get("desktop_archive", {}).get("status") or ""
             )
             delete_status = str(
                 (normalized_commands or {}).get("delete", {}).get("status") or ""
             )
-            if archive_status not in {"acknowledged", "confirmed"} or delete_status not in {
+            if desktop_archive_status not in {"acknowledged", "confirmed"} or delete_status not in {
                 "acknowledged",
                 "confirmed",
             }:
                 _raise_cleanup_transition(
-                    "Codex auxiliary cleanup succeeded without both official archive "
-                    "and delete command acknowledgements"
+                    "Codex auxiliary cleanup succeeded without Desktop archive and "
+                    "delete command acknowledgements"
                 )
             normalized_verification = dict(normalized_verification)
             normalized_verification["desktop_live"] = {

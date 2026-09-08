@@ -8,6 +8,7 @@ import re
 import shlex
 import shutil
 import secrets
+import socket
 import signal
 import subprocess
 import sys
@@ -40,6 +41,11 @@ from .permission_modes import (
     validate_permission_command,
 )
 from .permission_grants import PERMISSION_GRANT_EXTENSION_KEY
+from .codex_desktop_archive import (
+    CodexDesktopArchiveBroker,
+    CodexDesktopRouteContext,
+    read_desktop_route_context,
+)
 from .permission_elevation import permission_elevation_from_extensions
 from .permission_registry import TRANSPORT_HERMES_ACP
 from .protocol import ABCError
@@ -744,6 +750,7 @@ class RunnerClient:
         return self._request({"op": "process_sample", "patterns": list(patterns or [])})
 
     def status(self, run_id: str) -> dict[str, Any]:
+        self._try_register_current_desktop_route()
         return self._request({"op": "status", "run_id": run_id})
 
     def cancel(self, run_id: str) -> dict[str, Any]:
@@ -992,6 +999,7 @@ class RunnerClient:
         permission_mode: str | None = None,
         collaboration_spawn: bool = False,
     ) -> dict[str, Any]:
+        self._try_register_current_desktop_route(board_root=board_root)
         return self._request(
             {
                 "op": "create_and_dispatch",
@@ -1027,6 +1035,7 @@ class RunnerClient:
         session_id: str | None = None,
         permission_mode: str | None = None,
     ) -> dict[str, Any]:
+        self._try_register_current_desktop_route(board_root=board_root)
         return self._request(
             {
                 "op": "handoff_and_dispatch",
@@ -1044,6 +1053,40 @@ class RunnerClient:
                 "permission_mode": permission_mode,
             }
         )
+
+    def register_desktop_route(
+        self,
+        context: CodexDesktopRouteContext,
+        *,
+        board_root: str | Path | None = None,
+    ) -> dict[str, Any]:
+        """Register transient current-Desktop context with the Runner."""
+        return self._request(
+            {
+                "op": "register_desktop_route",
+                "board_root": str(Path(board_root).expanduser()) if board_root else "",
+                "context": {
+                    "pipe_path": context.pipe_path,
+                    "dispatcher_thread_id": context.dispatcher_thread_id,
+                    "mcp_runtime": context.mcp_runtime,
+                    "mcp_resource": context.mcp_resource,
+                },
+            }
+        )
+
+    def _try_register_current_desktop_route(
+        self,
+        *,
+        board_root: str | Path | None = None,
+    ) -> None:
+        """Best-effort route refresh; status must remain usable offline."""
+        context = read_desktop_route_context()
+        if context is None:
+            return
+        try:
+            self.register_desktop_route(context, board_root=board_root)
+        except Exception:
+            return
 
     def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -1099,6 +1142,7 @@ class RunnerState:
         allowed_executables: dict[str, Path],
         executable_sources: dict[str, str] | None = None,
         enable_task_dashboard: bool = False,
+        desktop_archive_broker: CodexDesktopArchiveBroker | None = None,
     ) -> None:
         self.state_root = state_root.expanduser().resolve()
         self.allowed_roots = [root.expanduser().resolve() for root in allowed_roots]
@@ -1108,6 +1152,9 @@ class RunnerState:
         }
         self.executable_sources = dict(executable_sources or {})
         self.enable_task_dashboard = bool(enable_task_dashboard)
+        # This registry is intentionally process-memory only. A Runner restart
+        # starts empty and cleanup replay waits for a newly registered Desktop.
+        self.desktop_archive_broker = desktop_archive_broker or CodexDesktopArchiveBroker()
         # RunnerService replaces this with its exact configured spool.  The
         # default keeps direct RunnerState tests and embedded uses coherent.
         self.spool_root = default_runner_spool().expanduser().resolve()
@@ -2186,7 +2233,12 @@ class RunnerState:
                     expired.append(item)
         return expired
 
-    def maintain_session_cleanup(self, *, now: str | None = None) -> list[dict[str, Any]]:
+    def maintain_session_cleanup(
+        self,
+        *,
+        now: str | None = None,
+        force_retry: bool = False,
+    ) -> list[dict[str, Any]]:
         """Runner-owned cleanup maintenance for terminal executor sessions.
 
         Scans every known board for terminal sessions that need a cleanup pass:
@@ -2202,11 +2254,47 @@ class RunnerState:
             boards = tuple(sorted(self.known_boards, key=str))
         for board in boards:
             try:
-                coordinator = SessionCleanupCoordinator(board)
-                processed.extend(coordinator.maintain_board(now=now))
+                coordinator = SessionCleanupCoordinator(
+                    board,
+                    desktop_archive_broker=self.desktop_archive_broker,
+                )
+                processed.extend(
+                    coordinator.maintain_board(now=now, force_retry=force_retry)
+                )
             except (ABCError, OSError, ValueError):
                 continue
         return processed
+
+    def register_desktop_route(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Register current Desktop context and wake receipt-backed cleanup."""
+        raw = request.get("context")
+        if not isinstance(raw, dict):
+            raise RunnerError("Desktop route context is unavailable")
+        context = CodexDesktopRouteContext(
+            pipe_path=str(raw.get("pipe_path") or ""),
+            dispatcher_thread_id=str(raw.get("dispatcher_thread_id") or ""),
+            mcp_runtime=str(raw.get("mcp_runtime") or ""),
+            mcp_resource=str(raw.get("mcp_resource") or ""),
+            host=socket.gethostname(),
+        )
+        if (
+            not context.pipe_path
+            or not Path(context.pipe_path).is_absolute()
+            or not context.dispatcher_thread_id
+            or not context.mcp_runtime
+            or not context.mcp_resource
+        ):
+            raise RunnerError("Desktop route context is unavailable")
+        board_value = str(request.get("board_root") or "").strip()
+        if board_value:
+            self._atomic_board(board_value)
+        registration = self.desktop_archive_broker.register(context)
+        processed = self.maintain_session_cleanup(force_retry=True)
+        return {
+            "ok": True,
+            **registration,
+            "woken_cleanup": len(processed),
+        }
 
     def maintain_terminal_delivery(self, *, now: str | None = None) -> list[dict[str, Any]]:
         """Runner-owned replay of incomplete terminal delivery stages.
@@ -4011,6 +4099,7 @@ def _dispatch_request(state: RunnerState, request: dict[str, Any]) -> dict[str, 
                 "authorization": "runner_task_scoped",
             },
             "atomic_dispatch": True,
+            "desktop_archive_route": state.desktop_archive_broker.public_status(),
         }
     if operation == "storage_status":
         return state.storage_status(request.get("paths"))
@@ -4070,6 +4159,8 @@ def _dispatch_request(state: RunnerState, request: dict[str, Any]) -> dict[str, 
         return state.create_and_dispatch(request)
     if operation == "handoff_and_dispatch":
         return state.handoff_and_dispatch(request)
+    if operation == "register_desktop_route":
+        return state.register_desktop_route(request)
     if operation == "status":
         return state.status(str(request.get("run_id") or ""))
     if operation == "cancel":

@@ -32,6 +32,12 @@ from agent_bridge_connect.codex_session_cleanup import (
     CodexSessionCleanupClient,
     CodexSessionCleanupError,
 )
+from agent_bridge_connect.codex_desktop_archive import (
+    CODEX_DESKTOP_ARCHIVE_REJECTED,
+    CODEX_DESKTOP_ARCHIVE_ROUTE_UNAVAILABLE,
+    CODEX_DESKTOP_ARCHIVE_TRANSPORT_LOST,
+    CodexDesktopArchiveBroker,
+)
 from agent_bridge_connect.control import (
     ApprovalControlPlane,
     ControlPlaneError,
@@ -90,12 +96,15 @@ class CodexExecutor(CLIExecutorBase):
         transport_factory: Any | None = None,
         approval_timeout_s: float = 300.0,
         desktop_verifier: Any | None = None,
+        desktop_archive_broker: CodexDesktopArchiveBroker | None = None,
+        desktop_archive_router: CodexDesktopArchiveBroker | None = None,
     ) -> None:
         super().__init__()
         self.timeout_s = timeout_s
         self.transport_mode = transport
         self.transport_factory = transport_factory
         self.desktop_verifier = desktop_verifier
+        self.desktop_archive_broker = desktop_archive_broker or desktop_archive_router
         self.approval_timeout_s = max(float(approval_timeout_s), 0.1)
         self._discovery = _discover_codex_binary(command)
         resolved = str(self._discovery.get("path") or "")
@@ -215,9 +224,10 @@ class CodexExecutor(CLIExecutorBase):
                 request_error,
                 False,
             )
-        if self._uses_cleanup_app_server(request):
-            return self._cleanup_session_app_server(request)
-        return self._cleanup_session_cli(request)
+        # Codex retain=false cleanup is always routed through the current
+        # Desktop App Tools acknowledgement.  The old CLI path remains a
+        # bounded compatibility seam, but can never satisfy this gate.
+        return self._cleanup_session_app_server(request)
 
     def _uses_cleanup_app_server(
         self, request: SessionCleanupRequest | None = None
@@ -238,7 +248,27 @@ class CodexExecutor(CLIExecutorBase):
         request: SessionCleanupRequest,
     ) -> SessionCleanupResult:
         verification = _unknown_cleanup_verification()
-        commands = _unknown_cleanup_commands()
+        commands = _v5_unknown_cleanup_commands()
+        broker = self.desktop_archive_broker
+        if broker is None:
+            return self._desktop_archive_failure(
+                request,
+                CODEX_DESKTOP_ARCHIVE_ROUTE_UNAVAILABLE,
+            )
+        try:
+            desktop_result = broker.archive(request)
+        except Exception:  # noqa: BLE001 - route failures are bounded below.
+            return self._desktop_archive_failure(
+                request,
+                CODEX_DESKTOP_ARCHIVE_TRANSPORT_LOST,
+            )
+        commands["desktop_archive"] = _v5_command_from_desktop_result(desktop_result)
+        if not desktop_result.acknowledged:
+            return self._desktop_archive_failure(
+                request,
+                desktop_result.error_code or CODEX_DESKTOP_ARCHIVE_REJECTED,
+                commands=commands,
+            )
         try:
             assert self.agent_bin is not None
             root = _cleanup_workspace_root(request)
@@ -255,11 +285,17 @@ class CodexExecutor(CLIExecutorBase):
             )
             observation = cleanup_client.delete_and_verify(
                 request.session_id,
-                archive_acknowledged=request.archive_acknowledged,
-                archive_checked_at=request.archive_checked_at,
+                archive_acknowledged=True,
+                archive_checked_at=desktop_result.checked_at,
             )
             verification = observation.verification()
-            commands = observation.commands()
+            legacy_commands = observation.commands()
+            commands["app_server_archive"] = _v5_command(
+                legacy_commands.get("archive"),
+                status="not_requested",
+                checked_at=desktop_result.checked_at,
+            )
+            commands["delete"] = _v5_command(legacy_commands.get("delete"))
         except CodexSessionCleanupError as exc:
             live = self._desktop_live_cleanup_verification(request)
             verification = {
@@ -282,7 +318,10 @@ class CodexExecutor(CLIExecutorBase):
                 exc.code,
                 exc.retryable,
                 verification=verification,
-                commands=exc.commands or _unknown_cleanup_commands(),
+                commands=_merge_v5_cleanup_commands(
+                    commands,
+                    legacy_commands=exc.commands,
+                ),
             )
         except (OSError, TransportClosed, RuntimeError):
             live = self._desktop_live_cleanup_verification(request)
@@ -297,7 +336,7 @@ class CodexExecutor(CLIExecutorBase):
                 CODEX_SESSION_DELETE_TRANSPORT_LOST_CODE,
                 True,
                 verification=verification,
-                commands=_unknown_cleanup_commands(),
+                commands=commands,
             )
 
         try:
@@ -315,7 +354,7 @@ class CodexExecutor(CLIExecutorBase):
         # observations stay as non-gating diagnostics, and the current Codex
         # Desktop refresh delay is accepted: desktop_live becomes
         # not_applicable and backend/live states never block the result.
-        if commands.get("archive", {}).get("status") in {
+        if commands.get("desktop_archive", {}).get("status") in {
             "acknowledged",
             "confirmed",
         } and (
@@ -381,6 +420,29 @@ class CodexExecutor(CLIExecutorBase):
             False,
             verification=verification,
             commands=commands,
+        )
+
+    def _desktop_archive_failure(
+        self,
+        request: SessionCleanupRequest,
+        error_code: str,
+        *,
+        commands: dict[str, dict[str, str]] | None = None,
+    ) -> SessionCleanupResult:
+        checked_at = _cleanup_now()
+        bounded = commands or _v5_unknown_cleanup_commands()
+        desktop = bounded["desktop_archive"]
+        if desktop["status"] == "not_requested":
+            desktop["status"] = "unavailable" if error_code != CODEX_DESKTOP_ARCHIVE_REJECTED else "rejected"
+            desktop["checked_at"] = checked_at
+        return SessionCleanupResult(
+            "failed",
+            "supported",
+            OFFICIAL_SESSION_ARCHIVE_THEN_DELETE,
+            error_code,
+            True,
+            verification=_unknown_cleanup_verification(),
+            commands=bounded,
         )
 
     def _desktop_live_cleanup_verification(
@@ -1904,6 +1966,63 @@ def _unknown_cleanup_commands() -> dict[str, dict[str, str]]:
         "archive": {"status": "unverified", "checked_at": _cleanup_now()},
         "delete": {"status": "unverified", "checked_at": _cleanup_now()},
     }
+
+
+def _v5_unknown_cleanup_commands() -> dict[str, dict[str, str]]:
+    """Bounded v5 command evidence before any Desktop or delete call."""
+    def entry() -> dict[str, str]:
+        return {
+            "status": "not_requested",
+            "checked_at": "",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": "",
+        }
+
+    return {
+        "desktop_archive": entry(),
+        "app_server_archive": entry(),
+        "delete": entry(),
+    }
+
+
+def _v5_command(
+    source: dict[str, Any] | None = None,
+    *,
+    status: str | None = None,
+    checked_at: str = "",
+) -> dict[str, str]:
+    source = source if isinstance(source, dict) else {}
+    return {
+        "status": str(status or source.get("status") or "unverified"),
+        "checked_at": str(checked_at or source.get("checked_at") or _cleanup_now()),
+        "request_digest": str(source.get("request_digest") or ""),
+        "route_digest": str(source.get("route_digest") or ""),
+        "app_instance_digest": str(source.get("app_instance_digest") or ""),
+    }
+
+
+def _v5_command_from_desktop_result(result: Any) -> dict[str, str]:
+    public = result.public() if callable(getattr(result, "public", None)) else {}
+    return _v5_command(public)
+
+
+def _merge_v5_cleanup_commands(
+    current: dict[str, dict[str, str]],
+    *,
+    legacy_commands: dict[str, dict[str, str]] | None,
+) -> dict[str, dict[str, str]]:
+    merged = copy.deepcopy(current)
+    if isinstance(legacy_commands, dict):
+        if isinstance(legacy_commands.get("archive"), dict):
+            merged["app_server_archive"] = _v5_command(
+                legacy_commands["archive"],
+                status="not_requested",
+                checked_at=merged["desktop_archive"].get("checked_at") or _cleanup_now(),
+            )
+        if isinstance(legacy_commands.get("delete"), dict):
+            merged["delete"] = _v5_command(legacy_commands["delete"])
+    return merged
 
 
 def _cleanup_workspace_root(request: SessionCleanupRequest) -> Path:

@@ -509,6 +509,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def command_task_create(args: argparse.Namespace) -> int:
     session_id, source_platform = _origin_context(args.session_id, args.source_platform)
+    _best_effort_desktop_route(getattr(args, "root", None))
     config_path = _optional_path_arg(getattr(args, "config", None))
     if getattr(args, "workspace", None) is not None or getattr(args, "output_dir", None) is not None:
         print('path_model_v2_required: use --customer-path "default path" or --customer-path <project-path> instead of --workspace/--output-dir')
@@ -763,6 +764,7 @@ def command_task_progress(args: argparse.Namespace) -> int:
 
 
 def command_task_status(args: argparse.Namespace) -> int:
+    _best_effort_desktop_route(getattr(args, "root", None))
     service = _task_service(args.root)
     try:
         if args.watch:
@@ -812,6 +814,16 @@ def command_task_status(args: argparse.Namespace) -> int:
 
     _print_resolution_payload(resolution, as_json=args.json)
     return 0
+
+
+def _best_effort_desktop_route(board_root: str | Path | None = None) -> None:
+    """Refresh the current Desktop route without making ordinary CLI fail."""
+    try:
+        from .runner import RunnerClient
+
+        RunnerClient()._try_register_current_desktop_route(board_root=board_root)
+    except Exception:  # noqa: BLE001 - route registration is an optional wake-up.
+        return
 
 
 def command_task_logs(args: argparse.Namespace) -> int:
@@ -2692,9 +2704,10 @@ def _print_execution_policy(policy: Any) -> None:
                 f"state={cleanup.get('state') or 'not_requested'} "
                 f"attempts={cleanup.get('attempts', 0)} "
                 f"error_code={cleanup.get('error_code') or '-'} "
-                f"retryable={'yes' if cleanup.get('retryable') else 'no'}"
+                f"retryable={'yes' if cleanup.get('retryable') else 'no'} "
+                f"phase={cleanup.get('phase') or '-'}"
             )
-            if cleanup.get("version") == 3:
+            if cleanup.get("version") in (3, 4, 5):
                 verification = cleanup.get("verification") or {}
                 cli_verification = verification.get("cli") if isinstance(verification, dict) else {}
                 backend_verification = verification.get("desktop_backend") if isinstance(verification, dict) else {}

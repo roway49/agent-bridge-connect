@@ -14,6 +14,7 @@ import json
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -77,7 +78,43 @@ class FakeCleanupExecutor:
         self.calls.append(copy.deepcopy(request))
         if self.raise_error is not None:
             raise self.raise_error
+        if (
+            request.executor == "codex"
+            and self.result.state == "succeeded"
+            and not self.result.commands
+        ):
+            commands = {
+                "desktop_archive": {
+                    "status": "acknowledged",
+                    "checked_at": T0,
+                    "request_digest": "req",
+                    "route_digest": "route",
+                    "app_instance_digest": "app",
+                },
+                "app_server_archive": {
+                    "status": "not_requested",
+                    "checked_at": T0,
+                    "request_digest": "",
+                    "route_digest": "",
+                    "app_instance_digest": "",
+                },
+                "delete": {
+                    "status": "acknowledged",
+                    "checked_at": T0,
+                    "request_digest": "req",
+                    "route_digest": "",
+                    "app_instance_digest": "",
+                },
+            }
+            return replace(self.result, commands=commands)
         return self.result
+
+
+class FakeDesktopArchiveBroker:
+    """An available route marker for non-Desktop executor unit doubles."""
+
+    def route_available(self) -> bool:
+        return True
 
 
 class AuxiliaryLedgerTestCase(unittest.TestCase):
@@ -526,7 +563,11 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
     def _coordinator(self, executor):
         from agent_bridge_connect.session_cleanup import SessionCleanupCoordinator
 
-        return SessionCleanupCoordinator(self.board, executor_port=executor)
+        return SessionCleanupCoordinator(
+            self.board,
+            executor_port=executor,
+            desktop_archive_broker=FakeDesktopArchiveBroker(),
+        )
 
     def test_auxiliary_cleanup_primary_first_then_deepest_newest(self) -> None:
         task_id = _terminal_task(self.service)

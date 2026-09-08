@@ -64,6 +64,9 @@ class SessionCleanupRequest:
     executor: str
     session_id: str
     task_id: str = ""
+    # The Runner's durable execution binding participates in Desktop-route
+    # deduplication but is never persisted in cleanup receipts.
+    executor_run_id: str = field(default="", repr=False)
     retain: bool = False
     project_mode: str = "none"
     strategy: str = "none"
@@ -73,10 +76,9 @@ class SessionCleanupRequest:
     # request metadata and are deliberately excluded from repr/log surfaces.
     receipt_source: str = field(default="", repr=False)
     official_receipt_bound: bool = field(default=False, repr=False)
-    # Codex App Server owns a live writer for the Executor thread. The
-    # Executor may acknowledge archive on that same connection before
-    # publishing its terminal result. Only this bounded acknowledgement is
-    # forwarded; raw RPC data never crosses the adapter boundary.
+    # Legacy transient compatibility fields.  The production Codex cleanup
+    # gate is the current Desktop App Tools acknowledgement; these fields can
+    # only help the unchanged App Server delete path after that gate passes.
     archive_acknowledged: bool = field(default=False, repr=False)
     archive_checked_at: str = field(default="", repr=False)
 
@@ -99,7 +101,7 @@ class SessionCleanupResult:
     # Only bounded verification statuses/timestamps may cross the adapter
     # boundary.  Raw RPC, CLI output, prompts, tokens and paths are forbidden.
     verification: dict[str, dict[str, str]] = field(default_factory=dict, repr=False)
-    # SESSION-104-001 bounded per-command evidence (archive/delete).  Same
+    # SESSION-104-001 bounded per-command evidence.  Same
     # boundary rules as verification; empty means the adapter supplies none.
     commands: dict[str, dict[str, str]] = field(default_factory=dict, repr=False)
 
