@@ -111,6 +111,11 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 - 新回执必须区分 `archive=parked|acknowledged|failed`、`unarchive=acknowledged|failed` 与既有 delete
   回执；重复维护、Runner 重启、乱序通知均幂等。验收覆盖停车后侧栏无点击消失、恢复后同一 session
   可继续、再次失败可重新停车、最终终态 archive→delete，以及 dispatcher/其他 Task 永不进入候选。
+- 2026-09-08 对照 canary 已确认控制面差异：`28KY-001` 的 retain=true 精确会话经当前 Desktop 控制面
+  archive 后立即从 active 移入 archived，随后既有 App Server delete 成功；`ED84-001` 的 retain=false
+  自动路径返回 `codex_session_archive_failed`、delete=`not_requested`，精确会话仍在 Desktop active。
+  该稳定码排除了 transport-lost、timeout 和 target-missing，但当前脱敏回执没有保留通用 RPC 拒绝的
+  有界原因类别。实现必须优先接通 Desktop archive authority，并补齐不泄露原文的拒绝分类。
 
 ### 2.1 P1 待回归项（不新增权威开发项）
 
