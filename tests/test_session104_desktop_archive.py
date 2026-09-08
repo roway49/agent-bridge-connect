@@ -181,13 +181,24 @@ class DesktopRouteTests(unittest.TestCase):
         wrong.register(_context())
         self.assertEqual(wrong.archive(_request()).error_code, CODEX_DESKTOP_ARCHIVE_REJECTED)
 
-    def test_transport_death_invalidates_route_and_duplicate_is_deduplicated(self) -> None:
+    def test_transport_death_keeps_route_retryable_and_duplicate_is_deduplicated(self) -> None:
         dead = CodexDesktopArchiveBroker(
-            transport_factory=Factory(_route_transport(), FakeTransport([RuntimeError("dead")]))
+            transport_factory=Factory(
+                _route_transport(),
+                FakeTransport([RuntimeError("dead")]),
+                FakeTransport(
+                    [
+                        _response(4),
+                        _response(5, {"tools": [{"name": "set_thread_archived"}]}),
+                        _response(6),
+                    ]
+                ),
+            )
         )
         dead.register(_context())
         self.assertEqual(dead.archive(_request()).error_code, CODEX_DESKTOP_ARCHIVE_TRANSPORT_LOST)
-        self.assertFalse(dead.route_available())
+        self.assertTrue(dead.route_available())
+        self.assertTrue(dead.archive(_request()).acknowledged)
 
         factory = Factory(_route_transport(), _archive_transport())
         broker = CodexDesktopArchiveBroker(transport_factory=factory)
@@ -196,6 +207,27 @@ class DesktopRouteTests(unittest.TestCase):
         self.assertEqual(first, broker.archive(_request()))
         self.assertTrue(first.acknowledged)
         self.assertEqual(factory.calls, 2)
+
+    def test_registration_collision_is_retried_during_archive(self) -> None:
+        retry_transport = FakeTransport(
+            [
+                _response(2),
+                _response(3, {"tools": [{"name": "set_thread_archived"}]}),
+                _response(4),
+            ]
+        )
+        broker = CodexDesktopArchiveBroker(
+            transport_factory=Factory(
+                FakeTransport([RuntimeError("pipe busy")]),
+                retry_transport,
+            )
+        )
+        registration = broker.register(_context())
+        self.assertEqual(registration["capability"], "unknown")
+        self.assertTrue(registration["route_digest"].startswith("route_"))
+        self.assertTrue(broker.route_available())
+        self.assertTrue(broker.archive(_request()).acknowledged)
+        self.assertEqual(broker.public_status()["capability"], "supported")
 
     def test_restarted_route_drops_old_cache_and_keeps_long_task_route_usable(self) -> None:
         factory = Factory(

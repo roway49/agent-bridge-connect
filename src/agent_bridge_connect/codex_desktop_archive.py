@@ -280,7 +280,10 @@ class _StdioMcpTransport:
         if process is None:
             return
         if process.stdin is not None:
-            process.stdin.close()
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
         if process.poll() is None:
             process.terminate()
             try:
@@ -289,7 +292,10 @@ class _StdioMcpTransport:
                 process.kill()
                 process.wait(timeout=1.0)
         if process.stdout is not None:
-            process.stdout.close()
+            try:
+                process.stdout.close()
+            except OSError:
+                pass
 
 
 class CodexDesktopArchiveBroker:
@@ -313,7 +319,12 @@ class CodexDesktopArchiveBroker:
 
     def route_available(self) -> bool:
         with self._lock:
-            return self._route is not None and self._capability == "supported"
+            # A mechanically supplied Desktop route remains usable while its
+            # capability is unknown.  The app-owned native pipe may reject a
+            # second facade connection while another App Tools client is
+            # active; treating that transient collision as route absence made
+            # terminal cleanup permanently skip every later retry.
+            return self._route is not None and self._capability != "unsupported"
 
     def public_status(self) -> dict[str, str]:
         with self._lock:
@@ -386,10 +397,10 @@ class CodexDesktopArchiveBroker:
                 self._capability = "supported"
             return self._registration_result("")
         except (TimeoutError, socket.timeout):
-            self._invalidate()
+            self._mark_retryable(context)
             return self._registration_result(CODEX_DESKTOP_ARCHIVE_TRANSPORT_LOST)
         except (OSError, TransportClosed, RuntimeError, ValueError):
-            self._invalidate()
+            self._mark_retryable(context)
             return self._registration_result(CODEX_DESKTOP_ARCHIVE_ROUTE_UNAVAILABLE)
         finally:
             self._close(transport)
@@ -441,7 +452,7 @@ class CodexDesktopArchiveBroker:
                 request_digest=request_digest,
                 route=None,
             )
-        elif capability != "supported":
+        elif capability == "unsupported":
             result = self._failure(
                 CODEX_DESKTOP_ARCHIVE_UNSUPPORTED,
                 request_digest=request_digest,
@@ -453,9 +464,17 @@ class CodexDesktopArchiveBroker:
                 session_id,
                 request_digest,
                 generation=generation,
+                negotiate=capability != "supported",
             )
         with self._lock:
-            if self._generation == generation and self._route == route:
+            # Transport loss is retryable and must never become a permanent
+            # exact-request cache entry.  Acknowledgement and deterministic
+            # rejection/unsupported results remain idempotent.
+            cacheable = result.acknowledged or result.error_code in {
+                CODEX_DESKTOP_ARCHIVE_REJECTED,
+                CODEX_DESKTOP_ARCHIVE_UNSUPPORTED,
+            }
+            if cacheable and self._generation == generation and self._route == route:
                 self._results[key] = result
             pending = self._inflight.get(key)
             if pending is event:
@@ -470,12 +489,34 @@ class CodexDesktopArchiveBroker:
         request_digest: str,
         *,
         generation: int,
+        negotiate: bool,
     ) -> CodexDesktopArchiveResult:
         transport = None
         try:
             transport = self._new_transport(route)
             self._start(transport)
             self._initialize(transport)
+            if negotiate:
+                tools_response = self._request(transport, "tools/list", {})
+                tools = (
+                    tools_response.get("result")
+                    if isinstance(tools_response.get("result"), dict)
+                    else {}
+                )
+                names = {
+                    str(item.get("name") or "")
+                    for item in tools.get("tools", [])
+                    if isinstance(item, dict)
+                }
+                if CODEX_DESKTOP_ARCHIVE_TOOL not in names:
+                    with self._lock:
+                        if self._generation == generation and self._route == route:
+                            self._capability = "unsupported"
+                    return self._failure(
+                        CODEX_DESKTOP_ARCHIVE_UNSUPPORTED,
+                        request_digest=request_digest,
+                        route=route,
+                    )
             response = self._request(
                 transport,
                 "tools/call",
@@ -500,6 +541,8 @@ class CodexDesktopArchiveBroker:
                 )
             with self._lock:
                 current = self._generation == generation and self._route == route
+                if current:
+                    self._capability = "supported"
             if not current:
                 return self._failure(
                     CODEX_DESKTOP_ARCHIVE_TRANSPORT_LOST,
@@ -514,14 +557,14 @@ class CodexDesktopArchiveBroker:
                 app_instance_digest=route.app_instance_digest,
             )
         except (TimeoutError, socket.timeout):
-            self._invalidate(route)
+            self._mark_retryable(route)
             return self._failure(
                 CODEX_DESKTOP_ARCHIVE_TRANSPORT_LOST,
                 request_digest=request_digest,
                 route=route,
             )
         except (OSError, TransportClosed, RuntimeError, ValueError):
-            self._invalidate(route)
+            self._mark_retryable(route)
             return self._failure(
                 CODEX_DESKTOP_ARCHIVE_TRANSPORT_LOST,
                 request_digest=request_digest,
@@ -648,11 +691,11 @@ class CodexDesktopArchiveBroker:
                     return found
         return ""
 
-    def _invalidate(self, route: CodexDesktopRouteContext | None = None) -> None:
+    def _mark_retryable(self, route: CodexDesktopRouteContext) -> None:
+        """Keep a valid Desktop route after a transient facade collision."""
         with self._lock:
-            if route is None or self._route == route:
-                self._route = None
-                self._capability = "unavailable"
+            if self._route == route:
+                self._capability = "unknown"
 
 
 # Short aliases make the production seam easy to discover without creating a
