@@ -3210,7 +3210,10 @@ def command_session_desktop_archive_ack(args: argparse.Namespace) -> int:
         print(f"session_cleanup_error: {exc}")
         return 1
     print(json.dumps(result, indent=2, ensure_ascii=False))
-    return 0 if result.get("state") == "succeeded" else 1
+    receipt = result.get("receipt")
+    receipt_state = receipt.get("state") if isinstance(receipt, dict) else None
+    cleanup_state = result.get("state") or result.get("status") or receipt_state
+    return 0 if cleanup_state in {"succeeded", "resolved"} else 1
 
 
 def _retention_payload(
