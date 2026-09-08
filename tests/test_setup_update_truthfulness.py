@@ -39,6 +39,15 @@ def _frozen_102a1_files(platform: str) -> dict[str, bytes]:
 
     fingerprint = MANAGED_SKILL_FINGERPRINTS["1.0.2a1"][platform]
     frozen_override = {
+        "SKILL.md": (
+            Path(__file__).parent
+            / "fixtures"
+            / "skill"
+            / "1.0.2a1"
+            / "codex-SKILL.md"
+        )
+        if platform == "codex"
+        else Path(""),
         "references/controller-contract.md": (
             Path(__file__).parent
             / "fixtures"
@@ -51,7 +60,7 @@ def _frozen_102a1_files(platform: str) -> dict[str, bytes]:
     files: dict[str, bytes] = {}
     for relative_path, digest in fingerprint["files"].items():
         override = frozen_override.get(relative_path)
-        if override is not None and override.exists():
+        if override is not None and override.is_file():
             candidate = override.read_bytes()
         else:
             candidate = current[relative_path]

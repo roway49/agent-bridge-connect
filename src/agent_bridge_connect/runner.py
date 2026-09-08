@@ -42,6 +42,7 @@ from .permission_modes import (
 )
 from .permission_grants import PERMISSION_GRANT_EXTENSION_KEY
 from .codex_desktop_archive import (
+    AcknowledgedCodexDesktopArchiveBroker,
     CodexDesktopArchiveBroker,
     CodexDesktopRouteContext,
     read_desktop_route_context,
@@ -1072,6 +1073,22 @@ class RunnerClient:
                     "mcp_runtime": context.mcp_runtime,
                     "mcp_resource": context.mcp_resource,
                 },
+            }
+        )
+
+    def acknowledge_desktop_archive(
+        self,
+        task_id: str,
+        session_id: str,
+        board_root: str | Path,
+    ) -> dict[str, Any]:
+        """Continue exact-session cleanup after native Desktop archive ack."""
+        return self._request(
+            {
+                "op": "acknowledge_desktop_archive",
+                "task_id": str(task_id or ""),
+                "session_id": str(session_id or ""),
+                "board_root": str(Path(board_root).expanduser()),
             }
         )
 
@@ -2296,6 +2313,45 @@ class RunnerState:
             **registration,
             "woken_cleanup": len(processed),
         }
+
+    def acknowledge_desktop_archive(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Validate one Codex app acknowledgement, then run existing delete."""
+        from .service import TaskService
+        from .session_cleanup import SessionCleanupCoordinator
+
+        task_id = str(request.get("task_id") or "").strip()
+        session_id = str(request.get("session_id") or "").strip().lower()
+        if not task_id or not session_id:
+            raise RunnerError("Desktop archive acknowledgement requires task and session ids")
+        board = self._atomic_board(str(request.get("board_root") or ""))
+        task = TaskService(board).get_task(task_id)
+        extensions = dict(task.extensions or {})
+        session = extensions.get("agentbc.session")
+        execution = extensions.get("agentbc.execution")
+        if not isinstance(session, dict) or not isinstance(execution, dict):
+            raise RunnerError("Desktop archive acknowledgement has no bound session receipt")
+        if (
+            str(session.get("executor") or "").strip().lower() != "codex"
+            or session.get("retain") is not False
+            or session.get("official_receipt_bound") is not True
+            or str(session.get("session_id") or "").strip().lower() != session_id
+            or str(session.get("session_state") or "").strip().lower() != "terminal"
+        ):
+            raise RunnerError("Desktop archive acknowledgement binding mismatch")
+        executor_run_id = str(execution.get("executor_run_id") or "").strip()
+        if not executor_run_id:
+            raise RunnerError("Desktop archive acknowledgement has no executor run binding")
+        broker = AcknowledgedCodexDesktopArchiveBroker(
+            task_id=task_id,
+            executor_run_id=executor_run_id,
+            session_id=session_id,
+        )
+        coordinator = SessionCleanupCoordinator(
+            board,
+            desktop_archive_broker=broker,
+        )
+        result = coordinator.request_cleanup(task_id, force_retry=True)
+        return {"ok": True, "task_id": task_id, "session_id": session_id, **result}
 
     def maintain_terminal_delivery(self, *, now: str | None = None) -> list[dict[str, Any]]:
         """Runner-owned replay of incomplete terminal delivery stages.
@@ -4190,6 +4246,8 @@ def _dispatch_request(state: RunnerState, request: dict[str, Any]) -> dict[str, 
         return state.handoff_and_dispatch(request)
     if operation == "register_desktop_route":
         return state.register_desktop_route(request)
+    if operation == "acknowledge_desktop_archive":
+        return state.acknowledge_desktop_archive(request)
     if operation == "status":
         return state.status(str(request.get("run_id") or ""))
     if operation == "cancel":

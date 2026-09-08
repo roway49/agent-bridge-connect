@@ -9,6 +9,7 @@ from pathlib import Path
 
 from agent_bridge_connect.adapters import SessionCleanupRequest
 from agent_bridge_connect.codex_desktop_archive import (
+    AcknowledgedCodexDesktopArchiveBroker,
     CODEX_DESKTOP_ARCHIVE_REJECTED,
     CODEX_DESKTOP_ARCHIVE_ROUTE_UNAVAILABLE,
     CODEX_DESKTOP_ARCHIVE_TRANSPORT_LOST,
@@ -119,6 +120,19 @@ def _request(**overrides: object) -> SessionCleanupRequest:
 
 
 class DesktopRouteTests(unittest.TestCase):
+    def test_native_control_plane_ack_is_exactly_bound(self) -> None:
+        broker = AcknowledgedCodexDesktopArchiveBroker(
+            task_id="E299-001",
+            executor_run_id="run-e299",
+            session_id=SESSION_ID,
+        )
+        self.assertTrue(broker.route_available())
+        self.assertTrue(broker.archive(_request()).acknowledged)
+        self.assertEqual(
+            broker.archive(_request(session_id=OTHER_ID)).error_code,
+            CODEX_DESKTOP_ARCHIVE_REJECTED,
+        )
+
     def test_environment_context_derives_official_resource_from_node(self) -> None:
         env = {
             "CODEX_APP_TOOLS_PIPE_PATH": "/tmp/app-tools.pipe",

@@ -698,6 +698,56 @@ class CodexDesktopArchiveBroker:
                 self._capability = "unknown"
 
 
+class AcknowledgedCodexDesktopArchiveBroker:
+    """One-shot bridge for an acknowledgement returned by Codex Desktop.
+
+    The Codex controller calls the native ``set_thread_archived`` tool first.
+    Runner constructs this broker only after validating the exact persisted
+    task/session/run binding supplied to the acknowledgement operation.
+    """
+
+    def __init__(self, *, task_id: str, executor_run_id: str, session_id: str) -> None:
+        self.task_id = str(task_id or "").strip()
+        self.executor_run_id = str(executor_run_id or "").strip()
+        self.session_id = _canonical_uuid(session_id)
+
+    def route_available(self) -> bool:
+        return bool(self.task_id and self.executor_run_id and self.session_id)
+
+    def archive(self, request: Any) -> CodexDesktopArchiveResult:
+        task_id = str(getattr(request, "task_id", "") or "").strip()
+        executor_run_id = str(getattr(request, "executor_run_id", "") or "").strip()
+        session_id = _canonical_uuid(getattr(request, "session_id", ""))
+        request_digest = _digest(
+            {"threadId": session_id, "archived": True}, prefix="request_"
+        )
+        binding = {
+            "task_id": task_id,
+            "executor_run_id": executor_run_id,
+            "session_id": session_id,
+        }
+        if (
+            task_id != self.task_id
+            or executor_run_id != self.executor_run_id
+            or session_id != self.session_id
+        ):
+            return CodexDesktopArchiveResult(
+                status="rejected",
+                error_code=CODEX_DESKTOP_ARCHIVE_REJECTED,
+                checked_at=_utc_now(),
+                request_digest=request_digest,
+            )
+        return CodexDesktopArchiveResult(
+            status="acknowledged",
+            checked_at=_utc_now(),
+            request_digest=request_digest,
+            route_digest=_digest(binding, prefix="route_"),
+            app_instance_digest=_digest(
+                {"source": "codex_app_control_plane"}, prefix="app_"
+            ),
+        )
+
+
 # Short aliases make the production seam easy to discover without creating a
 # second implementation or a version-specific capability table.
 DesktopArchiveBroker = CodexDesktopArchiveBroker

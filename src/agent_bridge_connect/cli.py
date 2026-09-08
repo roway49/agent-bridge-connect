@@ -152,6 +152,13 @@ def build_parser() -> argparse.ArgumentParser:
     retention_sub.add_parser("status", help="Show the effective retention setting.")
     retention_sub.add_parser("enable", help="Retain executor temporary sessions after terminal tasks.")
     retention_sub.add_parser("disable", help="Remove executor temporary sessions after terminal tasks.")
+    archive_ack = session_sub.add_parser(
+        "acknowledge-desktop-archive",
+        help="Record an exact native Codex Desktop archive acknowledgement and continue cleanup.",
+    )
+    add_task_root(archive_ack)
+    archive_ack.add_argument("id")
+    archive_ack.add_argument("--session-id", required=True)
 
     permissions = sub.add_parser(
         "permissions",
@@ -3190,6 +3197,22 @@ def command_session_retention(action: str) -> int:
     return 0
 
 
+def command_session_desktop_archive_ack(args: argparse.Namespace) -> int:
+    from .runner import RunnerClient, RunnerError
+
+    try:
+        result = RunnerClient(timeout_s=40).acknowledge_desktop_archive(
+            args.id,
+            args.session_id,
+            args.root,
+        )
+    except (ABCError, RunnerError) as exc:
+        print(f"session_cleanup_error: {exc}")
+        return 1
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if result.get("state") == "succeeded" else 1
+
+
 def _retention_payload(
     *,
     previous: bool,
@@ -3286,6 +3309,8 @@ def main(argv: list[str] | None = None) -> int:
         return command_executor_setting("hermes", "max_turns", args.turns)
 
     if args.command == "session":
+        if args.session_command == "acknowledge-desktop-archive":
+            return command_session_desktop_archive_ack(args)
         return command_session_retention(args.retention_command)
 
     if args.command == "permissions":

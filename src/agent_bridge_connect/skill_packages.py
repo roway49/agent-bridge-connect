@@ -83,15 +83,16 @@ MANAGED_SKILL_FINGERPRINTS: dict[str, dict[str, dict[str, Any]]] = {
     },
     # 1.0.3a2 (current, private/integration reconciliation): the controller
     # contract contains the executor-native choice broker and the split
-    # Hermes full transport contract; SKILL.md and the steps YAML reference
-    # remain byte-identical to 1.0.2a1.
+    # Hermes full transport contract. Codex SKILL.md also contains the native
+    # Desktop archive acknowledgement bridge; the steps YAML remains
+    # byte-identical to 1.0.2a1.
     "1.0.3a2": {
         "codex": {
             "protocol_version": "1.0",
             "completion_version": 1,
-            "template_sha256": "d9cfdb5c559de86beed9023f96f720bf7dcbc878f17dcefd90c230988ec344d0",
+            "template_sha256": "ae0373224b56411f11bce3291fc606dd7a5bbae1403d898756f918f2bbd4552c",
             "files": {
-                "SKILL.md": "a4793a20c5a9e079a3a26c31bdccca366be59f97b225f137bc90645d6f649ec0",
+                "SKILL.md": "fcffaede3997c0d2876aca396638714a915c234d6400dca6f33525826e1a393c",
                 "agents/openai.yaml": "8f6cf84d2091c1ea1e895ec06f9d2321daceee34e5707cd9df3fc8a9142ca21a",
                 "references/agentbc-steps-yaml.md": "ec2d398a422e7ae4787b7321a66a29aa77e6442ad1ed27f5b835007bdf8880dc",
                 "references/controller-contract.md": "e536fd77704db1e74462e0c333c5dc372f00e4818987817f4c5e3643df1cac44",
