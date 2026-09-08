@@ -63,6 +63,7 @@ MAX_MANAGED_FILE_BYTES = 10 * 1024
 TERMINAL_STATES = {"completed", "failed", "cancelled"}
 MANAGED_RECORD_NAME_RE = re.compile(r"[23456789ABCDEFGHJKMNPQRSTVWXYZ]{4,}-\d{3}-report\.md\Z")
 LEGACY_RUNNER_LAUNCH_AGENT_LABEL = "com.agentbc.runner"
+RUNNER_IDENTITY_REFRESH_INTERVAL_S = 30.0
 
 # --- Phase 2 (1.0.2A) legacy migration and Runner policy validation ---
 # Integration merge point: Task 1 (1.0.2A resource configuration foundations,
@@ -3885,10 +3886,22 @@ class RunnerService:
             raise
         self._stop = threading.Event()
         self._last_maintenance_at = 0.0
+        self._last_identity_refresh_at = 0.0
+        if not self._refresh_identity_files():
+            self._release_singleton_pid()
+            raise RunnerError("runner identity files could not be refreshed")
 
     def serve_forever(self) -> None:
         while not self._stop.is_set():
             if not self._identity_is_current():
+                self._stop.set()
+                break
+            now = time.monotonic()
+            if (
+                now - self._last_identity_refresh_at
+                >= RUNNER_IDENTITY_REFRESH_INTERVAL_S
+                and not self._refresh_identity_files(now=now)
+            ):
                 self._stop.set()
                 break
             handled = self.serve_once()
@@ -3975,6 +3988,22 @@ class RunnerService:
         except OSError:
             return False
         return bool(current_token) and hmac.compare_digest(current_token, self.runner_token)
+
+    def _refresh_identity_files(self, *, now: float | None = None) -> bool:
+        """Keep active `/tmp` identity files out of age-based OS cleanup.
+
+        The token value and pid contents remain unchanged.  Refreshing their
+        timestamps (and the containing spool) is the Runner heartbeat that
+        distinguishes a live IPC endpoint from abandoned temporary state.
+        """
+        paths = (self.spool_root, self.token_path, *self.pid_paths)
+        try:
+            for path in paths:
+                os.utime(path, None)
+        except OSError:
+            return False
+        self._last_identity_refresh_at = time.monotonic() if now is None else now
+        return True
 
     def _write_response(
         self,
