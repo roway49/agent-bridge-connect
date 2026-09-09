@@ -5314,6 +5314,18 @@ class TaskService:
         self.store.append_event(task_id, {"event_type": "step_retry", "task_id": task_id, "step_id": step_id, "created_at": task.updated_at})
         self._append_intervention(task_id, "retry", task.updated_at, step_id=step_id)
 
+    def retry_failed_task(self, task_id: str) -> TaskModel:
+        """Retry one failed current-chain head as a new execution attempt."""
+        from .retry_flow import retry_failed_task
+
+        return retry_failed_task(self, task_id)
+
+    def retry_preflight(self, task_id: str) -> dict[str, Any]:
+        """Return the stable failed-task retry preflight projection."""
+        from .retry_flow import failed_retry_preflight
+
+        return failed_retry_preflight(self, task_id)
+
     def reassign_task(self, task_id: str, new_executor: str) -> None:
         task = self.get_task(task_id)
         new_executor = _normalize_executor_ref(
@@ -5734,6 +5746,8 @@ class TaskService:
 
     def generate_report(self, task_id: str) -> dict[str, Any]:
         task = self.get_task(task_id)
+        from .retry_flow import failed_revival_projection
+
         report = {
             "task_id": task.id,
             "status": task.status,
@@ -5742,6 +5756,11 @@ class TaskService:
             "steps_done": sum(1 for step in task.steps if step.get("status") in {"done", "completed"}),
             "events": len(self.store.read_events(task_id)),
             "interventions": len(self.store.read_interventions(task_id)),
+            "revival": (
+                failed_revival_projection(task)
+                if task.status == "failed" or "agentbc.revival" in (task.extensions or {})
+                else None
+            ),
         }
         task.report = report
         task.updated_at = report["generated_at"]
@@ -6024,6 +6043,14 @@ def retry_step(task_id: str, step_id: int, board_root: str | Path = DEFAULT_BOAR
     TaskService(board_root).retry_step(task_id, step_id)
 
 
+def retry_failed_task(task_id: str, board_root: str | Path = DEFAULT_BOARD_ROOT) -> TaskModel:
+    return TaskService(board_root).retry_failed_task(task_id)
+
+
+def retry_preflight(task_id: str, board_root: str | Path = DEFAULT_BOARD_ROOT) -> dict[str, Any]:
+    return TaskService(board_root).retry_preflight(task_id)
+
+
 def reassign_task(task_id: str, new_executor: str, board_root: str | Path = DEFAULT_BOARD_ROOT) -> None:
     TaskService(board_root).reassign_task(task_id, new_executor)
 
@@ -6079,6 +6106,16 @@ def task_to_status(task: TaskModel) -> dict[str, Any]:
     data["status"] = _normalize_status(raw_status)
     data["steps"] = [dict(step, status=step.get("status", "pending")) for step in data.get("steps", [])]
     extensions = dict(data.get("extensions") or {})
+    if raw_status == "failed" or "agentbc.revival" in extensions:
+        from .retry_flow import failed_revival_projection, public_revival_projection
+
+        data["revival"] = failed_revival_projection(task)
+        if "agentbc.revival" in extensions:
+            projected_revival = public_revival_projection(extensions.get("agentbc.revival"))
+            if projected_revival is None:
+                extensions.pop("agentbc.revival", None)
+            else:
+                extensions["agentbc.revival"] = projected_revival
     extensions.setdefault(
         PERMISSION_EXTENSION_KEY,
         permission_record_from_extensions(extensions),
@@ -6782,6 +6819,10 @@ def _task_summary(task: TaskModel, board_root: str | Path | None = None) -> dict
         "health_state": health.get("state", ""),
         "health_color": health.get("color", "gray"),
     }
+    if _normalize_status(task.status) == "failed" or "agentbc.revival" in (task.extensions or {}):
+        from .retry_flow import failed_revival_projection
+
+        summary["revival"] = failed_revival_projection(task)
     if board_root is not None:
         from .timing_view import build_timing_view
 

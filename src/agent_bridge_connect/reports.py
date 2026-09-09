@@ -4,6 +4,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from .execution_policy import execution_policy_view, public_workspace_view
@@ -83,6 +84,19 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
     completed_at = _completed_at(task, events)
     workspace = task.get("workspace") or {}
     extensions = task.get("extensions") or {}
+    revival = None
+    if public_status == "failed" or "agentbc.revival" in extensions:
+        from .retry_flow import failed_revival_projection, public_revival_projection
+
+        revival_task = SimpleNamespace(
+            id=task.get("id", task_id),
+            status=public_status,
+            steps=steps,
+            extensions=extensions,
+        )
+        revival = failed_revival_projection(revival_task)
+        if "agentbc.revival" in extensions:
+            revival = public_revival_projection(extensions.get("agentbc.revival")) or revival
     session_snapshot = extensions.get("agentbc.session") or {}
     artifacts = _dedupe_values(
         [
@@ -179,6 +193,7 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "lineage": extensions.get("agentbc.lineage") or {},
         "media": extensions.get("agentbc.media") or {},
         "chain": chain,
+        "revival": revival,
         "final_callback": final_callback,
         "has_final_callback": bool(final_callback),
         "marker_valid": marker_valid,
@@ -725,6 +740,19 @@ def _render_report_md(report: dict[str, Any]) -> str:
         "",
         "## Path Plan",
     ]
+    revival = report.get("revival") or {}
+    if revival:
+        lines.extend(
+            [
+                "",
+                "## Revival",
+                f"- Operation: `{revival.get('operation', '')}`",
+                f"- Attempt: `{revival.get('attempt_index', '')}`",
+                f"- Cleanup scope: `{revival.get('cleanup_scope', '')}`",
+                f"- Allowed next actions: `{', '.join(revival.get('allowed_next_actions') or [])}`",
+                f"- Recommended action: `{revival.get('recommended_action', '')}`",
+            ]
+        )
     workspace = report.get("workspace") or {}
     lineage = report.get("lineage") or {}
     if workspace:

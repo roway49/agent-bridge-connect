@@ -375,10 +375,24 @@ def build_parser() -> argparse.ArgumentParser:
     task_correct.add_argument("--step", required=True, type=int)
     task_correct.add_argument("--message", required=True)
 
-    task_retry = task_sub.add_parser("retry", help="Reset a task step to pending.")
+    task_retry = task_sub.add_parser("retry", help="Retry a failed task from its current chain head.")
     add_task_root(task_retry)
     task_retry.add_argument("id")
-    task_retry.add_argument("--step", required=True, type=int)
+    task_retry.add_argument(
+        "--step",
+        type=int,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    task_retry.add_argument("--dispatch", action="store_true")
+
+    task_retry_step = task_sub.add_parser(
+        "retry-step",
+        help="Reset one live task step to pending.",
+    )
+    add_task_root(task_retry_step)
+    task_retry_step.add_argument("id")
+    task_retry_step.add_argument("--step", required=True, type=int)
 
     task_reassign = task_sub.add_parser("reassign", help="Reassign a task.")
     add_task_root(task_reassign)
@@ -1170,6 +1184,34 @@ def command_task_intervention(args: argparse.Namespace) -> int:
         elif args.task_command == "correct":
             service.correct_step(args.id, args.step, args.message)
         elif args.task_command == "retry":
+            from .retry_flow import REVIVAL_STEP_FLAG_UNSUPPORTED
+
+            if getattr(args, "step", None) is not None:
+                raise ABCError(
+                    REVIVAL_STEP_FLAG_UNSUPPORTED,
+                    "--step belongs to 'agentbc task retry-step <TASK_ID> --step <N>'; "
+                    "failed-task retry resets the complete task attempt.",
+                )
+            if getattr(args, "dispatch", False):
+                from .runner import RunnerClient, RunnerError
+
+                task = service.retry_failed_task(args.id)
+                try:
+                    result = RunnerClient().dispatch_task(
+                        task.id,
+                        args.root,
+                        config_path,
+                        getattr(args, "interval", 2),
+                        getattr(args, "monitor", False),
+                    )
+                except RunnerError as exc:
+                    print(f"atomic_dispatch_error: {exc}")
+                    return 1
+                print(f"retried: {task.id}")
+                _print_atomic_dispatch(result)
+                return 0
+            service.retry_failed_task(args.id)
+        elif args.task_command == "retry-step":
             service.retry_step(args.id, args.step)
         elif args.task_command == "reassign":
             service.reassign_task(args.id, args.to)
@@ -3381,7 +3423,7 @@ def main(argv: list[str] | None = None) -> int:
             return command_task_callback(args)
         if args.task_command == "delete":
             return command_task_delete(args)
-        if args.task_command in {"pause", "resume", "cancel", "close", "correct", "retry", "reassign", "handoff"}:
+        if args.task_command in {"pause", "resume", "cancel", "close", "correct", "retry", "retry-step", "reassign", "handoff"}:
             return command_task_intervention(args)
         raise AssertionError(args.task_command)
 
