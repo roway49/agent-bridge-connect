@@ -111,5 +111,5 @@ module 的尝试均未被当作成功；最终标准 setuptools wheel 已成功�
 ## Step 5：清单、提交与工作树
 
 已更新 `AGENTBC_1.0.4A_DEVELOPMENT_CHECKLIST.md`，仅写入上述直接证据支持的 PERM-104-002 收口状态；
-已保留本证据文件与最终矩阵测试。最终本地提交 hash 在提交完成后补记于此；不 push，不修改
-`private/integration`。
+最终矩阵、清单和本证据文件已在本地提交 `2996bf9`（`test(permission): close PERM-104-002 final matrix`）中保存；
+不 push，不修改 `private/integration`。最终工作树洁净性在回调前再次复核。
