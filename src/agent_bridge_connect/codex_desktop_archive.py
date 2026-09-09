@@ -28,6 +28,8 @@ from .control import TransportClosed
 CODEX_APP_TOOLS_PIPE_PATH_ENV = "CODEX_APP_TOOLS_PIPE_PATH"
 CODEX_THREAD_ID_ENV = "CODEX_THREAD_ID"
 CODEX_MCP_NODE_PATH_ENV = "CODEX_MCP_NODE_PATH"
+AGENTBC_DESKTOP_RELAY_SOCKET_ENV = "AGENTBC_DESKTOP_RELAY_SOCKET"
+AGENTBC_DESKTOP_RELAY_TOKEN_ENV = "AGENTBC_DESKTOP_RELAY_TOKEN"
 
 _APP_TOOLS_RESOURCE = Path(
     "plugins/openai-bundled/plugins/codex-app-tools/server.mjs"
@@ -80,6 +82,8 @@ class CodexDesktopRouteContext:
     dispatcher_thread_id: str = field(repr=False)
     mcp_runtime: str = field(repr=False)
     mcp_resource: str = field(repr=False)
+    relay_socket: str = field(default="", repr=False)
+    relay_token: str = field(default="", repr=False)
     host: str = field(default_factory=socket.gethostname, repr=False)
 
     @property
@@ -91,6 +95,7 @@ class CodexDesktopRouteContext:
                 "host": self.host,
                 "runtime": self.mcp_runtime,
                 "resource": self.mcp_resource,
+                "relay": bool(self.relay_socket),
             },
             prefix="route_",
         )
@@ -133,6 +138,8 @@ def read_desktop_route_context(
         dispatcher_thread_id=dispatcher_id,
         mcp_runtime=runtime,
         mcp_resource=resource,
+        relay_socket=_bounded_context_value(source.get(AGENTBC_DESKTOP_RELAY_SOCKET_ENV)),
+        relay_token=_bounded_context_value(source.get(AGENTBC_DESKTOP_RELAY_TOKEN_ENV)),
         host=socket.gethostname(),
     )
 
@@ -298,6 +305,83 @@ class _StdioMcpTransport:
                 pass
 
 
+class _RelayMcpTransport:
+    """MCP-shaped client for a host-attached Desktop relay."""
+
+    def __init__(self, context: CodexDesktopRouteContext, timeout_s: float) -> None:
+        self._context = context
+        self._timeout_s = timeout_s
+        self._socket: socket.socket | None = None
+        self._reader: Any | None = None
+
+    def start(self) -> None:
+        if self._socket is not None:
+            return
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(self._timeout_s)
+        try:
+            client.connect(self._context.relay_socket)
+        except OSError:
+            client.close()
+            raise
+        self._socket = client
+        self._reader = client.makefile("rb")
+
+    def send(self, message: dict[str, Any]) -> None:
+        client = self._socket
+        if client is None:
+            raise TransportClosed("Codex Desktop relay is not connected")
+        envelope = {
+            "token": self._context.relay_token,
+            "message": message,
+        }
+        encoded = json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        if len(encoded) > _MAX_RESPONSE_BYTES:
+            raise TransportClosed("Codex Desktop relay request is too large")
+        try:
+            client.sendall(encoded + b"\n")
+        except OSError as exc:
+            raise TransportClosed("Codex Desktop relay closed") from exc
+
+    def recv(self, timeout_s: float | None = None) -> dict[str, Any]:
+        client = self._socket
+        reader = self._reader
+        if client is None or reader is None:
+            raise TransportClosed("Codex Desktop relay is not connected")
+        client.settimeout(max(float(timeout_s or self._timeout_s), 0.01))
+        try:
+            line = reader.readline(_MAX_RESPONSE_BYTES + 1)
+        except OSError as exc:
+            raise TransportClosed("Codex Desktop relay closed") from exc
+        if not line or len(line) > _MAX_RESPONSE_BYTES:
+            raise TransportClosed("Codex Desktop relay response is unavailable")
+        try:
+            response = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+            raise TransportClosed("Codex Desktop relay response is invalid") from exc
+        if not isinstance(response, dict):
+            raise TransportClosed("Codex Desktop relay response is invalid")
+        return response
+
+    def close(self) -> None:
+        reader = self._reader
+        client = self._socket
+        self._reader = None
+        self._socket = None
+        if reader is not None:
+            try:
+                reader.close()
+            except OSError:
+                pass
+        if client is not None:
+            try:
+                client.close()
+            except OSError:
+                pass
+
+
 class CodexDesktopArchiveBroker:
     """Register, negotiate, and call one in-memory Desktop App Tools route."""
 
@@ -349,6 +433,8 @@ class CodexDesktopArchiveBroker:
             or not _bounded_context_value(context.mcp_runtime)
             or not isinstance(context.mcp_resource, str)
             or not _bounded_context_value(context.mcp_resource)
+            or bool(context.relay_socket) != bool(context.relay_token)
+            or (context.relay_socket and not Path(context.relay_socket).is_absolute())
             or not _route_context_paths_valid(
                 context,
                 require_installed=self.transport_factory is None,
@@ -598,6 +684,8 @@ class CodexDesktopArchiveBroker:
     def _new_transport(self, context: CodexDesktopRouteContext) -> Any:
         factory = self.transport_factory
         if factory is None:
+            if context.relay_socket and context.relay_token:
+                return _RelayMcpTransport(context, self.timeout_s)
             return _StdioMcpTransport(context, self.timeout_s)
         attempts = (
             lambda: factory(context=context),

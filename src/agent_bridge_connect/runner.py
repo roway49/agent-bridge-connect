@@ -1072,6 +1072,8 @@ class RunnerClient:
                     "dispatcher_thread_id": context.dispatcher_thread_id,
                     "mcp_runtime": context.mcp_runtime,
                     "mcp_resource": context.mcp_resource,
+                    "relay_socket": context.relay_socket,
+                    "relay_token": context.relay_token,
                 },
             }
         )
@@ -1098,6 +1100,8 @@ class RunnerClient:
         board_root: str | Path | None = None,
     ) -> None:
         """Best-effort route refresh; status must remain usable offline."""
+        if os.environ.get("AGENTBC_SKIP_DESKTOP_ROUTE_REGISTER") == "1":
+            return
         context = read_desktop_route_context()
         if context is None:
             return
@@ -2293,6 +2297,8 @@ class RunnerState:
             dispatcher_thread_id=str(raw.get("dispatcher_thread_id") or ""),
             mcp_runtime=str(raw.get("mcp_runtime") or ""),
             mcp_resource=str(raw.get("mcp_resource") or ""),
+            relay_socket=str(raw.get("relay_socket") or ""),
+            relay_token=str(raw.get("relay_token") or ""),
             host=socket.gethostname(),
         )
         if (
@@ -2301,6 +2307,8 @@ class RunnerState:
             or not context.dispatcher_thread_id
             or not context.mcp_runtime
             or not context.mcp_resource
+            or bool(context.relay_socket) != bool(context.relay_token)
+            or (context.relay_socket and not Path(context.relay_socket).is_absolute())
         ):
             raise RunnerError("Desktop route context is unavailable")
         board_value = str(request.get("board_root") or "").strip()

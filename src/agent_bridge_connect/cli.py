@@ -3262,6 +3262,8 @@ def _print_config_command_error(exc: Exception, setting: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if argv is None:
+        _bootstrap_desktop_relay(raw_argv)
     if not raw_argv:
         parser = build_parser()
         parser.print_help()
@@ -3417,6 +3419,46 @@ def _expand_shorthand(argv: list[str]) -> list[str]:
     if is_task_like(first):
         return ["task", "status", first.upper(), *argv[1:]]
     return ["_shorthand", *argv]
+
+
+def _bootstrap_desktop_relay(argv: list[str]) -> None:
+    """Re-exec the installed CLI through Codex's Node host relay bootstrap.
+
+    Desktop scopes its native App Tools pipe to a Node-originating process.
+    Replacing the console-script process before normal CLI startup preserves
+    that mechanical host context without changing task execution semantics.
+    """
+    if (
+        sys.platform != "darwin"
+        or os.environ.get("AGENTBC_DESKTOP_BOOTSTRAPPED") == "1"
+        or Path(sys.argv[0]).name not in {"agentbc", "abc"}
+    ):
+        return
+    try:
+        from .codex_desktop_archive import read_desktop_route_context
+
+        context = read_desktop_route_context()
+        asset = Path(__file__).with_name("assets") / "codex_desktop_relay.mjs"
+        if context is None or not asset.is_file():
+            return
+        environment = {**os.environ, "AGENTBC_DESKTOP_BOOTSTRAPPED": "1"}
+        os.execve(
+            context.mcp_runtime,
+            [
+                context.mcp_runtime,
+                str(asset),
+                "--resource",
+                context.mcp_resource,
+                "--",
+                sys.executable,
+                "-m",
+                "agent_bridge_connect.cli",
+                *argv,
+            ],
+            environment,
+        )
+    except OSError:
+        return
 
 
 def _should_reject_shorthand(description: str) -> bool:

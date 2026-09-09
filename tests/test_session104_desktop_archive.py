@@ -140,6 +140,8 @@ class DesktopRouteTests(unittest.TestCase):
             "CODEX_MCP_NODE_PATH": (
                 "/Applications/Test.app/Contents/Resources/cua_node/bin/node"
             ),
+            "AGENTBC_DESKTOP_RELAY_SOCKET": "/tmp/agentbc-relay.sock",
+            "AGENTBC_DESKTOP_RELAY_TOKEN": "relay-token",
         }
         context = read_desktop_route_context(env)
         self.assertIsNotNone(context)
@@ -149,6 +151,8 @@ class DesktopRouteTests(unittest.TestCase):
             "/Applications/Test.app/Contents/Resources/plugins/"
             "openai-bundled/plugins/codex-app-tools/server.mjs",
         )
+        self.assertEqual(context.relay_socket, "/tmp/agentbc-relay.sock")
+        self.assertEqual(context.relay_token, "relay-token")
         self.assertNotIn("app-tools.pipe", repr(context))
         self.assertIsNone(read_desktop_route_context({**env, "CODEX_THREAD_ID": "wrong"}))
         self.assertIsNone(
