@@ -24,9 +24,9 @@
   详情/返回零回执，`Approve Full` 精确回传同一 pending `can_use_tool` 的 native approve。
 - 2026-09-09 `FNJN-001` 最终确定性矩阵补齐 Codex、Claude、Hermes 的 full handoff/retry、Approve、Deny、timeout、重复/重放/乱序 native event；4 项测试全部通过，使用确定性 native 边界 fixture，不代替或批准真实权限弹窗。
 - 当前门禁：全量 unittest 1881 项通过、17 项跳过；PERM 专项 275 项通过、3 项跳过；Runner/session、terminal-delivery、SESSION-104-001 relay/cleanup 回归均通过；Ruff、compileall、package wheel、diff 空白检查通过。完整命令与结果见 `PERM-104-002_FNJN-001_EVIDENCE.md`。
-  包绑定 `private/integration@50acf9949387e21611b7558587110acee80bf718`，本机 CLI/Skill/Runner 已替换且
-  Runner PID `59193`。`FNJN-001` 已完成 handoff/retry 继承 full、Deny/timeout/重复事件的确定性回归与发布身份复核；
-  后续仅保留下一开发任务的常规全局发布门禁。
+  `FNJN-001` 已完成 handoff/retry 继承 full、Deny/timeout/重复事件的确定性回归与发布身份复核；其提交已合入
+  `private/integration`。本机 CLI/Skill/Runner 以本清单更新后的 integration HEAD 重新封包替换，完成后进入
+  `INPUT-104-001`，不再保留 PERM 全局开发门禁。
 > 来源基线：`private/integration@01f3ce1`
 > 已发布基线：`v1.0.3A2@62757a4`；公开 Formula 收口 `public/main@87c4bca`
 > 上版归档：`AGENTBC_1.0.3A_DEVELOPMENT_CHECKLIST.md`
@@ -258,7 +258,7 @@ fixture/文档工作，但不得进入公开 RC。
 | 时间窗 | 优先级与工作包 | 当前起点 | 退出条件 |
 | --- | --- | --- | --- |
 | 9 月 8 日—9 月 9 日 | **已通过：`SESSION-104-001` Desktop archive 生产接线回归** | `P3FK-002` 等旧反例已冻结；`5b8c3d4` 接通当前 Desktop 官方 relay | `XQQF-001` 的 Desktop archive 与 delete 独立 acknowledged、CLI/Desktop backend absent，用户确认侧栏即时收敛；本项不再阻塞 RC |
-| 9 月 7 日—9 月 9 日 | P0-Blocker：`PERM-104-002` 收尾 | 三 Executor 显式 full 与 inherit→full 核心矩阵、Claude Details UI 已通过 | handoff/retry 继承 full、Deny、timeout、重复/乱序事件全部通过；安装身份一致，关闭 PERM 全局门禁 |
+| 9 月 7 日—9 月 9 日 | **已通过：`PERM-104-002` 最终收口** | 三 Executor 显式 full 与 inherit→full 核心矩阵、Claude Details UI 已通过 | `FNJN-001` 补齐 handoff/retry 继承 full、Deny、timeout、重复/乱序事件并完成质量门禁；PERM 全局开发门禁关闭 |
 | 9 月 10 日—9 月 13 日 | P0：`INPUT-104-001`（`FLOW-104-002` 已通过） | 独立 terminal delivery 已完成；外部附件仍有 custom-path 阻断基线 | custom path + 外部只读附件原子派发通过，且不回归已通过的 terminal delivery 与 session cleanup |
 | 9 月 14 日—9 月 18 日 | P0：`FLOW-104-003`；P1：`FLOW-104-003-R1`、`FLOW-104-004-R1` | Failed retry/handoff 与 Codex interrupted turn 均有固定失败基线 | failed current head 可审计 retry/handoff；Hermes incomplete exit 与 Codex interrupted turn 有稳定终态和恢复动作 |
 | 9 月 19 日—9 月 22 日 | P1：`FLOW-104-001`、`FLOW-103-001`、`RESOURCE-104-001-R1` | steps/progress/resource input 均已有部分合同 | multi-step handoff、单调 progress、资源耗尽 Desktop 弹窗和同 session continuation 通过 |
