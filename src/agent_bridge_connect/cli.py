@@ -32,7 +32,7 @@ from .permission_elevation import PERMISSION_ELEVATION_MODE
 from .permission_modes import CANONICAL_PERMISSION_MODES, PERMISSION_EXTENSION_KEY
 from .protocol import ABCError
 from .service import TaskService, load_steps, task_to_status
-from .task_id import is_task_like, split_task_ref
+from .task_id import format_task_id, is_task_like, split_task_ref
 from .terminal_states import TASK_TERMINAL_STATES, terminal_status_label
 
 _TASK_TERMINAL_STATUSES = TASK_TERMINAL_STATES
@@ -384,7 +384,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=argparse.SUPPRESS,
     )
-    task_retry.add_argument("--dispatch", action="store_true")
+    task_retry.add_argument(
+        "--dispatch",
+        action="store_true",
+        help="Skip confirmation and immediately submit the reset task to Runner.",
+    )
+    task_retry.add_argument("--config", type=Path)
+    task_retry.add_argument("--interval", type=float, default=2)
+    task_retry.add_argument(
+        "--monitor",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Open a separate Terminal window for live task output after dispatch.",
+    )
 
     task_retry_step = task_sub.add_parser(
         "retry-step",
@@ -419,7 +431,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the inherited permission mode for this handoff task.",
     )
     task_handoff.add_argument("--branch", action="store_true", help="Intentionally create a branch from a non-head task.")
-    task_handoff.add_argument("--dispatch", action="store_true", help="Atomically create and submit the handoff task to Runner.")
+    task_handoff.add_argument(
+        "--dispatch",
+        action="store_true",
+        help="Skip confirmation and atomically create and submit the handoff task to Runner.",
+    )
     task_handoff.add_argument("--config", type=Path)
     task_handoff.add_argument("--interval", type=float, default=2)
     task_handoff.add_argument(
@@ -1108,9 +1124,21 @@ def command_task_intervention(args: argparse.Namespace) -> int:
         getattr(args, "session_id", None),
         getattr(args, "source_platform", None),
     )
-    if args.task_command == "handoff" and getattr(args, "dispatch", False) is True:
+    if args.task_command == "handoff":
         from .runner import RunnerClient, RunnerError
 
+        if not getattr(args, "dispatch", False):
+            service = _task_service(args.root, config_path)
+            try:
+                source = service.get_task(args.id)
+                if str(source.status or "").lower() == "failed":
+                    _require_revival_action(service, source.id, "handoff")
+            except ABCError as exc:
+                print(f"{exc.code}: {exc}")
+                return 1
+            if not _confirm_task_handoff(source, args.to):
+                print("handoff_cancelled")
+                return 0
         try:
             result = RunnerClient().handoff_and_dispatch(
                 source_task_id=args.id,
@@ -1193,50 +1221,40 @@ def command_task_intervention(args: argparse.Namespace) -> int:
                     "--step belongs to 'agentbc task retry-step <TASK_ID> --step <N>'; "
                     "failed-task retry resets the complete task attempt.",
                 )
-            if getattr(args, "dispatch", False):
-                from .runner import RunnerClient, RunnerError
+            from .runner import RunnerClient, RunnerError
 
-                task = service.retry_failed_task(args.id)
-                try:
-                    result = RunnerClient().dispatch_task(
-                        task.id,
-                        args.root,
-                        config_path,
-                        getattr(args, "interval", 2),
-                        getattr(args, "monitor", False),
-                    )
-                except RunnerError as exc:
-                    print(f"atomic_dispatch_error: {exc}")
-                    return 1
-                print(f"retried: {task.id}")
-                _print_atomic_dispatch(result)
-                return 0
-            service.retry_failed_task(args.id)
+            if not getattr(args, "dispatch", False):
+                retry_source = service.get_task(args.id)
+                _require_revival_action(service, retry_source.id, "retry")
+                if not _confirm_failed_task_retry(retry_source):
+                    print("retry_cancelled")
+                    return 0
+            task = service.retry_failed_task(args.id)
+            try:
+                result = RunnerClient().dispatch_task(
+                    task.id,
+                    args.root,
+                    config_path,
+                    getattr(args, "interval", 2),
+                    getattr(args, "monitor", False),
+                )
+            except RunnerError as exc:
+                print(f"atomic_dispatch_error: {exc}")
+                return 1
+            print(f"retried: {task.id}")
+            _print_atomic_dispatch(
+                {
+                    **result,
+                    "task_id": task.id,
+                    "assignee": task.assignee,
+                    "workspace": task.workspace,
+                }
+            )
+            return 0
         elif args.task_command == "retry-step":
             service.retry_step(args.id, args.step)
         elif args.task_command == "reassign":
             service.reassign_task(args.id, args.to)
-        elif args.task_command == "handoff":
-            task = service.handoff_task(
-                args.id,
-                args.to,
-                args.message,
-                branch=getattr(args, "branch", False),
-                session_id=session_id,
-                source_platform=source_platform,
-                images=_image_args(args, inherit_when_missing=True),
-                permission_mode=_permission_mode_arg(args),
-            )
-            print(f"handoff_created: {args.id} -> {task.id}")
-            print(f"assignee: {task.assignee}")
-            if task.workspace:
-                print(f"task_code: {task.workspace.get('task_code', '')}")
-                print(f"iteration: {task.workspace.get('iteration', '')}")
-                print(f"project_root: {task.workspace.get('project_root', '')}")
-                print(f"requirements: {task.workspace.get('task_file', '')}")
-                print(f"artifact_root: {task.workspace.get('artifact_root', task.workspace.get('artifacts_dir', ''))}")
-                print(f"report: {task.workspace.get('report_file', '')}")
-            return 0
         else:
             raise AssertionError(args.task_command)
     except ABCError as exc:
@@ -1308,6 +1326,64 @@ def _confirm_chain_close(plan: dict[str, Any]) -> bool:
     print("Original project files may already have changed and cannot be restored.")
     try:
         answer = input("Continue? [y/N]: ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer.strip().lower() in {"y", "yes"}
+
+
+def _require_revival_action(service: TaskService, task_id: str, action: str) -> None:
+    preflight = service.retry_preflight(task_id)
+    if action in list(preflight.get("allowed_next_actions") or []):
+        return
+    errors = list(preflight.get("errors") or [])
+    first = errors[0] if errors and isinstance(errors[0], dict) else {}
+    code = str(first.get("code") or "revival_preflight_failed")
+    message = str(first.get("message") or f"Task {task_id} cannot {action}")
+    raise ABCError(code, message, {"errors": errors})
+
+
+def _confirm_failed_task_retry(task: Any) -> bool:
+    workspace = dict(getattr(task, "workspace", None) or {})
+    report = str(workspace.get("report_file") or "the previous failure report")
+    artifacts = str(
+        workspace.get("artifact_root")
+        or workspace.get("artifacts_dir")
+        or "the AgentBC-managed artifact root"
+    )
+    print(f"Retry {task.id} from Step 1.")
+    print(f"This will delete the previous failure report: {report}")
+    if workspace.get("customer_dir") is True:
+        print("Custom-path contents will be preserved.")
+    else:
+        print(f"This will clear previous AgentBC-managed artifacts: {artifacts}")
+    print("The Task ID and revival audit receipt will be preserved.")
+    try:
+        answer = input("Continue and dispatch? [y/N]: ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer.strip().lower() in {"y", "yes"}
+
+
+def _confirm_task_handoff(source: Any, target_assignee: str) -> bool:
+    extensions = dict(getattr(source, "extensions", None) or {})
+    lineage = dict(extensions.get("agentbc.lineage") or {})
+    workspace = dict(getattr(source, "workspace", None) or {})
+    task_code = str(lineage.get("task_code") or workspace.get("task_code") or "")
+    try:
+        iteration = int(
+            lineage.get("iteration_index") or workspace.get("iteration") or 1
+        ) + 1
+        target_task_id = format_task_id(task_code, iteration)
+    except (TypeError, ValueError):
+        target_task_id = "the next iteration"
+    print(f"Continue {source.id} from its existing baseline.")
+    print(f"This will preserve its report and artifacts, then create {target_task_id}.")
+    print("Requirements and recorded step state will be imported mechanically.")
+    print(f"The new iteration will be dispatched to {target_assignee}.")
+    try:
+        answer = input("Continue and dispatch? [y/N]: ")
     except (EOFError, KeyboardInterrupt):
         print()
         return False

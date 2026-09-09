@@ -10,6 +10,7 @@ re-failure, the strict callback contract and status/report lineage.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import shutil
@@ -17,6 +18,7 @@ import tempfile
 import time as time_module
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
@@ -250,6 +252,78 @@ class HandoffSourceSelectionTests(HandoffRecoveryTestCase):
         )
         handoff = self.service.handoff_task(source.id, "codex", "next step")
         self.assertNotIn(HANDOFF_RECOVERY_EXTENSION_KEY, handoff.extensions or {})
+
+    def test_plain_handoff_confirms_baseline_then_dispatches_atomically(self):
+        source = self.failed_task()
+        from agent_bridge_connect.cli import main
+
+        result = {
+            "task_id": f"{source.workspace['task_code']}-002",
+            "assignee": "claude",
+            "workspace": source.workspace,
+            "run_id": "handoff-worker",
+            "dispatch_status": "accepted",
+            "monitor_status": "opened",
+        }
+        output = StringIO()
+        with (
+            mock.patch("builtins.input", return_value="y") as confirm,
+            mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.handoff_and_dispatch",
+                return_value=result,
+            ) as dispatch,
+            contextlib.redirect_stdout(output),
+        ):
+            code = main(
+                [
+                    "task",
+                    "handoff",
+                    source.id,
+                    "--to",
+                    "claude",
+                    "--root",
+                    str(self.board),
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        confirm.assert_called_once_with("Continue and dispatch? [y/N]: ")
+        dispatch.assert_called_once()
+        text = output.getvalue()
+        self.assertIn(f"Continue {source.id} from its existing baseline.", text)
+        self.assertIn(f"create {source.workspace['task_code']}-002", text)
+        self.assertIn("preserve its report and artifacts", text)
+        self.assertIn(f"dispatched: {source.workspace['task_code']}-002", text)
+
+    def test_plain_handoff_no_creates_nothing_and_does_not_dispatch(self):
+        source = self.failed_task()
+        before = {task.id for task in self.service.list_tasks()}
+        from agent_bridge_connect.cli import main
+
+        output = StringIO()
+        with (
+            mock.patch("builtins.input", return_value="n"),
+            mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.handoff_and_dispatch"
+            ) as dispatch,
+            contextlib.redirect_stdout(output),
+        ):
+            code = main(
+                [
+                    "task",
+                    "handoff",
+                    source.id,
+                    "--to",
+                    "claude",
+                    "--root",
+                    str(self.board),
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        dispatch.assert_not_called()
+        self.assertIn("handoff_cancelled", output.getvalue())
+        self.assertEqual({task.id for task in self.service.list_tasks()}, before)
 
 
 class RequirementImportTests(HandoffRecoveryTestCase):

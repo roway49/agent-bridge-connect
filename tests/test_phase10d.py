@@ -2349,8 +2349,35 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         output = io.StringIO()
 
+        def dispatch_handoff(**kwargs):
+            followup = self.service.handoff_task(
+                kwargs["source_task_id"],
+                kwargs["target_assignee"],
+                kwargs["message"],
+                branch=kwargs["branch"],
+                session_id=kwargs["session_id"],
+                source_platform=kwargs["source_platform"],
+                images=kwargs["images"],
+                permission_mode=kwargs["permission_mode"],
+            )
+            return {
+                "task_id": followup.id,
+                "assignee": followup.assignee,
+                "workspace": followup.workspace,
+                "run_id": "test-run",
+                "dispatch_status": "accepted",
+                "monitor_status": "opened",
+            }
+
         try:
-            with contextlib.redirect_stdout(output):
+            with (
+                mock.patch("builtins.input", return_value="y"),
+                mock.patch(
+                    "agent_bridge_connect.runner.RunnerClient.handoff_and_dispatch",
+                    side_effect=dispatch_handoff,
+                ),
+                contextlib.redirect_stdout(output),
+            ):
                 code = command_task_intervention(args)
         finally:
             source_report.chmod(0o600)

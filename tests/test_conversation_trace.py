@@ -167,7 +167,7 @@ class ConversationTraceFlowTests(unittest.TestCase):
             requirements,
         )
 
-    def test_non_atomic_handoff_owns_new_id_without_mutating_source_trace(self):
+    def test_confirmed_handoff_owns_new_id_without_mutating_source_trace(self):
         from agent_bridge_connect.cli import build_parser, command_task_intervention
 
         service, source = self._completed_source()
@@ -191,7 +191,34 @@ class ConversationTraceFlowTests(unittest.TestCase):
             ]
         )
 
-        with contextlib.redirect_stdout(io.StringIO()):
+        def dispatch_handoff(**kwargs):
+            followup = service.handoff_task(
+                kwargs["source_task_id"],
+                kwargs["target_assignee"],
+                kwargs["message"],
+                branch=kwargs["branch"],
+                session_id=kwargs["session_id"],
+                source_platform=kwargs["source_platform"],
+                images=kwargs["images"],
+                permission_mode=kwargs["permission_mode"],
+            )
+            return {
+                "task_id": followup.id,
+                "assignee": followup.assignee,
+                "workspace": followup.workspace,
+                "run_id": "test-run",
+                "dispatch_status": "accepted",
+                "monitor_status": "opened",
+            }
+
+        with (
+            mock.patch("builtins.input", return_value="y"),
+            mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.handoff_and_dispatch",
+                side_effect=dispatch_handoff,
+            ),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
             result = command_task_intervention(args)
 
         source_after = service.get_task(source.id)

@@ -215,6 +215,17 @@ Fixed meanings (authoritative for every consumer):
   failure report by digest, locks completed steps as `inherited_done`, and
   resumes the remainder.
 
+The plain interactive commands are confirm-and-run operations. `task retry`
+shows the report/default-artifact cleanup boundary and asks `y/N`; `task
+handoff --to <executor>` shows the preserved baseline and predicted next
+iteration and asks `y/N`. A negative, empty, interrupted, or EOF answer makes
+no change. `y` performs the operation and immediately submits it to Runner,
+which opens or refreshes the standard Task List. `--dispatch` is the explicit
+non-interactive form: it skips this human confirmation but performs the same
+operation and submission. A successful command must print the exact Task ID,
+worker run ID, dispatch status, and monitor status; creating an undispatched
+pending revival is not a successful interactive recovery.
+
 The authoritative task record wins when the stored report's step statuses
 differ: Core keeps the task record's binding and emits the
 `source_report_step_mismatch` warning instead of blocking the handoff.

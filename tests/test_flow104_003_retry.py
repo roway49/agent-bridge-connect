@@ -393,6 +393,61 @@ class FailedTaskRetryTests(unittest.TestCase):
         self.assertEqual(dispatch.call_args.args[0], task.id)
         self.assertEqual(self.service.get_task(task.id).status, "pending")
 
+    def test_plain_retry_confirms_then_dispatches_and_describes_cleanup(self) -> None:
+        task = self._failed_task()
+        from agent_bridge_connect.cli import main
+
+        dispatch_result = {
+            "task_id": task.id,
+            "assignee": task.assignee,
+            "workspace": task.workspace,
+            "run_id": "confirmed-worker",
+            "dispatch_status": "accepted",
+            "monitor_status": "opened",
+        }
+        output = StringIO()
+        with (
+            mock.patch("builtins.input", return_value="y") as confirm,
+            mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.dispatch_task",
+                return_value=dispatch_result,
+            ) as dispatch,
+            contextlib.redirect_stdout(output),
+        ):
+            code = main(["task", "retry", task.id, "--root", str(self.board)])
+
+        self.assertEqual(code, 0)
+        confirm.assert_called_once_with("Continue and dispatch? [y/N]: ")
+        dispatch.assert_called_once()
+        text = output.getvalue()
+        self.assertIn(f"Retry {task.id} from Step 1.", text)
+        self.assertIn("delete the previous failure report", text)
+        self.assertIn("clear previous AgentBC-managed artifacts", text)
+        self.assertIn(f"dispatched: {task.id}", text)
+        self.assertEqual(self.service.get_task(task.id).status, "pending")
+
+    def test_plain_retry_no_cancels_without_mutation_or_dispatch(self) -> None:
+        task = self._failed_task()
+        report = Path(task.workspace["report_file"])
+        before = self.service.store.read_task(task.id)
+        from agent_bridge_connect.cli import main
+
+        output = StringIO()
+        with (
+            mock.patch("builtins.input", return_value="n"),
+            mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.dispatch_task"
+            ) as dispatch,
+            contextlib.redirect_stdout(output),
+        ):
+            code = main(["task", "retry", task.id, "--root", str(self.board)])
+
+        self.assertEqual(code, 0)
+        dispatch.assert_not_called()
+        self.assertIn("retry_cancelled", output.getvalue())
+        self.assertEqual(self.service.store.read_task(task.id), before)
+        self.assertTrue(report.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

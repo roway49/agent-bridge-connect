@@ -92,32 +92,32 @@ MANAGED_SKILL_FINGERPRINTS: dict[str, dict[str, dict[str, Any]]] = {
         "codex": {
             "protocol_version": "1.0",
             "completion_version": 1,
-            "template_sha256": "66dc90023134424cd644f4b26d1b36544c33756368628e2f607f581823c5216d",
+            "template_sha256": "10fc247e9d5542f33e156bead8ab4260e3334b421288155971ff0d5a1a3cd24c",
             "files": {
                 "SKILL.md": "fcffaede3997c0d2876aca396638714a915c234d6400dca6f33525826e1a393c",
                 "agents/openai.yaml": "8f6cf84d2091c1ea1e895ec06f9d2321daceee34e5707cd9df3fc8a9142ca21a",
                 "references/agentbc-steps-yaml.md": "ec2d398a422e7ae4787b7321a66a29aa77e6442ad1ed27f5b835007bdf8880dc",
-                "references/controller-contract.md": "58a8b5cdb30d71558a0f1a8a474a0042eb4946661c8760dcd6111bef9efa4622",
+                "references/controller-contract.md": "fdca8730830dd9f02184fdad2edb3ed7a93a36108596298672a0f3e35f960573",
             },
         },
         "claude": {
             "protocol_version": "1.0",
             "completion_version": 1,
-            "template_sha256": "60e568f72f992f864bbe036500f81c2e55e8e804051c30d35de82c0d0d2037a2",
+            "template_sha256": "789635fb078be751dd8e6928cd60f46a2881d482e0818674baa9de73ad02f672",
             "files": {
                 "SKILL.md": "793e1c2c2ff04785f917f97d39decef3789a14a27d679f4ddf2789e598baf1db",
                 "references/agentbc-steps-yaml.md": "ec2d398a422e7ae4787b7321a66a29aa77e6442ad1ed27f5b835007bdf8880dc",
-                "references/controller-contract.md": "58a8b5cdb30d71558a0f1a8a474a0042eb4946661c8760dcd6111bef9efa4622",
+                "references/controller-contract.md": "fdca8730830dd9f02184fdad2edb3ed7a93a36108596298672a0f3e35f960573",
             },
         },
         "hermes": {
             "protocol_version": "1.0",
             "completion_version": 1,
-            "template_sha256": "2697336542e4cd845d00f1b2f2e003c06cd1de9cd3d9f2d6b8e42b8b2b31f140",
+            "template_sha256": "fd13f176fab7c599e0996f0b3e5ec33294165ba9a24a6381b3ad74f73bd48653",
             "files": {
                 "SKILL.md": "108723eb662cd22e78a475e48512dc2beae21fb079378be92fc3a26388521654",
                 "references/agentbc-steps-yaml.md": "ec2d398a422e7ae4787b7321a66a29aa77e6442ad1ed27f5b835007bdf8880dc",
-                "references/controller-contract.md": "58a8b5cdb30d71558a0f1a8a474a0042eb4946661c8760dcd6111bef9efa4622",
+                "references/controller-contract.md": "fdca8730830dd9f02184fdad2edb3ed7a93a36108596298672a0f3e35f960573",
             },
         },
     },
