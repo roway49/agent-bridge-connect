@@ -4,7 +4,7 @@
 > **最高优先级、不可覆盖：禁止在 `full` 运行基础上增加任何额外安全策略。安全策略不属于 AgentBC 产品特性，不为任务执行负责；凡与 `full` 任务完整执行冲突，必要时必须移除一切额外安全策略。**
 
 > 制定日期：2026-08-26
-> 状态：持续开发与回归中；`SESSION-104-001` 已于 2026-09-09 经 `XQQF-001` 当前 Codex Desktop 真机复验并由用户确认侧栏即时消失，重新标记通过；方案 D 的三 Executor 显式 full 与 inherit→full 核心实机矩阵已通过；`PERM-104-002` 仅保留继承 full、Deny/异常路径及发布收尾
+> 状态：持续开发与回归中；`SESSION-104-001` 已于 2026-09-09 经 `XQQF-001` 当前 Codex Desktop 真机复验并由用户确认侧栏即时消失，重新标记通过；`FLOW-104-002` 的独立终态投递链已完成并通过全量门禁；当前下一开发任务为 `PERM-104-002` 最终收口，完成后转入 `INPUT-104-001` 与 `FLOW-104-003`
 > 目标版本：AgentBC `1.0.4A` / Python `1.0.4a1`
 
 ## PERM-104 方案 D（2026-09-07，代码与核心实机矩阵通过）
@@ -79,7 +79,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `ARCH-104-001` | P1 / 按域执行 | Service、Runner、CLI、approval、notification 责任仍集中 | 每个功能项先完成对应窄模块机械拆分，公共 API/CLI/磁盘行为不变 | `PROTO-104-001` |
 | `PERM-104-001` | P0 / 已通过（2026-09-07） | native Deny 后 Agent 仍可用 Prompt/callback 请求 full 并启动第二 worker | Claude inherit 的首个结构化 `can_use_tool` 事件只产生一次同会话输入；`8JY7-001` 已证明 Approve Full 原子返回原始 input + `setMode/bypassPermissions/session`，同 session 完成且零 continuation | `RM7A-001`；`8JY7-001`；`tests/test_perm104_001_claude_same_session_elevation.py` |
 | `PERM-104-002` | P0-Blocker / 核心矩阵通过、收尾开放（2026-09-07） | full 必须完整后台执行；inherit/safe 首次可信阻塞后至多一次提升，不能审批循环 | 三 Executor 显式 full 零弹窗与 inherit→full 一次审批矩阵已通过；Claude `PERM-104-002-R1` 的 Details UI 已通过。关闭前补齐 handoff/retry 继承 full、Deny、timeout、重复/乱序事件和最终安装身份复核 | `PERM-104-001` 已完成；`T5KN/XE8R/QMBK/G3CQ/8JY7/9EP7` 实机证据 |
-| `FLOW-104-002` | P0 | report/record 超限可跳过终态通知和 cleanup receipt | terminal、report、notification、cleanup 独立且可重放，通知不被报告失败吞掉 | terminal fixtures；对应 ARCH slice |
+| `FLOW-104-002` | P0 / 已通过（2026-09-08） | report/record 超限曾可跳过终态通知和 cleanup receipt | terminal、report、record、index、file/UI notification 已按独立幂等 receipt 投递并可重放；cleanup 不再依赖 report/notification 成功，业务终态不被投递故障回写 | `eb4514e`、`ab1ba49`、`1cfc043`；全量 1855 tests 通过，17 skipped；证据见 `FLOW-104-002_TERMINAL_DELIVERY_EVIDENCE.md` |
 | `FLOW-104-001` | P1 | handoff 只能声明一个 step，自由文本多步骤直到 callback 才失败 | handoff 原生结构化 steps、dispatch 前预检、严格 callback 一致性 | schema fixtures；对应 ARCH slice |
 | `FLOW-103-001` | P1 / 跨版转入 | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | task/run/session scoped 单调 progress receipt；所有公共视图同源 | `FLOW-104-001` 的 declared steps |
 | `SESSION-104-001` | **P0 / 已通过（2026-09-09，用户真机确认）** | 9 月 8 日曾出现 App Server archive/delete 后端成功但 Desktop 侧栏残留；根因修复为由 CLI 的 Node 宿主维持当前 Desktop 官方 relay，使 archive 精确触达当前应用实例，再进入既有 delete | `XQQF-001` 对精确官方 session `01a08466-7414-76a0-bceb-01e7130bc1f7` 持久化 Desktop archive acknowledged、delete acknowledged、CLI/Desktop backend absent；任务 completed、唯一合法 callback、RunLease closed。用户确认当前 Desktop 侧栏无需点击即消失，批准标记通过 | 修复提交 `5b8c3d4`；`SESSION-104-001-R1` 已关闭并回主项；原生派生子会话仍归 `PROTO-105-001` P2 |
@@ -257,7 +257,7 @@ fixture/文档工作，但不得进入公开 RC。
 | --- | --- | --- | --- |
 | 9 月 8 日—9 月 9 日 | **已通过：`SESSION-104-001` Desktop archive 生产接线回归** | `P3FK-002` 等旧反例已冻结；`5b8c3d4` 接通当前 Desktop 官方 relay | `XQQF-001` 的 Desktop archive 与 delete 独立 acknowledged、CLI/Desktop backend absent，用户确认侧栏即时收敛；本项不再阻塞 RC |
 | 9 月 7 日—9 月 9 日 | P0-Blocker：`PERM-104-002` 收尾 | 三 Executor 显式 full 与 inherit→full 核心矩阵、Claude Details UI 已通过 | handoff/retry 继承 full、Deny、timeout、重复/乱序事件全部通过；安装身份一致，关闭 PERM 全局门禁 |
-| 9 月 10 日—9 月 13 日 | P0：`FLOW-104-002` 与 `INPUT-104-001` | record 上限已放宽到 50 KiB；外部附件仍有 custom-path 阻断基线 | terminal/report/notification/cleanup 可独立重放；custom path + 外部只读附件原子派发通过 |
+| 9 月 10 日—9 月 13 日 | P0：`INPUT-104-001`（`FLOW-104-002` 已通过） | 独立 terminal delivery 已完成；外部附件仍有 custom-path 阻断基线 | custom path + 外部只读附件原子派发通过，且不回归已通过的 terminal delivery 与 session cleanup |
 | 9 月 14 日—9 月 18 日 | P0：`FLOW-104-003`；P1：`FLOW-104-003-R1`、`FLOW-104-004-R1` | Failed retry/handoff 与 Codex interrupted turn 均有固定失败基线 | failed current head 可审计 retry/handoff；Hermes incomplete exit 与 Codex interrupted turn 有稳定终态和恢复动作 |
 | 9 月 19 日—9 月 22 日 | P1：`FLOW-104-001`、`FLOW-103-001`、`RESOURCE-104-001-R1` | steps/progress/resource input 均已有部分合同 | multi-step handoff、单调 progress、资源耗尽 Desktop 弹窗和同 session continuation 通过 |
 | 9 月 23 日—9 月 27 日 | P1 回归与局部 `ARCH-104-001` 收口 | `SESSION-104-001` 已完成重新验收 | 三 Executor E2E、session teardown、Update/Homebrew 回归完成；只做被前述工作包证明必要的机械拆分 |
@@ -798,6 +798,10 @@ callback invalid。
 旧任务以及 Codex/Claude/Hermes/fake Executor。
 
 ### 4.7 `FLOW-104-002`：终态投递与 record budget
+
+> 2026-09-08 状态：已通过。实现提交为 `eb4514e`、`ab1ba49`、`1cfc043`；最终控制器验收
+> 覆盖 134 项定向测试和 1855 项完整 unittest（17 skipped），Ruff、compileall、package build、
+> `git diff --check` 均通过。生产投递已统一进入持久化 receipt，未改变权限审批与 Codex cleanup 顺序。
 
 终态流程拆为独立、幂等、可重放阶段 receipt：
 
