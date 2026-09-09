@@ -330,6 +330,10 @@ def _compact_terminal_extensions(value: Any) -> dict[str, Any]:
         "agentbc.permission",
         "agentbc.auxiliary_sessions",
         "agentbc.terminal_delivery",
+        # FLOW-104-003: the imported failure evidence and locked-step contract
+        # must survive terminal compaction so the recovery lineage stays
+        # auditable after the source task is long gone.
+        "agentbc.handoff_recovery",
     ):
         item = value.get(key)
         if item not in (None, "", [], {}):

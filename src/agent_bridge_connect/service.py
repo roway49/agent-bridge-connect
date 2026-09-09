@@ -50,6 +50,24 @@ from .execution_policy import (
     validate_session_snapshot,
 )
 from .executor_registry import get_executor
+from .handoff_recovery import (
+    HANDOFF_RECOVERY_EXTENSION_KEY,
+    HANDOFF_RECOVERY_SOURCE_STATUSES,
+    SOURCE_REPORT_STEP_MISMATCH,
+    HandoffRecoveryLock,
+    build_recovery_record,
+    has_recovery_child,
+    handoff_lock_path,
+    inherit_frozen_resources,
+    is_handoff_recovery_source,
+    is_locked_inherited_step,
+    plan_recovery_steps,
+    read_recovery_source,
+    read_source_bytes,
+    revival_error,
+    rollback_created_iteration,
+    write_source_snapshots,
+)
 from .media import media_extension, normalize_image_inputs, task_image_paths
 from .migration import (
     assert_legacy_cutover_clear,
@@ -164,7 +182,7 @@ PUBLIC_TASK_STATUSES = {
     "rejected",
     "needs_recovery",
 }
-HANDOFF_SOURCE_STATUSES = {"completed"}
+HANDOFF_SOURCE_STATUSES = {"completed", *HANDOFF_RECOVERY_SOURCE_STATUSES}
 DELETE_ELIGIBLE_STATUSES = {"completed", "failed", "cancelled", "rejected"}
 DEFAULT_INPUT_WAIT_SECONDS = 24 * 60 * 60
 PERMISSION_DIALOG_TIMEOUT_RESPONSE = "agentbc_permission_dialog_timeout"
@@ -804,6 +822,26 @@ class TaskService:
         public_status = _normalize_status(task.status)
         if public_status not in {"running", "input_required"}:
             raise ABCError("invalid_transition", f"Cannot update step in state: {task.status}")
+        locked = next(
+            (
+                step
+                for step in task.steps
+                if step.get("id") == step_id and is_locked_inherited_step(step)
+            ),
+            None,
+        )
+        if locked is not None:
+            raise ABCError(
+                "inherited_step_locked",
+                f"Step {step_id} is locked inherited work from {locked.get('origin_task_id')}; "
+                "it cannot execute again and may only be reported as done.",
+                {
+                    "task_id": task.id,
+                    "step_id": step_id,
+                    "origin_task_id": locked.get("origin_task_id"),
+                    "origin_step_id": locked.get("origin_step_id"),
+                },
+            )
         task.steps = [_update_step(step, step_id, result) for step in task.steps]
         task.updated_at = _utc_now()
         self.store.write_task(task_id, _without_none(task.to_dict()))
@@ -5415,12 +5453,26 @@ class TaskService:
         if normalized_source_status not in HANDOFF_SOURCE_STATUSES:
             raise ABCError(
                 "handoff_source_not_ready",
-                f"Task {source.id} is {normalized_source_status}; handoff requires completed.",
+                (
+                    f"Task {source.id} is {normalized_source_status}; handoff requires "
+                    f"one of {sorted(HANDOFF_SOURCE_STATUSES)}."
+                ),
                 {
                     "source_task_id": source.id,
                     "status": normalized_source_status,
                     "allowed_statuses": sorted(HANDOFF_SOURCE_STATUSES),
                 },
+            )
+        if is_handoff_recovery_source(normalized_source_status):
+            return self.handoff_failed_task(
+                source,
+                target_assignee,
+                message=message,
+                branch=branch,
+                source_platform=source_platform,
+                images=images,
+                session_id=session_id,
+                permission_mode=permission_mode,
             )
         chain = self.resolve_chain(source.id)
         if chain.anomalies:
@@ -5514,6 +5566,206 @@ class TaskService:
             message=message,
         )
         return handoff
+
+    def handoff_failed_task(
+        self,
+        source: TaskModel,
+        target_assignee: str,
+        *,
+        message: str | None = None,
+        branch: bool = False,
+        source_platform: str | None = None,
+        images: list[str | Path] | None = None,
+        session_id: str | None = None,
+        permission_mode: str | None = None,
+    ) -> TaskModel:
+        """Create exactly one recovery iteration from a failed chain head.
+
+        FLOW-104-003.  The source stays terminal: its task brief, failure
+        report, artifacts, events, terminal receipt and cleanup evidence are
+        imported, never rewritten.  Requirements and the canonical failure
+        report are imported mechanically; the receiving Executor never chooses
+        the recovery point.
+        """
+        now = _utc_now()
+        if self.store.is_leased(source.id):
+            raise ABCError(
+                "handoff_source_leased",
+                f"Task {source.id} still holds an active run lease; close it before handoff.",
+                {"source_task_id": source.id},
+            )
+        input_request = (source.extensions or {}).get("agentbc.input")
+        if isinstance(input_request, dict) and input_request.get("status") == "waiting":
+            raise ABCError(
+                "input_pending",
+                f"Task {source.id} is waiting for input; respond before handoff.",
+                {
+                    "source_task_id": source.id,
+                    "input_id": str(input_request.get("input_id") or ""),
+                },
+            )
+        session_snapshot = (source.extensions or {}).get(SESSION_EXTENSION_KEY)
+        cleanup = (
+            session_snapshot.get("cleanup")
+            if isinstance(session_snapshot, dict)
+            else None
+        )
+        if isinstance(cleanup, dict) and cleanup.get("state") == "pending":
+            raise ABCError(
+                "handoff_source_cleanup_pending",
+                (
+                    f"Task {source.id} has a session cleanup pass in progress; "
+                    "retry the handoff after it settles."
+                ),
+                {"source_task_id": source.id},
+            )
+
+        chain = self.resolve_chain(source.id)
+        if chain.anomalies:
+            raise revival_error(
+                "lineage_invalid",
+                f"Task chain for {source.id} has inconsistent lineage; resolve it before handoff.",
+                chain.to_dict(),
+            )
+        if not branch:
+            if len(chain.head_task_ids) > 1:
+                raise ABCError(
+                    "ambiguous_chain_head",
+                    (
+                        f"Task {source.id} belongs to a chain with multiple heads; "
+                        "pass an explicit head task id, or use --branch intentionally."
+                    ),
+                    chain.to_dict(),
+                )
+            if not chain.requested_is_head:
+                suggested = (
+                    f"agentbc task handoff {chain.current_head_task_id} --to {target_assignee}"
+                    if chain.current_head_task_id
+                    else ""
+                )
+                raise ABCError(
+                    "stale_handoff_source",
+                    (
+                        f"Task {source.id} is not the current chain head. "
+                        f"Use {chain.current_head_task_id} instead."
+                    ),
+                    {**chain.to_dict(), "suggested_command": suggested},
+                )
+
+        workspace = source.workspace or {}
+        try:
+            validate_path_plan_workspace(workspace)
+        except ABCError as exc:
+            raise revival_error(
+                "path_plan_invalid",
+                f"Task {source.id} has an invalid PathPlan: {exc}",
+                {"source_task_id": source.id, "cause": exc.code},
+            ) from exc
+
+        # A duplicate request never re-imports (or regenerates) source evidence.
+        task_code = _task_code_for(source)
+        existing = has_recovery_child(
+            [task for task in self.list_tasks() if _task_code_for(task) == task_code],
+            source.id,
+        )
+        if existing is not None:
+            return existing
+
+        # Mechanical import happens before anything is created so an unreadable
+        # brief/report can never leave a partial iteration behind.
+        snapshot = read_recovery_source(source, board_root=self.board_root)
+        steps = plan_recovery_steps(snapshot)
+        brief_bytes, report_bytes = read_source_bytes(snapshot)
+
+        lock = HandoffRecoveryLock(handoff_lock_path(self.board_root, task_code))
+        with lock:
+            # Conclusive duplicate check: the winner of the lock created the
+            # iteration, so a concurrent replay converges on it.
+            existing = has_recovery_child(
+                [task for task in self.list_tasks() if _task_code_for(task) == task_code],
+                source.id,
+            )
+            if existing is not None:
+                return existing
+
+            permission_override = permission_mode is not None
+            source_permission = permission_record_from_extensions(source.extensions)
+            task: TaskModel | None = None
+            try:
+                task = self.create_task(
+                    title=f"Handoff recovery from {source.id}: {source.title}",
+                    assignee=target_assignee,
+                    steps=steps,
+                    session_id=session_id,
+                    source_platform=source_platform,
+                    customer_dir=bool(workspace.get("customer_dir")),
+                    customer_path=workspace.get("customer_path") or None,
+                    lineage=_next_lineage(source, workspace, branch=branch),
+                    images=images if images is not None else task_image_paths(source.to_dict()),
+                    permission_mode=permission_mode,
+                    inherited_permission=(
+                        None if permission_override else source_permission
+                    ),
+                )
+                snapshot_paths = write_source_snapshots(
+                    snapshot,
+                    report_root=task.workspace["report_root"],
+                    task_brief_bytes=brief_bytes,
+                    report_bytes=report_bytes,
+                )
+                record = build_recovery_record(
+                    snapshot,
+                    task.steps,
+                    target_assignee=target_assignee,
+                    message=message,
+                    snapshot_paths=snapshot_paths,
+                    created_at=now,
+                    permission_override=permission_override,
+                )
+                extensions = dict(task.extensions or {})
+                inherited_resources = inherit_frozen_resources(
+                    source.extensions,
+                    target_assignee,
+                    created_at=now,
+                )
+                if inherited_resources is not None:
+                    extensions = attach_execution_policy(
+                        extensions,
+                        resources=inherited_resources,
+                    )
+                extensions[HANDOFF_RECOVERY_EXTENSION_KEY] = record
+                task.extensions = extensions
+                self.store.write_task(task.id, _without_none(task.to_dict()))
+                _write_task_requirements(task, Path(task.workspace["task_file"]))
+            except Exception:
+                if task is not None:
+                    rollback_created_iteration(self.store.task_dir(task.id))
+                    if not bool((task.workspace or {}).get("customer_dir")):
+                        try:
+                            Path(str(task.workspace.get("artifacts_dir") or "")).rmdir()
+                        except OSError:
+                            pass
+                    self._refresh_task_index()
+                raise
+            self.store.append_event(
+                task.id,
+                {
+                    "event_type": "handoff_recovery_created",
+                    "task_id": task.id,
+                    "created_at": now,
+                    "source_task_id": source.id,
+                    "source_status": snapshot.status,
+                    "source_failure_code": snapshot.failure_code,
+                    "target_assignee": target_assignee,
+                    "source_task_brief_sha256": snapshot.task_brief_sha256,
+                    "source_report_sha256": snapshot.report_sha256,
+                    "source_report_step_mismatch": [
+                        dict(item) for item in snapshot.step_mismatches
+                    ],
+                },
+            )
+            self._refresh_task_index()
+            return task
 
     def preflight(self, task_id: str) -> PreflightResult:
         try:
@@ -5753,7 +6005,11 @@ class TaskService:
             "status": task.status,
             "generated_at": _utc_now(),
             "steps_total": len(task.steps),
-            "steps_done": sum(1 for step in task.steps if step.get("status") in {"done", "completed"}),
+            "steps_done": sum(
+                1
+                for step in task.steps
+                if step.get("status") in {"done", "completed", "inherited_done"}
+            ),
             "events": len(self.store.read_events(task_id)),
             "interventions": len(self.store.read_interventions(task_id)),
             "revival": (
@@ -6464,6 +6720,7 @@ def _write_task_requirements(task: TaskModel, path: Path) -> None:
     workspace = task.workspace or {}
     provenance = task.extensions.get("agentbc.provenance") or {}
     lineage = task.extensions.get("agentbc.lineage") or {}
+    recovery = task.extensions.get(HANDOFF_RECOVERY_EXTENSION_KEY)
     images = task_image_paths(task.to_dict())
     permission = permission_record_from_extensions(task.extensions)
     policy = execution_policy_view(task.extensions)
@@ -6510,6 +6767,8 @@ def _write_task_requirements(task: TaskModel, path: Path) -> None:
     lines.extend(["", "## Requirements"])
     for index, step in enumerate(task.steps, 1):
         lines.append(f"{index}. {task_step_text(step)}")
+    if isinstance(recovery, dict):
+        lines.extend(_handoff_recovery_brief_lines(task, recovery))
     lines.extend(
         [
             "",
@@ -6524,6 +6783,88 @@ def _write_task_requirements(task: TaskModel, path: Path) -> None:
         ]
     )
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _handoff_recovery_brief_lines(task: TaskModel, recovery: dict[str, Any]) -> list[str]:
+    """Append the deterministic FLOW-104-003 recovery section to a task brief.
+
+    The section lists every inherited requirement, the locked completed steps,
+    the executable remaining steps, the imported failure report digest and the
+    optional additive handoff goal.  Content is derived only from the recovery
+    record so a re-read of the brief is byte-stable for one task state.
+    """
+    steps_by_id = {
+        step.get("id"): step
+        for step in task.steps
+        if isinstance(step, dict)
+    }
+    brief = recovery.get("source_task_brief") or {}
+    report = recovery.get("source_report") or {}
+    mismatches = recovery.get(SOURCE_REPORT_STEP_MISMATCH) or []
+    locked = [int(item) for item in recovery.get("locked_step_ids") or []]
+    remaining = [int(item) for item in recovery.get("remaining_step_ids") or []]
+    closeout = recovery.get("terminal_verification_step_id")
+    lines = [
+        "",
+        "## Handoff Recovery",
+        f"- Source task: `{recovery.get('source_task_id', '')}`",
+        f"- Source status: `{recovery.get('source_status', '')}`",
+        f"- Source failure code: `{recovery.get('source_failure_code') or 'none'}`",
+        f"- Source assignee: `{recovery.get('source_assignee', '')}`",
+        f"- Imported source task brief: `{brief.get('path', '')}` (sha256 `{brief.get('sha256', '')}`)",
+        f"- Imported source report: `{report.get('path', '')}` (sha256 `{report.get('sha256', '')}`)",
+        (
+            "- Imported source report regenerated: `yes`"
+            if report.get("regenerated") is True
+            else "- Imported source report regenerated: `no`"
+        ),
+    ]
+    if mismatches:
+        lines.append("- Source report step mismatch (task state is authoritative):")
+        lines.extend(
+            f"  - Step `{item.get('step_id')}`: report `{item.get('report_status') or 'missing'}` "
+            f"vs task `{item.get('task_status')}` ({item.get('reason')})"
+            for item in mismatches
+        )
+    else:
+        lines.append("- Source report step mismatch: `none`")
+    lines.append(
+        f"- Locked inherited steps (already done, never re-execute): "
+        f"`{', '.join(str(item) for item in locked) if locked else 'none'}`"
+    )
+    lines.append(
+        f"- Executable remaining steps: "
+        f"`{', '.join(str(item) for item in remaining) if remaining else 'none'}`"
+    )
+    lines.append(
+        f"- Terminal-verification closeout step: "
+        f"`{closeout if isinstance(closeout, int) else 'none'}`"
+    )
+    message = str(recovery.get("additive_message") or "")
+    lines.append(f"- Additive handoff goal: {message if message else '`none`'}")
+    lines.extend(
+        [
+            "",
+            "### Inherited Requirements",
+        ]
+    )
+    for step_id in sorted(id_ for id_ in steps_by_id if isinstance(id_, int)):
+        step = steps_by_id[step_id]
+        lines.append(
+            f"{step_id}. {task_step_text(step)} [inherited status: {step.get('status', 'pending')}]"
+        )
+    lines.extend(
+        [
+            "",
+            "### Recovery Rules",
+            "- Never re-execute a locked inherited step; report it as done only.",
+            "- The additive handoff goal may add an objective; it cannot change, remove or "
+            "reorder the inherited requirements and cannot choose the resume step.",
+            "- The imported failure report and task brief are read-only evidence; do not "
+            "rewrite the source task, its report or its artifacts.",
+        ]
+    )
+    return lines
 
 
 def _validate_failure_path(status: str) -> None:

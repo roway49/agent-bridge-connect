@@ -870,6 +870,11 @@ class RunnerStateTests(unittest.TestCase):
         )
         task_service.start_task_run(source.id, "hermes")
         task_service.mark_task_failed(source.id, "test_failure", "cannot hand off")
+        # FLOW-104-003: a failed current chain head is now a valid handoff
+        # source, so this regression uses a cancelled terminal source to keep
+        # exercising the deterministic business-error path.
+        task_service.mark_task_needs_recovery(source.id, "test_failure", "retry not allowed")
+        task_service.cancel_task(source.id)
 
         spool = self.root / "business-error-spool"
         token = spool / "token"
@@ -878,7 +883,7 @@ class RunnerStateTests(unittest.TestCase):
         thread.start()
         try:
             client = RunnerClient(spool, token, timeout_s=2)
-            with self.assertRaisesRegex(RunnerError, "handoff requires completed"):
+            with self.assertRaisesRegex(RunnerError, "handoff requires"):
                 client.handoff_and_dispatch(
                     source.id,
                     "hermes",

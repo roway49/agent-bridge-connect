@@ -21,6 +21,7 @@ from typing import Any
 
 from .effective_permissions import is_temporary_permission, resolve_effective_permission
 from .control import ApprovalControlPlane, ControlPlaneError, normalize_decision
+from .handoff_recovery import is_handoff_recovery_source
 from .claude_path_capability import (
     assert_claude_path_capability_command,
 )
@@ -2397,7 +2398,10 @@ class RunnerState:
         self._validate_executor_config(target, config, service.config)
         source_id = str(request.get("source_task_id") or "")
         source = service.get_task(source_id)
-        self._validate_task_path_plan(source.to_dict())
+        if not is_handoff_recovery_source(str(source.status or "")):
+            self._validate_task_path_plan(source.to_dict())
+        # FLOW-104-003: a failed source is preflighted by the recovery module,
+        # which raises the shared stable revival error for an invalid PathPlan.
         task = service.handoff_task(
             source_id,
             target,

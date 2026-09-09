@@ -118,7 +118,7 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
     report_ready = bool(workspace.get("report_file")) and Path(str(workspace.get("report_file"))).expanduser().exists()
     chain = _chain_snapshot(task_id, root, task)
     completed_step_count = sum(
-        1 for step in steps if step.get("status") in {"done", "completed"}
+        1 for step in steps if step.get("status") in {"done", "completed", "inherited_done"}
     )
     failed_steps = [step.get("id") for step in steps if step.get("status") == "failed"]
     blocked_steps = [step.get("id") for step in steps if step.get("status") == "blocked"]

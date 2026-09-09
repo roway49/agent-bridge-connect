@@ -11,6 +11,10 @@ FINAL_CALLBACK_PREFIX = "AGENTBC_FINAL_CALLBACK:"
 FINAL_CALLBACK_VERSION = 1
 AGENT_FINAL_STATES = frozenset({"completed", "input_required", "cancelled"})
 STEP_RESULT_STATUSES = frozenset({"done", "failed", "blocked", "pending"})
+# FLOW-104-003: a locked inherited step imported from a failed handoff source is
+# already complete.  It is stored with this declared-task status and may only be
+# reported back as ``done`` in the final callback; it can never execute again.
+INHERITED_DONE_STATUS = "inherited_done"
 CHOICE_INPUT_TYPE = "choice"
 PERMISSION_INPUT_TYPE = "permission"
 PERMISSION_REQUESTED_MODE = "full"
@@ -126,6 +130,30 @@ def validate_callback_payload(
         normalized_results.append(dict(item))
 
     declared_set = set(declared_ids)
+    # FLOW-104-003: a locked inherited step may only be reported as done.  It is
+    # already complete, so any other declared outcome proves the executor
+    # re-executed locked work and the marker must fail closed.
+    locked_ids = sorted(
+        step_id
+        for step_id, step in zip(declared_ids, declared_steps)
+        if isinstance(step, dict)
+        and (
+            step.get("status") == INHERITED_DONE_STATUS
+            or step.get("locked") is True
+        )
+    )
+    if locked_ids:
+        invalid_locked = sorted(
+            item["id"]
+            for item in normalized_results
+            if item["id"] in set(locked_ids) and item.get("status") != "done"
+        )
+        if invalid_locked:
+            return _invalid(
+                "completion_marker_locked_step_invalid",
+                "Locked inherited steps may only be reported as done: "
+                + ", ".join(map(str, invalid_locked)),
+            )
     if final_state == "completed":
         missing_ids = sorted(declared_set - seen_ids)
         if missing_ids:

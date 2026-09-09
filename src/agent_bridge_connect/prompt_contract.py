@@ -27,6 +27,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from agent_bridge_connect.execution_contract import FINAL_CALLBACK_PREFIX
+from agent_bridge_connect.handoff_recovery import (
+    HANDOFF_RECOVERY_EXTENSION_KEY,
+    recovery_prompt_lines,
+)
 from agent_bridge_connect.protocol import resumed_input_prompt_lines, task_step_text
 
 #: Common rules emitted once per prompt for every executor. Wording is the
@@ -111,6 +115,10 @@ def build_prompt_contract(
     if isinstance(task_packet.get("extensions"), dict):
         value = task_packet["extensions"].get("agentbc.lineage")
         lineage = value if isinstance(value, dict) else {}
+    recovery_record = {}
+    if isinstance(task_packet.get("extensions"), dict):
+        value = task_packet["extensions"].get(HANDOFF_RECOVERY_EXTENSION_KEY)
+        recovery_record = value if isinstance(value, dict) else {}
     progress_command = (
         f"agentbc task progress {shlex.quote(task_id)} --root {shlex.quote(board_root)} "
         '--summary "describe current progress"'
@@ -156,6 +164,8 @@ def build_prompt_contract(
     resume_context = resumed_input_prompt_lines(task_packet)
     if resume_context:
         lines.extend(["", *resume_context, ""])
+    if recovery_record:
+        lines.extend(["", *recovery_prompt_lines(recovery_record), ""])
     for index, step in enumerate(task_packet.get("steps") or [], 1):
         lines.append(f"{index}. {task_step_text(step)} [status: {step.get('status', 'pending')}]")
 
