@@ -4,7 +4,7 @@
 > **最高优先级、不可覆盖：禁止在 `full` 运行基础上增加任何额外安全策略。安全策略不属于 AgentBC 产品特性，不为任务执行负责；凡与 `full` 任务完整执行冲突，必要时必须移除一切额外安全策略。**
 
 > 制定日期：2026-08-26
-> 状态：持续开发与回归中；`SESSION-104-001` 因当前 Codex Desktop 侧栏 archive 再次失效，于 2026-09-08 重新打开为 P0-Blocker 并置于开发队列首位；方案 D 的三 Executor 显式 full 与 inherit→full 核心实机矩阵已通过；`PERM-104-002` 仅保留继承 full、Deny/异常路径及发布收尾
+> 状态：持续开发与回归中；`SESSION-104-001` 已于 2026-09-09 经 `XQQF-001` 当前 Codex Desktop 真机复验并由用户确认侧栏即时消失，重新标记通过；方案 D 的三 Executor 显式 full 与 inherit→full 核心实机矩阵已通过；`PERM-104-002` 仅保留继承 full、Deny/异常路径及发布收尾
 > 目标版本：AgentBC `1.0.4A` / Python `1.0.4a1`
 
 ## PERM-104 方案 D（2026-09-07，代码与核心实机矩阵通过）
@@ -82,7 +82,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `FLOW-104-002` | P0 | report/record 超限可跳过终态通知和 cleanup receipt | terminal、report、notification、cleanup 独立且可重放，通知不被报告失败吞掉 | terminal fixtures；对应 ARCH slice |
 | `FLOW-104-001` | P1 | handoff 只能声明一个 step，自由文本多步骤直到 callback 才失败 | handoff 原生结构化 steps、dispatch 前预检、严格 callback 一致性 | schema fixtures；对应 ARCH slice |
 | `FLOW-103-001` | P1 / 跨版转入 | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | task/run/session scoped 单调 progress receipt；所有公共视图同源 | `FLOW-104-001` 的 declared steps |
-| `SESSION-104-001` | **P0-Blocker / 回归失效、重新打开（2026-09-08）** | 后端命令回执仍显示 archive→delete 成功，但 `P3FK-002` 在当前 Codex Desktop 侧栏继续存在；点击后提示该 thread ID 已无 rollout，证明 delete 生效而 archive 没有让当前 UI 收敛。两条 acknowledgement 仅相隔约 0.23 秒，且均来自 Executor/App Server 路径，不能证明当前 Desktop 运行实例已消费 archive 状态 | 保留现有精确官方 session 隔离和 delete 实现；优先补齐独立 archive 生产接线，使当前 Desktop 官方控制面收到 archive 并清除侧栏行后，才允许进入既有 delete。必须分别持久化 archive 后端确认、Desktop 实例触达与 delete 触达；任何 fresh `thread/list` absent 或 delete 成功均不得反推 UI archive 成功。至少完成 completed、failed、一次提权 continuation 三类真机回归，并由用户确认侧栏无需点击临时会话即可消失 | 当前开发队列首位；`SESSION-104-001-R1` 已并回主项；原生派生子会话仍归 `PROTO-105-001` P2 |
+| `SESSION-104-001` | **P0 / 已通过（2026-09-09，用户真机确认）** | 9 月 8 日曾出现 App Server archive/delete 后端成功但 Desktop 侧栏残留；根因修复为由 CLI 的 Node 宿主维持当前 Desktop 官方 relay，使 archive 精确触达当前应用实例，再进入既有 delete | `XQQF-001` 对精确官方 session `01a08466-7414-76a0-bceb-01e7130bc1f7` 持久化 Desktop archive acknowledged、delete acknowledged、CLI/Desktop backend absent；任务 completed、唯一合法 callback、RunLease closed。用户确认当前 Desktop 侧栏无需点击即消失，批准标记通过 | 修复提交 `5b8c3d4`；`SESSION-104-001-R1` 已关闭并回主项；原生派生子会话仍归 `PROTO-105-001` P2 |
 | `FLOW-104-003` | P0 / 恢复闭环 | 当前终态 `failed` 既不能 `task retry`，也不能作为普通 handoff 源，失败后只能人工绕行 | status/report 给出机械可判定的 retry/handoff 动作；同任务重试与新 iteration 交接均保留审计和进度 | failure taxonomy；`FLOW-104-002` terminal receipts；`FLOW-104-001` steps |
 | `INPUT-104-001` | P0 / 派发阻断 | 显式 custom path 时，位于项目根之外的 `--image`/输入文件被 `image input is outside task roots` 原子拒绝 | 项目根与只读附件根分离；Runner 受控导入外部文件且不扩大 Executor 项目权限 | PathPlan v2；atomic dispatch；input manifest |
 
@@ -117,6 +117,17 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
   该稳定码排除了 transport-lost、timeout 和 target-missing，但当前脱敏回执没有保留通用 RPC 拒绝的
   有界原因类别。实现必须优先接通 Desktop archive authority，并补齐不泄露原文的拒绝分类。
 
+### 2.0.2 `SESSION-104-001` 2026-09-09 重新验收结论
+
+- 修复提交 `5b8c3d4` 将 Desktop archive 接入 CLI 的 Node 宿主 relay；Runner 使用绑定当前应用实例的
+  relay socket/token 发送精确 session archive，收到 acknowledgement 后才执行既有 delete。
+- 真机任务 `XQQF-001` completed，唯一合法 `AGENTBC_FINAL_CALLBACK`、报告和终态投递完整，RunLease
+  closed；冻结 `retain=false`，官方 session 为 `01a08466-7414-76a0-bceb-01e7130bc1f7`。
+- cleanup v5 首次完成：`desktop_archive=acknowledged`、`delete=acknowledged`、CLI absent、Desktop
+  backend absent；archive 回执包含脱敏 request、route 与 app-instance digest，未使用名称猜测或私有库。
+- 用户在当前 Codex Desktop 真机确认该临时会话无需点击即从侧栏消失，并明确批准将本项标记通过。
+  `P3FK-002`、`ED84-001`、`9KX4-001` 等旧失败仍作为回归历史保留，不改写原证据。
+
 ### 2.1 P1 待回归项（不新增权威开发项）
 
 | ID | 优先级 | 现场基线 | 回归目标 | 主要依赖 |
@@ -124,7 +135,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `RESOURCE-104-001-R1` | P1 / 待回归 | `E52M-002` 的 Hermes run 使用完 `150/150` 次迭代后，Core 已持久化 `input_required(type=choice, kind=resource_limit)`、RunLease 已挂起且 CLI 可响应，但 Codex Desktop 没有显示“提高预算并继续 / 终止任务”弹窗 | 每个仍有效的 resource-limit input 都有且只有一个 Desktop 弹窗；Approve 将当前 Task 上限翻倍并恢复同一官方 session，Deny 单调终止；CLI 响应保持等价兜底，但不能替代 Desktop 真机验收 | `FLOW-104-002` notification delivery；`FLOW-103-001` progress receipt；DialogNotifier |
 | `FLOW-104-003-R1` | P1 / 待回归 | `E52M-003` 中 Hermes 0.20.1 运行 `2h37m` 后以返回码 `0` 结束，但输出停留在代码 diff、未产生 `AGENTBC_FINAL_CALLBACK`；Runner 明确记录 `output_truncated=false`、`marker_seen=false`，且没有可识别的迭代耗尽 receipt | 进程成功退出与任务合同完成继续严格分离；Hermes 必须提供结构化 terminal reason、实际/上限 turns 和最终响应边界。确属资源耗尽时生成唯一可恢复 input；仍有 pending step 却正常退出时给出稳定的 incomplete-exit 分类、保留部分进度并允许受审计 retry/handoff；不得伪造 callback | `FLOW-104-003` failed recovery；`FLOW-103-001` progress receipt；Hermes ACP/CLI terminal receipt |
 | `FLOW-104-004-R1` | P1 / 1.0.4 待回归（`A3AC-001`，2026-09-05） | Codex 原生审批于 `08:54:43Z` 成功回传，唯一 contained-full continuation 于 `08:54:45Z` 在同一官方 session `01a070c5-836a-7553-b07f-68ab7da97e8b` 启动并继续完成合并、测试与代码修改；随后官方 Codex turn 变为 `interrupted`（`error=null`、无 `completedAt`），但 App Server Adapter 未收到或未持久化 `turn/completed`，无超时地阻塞在 stdio `recv/readline`，导致 Task 长期保持 `running`、RunLease `stale`、无 terminal callback | 权限审批成功与后续 turn 中断必须独立投影；App Server 等待循环须有有界接收、活性心跳和官方 turn 状态对账。发现 `interrupted/cancelled/failed`、transport loss 或在有界窗口内无法取得可信终态时，必须停止对应 Worker、关闭 RunLease、保留同一 session/工作树证据并单调进入稳定的 `needs_recovery`，不得无限等待、伪造 completed 或自动重派；正常长任务仍不得仅因耗时被终止 | Codex App Server turn lifecycle；RunLease heartbeat/reconciliation；`FLOW-104-003` terminal recovery |
-| `SESSION-104-001-R1` | **已升级并并回 `SESSION-104-001` P0-Blocker（2026-09-08）** | `Z2W7-001` 曾证明 archive/delete 后端回执成功但 Desktop 侧栏不实时移除；当前用户再次确认 archive 用户面失效，说明该问题不能继续作为非门禁体验项 | 按主项的新验收合同处理：archive 与 delete 各自保留独立权威回执，且当前 Desktop 运行实例必须在不点击临时会话的情况下收敛；禁止用 delete 成功、重启应用、GUI 自动化或私有数据库改写冒充 archive 生效 | `SESSION-104-001` P0-Blocker |
+| `SESSION-104-001-R1` | **已关闭并通过主项验收（2026-09-09）** | `Z2W7-001` 等历史反例证明仅有 App Server 回执不足以驱动当前 Desktop 侧栏收敛 | `5b8c3d4` 的当前 Desktop relay 已提供独立 archive 触达回执；`XQQF-001` 完成 archive→delete，用户确认侧栏无需点击即消失 | `SESSION-104-001` 已通过 |
 
 `RESOURCE-104-001-R1` 的固定验收合同：
 
@@ -201,9 +212,9 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 - 两个主项共享 approval schema、notification projection 或 DialogNotifier 时，不并行写同一文件，
   由 integration 先冻结公共接口再派发。
 
-### Wave 3：Codex Desktop archive 紧急回归、终态与 Failed 恢复
+### Wave 3：Codex Desktop archive 已通过、终态与 Failed 恢复
 
-- `SESSION-104-001` 回归失效后提升到全部开发项之前优先处理；先冻结“Executor/App Server archive 已确认、当前 Desktop 侧栏仍保留”的同一任务双面证据；
+- `SESSION-104-001` 已由 `XQQF-001` 和用户当前 Desktop 侧栏确认重新通过；后续全量回归继续保留其精确 session 与 relay 回执；
 - archive 与 delete 保持两个独立动作和回执。现有 delete 逻辑不重写；禁止用 delete 成功反推 archive 已在当前 Desktop 生效；
 - 优先调查当前 Desktop 官方控制面、运行实例通知/刷新能力及跨 App Server 连接的 archive 传播语义；没有官方通道时必须明确记录上游 blocker，不扫描私有数据库、不用 GUI 自动化或强制重启伪造通过；
 - `FLOW-104-002` 先建立独立 terminal/report/notification/cleanup receipt，作为失败恢复的审计基础；
@@ -244,12 +255,12 @@ fixture/文档工作，但不得进入公开 RC。
 
 | 时间窗 | 优先级与工作包 | 当前起点 | 退出条件 |
 | --- | --- | --- | --- |
-| 9 月 8 日起立即执行 | **P0-Blocker：`SESSION-104-001` Desktop archive 生产接线回归** | `P3FK-002` archive/delete 后端回执均成功，但当前 Desktop 侧栏仍保留会话；点击后因 delete 已生效而报 `no rollout found` | 精确会话的 archive 后端确认、当前 Desktop 实例触达和 delete 均有独立回执；当前侧栏无需点击即可收敛；completed、failed、一次提权 continuation 三类真机通过；未通过前不进入 RC |
+| 9 月 8 日—9 月 9 日 | **已通过：`SESSION-104-001` Desktop archive 生产接线回归** | `P3FK-002` 等旧反例已冻结；`5b8c3d4` 接通当前 Desktop 官方 relay | `XQQF-001` 的 Desktop archive 与 delete 独立 acknowledged、CLI/Desktop backend absent，用户确认侧栏即时收敛；本项不再阻塞 RC |
 | 9 月 7 日—9 月 9 日 | P0-Blocker：`PERM-104-002` 收尾 | 三 Executor 显式 full 与 inherit→full 核心矩阵、Claude Details UI 已通过 | handoff/retry 继承 full、Deny、timeout、重复/乱序事件全部通过；安装身份一致，关闭 PERM 全局门禁 |
 | 9 月 10 日—9 月 13 日 | P0：`FLOW-104-002` 与 `INPUT-104-001` | record 上限已放宽到 50 KiB；外部附件仍有 custom-path 阻断基线 | terminal/report/notification/cleanup 可独立重放；custom path + 外部只读附件原子派发通过 |
 | 9 月 14 日—9 月 18 日 | P0：`FLOW-104-003`；P1：`FLOW-104-003-R1`、`FLOW-104-004-R1` | Failed retry/handoff 与 Codex interrupted turn 均有固定失败基线 | failed current head 可审计 retry/handoff；Hermes incomplete exit 与 Codex interrupted turn 有稳定终态和恢复动作 |
 | 9 月 19 日—9 月 22 日 | P1：`FLOW-104-001`、`FLOW-103-001`、`RESOURCE-104-001-R1` | steps/progress/resource input 均已有部分合同 | multi-step handoff、单调 progress、资源耗尽 Desktop 弹窗和同 session continuation 通过 |
-| 9 月 23 日—9 月 27 日 | P1 回归与局部 `ARCH-104-001` 收口 | `SESSION-104-001` 必须已完成重新验收 | 三 Executor E2E、session teardown、Update/Homebrew 回归完成；只做被前述工作包证明必要的机械拆分 |
+| 9 月 23 日—9 月 27 日 | P1 回归与局部 `ARCH-104-001` 收口 | `SESSION-104-001` 已完成重新验收 | 三 Executor E2E、session teardown、Update/Homebrew 回归完成；只做被前述工作包证明必要的机械拆分 |
 | 9 月 28 日—10 月 2 日 | Wave 5：`1.0.4a1` RC 与双机发布门禁 | 所有 P0/P1 退出条件完成 | GitHub/PyPI/bundle/bottle/manifest SHA 与 tag commit 可复验，提交用户 go/no-go |
 
 `PROTO-105-001`（原生派生子会话启用合同）保持 P2，不占用 1.0.4A 主线；若 9 月 23 日后仍有容量，
@@ -809,6 +820,11 @@ callback invalid。
 
 ### 4.8 `SESSION-104-001`：Codex CLI/Desktop 双入口临时会话清理
 
+> 2026-09-09 最新状态：本项经 `private/integration@5b8c3d4` 与 `XQQF-001` 重新验收通过。
+> 当前 Desktop relay 必须先确认精确官方 session 的 archive，再执行既有 delete；用户已在运行中的
+> Codex Desktop 确认侧栏无需点击即收敛。下述 2026-08-29 结论及策略均为历史记录，凡与本段冲突，
+> 以本段和 2.0.2 的最新验收结论为准。
+>
 > 2026-08-29 最终状态：本项已通过 `1.0.4A` 发布门禁。`QV46-001` 与 `NMY4-001`
 > 均对绑定任务的精确官方主会话取得 archive、delete acknowledgement，并在 CLI、Desktop
 > backend 及当前应用 active/archived 列表确认 absent；完整证据见
