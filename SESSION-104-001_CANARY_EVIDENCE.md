@@ -235,3 +235,27 @@ ledger, and the parent model merely emitted `CHILD_SESSION_CANARY_OK`. This is
 recorded separately as P2 `PROTO-105-001`, considered for `1.0.5A`; it does not
 reopen the accepted primary/failed-session cleanup gate and must remain
 fail-closed until an official native collaboration receipt exists.
+
+## SESSION-104-001 re-acceptance (2026-09-09)
+
+The item was reopened after later canaries reproduced a Desktop-sidebar row
+that survived successful App Server archive/delete acknowledgements. It is now
+accepted again on the host-attached Desktop relay implementation in
+`private/integration@5b8c3d4`:
+
+- `XQQF-001` completed with one valid `AGENTBC_FINAL_CALLBACK`, a closed
+  RunLease, and official Codex Executor session
+  `01a08466-7414-76a0-bceb-01e7130bc1f7`;
+- its frozen policy was `retain=false`, cleanup v5 completed on the first
+  attempt, and the strategy remained `official_session_archive_then_delete`;
+- the current Desktop relay returned `desktop_archive=acknowledged` with
+  bounded request, route, and app-instance digests before
+  `delete=acknowledged`;
+- fresh verification recorded CLI `absent` and Desktop backend `absent`;
+- the user confirmed that the exact temporary conversation disappeared from
+  the currently running Codex Desktop sidebar without clicking it and
+  explicitly approved marking `SESSION-104-001` passed.
+
+Historical failed canaries remain preserved as regression evidence. No private
+Codex database, name-based matching, GUI automation, forced refresh, or
+unrelated conversation cleanup was used for this acceptance.

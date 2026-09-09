@@ -166,8 +166,9 @@ class SkillManifestTests(unittest.TestCase):
             fingerprints["codex"]["files"]["references/controller-contract.md"],
             "e536fd77704db1e74462e0c333c5dc372f00e4818987817f4c5e3643df1cac44",
         )
-        # SKILL.md and the steps YAML reference are byte-identical to 1.0.2a1.
-        self.assertEqual(
+        # The Codex entrypoint changed for the Desktop archive bridge; its
+        # previous bytes are preserved as a fixture below.
+        self.assertNotEqual(
             fingerprints["codex"]["files"]["SKILL.md"],
             MANAGED_SKILL_FINGERPRINTS["1.0.2a1"]["codex"]["files"]["SKILL.md"],
         )
@@ -228,6 +229,13 @@ class SkillManifestTests(unittest.TestCase):
         # package.  Every path is hash-verified against the frozen
         # fingerprint so an invented fixture can never pass.
         frozen_override = {
+            "SKILL.md": Path(__file__).parent
+            / "fixtures"
+            / "skill"
+            / "1.0.2a1"
+            / "codex-SKILL.md"
+            if platform == "codex"
+            else Path(""),
             "references/controller-contract.md": Path(__file__).parent
             / "fixtures"
             / "skill"
@@ -237,7 +245,7 @@ class SkillManifestTests(unittest.TestCase):
         files: dict[str, bytes] = {}
         for relative_path, digest in fingerprint["files"].items():
             override = frozen_override.get(relative_path)
-            if override is not None and override.exists():
+            if override is not None and override.is_file():
                 candidate = override.read_bytes()
             else:
                 candidate = current.get(relative_path)

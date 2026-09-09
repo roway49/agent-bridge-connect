@@ -1363,6 +1363,7 @@ def transition_session_cleanup(
     verification: Any | None = None,
     commands: Any | None = None,
     occurred_at: str | None = None,
+    authoritative_archive_ack: bool = False,
 ) -> dict[str, Any]:
     """Apply one pure, fail-closed cleanup receipt transition.
 
@@ -1418,13 +1419,19 @@ def transition_session_cleanup(
         if blockers:
             _raise_cleanup_transition("cleanup request is blocked", blockers)
         if current_state == "failed":
-            if receipt["retryable"] is not True:
-                _raise_cleanup_transition("failed cleanup is not retryable")
-            if receipt["attempts"] >= MAX_SESSION_CLEANUP_ATTEMPTS:
-                _raise_cleanup_transition("cleanup attempt limit reached")
-            due_at = receipt["next_attempt_at"]
-            if not due_at or _parse_utc_timestamp(now) < _parse_utc_timestamp(due_at):
-                _raise_cleanup_transition("cleanup retry backoff has not elapsed")
+            if authoritative_archive_ack:
+                if str(session.get("executor") or "").strip().lower() != "codex":
+                    _raise_cleanup_transition(
+                        "authoritative archive acknowledgement requires Codex"
+                    )
+            else:
+                if receipt["retryable"] is not True:
+                    _raise_cleanup_transition("failed cleanup is not retryable")
+                if receipt["attempts"] >= MAX_SESSION_CLEANUP_ATTEMPTS:
+                    _raise_cleanup_transition("cleanup attempt limit reached")
+                due_at = receipt["next_attempt_at"]
+                if not due_at or _parse_utc_timestamp(now) < _parse_utc_timestamp(due_at):
+                    _raise_cleanup_transition("cleanup retry backoff has not elapsed")
         updated = dict(receipt)
         updated.update(
             {

@@ -12,7 +12,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import selectors
 import socket
+import subprocess
 import threading
 import time
 import uuid
@@ -25,11 +27,13 @@ from .control import TransportClosed
 
 CODEX_APP_TOOLS_PIPE_PATH_ENV = "CODEX_APP_TOOLS_PIPE_PATH"
 CODEX_THREAD_ID_ENV = "CODEX_THREAD_ID"
-CODEX_APP_TOOLS_MCP_CONTEXT_ENV = "CODEX_APP_TOOLS_MCP_CONTEXT"
-CODEX_APP_TOOLS_MCP_RUNTIME_ENV = "CODEX_APP_TOOLS_MCP_RUNTIME"
-CODEX_APP_TOOLS_MCP_RESOURCE_ENV = "CODEX_APP_TOOLS_MCP_RESOURCE"
-CODEX_APP_TOOLS_MCP_RUNTIME_CONTEXT_ENV = "CODEX_APP_TOOLS_MCP_RUNTIME_CONTEXT"
-CODEX_APP_TOOLS_MCP_RESOURCE_CONTEXT_ENV = "CODEX_APP_TOOLS_MCP_RESOURCE_CONTEXT"
+CODEX_MCP_NODE_PATH_ENV = "CODEX_MCP_NODE_PATH"
+AGENTBC_DESKTOP_RELAY_SOCKET_ENV = "AGENTBC_DESKTOP_RELAY_SOCKET"
+AGENTBC_DESKTOP_RELAY_TOKEN_ENV = "AGENTBC_DESKTOP_RELAY_TOKEN"
+
+_APP_TOOLS_RESOURCE = Path(
+    "plugins/openai-bundled/plugins/codex-app-tools/server.mjs"
+)
 
 CODEX_DESKTOP_ARCHIVE_TOOL = "set_thread_archived"
 CODEX_DESKTOP_ARCHIVE_ROUTE_UNAVAILABLE = "codex_desktop_archive_route_unavailable"
@@ -78,6 +82,8 @@ class CodexDesktopRouteContext:
     dispatcher_thread_id: str = field(repr=False)
     mcp_runtime: str = field(repr=False)
     mcp_resource: str = field(repr=False)
+    relay_socket: str = field(default="", repr=False)
+    relay_token: str = field(default="", repr=False)
     host: str = field(default_factory=socket.gethostname, repr=False)
 
     @property
@@ -89,6 +95,7 @@ class CodexDesktopRouteContext:
                 "host": self.host,
                 "runtime": self.mcp_runtime,
                 "resource": self.mcp_resource,
+                "relay": bool(self.relay_socket),
             },
             prefix="route_",
         )
@@ -111,8 +118,10 @@ def read_desktop_route_context(
 ) -> CodexDesktopRouteContext | None:
     """Read only mechanically supplied Desktop context from the environment.
 
-    The optional JSON context is accepted only as a transport envelope.  Its
-    values are never logged or included in the returned public route state.
+    Codex Desktop currently supplies the native pipe, dispatcher thread and
+    bundled Node runtime mechanically.  The App Tools MCP resource is derived
+    from that runtime's application Resources root; AgentBC does not require
+    invented environment variables or a version allow-list.
     """
     source = env if env is not None else os.environ
     pipe_path = _bounded_context_value(source.get(CODEX_APP_TOOLS_PIPE_PATH_ENV))
@@ -120,19 +129,8 @@ def read_desktop_route_context(
     if not pipe_path or not Path(pipe_path).is_absolute() or not dispatcher_id:
         return None
 
-    runtime = _bounded_context_value(source.get(CODEX_APP_TOOLS_MCP_RUNTIME_ENV))
-    resource = _bounded_context_value(source.get(CODEX_APP_TOOLS_MCP_RESOURCE_ENV))
-    envelope = _bounded_context_value(source.get(CODEX_APP_TOOLS_MCP_CONTEXT_ENV))
-    if envelope:
-        try:
-            parsed = json.loads(envelope)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            parsed = None
-        if isinstance(parsed, dict):
-            runtime = runtime or _bounded_context_value(parsed.get("runtime"))
-            resource = resource or _bounded_context_value(parsed.get("resource"))
-    runtime = runtime or _bounded_context_value(source.get(CODEX_APP_TOOLS_MCP_RUNTIME_CONTEXT_ENV))
-    resource = resource or _bounded_context_value(source.get(CODEX_APP_TOOLS_MCP_RESOURCE_CONTEXT_ENV))
+    runtime = _bounded_context_value(source.get(CODEX_MCP_NODE_PATH_ENV))
+    resource = _app_tools_resource_for_runtime(runtime)
     if not runtime or not resource:
         return None
     return CodexDesktopRouteContext(
@@ -140,8 +138,49 @@ def read_desktop_route_context(
         dispatcher_thread_id=dispatcher_id,
         mcp_runtime=runtime,
         mcp_resource=resource,
+        relay_socket=_bounded_context_value(source.get(AGENTBC_DESKTOP_RELAY_SOCKET_ENV)),
+        relay_token=_bounded_context_value(source.get(AGENTBC_DESKTOP_RELAY_TOKEN_ENV)),
         host=socket.gethostname(),
     )
+
+
+def _app_tools_resource_for_runtime(runtime: str) -> str:
+    """Derive the bundled App Tools server from a Desktop-owned Node path."""
+    value = _bounded_context_value(runtime)
+    if not value:
+        return ""
+    node = Path(value).expanduser()
+    if not node.is_absolute():
+        return ""
+    for parent in node.parents:
+        if parent.name != "Resources":
+            continue
+        return str(parent / _APP_TOOLS_RESOURCE)
+    return ""
+
+
+def _route_context_paths_valid(
+    context: CodexDesktopRouteContext,
+    *,
+    require_installed: bool,
+) -> bool:
+    runtime = Path(context.mcp_runtime).expanduser()
+    resource = Path(context.mcp_resource).expanduser()
+    expected = _app_tools_resource_for_runtime(str(runtime))
+    if (
+        not runtime.is_absolute()
+        or not resource.is_absolute()
+        or not expected
+        or resource != Path(expected)
+    ):
+        return False
+    if require_installed and (
+        not runtime.is_file()
+        or not os.access(runtime, os.X_OK)
+        or not resource.is_file()
+    ):
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -168,47 +207,74 @@ class CodexDesktopArchiveResult:
         }
 
 
-class _UnixMcpTransport:
-    def __init__(self, path: str, timeout_s: float) -> None:
-        self._path = path
+class _StdioMcpTransport:
+    """Run Codex's bundled MCP facade and let it own native pipe framing.
+
+    The native Desktop socket is *not* an MCP socket: it uses a private framed
+    host protocol.  The bundled facade is the supported adapter from newline
+    delimited MCP stdio to that host protocol and supplies the dispatcher
+    identity required by App Tools.
+    """
+
+    def __init__(self, context: CodexDesktopRouteContext, timeout_s: float) -> None:
+        self._context = context
         self._timeout_s = timeout_s
-        self._socket: socket.socket | None = None
-        self._buffer = b""
+        self._process: subprocess.Popen[bytes] | None = None
 
     def start(self) -> None:
-        if self._socket is not None:
+        if self._process is not None:
             return
-        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        connection.settimeout(self._timeout_s)
         try:
-            connection.connect(self._path)
-        except Exception:
-            connection.close()
-            raise
-        self._socket = connection
+            self._process = subprocess.Popen(
+                [
+                    self._context.mcp_runtime,
+                    self._context.mcp_resource,
+                    "--interaction-client-id",
+                    self._context.dispatcher_thread_id,
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env={
+                    **os.environ,
+                    CODEX_APP_TOOLS_PIPE_PATH_ENV: self._context.pipe_path,
+                },
+            )
+        except OSError as exc:
+            raise TransportClosed("Codex Desktop MCP facade failed to start") from exc
 
     def send(self, message: dict[str, Any]) -> None:
-        if self._socket is None:
+        process = self._process
+        if process is None or process.stdin is None or process.poll() is not None:
             raise TransportClosed("Codex Desktop route is not connected")
         encoded = json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(encoded) > _MAX_RESPONSE_BYTES:
             raise TransportClosed("Codex Desktop MCP request is too large")
-        self._socket.sendall(encoded + b"\n")
+        try:
+            process.stdin.write(encoded + b"\n")
+            process.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            raise TransportClosed("Codex Desktop MCP facade closed") from exc
 
     def recv(self, timeout_s: float | None = None) -> dict[str, Any]:
-        if self._socket is None:
+        process = self._process
+        if process is None or process.stdout is None or process.poll() is not None:
             raise TransportClosed("Codex Desktop route is not connected")
-        self._socket.settimeout(max(float(timeout_s or self._timeout_s), 0.01))
-        while b"\n" not in self._buffer:
-            chunk = self._socket.recv(65536)
-            if not chunk:
-                raise TransportClosed("Codex Desktop route closed")
-            self._buffer += chunk
-            if len(self._buffer) > _MAX_RESPONSE_BYTES:
-                raise TransportClosed("Codex Desktop MCP response is too large")
-        line, self._buffer = self._buffer.split(b"\n", 1)
+        wait_s = max(float(timeout_s or self._timeout_s), 0.01)
+        selector = selectors.DefaultSelector()
         try:
-            message = json.loads(line.decode("utf-8"))
+            selector.register(process.stdout, selectors.EVENT_READ)
+            if not selector.select(wait_s):
+                raise TimeoutError("Codex Desktop MCP response timed out")
+            line = process.stdout.readline(_MAX_RESPONSE_BYTES + 1)
+        finally:
+            selector.close()
+        if not line:
+            raise TransportClosed("Codex Desktop MCP facade closed")
+        if len(line) > _MAX_RESPONSE_BYTES:
+            raise TransportClosed("Codex Desktop MCP response is too large")
+        try:
+            message = json.loads(line.decode("utf-8").strip())
         except (UnicodeDecodeError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise TransportClosed("Codex Desktop MCP response is invalid") from exc
         if not isinstance(message, dict):
@@ -216,9 +282,104 @@ class _UnixMcpTransport:
         return message
 
     def close(self) -> None:
+        process = self._process
+        self._process = None
+        if process is None:
+            return
+        if process.stdin is not None:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=1.0)
+        if process.stdout is not None:
+            try:
+                process.stdout.close()
+            except OSError:
+                pass
+
+
+class _RelayMcpTransport:
+    """MCP-shaped client for a host-attached Desktop relay."""
+
+    def __init__(self, context: CodexDesktopRouteContext, timeout_s: float) -> None:
+        self._context = context
+        self._timeout_s = timeout_s
+        self._socket: socket.socket | None = None
+        self._reader: Any | None = None
+
+    def start(self) -> None:
         if self._socket is not None:
-            self._socket.close()
-            self._socket = None
+            return
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(self._timeout_s)
+        try:
+            client.connect(self._context.relay_socket)
+        except OSError:
+            client.close()
+            raise
+        self._socket = client
+        self._reader = client.makefile("rb")
+
+    def send(self, message: dict[str, Any]) -> None:
+        client = self._socket
+        if client is None:
+            raise TransportClosed("Codex Desktop relay is not connected")
+        envelope = {
+            "token": self._context.relay_token,
+            "message": message,
+        }
+        encoded = json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        if len(encoded) > _MAX_RESPONSE_BYTES:
+            raise TransportClosed("Codex Desktop relay request is too large")
+        try:
+            client.sendall(encoded + b"\n")
+        except OSError as exc:
+            raise TransportClosed("Codex Desktop relay closed") from exc
+
+    def recv(self, timeout_s: float | None = None) -> dict[str, Any]:
+        client = self._socket
+        reader = self._reader
+        if client is None or reader is None:
+            raise TransportClosed("Codex Desktop relay is not connected")
+        client.settimeout(max(float(timeout_s or self._timeout_s), 0.01))
+        try:
+            line = reader.readline(_MAX_RESPONSE_BYTES + 1)
+        except OSError as exc:
+            raise TransportClosed("Codex Desktop relay closed") from exc
+        if not line or len(line) > _MAX_RESPONSE_BYTES:
+            raise TransportClosed("Codex Desktop relay response is unavailable")
+        try:
+            response = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+            raise TransportClosed("Codex Desktop relay response is invalid") from exc
+        if not isinstance(response, dict):
+            raise TransportClosed("Codex Desktop relay response is invalid")
+        return response
+
+    def close(self) -> None:
+        reader = self._reader
+        client = self._socket
+        self._reader = None
+        self._socket = None
+        if reader is not None:
+            try:
+                reader.close()
+            except OSError:
+                pass
+        if client is not None:
+            try:
+                client.close()
+            except OSError:
+                pass
 
 
 class CodexDesktopArchiveBroker:
@@ -242,7 +403,12 @@ class CodexDesktopArchiveBroker:
 
     def route_available(self) -> bool:
         with self._lock:
-            return self._route is not None and self._capability == "supported"
+            # A mechanically supplied Desktop route remains usable while its
+            # capability is unknown.  The app-owned native pipe may reject a
+            # second facade connection while another App Tools client is
+            # active; treating that transient collision as route absence made
+            # terminal cleanup permanently skip every later retry.
+            return self._route is not None and self._capability != "unsupported"
 
     def public_status(self) -> dict[str, str]:
         with self._lock:
@@ -267,6 +433,12 @@ class CodexDesktopArchiveBroker:
             or not _bounded_context_value(context.mcp_runtime)
             or not isinstance(context.mcp_resource, str)
             or not _bounded_context_value(context.mcp_resource)
+            or bool(context.relay_socket) != bool(context.relay_token)
+            or (context.relay_socket and not Path(context.relay_socket).is_absolute())
+            or not _route_context_paths_valid(
+                context,
+                require_installed=self.transport_factory is None,
+            )
         ):
             with self._lock:
                 stale_events = tuple(self._inflight.values())
@@ -311,10 +483,10 @@ class CodexDesktopArchiveBroker:
                 self._capability = "supported"
             return self._registration_result("")
         except (TimeoutError, socket.timeout):
-            self._invalidate()
+            self._mark_retryable(context)
             return self._registration_result(CODEX_DESKTOP_ARCHIVE_TRANSPORT_LOST)
         except (OSError, TransportClosed, RuntimeError, ValueError):
-            self._invalidate()
+            self._mark_retryable(context)
             return self._registration_result(CODEX_DESKTOP_ARCHIVE_ROUTE_UNAVAILABLE)
         finally:
             self._close(transport)
@@ -366,7 +538,7 @@ class CodexDesktopArchiveBroker:
                 request_digest=request_digest,
                 route=None,
             )
-        elif capability != "supported":
+        elif capability == "unsupported":
             result = self._failure(
                 CODEX_DESKTOP_ARCHIVE_UNSUPPORTED,
                 request_digest=request_digest,
@@ -378,9 +550,17 @@ class CodexDesktopArchiveBroker:
                 session_id,
                 request_digest,
                 generation=generation,
+                negotiate=capability != "supported",
             )
         with self._lock:
-            if self._generation == generation and self._route == route:
+            # Transport loss is retryable and must never become a permanent
+            # exact-request cache entry.  Acknowledgement and deterministic
+            # rejection/unsupported results remain idempotent.
+            cacheable = result.acknowledged or result.error_code in {
+                CODEX_DESKTOP_ARCHIVE_REJECTED,
+                CODEX_DESKTOP_ARCHIVE_UNSUPPORTED,
+            }
+            if cacheable and self._generation == generation and self._route == route:
                 self._results[key] = result
             pending = self._inflight.get(key)
             if pending is event:
@@ -395,12 +575,34 @@ class CodexDesktopArchiveBroker:
         request_digest: str,
         *,
         generation: int,
+        negotiate: bool,
     ) -> CodexDesktopArchiveResult:
         transport = None
         try:
             transport = self._new_transport(route)
             self._start(transport)
             self._initialize(transport)
+            if negotiate:
+                tools_response = self._request(transport, "tools/list", {})
+                tools = (
+                    tools_response.get("result")
+                    if isinstance(tools_response.get("result"), dict)
+                    else {}
+                )
+                names = {
+                    str(item.get("name") or "")
+                    for item in tools.get("tools", [])
+                    if isinstance(item, dict)
+                }
+                if CODEX_DESKTOP_ARCHIVE_TOOL not in names:
+                    with self._lock:
+                        if self._generation == generation and self._route == route:
+                            self._capability = "unsupported"
+                    return self._failure(
+                        CODEX_DESKTOP_ARCHIVE_UNSUPPORTED,
+                        request_digest=request_digest,
+                        route=route,
+                    )
             response = self._request(
                 transport,
                 "tools/call",
@@ -425,6 +627,8 @@ class CodexDesktopArchiveBroker:
                 )
             with self._lock:
                 current = self._generation == generation and self._route == route
+                if current:
+                    self._capability = "supported"
             if not current:
                 return self._failure(
                     CODEX_DESKTOP_ARCHIVE_TRANSPORT_LOST,
@@ -439,14 +643,14 @@ class CodexDesktopArchiveBroker:
                 app_instance_digest=route.app_instance_digest,
             )
         except (TimeoutError, socket.timeout):
-            self._invalidate(route)
+            self._mark_retryable(route)
             return self._failure(
                 CODEX_DESKTOP_ARCHIVE_TRANSPORT_LOST,
                 request_digest=request_digest,
                 route=route,
             )
         except (OSError, TransportClosed, RuntimeError, ValueError):
-            self._invalidate(route)
+            self._mark_retryable(route)
             return self._failure(
                 CODEX_DESKTOP_ARCHIVE_TRANSPORT_LOST,
                 request_digest=request_digest,
@@ -480,7 +684,9 @@ class CodexDesktopArchiveBroker:
     def _new_transport(self, context: CodexDesktopRouteContext) -> Any:
         factory = self.transport_factory
         if factory is None:
-            return _UnixMcpTransport(context.pipe_path, self.timeout_s)
+            if context.relay_socket and context.relay_token:
+                return _RelayMcpTransport(context, self.timeout_s)
+            return _StdioMcpTransport(context, self.timeout_s)
         attempts = (
             lambda: factory(context=context),
             lambda: factory(context),
@@ -573,11 +779,63 @@ class CodexDesktopArchiveBroker:
                     return found
         return ""
 
-    def _invalidate(self, route: CodexDesktopRouteContext | None = None) -> None:
+    def _mark_retryable(self, route: CodexDesktopRouteContext) -> None:
+        """Keep a valid Desktop route after a transient facade collision."""
         with self._lock:
-            if route is None or self._route == route:
-                self._route = None
-                self._capability = "unavailable"
+            if self._route == route:
+                self._capability = "unknown"
+
+
+class AcknowledgedCodexDesktopArchiveBroker:
+    """One-shot bridge for an acknowledgement returned by Codex Desktop.
+
+    The Codex controller calls the native ``set_thread_archived`` tool first.
+    Runner constructs this broker only after validating the exact persisted
+    task/session/run binding supplied to the acknowledgement operation.
+    """
+
+    authoritative_ack = True
+
+    def __init__(self, *, task_id: str, executor_run_id: str, session_id: str) -> None:
+        self.task_id = str(task_id or "").strip()
+        self.executor_run_id = str(executor_run_id or "").strip()
+        self.session_id = _canonical_uuid(session_id)
+
+    def route_available(self) -> bool:
+        return bool(self.task_id and self.executor_run_id and self.session_id)
+
+    def archive(self, request: Any) -> CodexDesktopArchiveResult:
+        task_id = str(getattr(request, "task_id", "") or "").strip()
+        executor_run_id = str(getattr(request, "executor_run_id", "") or "").strip()
+        session_id = _canonical_uuid(getattr(request, "session_id", ""))
+        request_digest = _digest(
+            {"threadId": session_id, "archived": True}, prefix="request_"
+        )
+        binding = {
+            "task_id": task_id,
+            "executor_run_id": executor_run_id,
+            "session_id": session_id,
+        }
+        if (
+            task_id != self.task_id
+            or executor_run_id != self.executor_run_id
+            or session_id != self.session_id
+        ):
+            return CodexDesktopArchiveResult(
+                status="rejected",
+                error_code=CODEX_DESKTOP_ARCHIVE_REJECTED,
+                checked_at=_utc_now(),
+                request_digest=request_digest,
+            )
+        return CodexDesktopArchiveResult(
+            status="acknowledged",
+            checked_at=_utc_now(),
+            request_digest=request_digest,
+            route_digest=_digest(binding, prefix="route_"),
+            app_instance_digest=_digest(
+                {"source": "codex_app_control_plane"}, prefix="app_"
+            ),
+        )
 
 
 # Short aliases make the production seam easy to discover without creating a

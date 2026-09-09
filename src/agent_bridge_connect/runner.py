@@ -42,6 +42,7 @@ from .permission_modes import (
 )
 from .permission_grants import PERMISSION_GRANT_EXTENSION_KEY
 from .codex_desktop_archive import (
+    AcknowledgedCodexDesktopArchiveBroker,
     CodexDesktopArchiveBroker,
     CodexDesktopRouteContext,
     read_desktop_route_context,
@@ -63,6 +64,7 @@ MAX_MANAGED_FILE_BYTES = 10 * 1024
 TERMINAL_STATES = {"completed", "failed", "cancelled"}
 MANAGED_RECORD_NAME_RE = re.compile(r"[23456789ABCDEFGHJKMNPQRSTVWXYZ]{4,}-\d{3}-report\.md\Z")
 LEGACY_RUNNER_LAUNCH_AGENT_LABEL = "com.agentbc.runner"
+RUNNER_IDENTITY_REFRESH_INTERVAL_S = 30.0
 
 # --- Phase 2 (1.0.2A) legacy migration and Runner policy validation ---
 # Integration merge point: Task 1 (1.0.2A resource configuration foundations,
@@ -1070,7 +1072,25 @@ class RunnerClient:
                     "dispatcher_thread_id": context.dispatcher_thread_id,
                     "mcp_runtime": context.mcp_runtime,
                     "mcp_resource": context.mcp_resource,
+                    "relay_socket": context.relay_socket,
+                    "relay_token": context.relay_token,
                 },
+            }
+        )
+
+    def acknowledge_desktop_archive(
+        self,
+        task_id: str,
+        session_id: str,
+        board_root: str | Path,
+    ) -> dict[str, Any]:
+        """Continue exact-session cleanup after native Desktop archive ack."""
+        return self._request(
+            {
+                "op": "acknowledge_desktop_archive",
+                "task_id": str(task_id or ""),
+                "session_id": str(session_id or ""),
+                "board_root": str(Path(board_root).expanduser()),
             }
         )
 
@@ -1080,6 +1100,8 @@ class RunnerClient:
         board_root: str | Path | None = None,
     ) -> None:
         """Best-effort route refresh; status must remain usable offline."""
+        if os.environ.get("AGENTBC_SKIP_DESKTOP_ROUTE_REGISTER") == "1":
+            return
         context = read_desktop_route_context()
         if context is None:
             return
@@ -2275,6 +2297,8 @@ class RunnerState:
             dispatcher_thread_id=str(raw.get("dispatcher_thread_id") or ""),
             mcp_runtime=str(raw.get("mcp_runtime") or ""),
             mcp_resource=str(raw.get("mcp_resource") or ""),
+            relay_socket=str(raw.get("relay_socket") or ""),
+            relay_token=str(raw.get("relay_token") or ""),
             host=socket.gethostname(),
         )
         if (
@@ -2283,6 +2307,8 @@ class RunnerState:
             or not context.dispatcher_thread_id
             or not context.mcp_runtime
             or not context.mcp_resource
+            or bool(context.relay_socket) != bool(context.relay_token)
+            or (context.relay_socket and not Path(context.relay_socket).is_absolute())
         ):
             raise RunnerError("Desktop route context is unavailable")
         board_value = str(request.get("board_root") or "").strip()
@@ -2295,6 +2321,45 @@ class RunnerState:
             **registration,
             "woken_cleanup": len(processed),
         }
+
+    def acknowledge_desktop_archive(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Validate one Codex app acknowledgement, then run existing delete."""
+        from .service import TaskService
+        from .session_cleanup import SessionCleanupCoordinator
+
+        task_id = str(request.get("task_id") or "").strip()
+        session_id = str(request.get("session_id") or "").strip().lower()
+        if not task_id or not session_id:
+            raise RunnerError("Desktop archive acknowledgement requires task and session ids")
+        board = self._atomic_board(str(request.get("board_root") or ""))
+        task = TaskService(board).get_task(task_id)
+        extensions = dict(task.extensions or {})
+        session = extensions.get("agentbc.session")
+        execution = extensions.get("agentbc.execution")
+        if not isinstance(session, dict) or not isinstance(execution, dict):
+            raise RunnerError("Desktop archive acknowledgement has no bound session receipt")
+        if (
+            str(session.get("executor") or "").strip().lower() != "codex"
+            or session.get("retain") is not False
+            or session.get("official_receipt_bound") is not True
+            or str(session.get("session_id") or "").strip().lower() != session_id
+            or str(session.get("session_state") or "").strip().lower() != "terminal"
+        ):
+            raise RunnerError("Desktop archive acknowledgement binding mismatch")
+        executor_run_id = str(execution.get("executor_run_id") or "").strip()
+        if not executor_run_id:
+            raise RunnerError("Desktop archive acknowledgement has no executor run binding")
+        broker = AcknowledgedCodexDesktopArchiveBroker(
+            task_id=task_id,
+            executor_run_id=executor_run_id,
+            session_id=session_id,
+        )
+        coordinator = SessionCleanupCoordinator(
+            board,
+            desktop_archive_broker=broker,
+        )
+        result = coordinator.request_cleanup(task_id, force_retry=True)
+        return {"ok": True, "task_id": task_id, "session_id": session_id, **result}
 
     def maintain_terminal_delivery(self, *, now: str | None = None) -> list[dict[str, Any]]:
         """Runner-owned replay of incomplete terminal delivery stages.
@@ -3885,10 +3950,22 @@ class RunnerService:
             raise
         self._stop = threading.Event()
         self._last_maintenance_at = 0.0
+        self._last_identity_refresh_at = 0.0
+        if not self._refresh_identity_files():
+            self._release_singleton_pid()
+            raise RunnerError("runner identity files could not be refreshed")
 
     def serve_forever(self) -> None:
         while not self._stop.is_set():
             if not self._identity_is_current():
+                self._stop.set()
+                break
+            now = time.monotonic()
+            if (
+                now - self._last_identity_refresh_at
+                >= RUNNER_IDENTITY_REFRESH_INTERVAL_S
+                and not self._refresh_identity_files(now=now)
+            ):
                 self._stop.set()
                 break
             handled = self.serve_once()
@@ -3975,6 +4052,22 @@ class RunnerService:
         except OSError:
             return False
         return bool(current_token) and hmac.compare_digest(current_token, self.runner_token)
+
+    def _refresh_identity_files(self, *, now: float | None = None) -> bool:
+        """Keep active `/tmp` identity files out of age-based OS cleanup.
+
+        The token value and pid contents remain unchanged.  Refreshing their
+        timestamps (and the containing spool) is the Runner heartbeat that
+        distinguishes a live IPC endpoint from abandoned temporary state.
+        """
+        paths = (self.spool_root, self.token_path, *self.pid_paths)
+        try:
+            for path in paths:
+                os.utime(path, None)
+        except OSError:
+            return False
+        self._last_identity_refresh_at = time.monotonic() if now is None else now
+        return True
 
     def _write_response(
         self,
@@ -4161,6 +4254,8 @@ def _dispatch_request(state: RunnerState, request: dict[str, Any]) -> dict[str, 
         return state.handoff_and_dispatch(request)
     if operation == "register_desktop_route":
         return state.register_desktop_route(request)
+    if operation == "acknowledge_desktop_archive":
+        return state.acknowledge_desktop_archive(request)
     if operation == "status":
         return state.status(str(request.get("run_id") or ""))
     if operation == "cancel":

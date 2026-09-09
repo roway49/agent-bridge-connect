@@ -21,15 +21,6 @@ The shared controller contract is authoritative. This file contains only Codex-s
 - Executor temporary-session cleanup is separate from the dispatcher runtime and never deletes the controller conversation.
 - Configuration (`claude budget`, `hermes max-turns`, `session retention`), `doctor` exit codes 0/1/2, `record clean`, and queued-head `task close` semantics all follow the shared controller contract.
 - After a dispatched create/handoff returns `accepted`, report the exact task ID and return control immediately.
-- When a Codex Executor task reports `retain=no` and the current controller is Codex Desktop,
-  create one task-scoped heartbeat before returning control.  It must wait for that exact task to
-  become terminal, read its exact official Executor session receipt, call the native
-  `set_thread_archived` app tool for only that session, and only after a successful tool response run
-  `agentbc session acknowledge-desktop-archive <task-id> --session-id <exact-id>`.  The heartbeat
-  then verifies cleanup state and deletes itself.  It must never act on the dispatcher conversation,
-  an unbound session, a retained session, or another task.  This controller bridge is required
-  because the Desktop App Tools pipe permits only its app-owned client; Runner must not synthesize
-  an acknowledgement from a failed secondary connection.
 
 Canonical command shapes:
 

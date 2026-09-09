@@ -296,6 +296,27 @@ class RunnerStateTests(unittest.TestCase):
         second = RunnerService(spool, spool / "token", self.state, interval_s=0.01)
         second.shutdown()
 
+    def test_runner_service_refreshes_identity_files_without_rotating_token(self):
+        from agent_bridge_connect.runner import RunnerService
+
+        spool = self.root / "spool-identity-heartbeat"
+        service = RunnerService(spool, spool / "token", self.state, interval_s=0.01)
+        try:
+            token_before = (spool / "token").read_text(encoding="utf-8")
+            pid_before = (spool / "runner.pid").read_text(encoding="utf-8")
+            old = time.time() - 86400
+            for path in (spool, spool / "token", spool / "runner.pid"):
+                os.utime(path, (old, old))
+
+            self.assertTrue(service._refresh_identity_files(now=123.0))
+            self.assertEqual((spool / "token").read_text(encoding="utf-8"), token_before)
+            self.assertEqual((spool / "runner.pid").read_text(encoding="utf-8"), pid_before)
+            self.assertGreater((spool / "token").stat().st_mtime, old)
+            self.assertGreater((spool / "runner.pid").stat().st_mtime, old)
+            self.assertEqual(service._last_identity_refresh_at, 123.0)
+        finally:
+            service.shutdown()
+
     def test_managed_report_write_is_atomic_and_restricted(self):
         from agent_bridge_connect.runner import RunnerError
 

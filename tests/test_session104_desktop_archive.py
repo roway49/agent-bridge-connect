@@ -9,6 +9,7 @@ from pathlib import Path
 
 from agent_bridge_connect.adapters import SessionCleanupRequest
 from agent_bridge_connect.codex_desktop_archive import (
+    AcknowledgedCodexDesktopArchiveBroker,
     CODEX_DESKTOP_ARCHIVE_REJECTED,
     CODEX_DESKTOP_ARCHIVE_ROUTE_UNAVAILABLE,
     CODEX_DESKTOP_ARCHIVE_TRANSPORT_LOST,
@@ -90,8 +91,11 @@ def _context(dispatcher_thread_id: str = DISPATCHER_ID) -> CodexDesktopRouteCont
     return CodexDesktopRouteContext(
         pipe_path="/tmp/codex-app-tools-test.pipe",
         dispatcher_thread_id=dispatcher_thread_id,
-        mcp_runtime="bundled-runtime-test",
-        mcp_resource="bundled-resource-test",
+        mcp_runtime="/Applications/Test.app/Contents/Resources/cua_node/bin/node",
+        mcp_resource=(
+            "/Applications/Test.app/Contents/Resources/plugins/"
+            "openai-bundled/plugins/codex-app-tools/server.mjs"
+        ),
         host=socket.gethostname(),
     )
 
@@ -116,18 +120,60 @@ def _request(**overrides: object) -> SessionCleanupRequest:
 
 
 class DesktopRouteTests(unittest.TestCase):
-    def test_environment_context_requires_pipe_thread_and_mcp_context(self) -> None:
+    def test_native_control_plane_ack_is_exactly_bound(self) -> None:
+        broker = AcknowledgedCodexDesktopArchiveBroker(
+            task_id="E299-001",
+            executor_run_id="run-e299",
+            session_id=SESSION_ID,
+        )
+        self.assertTrue(broker.route_available())
+        self.assertTrue(broker.archive(_request()).acknowledged)
+        self.assertEqual(
+            broker.archive(_request(session_id=OTHER_ID)).error_code,
+            CODEX_DESKTOP_ARCHIVE_REJECTED,
+        )
+
+    def test_environment_context_derives_official_resource_from_node(self) -> None:
         env = {
             "CODEX_APP_TOOLS_PIPE_PATH": "/tmp/app-tools.pipe",
             "CODEX_THREAD_ID": DISPATCHER_ID,
-            "CODEX_APP_TOOLS_MCP_RUNTIME": "runtime",
-            "CODEX_APP_TOOLS_MCP_RESOURCE": "resource",
+            "CODEX_MCP_NODE_PATH": (
+                "/Applications/Test.app/Contents/Resources/cua_node/bin/node"
+            ),
+            "AGENTBC_DESKTOP_RELAY_SOCKET": "/tmp/agentbc-relay.sock",
+            "AGENTBC_DESKTOP_RELAY_TOKEN": "relay-token",
         }
         context = read_desktop_route_context(env)
         self.assertIsNotNone(context)
+        assert context is not None
+        self.assertEqual(
+            context.mcp_resource,
+            "/Applications/Test.app/Contents/Resources/plugins/"
+            "openai-bundled/plugins/codex-app-tools/server.mjs",
+        )
+        self.assertEqual(context.relay_socket, "/tmp/agentbc-relay.sock")
+        self.assertEqual(context.relay_token, "relay-token")
         self.assertNotIn("app-tools.pipe", repr(context))
         self.assertIsNone(read_desktop_route_context({**env, "CODEX_THREAD_ID": "wrong"}))
-        self.assertIsNone(read_desktop_route_context({k: v for k, v in env.items() if "RESOURCE" not in k}))
+        self.assertIsNone(
+            read_desktop_route_context(
+                {key: value for key, value in env.items() if key != "CODEX_MCP_NODE_PATH"}
+            )
+        )
+
+    def test_registration_rejects_unrelated_facade_resource(self) -> None:
+        invalid = CodexDesktopRouteContext(
+            pipe_path="/tmp/codex-app-tools-test.pipe",
+            dispatcher_thread_id=DISPATCHER_ID,
+            mcp_runtime="/Applications/Test.app/Contents/Resources/cua_node/bin/node",
+            mcp_resource="/tmp/server.mjs",
+            host=socket.gethostname(),
+        )
+        broker = CodexDesktopArchiveBroker(transport_factory=Factory(_route_transport()))
+        self.assertEqual(
+            broker.register(invalid)["error_code"],
+            CODEX_DESKTOP_ARCHIVE_ROUTE_UNAVAILABLE,
+        )
 
     def test_registration_negotiates_tools_without_version_allowlist(self) -> None:
         factory = Factory(_route_transport())
@@ -153,13 +199,24 @@ class DesktopRouteTests(unittest.TestCase):
         wrong.register(_context())
         self.assertEqual(wrong.archive(_request()).error_code, CODEX_DESKTOP_ARCHIVE_REJECTED)
 
-    def test_transport_death_invalidates_route_and_duplicate_is_deduplicated(self) -> None:
+    def test_transport_death_keeps_route_retryable_and_duplicate_is_deduplicated(self) -> None:
         dead = CodexDesktopArchiveBroker(
-            transport_factory=Factory(_route_transport(), FakeTransport([RuntimeError("dead")]))
+            transport_factory=Factory(
+                _route_transport(),
+                FakeTransport([RuntimeError("dead")]),
+                FakeTransport(
+                    [
+                        _response(4),
+                        _response(5, {"tools": [{"name": "set_thread_archived"}]}),
+                        _response(6),
+                    ]
+                ),
+            )
         )
         dead.register(_context())
         self.assertEqual(dead.archive(_request()).error_code, CODEX_DESKTOP_ARCHIVE_TRANSPORT_LOST)
-        self.assertFalse(dead.route_available())
+        self.assertTrue(dead.route_available())
+        self.assertTrue(dead.archive(_request()).acknowledged)
 
         factory = Factory(_route_transport(), _archive_transport())
         broker = CodexDesktopArchiveBroker(transport_factory=factory)
@@ -168,6 +225,27 @@ class DesktopRouteTests(unittest.TestCase):
         self.assertEqual(first, broker.archive(_request()))
         self.assertTrue(first.acknowledged)
         self.assertEqual(factory.calls, 2)
+
+    def test_registration_collision_is_retried_during_archive(self) -> None:
+        retry_transport = FakeTransport(
+            [
+                _response(2),
+                _response(3, {"tools": [{"name": "set_thread_archived"}]}),
+                _response(4),
+            ]
+        )
+        broker = CodexDesktopArchiveBroker(
+            transport_factory=Factory(
+                FakeTransport([RuntimeError("pipe busy")]),
+                retry_transport,
+            )
+        )
+        registration = broker.register(_context())
+        self.assertEqual(registration["capability"], "unknown")
+        self.assertTrue(registration["route_digest"].startswith("route_"))
+        self.assertTrue(broker.route_available())
+        self.assertTrue(broker.archive(_request()).acknowledged)
+        self.assertEqual(broker.public_status()["capability"], "supported")
 
     def test_restarted_route_drops_old_cache_and_keeps_long_task_route_usable(self) -> None:
         factory = Factory(

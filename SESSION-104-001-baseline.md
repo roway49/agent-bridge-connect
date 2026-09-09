@@ -1,5 +1,17 @@
 # SESSION-104-001 baseline
 
+> [!NOTE]
+> **2026-09-08 controller correction:** the original E299 implementation below
+> used invented MCP runtime/resource environment names and treated the native
+> App Tools pipe as newline-delimited MCP.  The production correction instead
+> reads the mechanically supplied `CODEX_MCP_NODE_PATH`, derives the bundled
+> `codex-app-tools/server.mjs`, and launches that official facade with the
+> trusted `CODEX_THREAD_ID`.  The facade owns the native framed pipe protocol;
+> AgentBC communicates with it over MCP stdio.  A sandboxed controller probe
+> can receive `EPERM` for the Unix socket, so production acceptance is performed
+> through the launchd Runner rather than weakening or bypassing the cleanup
+> gate.
+
 Captured before source edits on 2026-09-08.
 
 ## Historical failure/control evidence

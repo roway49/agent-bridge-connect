@@ -17,6 +17,7 @@ from agent_bridge_connect.execution_policy import (
     build_session_cleanup_receipt,
     build_session_snapshot,
     is_session_cleanup_resolved,
+    normalize_cleanup_commands,
     read_session_cleanup_receipt,
     session_cleanup_blockers,
     transition_session_cleanup,
@@ -257,6 +258,46 @@ class CleanupTransitionTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ABCError, "attempt limit"):
             self._transition(session, "pending", occurred_at="2026-08-11T00:00:07Z")
+
+    def test_exact_codex_desktop_ack_can_replace_exhausted_transport_failure(self) -> None:
+        session = build_session_snapshot(
+            "codex",
+            retain=False,
+            session_id="01a081be-3e15-7f93-9b1c-2fb032b6c279",
+            session_state="terminal",
+            created_at=T0,
+        )
+        session["receipt_source"] = "jsonl_thread_started"
+        session["official_receipt_bound"] = True
+        receipt = build_session_cleanup_receipt()
+        receipt.update(
+            {
+                "capability": "supported",
+                "strategy": "official_session_archive_then_delete",
+                "state": "failed",
+                "attempts": 3,
+                "requested_at": T0,
+                "last_attempt_at": T1,
+                "error_code": "codex_desktop_archive_transport_lost",
+                "retryable": False,
+                "commands": normalize_cleanup_commands("not_requested"),
+            }
+        )
+        receipt["commands"]["desktop_archive"]["status"] = "unavailable"
+        receipt["commands"]["desktop_archive"]["checked_at"] = T1
+        session["cleanup"] = receipt
+
+        with self.assertRaisesRegex(ABCError, "not retryable"):
+            self._transition(session, "pending", occurred_at=T2)
+        pending = self._transition(
+            session,
+            "pending",
+            occurred_at=T2,
+            authoritative_archive_ack=True,
+        )
+
+        self.assertEqual(pending["state"], "pending")
+        self.assertEqual(pending["attempts"], 4)
 
     def test_all_direct_illegal_transitions_fail_closed(self) -> None:
         for target in ("succeeded", "unsupported", "failed"):

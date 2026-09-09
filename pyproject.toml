@@ -36,6 +36,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 agent_bridge_connect = [
+    "assets/*.mjs",
     "skills/*.md",
     "skills/*.yaml",
     "skills/references/*.md",
