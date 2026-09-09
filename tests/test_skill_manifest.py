@@ -162,9 +162,11 @@ class SkillManifestTests(unittest.TestCase):
         """The current managed-package fingerprint is frozen."""
         fingerprints = MANAGED_SKILL_FINGERPRINTS["1.0.3a2"]
         self.assertEqual(set(fingerprints), {"codex", "claude", "hermes"})
+        # FLOW-104-003 (RFT2-001): the shared controller contract documents
+        # the agentbc.revival v1 failed-task revival protocol.
         self.assertEqual(
             fingerprints["codex"]["files"]["references/controller-contract.md"],
-            "e536fd77704db1e74462e0c333c5dc372f00e4818987817f4c5e3643df1cac44",
+            "58a8b5cdb30d71558a0f1a8a474a0042eb4946661c8760dcd6111bef9efa4622",
         )
         # The Codex entrypoint changed for the Desktop archive bridge; its
         # previous bytes are preserved as a fixture below.

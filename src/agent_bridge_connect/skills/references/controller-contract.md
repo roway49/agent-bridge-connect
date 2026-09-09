@@ -194,6 +194,51 @@ and default artifacts that will be removed, then asks `Continue? [y/N]`. Only ex
 deletes; Enter, `n`, EOF, or interrupt cancels without writes. Customer projects are always
 preserved. There is no public `task delete --confirm` mode.
 
+## Failed-Task Revival Protocol (agentbc.revival v1, FLOW-104-003)
+
+A `failed` task that is the exact current chain head is mechanically revivable
+through `agentbc.revival` v1. Status and report carry the mechanical
+projection: `revival.eligible`, `revival.allowed_next_actions`,
+`revival.recommended_action`, `revival.error_codes` and `revival.warnings`.
+`allowed_next_actions` is mechanical data; the failure taxonomy only orders
+`recommended_action` inside the allowed set and never permanently suppresses a
+mechanically valid user choice.
+
+Fixed meanings (authoritative for every consumer):
+
+- `retry` keeps the Task ID, deletes its failure report, resets every step,
+  and clears only AgentBC-managed default artifacts (`cleanup_scope`
+  `managed_default_artifacts`). It never deletes custom-path
+  (`customer_dir=true`) contents.
+- `handoff` preserves all source evidence, creates a new iteration with a new
+  Task ID, mechanically imports the prior requirements/task record and the
+  failure report by digest, locks completed steps as `inherited_done`, and
+  resumes the remainder.
+
+The authoritative task record wins when the stored report's step statuses
+differ: Core keeps the task record's binding and emits the
+`source_report_step_mismatch` warning instead of blocking the handoff.
+`source_report_absent` / `source_report_unreadable` are likewise warnings, not
+errors.
+
+The common failed-current-head preflight requires, all at once: task status
+`failed`, exact current chain head, closed RunLease, no active worker or
+dispatch, no unresolved input, stable session cleanup
+(`retained`/`succeeded`/`unsupported`), readable requirements, valid lineage
+and PathPlan, and at most one open retry/handoff reservation. Rejections carry
+stable codes (`revival_source_status_invalid`, `revival_source_not_chain_head`,
+`revival_run_lease_open`, `revival_worker_active`, `revival_dispatch_active`,
+`revival_input_unresolved`, `revival_session_cleanup_unstable`,
+`revival_requirements_unreadable`, `revival_lineage_invalid`,
+`revival_path_plan_invalid`, `revival_reservation_conflict`,
+`revival_reservation_invalid`); an identical re-request of the same operation
+is an idempotent replay (`revival_replayed`), never a duplicate reservation.
+
+Retry filesystem cleanup and failed-handoff creation are implemented by the
+dedicated CLI/service work packages. Until both sibling implementations are
+integrated, do not claim retry/handoff production delivery; keep using the
+documented manual recovery paths for failed tasks.
+
 ## Configuration And Health
 
 Use the configured values for future executor runs; do not invent executor-native budget or turn

@@ -85,37 +85,39 @@ MANAGED_SKILL_FINGERPRINTS: dict[str, dict[str, dict[str, Any]]] = {
     # contract contains the executor-native choice broker and the split
     # Hermes full transport contract. Codex SKILL.md also contains the native
     # Desktop archive acknowledgement bridge; the steps YAML remains
-    # byte-identical to 1.0.2a1.
+    # byte-identical to 1.0.2a1. FLOW-104-003 (RFT2-001): the shared
+    # controller contract additionally documents the agentbc.revival v1
+    # failed-task revival protocol.
     "1.0.3a2": {
         "codex": {
             "protocol_version": "1.0",
             "completion_version": 1,
-            "template_sha256": "ae0373224b56411f11bce3291fc606dd7a5bbae1403d898756f918f2bbd4552c",
+            "template_sha256": "66dc90023134424cd644f4b26d1b36544c33756368628e2f607f581823c5216d",
             "files": {
                 "SKILL.md": "fcffaede3997c0d2876aca396638714a915c234d6400dca6f33525826e1a393c",
                 "agents/openai.yaml": "8f6cf84d2091c1ea1e895ec06f9d2321daceee34e5707cd9df3fc8a9142ca21a",
                 "references/agentbc-steps-yaml.md": "ec2d398a422e7ae4787b7321a66a29aa77e6442ad1ed27f5b835007bdf8880dc",
-                "references/controller-contract.md": "e536fd77704db1e74462e0c333c5dc372f00e4818987817f4c5e3643df1cac44",
+                "references/controller-contract.md": "58a8b5cdb30d71558a0f1a8a474a0042eb4946661c8760dcd6111bef9efa4622",
             },
         },
         "claude": {
             "protocol_version": "1.0",
             "completion_version": 1,
-            "template_sha256": "d813ff712f03f389b7585af3311c2dc901552b819de6ca4edd6918b334e620ef",
+            "template_sha256": "60e568f72f992f864bbe036500f81c2e55e8e804051c30d35de82c0d0d2037a2",
             "files": {
                 "SKILL.md": "793e1c2c2ff04785f917f97d39decef3789a14a27d679f4ddf2789e598baf1db",
                 "references/agentbc-steps-yaml.md": "ec2d398a422e7ae4787b7321a66a29aa77e6442ad1ed27f5b835007bdf8880dc",
-                "references/controller-contract.md": "e536fd77704db1e74462e0c333c5dc372f00e4818987817f4c5e3643df1cac44",
+                "references/controller-contract.md": "58a8b5cdb30d71558a0f1a8a474a0042eb4946661c8760dcd6111bef9efa4622",
             },
         },
         "hermes": {
             "protocol_version": "1.0",
             "completion_version": 1,
-            "template_sha256": "800ee004378baf0422eb4d2dc350f167af2bad1da8e8e1803a4c0160212309e1",
+            "template_sha256": "2697336542e4cd845d00f1b2f2e003c06cd1de9cd3d9f2d6b8e42b8b2b31f140",
             "files": {
                 "SKILL.md": "108723eb662cd22e78a475e48512dc2beae21fb079378be92fc3a26388521654",
                 "references/agentbc-steps-yaml.md": "ec2d398a422e7ae4787b7321a66a29aa77e6442ad1ed27f5b835007bdf8880dc",
-                "references/controller-contract.md": "e536fd77704db1e74462e0c333c5dc372f00e4818987817f4c5e3643df1cac44",
+                "references/controller-contract.md": "58a8b5cdb30d71558a0f1a8a474a0042eb4946661c8760dcd6111bef9efa4622",
             },
         },
     },
