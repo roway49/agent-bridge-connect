@@ -82,6 +82,11 @@ class FailedTaskRetryTests(unittest.TestCase):
             }
         )
         extensions["agentbc.execution"] = execution
+        session = dict(extensions.get("agentbc.session") or {})
+        cleanup = dict(session.get("cleanup") or {})
+        cleanup.update({"state": "unsupported", "capability": "unsupported"})
+        session.update({"session_state": "terminal", "cleanup": cleanup})
+        extensions["agentbc.session"] = session
         task.extensions = extensions
         self.service.store.write_task(task.id, task.to_dict())
         report = Path(task.workspace["report_file"])
@@ -160,9 +165,17 @@ class FailedTaskRetryTests(unittest.TestCase):
         self.assertNotIn("worker_run_id", execution)
         self.assertNotIn("dispatch_status", execution)
         revival = retried.extensions["agentbc.revival"]
-        self.assertEqual(revival["attempt_index"], 1)
-        self.assertEqual(revival["cleanup_scope"], "managed_artifacts")
+        self.assertEqual(revival["target_attempt_id"], "attempt-1")
+        self.assertEqual(revival["cleanup_scope"], "managed_default_artifacts")
         self.assertEqual(revival["resumed_step_ids"], [1, 2, 3])
+        from agent_bridge_connect import retry_flow
+        from agent_bridge_connect.revival import validate_revival_reservation
+
+        self.assertEqual(
+            retry_flow.build_revival_reservation.__module__,
+            "agent_bridge_connect.revival",
+        )
+        self.assertEqual(validate_revival_reservation(revival), [])
 
     def test_custom_retry_is_report_only_and_byte_identical(self) -> None:
         task = self._failed_task(customer_dir=True)
@@ -186,7 +199,7 @@ class FailedTaskRetryTests(unittest.TestCase):
         self.assertEqual(before, after)
         self.assertEqual(
             retried.extensions["agentbc.revival"]["cleanup_scope"],
-            "report_only_customer_path_preserved",
+            "managed_default_artifacts",
         )
         self.assertFalse(Path(task.workspace["report_file"]).exists())
         self.assertTrue(Path(task.workspace["task_file"]).exists())
@@ -196,14 +209,15 @@ class FailedTaskRetryTests(unittest.TestCase):
         task.extensions.pop("agentbc.permission_runtime", None)
         self.service.store.write_task(task.id, task.to_dict())
 
-        status = task_to_status(self.service.get_task(task.id))
+        status = task_to_status(self.service.get_task(task.id), self.service)
         from agent_bridge_connect.reports import generate_report
 
         report = generate_report(task.id, self.board)
 
         self.assertEqual(status["revival"]["allowed_next_actions"], ["retry", "handoff"])
-        self.assertNotIn("reservation_id", status["revival"])
-        self.assertEqual(report["revival"]["operation"], "retry")
+        self.assertNotIn("revival_id", status["revival"])
+        self.assertEqual(report["revival"]["version"], 1)
+        self.assertIs(report["revival"]["eligible"], True)
 
     def test_cleanup_failure_restores_report_artifact_and_failed_state(self) -> None:
         task = self._failed_task()
@@ -234,14 +248,14 @@ class FailedTaskRetryTests(unittest.TestCase):
         self.service.store.write_task(waiting.id, waiting.to_dict())
         errors = self.service.retry_preflight(waiting.id)["errors"]
         codes = {item["code"] for item in errors}
-        self.assertIn("revival_input_pending", codes)
-        self.assertIn("revival_cleanup_unstable", codes)
+        self.assertIn("revival_input_unresolved", codes)
+        self.assertIn("revival_session_cleanup_unstable", codes)
 
         leased = self._failed_task()
         token = self.service.store.acquire_lease(leased.id, "runner", ttl_s=60)
         self.assertIsNotNone(token)
         errors = self.service.retry_preflight(leased.id)["errors"]
-        self.assertIn("revival_active_lease", {item["code"] for item in errors})
+        self.assertIn("revival_run_lease_open", {item["code"] for item in errors})
 
     def test_stale_worker_projection_is_restart_safe(self) -> None:
         task = self._failed_task()
@@ -266,7 +280,7 @@ class FailedTaskRetryTests(unittest.TestCase):
 
         errors = self.service.retry_preflight(source.id)["errors"]
 
-        self.assertIn("revival_source_not_head", {item["code"] for item in errors})
+        self.assertIn("revival_source_not_chain_head", {item["code"] for item in errors})
         self.assertEqual(self.service.get_task(head.id).status, "pending")
 
     def test_duplicate_requests_create_one_attempt(self) -> None:
@@ -282,7 +296,10 @@ class FailedTaskRetryTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=4) as pool:
             results = list(pool.map(lambda _: retry_once(), range(4)))
         self.assertEqual(sum(result[0] == "ok" for result in results), 1)
-        self.assertEqual(self.service.get_task(task.id).extensions["agentbc.revival"]["attempt_index"], 1)
+        self.assertEqual(
+            self.service.get_task(task.id).extensions["agentbc.revival"]["target_attempt_id"],
+            "attempt-1",
+        )
         retry_events = [
             event
             for event in self.service.store.read_events(task.id)
@@ -297,14 +314,19 @@ class FailedTaskRetryTests(unittest.TestCase):
         failed_again.status = "failed"
         failed_again.steps[1]["status"] = "failed"
         failed_again.errors.append({"code": "executor_failed_again", "message": "again"})
+        session = dict(failed_again.extensions.get("agentbc.session") or {})
+        cleanup = dict(session.get("cleanup") or {})
+        cleanup.update({"state": "unsupported", "capability": "unsupported"})
+        session.update({"session_state": "terminal", "cleanup": cleanup})
+        failed_again.extensions["agentbc.session"] = session
         self.service.store.write_task(task.id, failed_again.to_dict())
         Path(task.workspace["report_file"]).write_text("second failure\n", encoding="utf-8")
 
         retried_again = self.service.retry_failed_task(task.id)
 
         self.assertEqual(retried_again.id, task.id)
-        self.assertEqual(retried_again.extensions["agentbc.revival"]["attempt_index"], 2)
-        self.assertEqual(retried_again.extensions["agentbc.revival"]["source_attempt_index"], 1)
+        self.assertEqual(retried_again.extensions["agentbc.revival"]["target_attempt_id"], "attempt-2")
+        self.assertEqual(retried_again.extensions["agentbc.revival"]["source_attempt_id"], "attempt-1")
 
     def test_retry_rejects_non_failed_and_step_flag_is_separate(self) -> None:
         task = self._failed_task()
@@ -330,7 +352,7 @@ class FailedTaskRetryTests(unittest.TestCase):
         self.service.retry_failed_task(task.id)
         with self.assertRaises(ABCError) as raised:
             self.service.retry_failed_task(task.id)
-        self.assertEqual(raised.exception.code, "revival_source_not_failed")
+        self.assertEqual(raised.exception.code, "revival_source_status_invalid")
 
         from agent_bridge_connect.cli import build_parser
 

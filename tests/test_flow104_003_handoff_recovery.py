@@ -81,6 +81,15 @@ class HandoffRecoveryTestCase(unittest.TestCase):
             self.service.mark_task_needs_recovery(task.id, code, "executor stopped", {})
         else:
             self.service.mark_task_failed(task.id, code, "executor stopped", {})
+        task = self.service.get_task(task.id)
+        extensions = dict(task.extensions or {})
+        session = dict(extensions.get("agentbc.session") or {})
+        cleanup = dict(session.get("cleanup") or {})
+        cleanup.update({"state": "unsupported", "capability": "unsupported"})
+        session.update({"session_state": "terminal", "cleanup": cleanup})
+        extensions["agentbc.session"] = session
+        task.extensions = extensions
+        self.service.store.write_task(task.id, task.to_dict())
         return task
 
     def task_packet(self, task) -> dict:
@@ -93,6 +102,17 @@ class HandoffRecoveryTestCase(unittest.TestCase):
             "task_board": {"root": str(self.board)},
             "extensions": task.extensions,
         }
+
+    def settle_session_cleanup(self, task_id: str) -> None:
+        task = self.service.get_task(task_id)
+        extensions = dict(task.extensions or {})
+        session = dict(extensions.get("agentbc.session") or {})
+        cleanup = dict(session.get("cleanup") or {})
+        cleanup.update({"state": "unsupported", "capability": "unsupported"})
+        session.update({"session_state": "terminal", "cleanup": cleanup})
+        extensions["agentbc.session"] = session
+        task.extensions = extensions
+        self.service.store.write_task(task.id, task.to_dict())
 
     def assertNoRecoveryEvent(self, source):
         events = [event["event_type"] for event in self.service.store.read_events(source.id)]
@@ -120,6 +140,15 @@ class HandoffSourceSelectionTests(HandoffRecoveryTestCase):
         self.assertEqual(handoff.workspace["customer_path"], source.workspace["customer_path"])
         self.assertEqual(handoff.workspace["task_date"], source.workspace["task_date"])
         self.assertEqual(handoff.workspace["artifact_root"], source.workspace["artifact_root"])
+        from agent_bridge_connect.revival import validate_revival_reservation
+
+        source_revival = self.service.get_task(source.id).extensions["agentbc.revival"]
+        target_revival = handoff.extensions["agentbc.revival"]
+        self.assertEqual(source_revival, target_revival)
+        self.assertEqual(target_revival["operation"], "handoff")
+        self.assertEqual(target_revival["state"], "committed")
+        self.assertEqual(target_revival["target_task_id"], handoff.id)
+        self.assertEqual(validate_revival_reservation(target_revival), [])
         self.assertNoRecoveryEvent(source)
 
     def test_cross_executor_failed_handoff_keeps_artifact_lineage(self):
@@ -135,10 +164,11 @@ class HandoffSourceSelectionTests(HandoffRecoveryTestCase):
             source.id,
         )
 
-    def test_needs_recovery_source_is_accepted(self):
+    def test_needs_recovery_source_is_rejected_by_failed_only_protocol(self):
         source = self.failed_task(recover=True)
-        handoff = self.service.handoff_task(source.id, "codex")
-        self.assertEqual(recovery_record(handoff)["source_status"], "needs_recovery")
+        with self.assertRaises(ABCError) as raised:
+            self.service.handoff_task(source.id, "codex")
+        self.assertEqual(raised.exception.code, "revival_source_status_invalid")
 
     def test_source_immutability_after_handoff(self):
         source = self.failed_task()
@@ -148,7 +178,6 @@ class HandoffSourceSelectionTests(HandoffRecoveryTestCase):
             return {
                 "brief": Path(source.workspace["task_file"]).read_bytes(),
                 "report": Path(source.workspace["report_file"]).read_bytes(),
-                "task_json": (task_dir / "task.json").read_bytes(),
                 "events": (task_dir / "events.jsonl").read_bytes(),
                 "interventions": self._file_bytes(task_dir / "interventions.jsonl"),
                 "delivery": self._file_bytes(task_dir / "delivery.jsonl"),
@@ -161,6 +190,7 @@ class HandoffSourceSelectionTests(HandoffRecoveryTestCase):
         refreshed = self.service.get_task(source.id)
         self.assertEqual(refreshed.status, "failed")
         self.assertEqual(refreshed.extensions["agentbc.terminal_delivery"]["terminal_state"], "failed")
+        self.assertEqual(refreshed.extensions["agentbc.revival"]["state"], "committed")
         self.assertEqual(len(refreshed.errors), 1)
 
     @staticmethod
@@ -415,6 +445,7 @@ class RecoveryStepPlanTests(HandoffRecoveryTestCase):
             first.id,
             {**self.service.store.read_task(first.id), "status": "failed"},
         )
+        self.settle_session_cleanup(first.id)
         second = self.service.handoff_task(first.id, "hermes")
         self.assertEqual(len(second.steps), 2)
         self.assertEqual(
@@ -715,6 +746,7 @@ class RestartAndChainTests(HandoffRecoveryTestCase):
         self.service.start_task_run(first.id, "codex")
         self.service.execute_step(first.id, 2, {"status": "done"})
         self.service.mark_task_failed(first.id, "executor_terminal_failure", "step failed", {})
+        self.settle_session_cleanup(first.id)
 
         second = self.service.handoff_task(first.id, "hermes")
         self.assertEqual(second.id, f"{source.workspace['task_code']}-003")

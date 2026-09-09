@@ -87,6 +87,7 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
     revival = None
     if public_status == "failed" or "agentbc.revival" in extensions:
         from .retry_flow import failed_revival_projection, public_revival_projection
+        from .service import TaskService
 
         revival_task = SimpleNamespace(
             id=task.get("id", task_id),
@@ -94,7 +95,10 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
             steps=steps,
             extensions=extensions,
         )
-        revival = failed_revival_projection(revival_task)
+        revival = failed_revival_projection(
+            revival_task,
+            TaskService(root).retry_preflight(task_id),
+        )
         if "agentbc.revival" in extensions:
             revival = public_revival_projection(extensions.get("agentbc.revival")) or revival
     session_snapshot = extensions.get("agentbc.session") or {}

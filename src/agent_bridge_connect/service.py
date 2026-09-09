@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import functools
 import hashlib
 import importlib
@@ -76,6 +77,18 @@ from .migration import (
     maintenance_mode_view,
 )
 from .path_model import build_path_plan, validate_path_plan_workspace
+from .revival import (
+    REVIVAL_EXTENSION_KEY,
+    REVIVAL_OPERATION_HANDOFF,
+    build_revival_reservation,
+    commit_revival_reservation,
+    evaluate_revival_preflight,
+    release_revival_reservation,
+    revival_digest,
+    revival_facts_from_task,
+    revival_path_plan_digest,
+    revival_policy_digest,
+)
 from .permission_failures import (
     PERMISSION_BLOCKED_STEP_CARDINALITY_INVALID,
     PERMISSION_CHAIN_HEAD_AMBIGUOUS,
@@ -5677,6 +5690,58 @@ class TaskService:
         steps = plan_recovery_steps(snapshot)
         brief_bytes, report_bytes = read_source_bytes(snapshot)
 
+        from .run_lease import RunLeaseState, load_lease
+
+        run_lease = load_lease(source.id, self.board_root)
+        lease_state = run_lease.state if run_lease is not None else "missing"
+        execution = (source.extensions or {}).get("agentbc.execution")
+        execution = execution if isinstance(execution, dict) else {}
+        dispatch_state = str(execution.get("dispatch_status") or "").lower()
+        facts = revival_facts_from_task(
+            source.to_dict(),
+            is_chain_head=(
+                not chain.anomalies
+                and len(chain.head_task_ids) == 1
+                and chain.requested_is_head
+            ),
+            lease_state=lease_state,
+            worker_active=self.store.is_leased(source.id),
+            dispatch_active=(
+                dispatch_state in {"dispatching", "starting", "running"}
+                and lease_state != RunLeaseState.CLOSED
+            ),
+            requirements_readable=True,
+            lineage_valid=not chain.anomalies,
+            path_plan_valid=True,
+            report_state=("readable" if report_bytes else "absent"),
+            warnings=(
+                [SOURCE_REPORT_STEP_MISMATCH]
+                if snapshot.step_mismatches
+                else []
+            ),
+        )
+        raw_cleanup_state = (
+            str(cleanup.get("state") or "").strip().lower()
+            if isinstance(cleanup, dict)
+            else ""
+        )
+        if raw_cleanup_state in {"retained", "succeeded", "unsupported"}:
+            facts["session_cleanup_state"] = raw_cleanup_state
+        revival_preflight = evaluate_revival_preflight(
+            facts,
+            requested_operation=REVIVAL_OPERATION_HANDOFF,
+        )
+        if not revival_preflight.ok:
+            raise ABCError(
+                revival_preflight.error_codes[0],
+                "Failed-task handoff did not pass the shared revival preflight.",
+                {
+                    "source_task_id": source.id,
+                    "error_codes": list(revival_preflight.error_codes),
+                    "warnings": list(revival_preflight.warnings),
+                },
+            )
+
         lock = HandoffRecoveryLock(handoff_lock_path(self.board_root, task_code))
         with lock:
             # Conclusive duplicate check: the winner of the lock created the
@@ -5691,6 +5756,26 @@ class TaskService:
             permission_override = permission_mode is not None
             source_permission = permission_record_from_extensions(source.extensions)
             task: TaskModel | None = None
+            source_before_reservation = copy.deepcopy(source.to_dict())
+            reservation = build_revival_reservation(
+                operation=REVIVAL_OPERATION_HANDOFF,
+                source_task_id=source.id,
+                source_attempt_id=str(facts.get("source_attempt_id") or ""),
+                steps=source.steps,
+                source_report_digest=(
+                    revival_digest(report_bytes) if report_bytes else ""
+                ),
+                source_requirements_digest=revival_digest(brief_bytes),
+                path_plan_digest=revival_path_plan_digest(source.workspace or {}),
+                policy_digest=revival_policy_digest(source.extensions or {}),
+                now=now,
+            )
+            if snapshot.step_mismatches:
+                reservation["warnings"] = [SOURCE_REPORT_STEP_MISMATCH]
+            source_extensions = dict(source.extensions or {})
+            source_extensions[REVIVAL_EXTENSION_KEY] = reservation
+            source.extensions = source_extensions
+            self.store.write_task(source.id, _without_none(source.to_dict()))
             try:
                 task = self.create_task(
                     title=f"Handoff recovery from {source.id}: {source.title}",
@@ -5733,11 +5818,32 @@ class TaskService:
                         extensions,
                         resources=inherited_resources,
                     )
+                committed_revival = commit_revival_reservation(
+                    reservation,
+                    target_task_id=task.id,
+                    target_attempt_id=str(
+                        ((task.extensions or {}).get("agentbc.execution") or {}).get(
+                            "worker_run_id"
+                        )
+                        or ""
+                    ),
+                    now=now,
+                )
+                extensions[REVIVAL_EXTENSION_KEY] = committed_revival
                 extensions[HANDOFF_RECOVERY_EXTENSION_KEY] = record
                 task.extensions = extensions
                 self.store.write_task(task.id, _without_none(task.to_dict()))
+                source.extensions = dict(source.extensions or {})
+                source.extensions[REVIVAL_EXTENSION_KEY] = committed_revival
+                self.store.write_task(source.id, _without_none(source.to_dict()))
                 _write_task_requirements(task, Path(task.workspace["task_file"]))
             except Exception:
+                released = release_revival_reservation(reservation)
+                restored_source = copy.deepcopy(source_before_reservation)
+                restored_extensions = dict(restored_source.get("extensions") or {})
+                restored_extensions[REVIVAL_EXTENSION_KEY] = released
+                restored_source["extensions"] = restored_extensions
+                self.store.write_task(source.id, _without_none(restored_source))
                 if task is not None:
                     rollback_created_iteration(self.store.task_dir(task.id))
                     if not bool((task.workspace or {}).get("customer_dir")):
@@ -6013,7 +6119,7 @@ class TaskService:
             "events": len(self.store.read_events(task_id)),
             "interventions": len(self.store.read_interventions(task_id)),
             "revival": (
-                failed_revival_projection(task)
+                failed_revival_projection(task, self.retry_preflight(task.id))
                 if task.status == "failed" or "agentbc.revival" in (task.extensions or {})
                 else None
             ),
@@ -6182,7 +6288,7 @@ class TaskService:
         return input_id
 
     def _task_status_with_chain(self, task: TaskModel) -> dict[str, Any]:
-        status = task_to_status(task)
+        status = task_to_status(task, self)
         from .timing_view import build_timing_view
 
         timing = build_timing_view(task, self.board_root)
@@ -6354,7 +6460,10 @@ def load_steps(path: str | Path) -> list[dict[str, Any]]:
     return _load_steps_text(text)
 
 
-def task_to_status(task: TaskModel) -> dict[str, Any]:
+def task_to_status(
+    task: TaskModel,
+    service: TaskService | None = None,
+) -> dict[str, Any]:
     from .task_health import task_health
 
     data = task.to_dict()
@@ -6365,7 +6474,8 @@ def task_to_status(task: TaskModel) -> dict[str, Any]:
     if raw_status == "failed" or "agentbc.revival" in extensions:
         from .retry_flow import failed_revival_projection, public_revival_projection
 
-        data["revival"] = failed_revival_projection(task)
+        preflight = service.retry_preflight(task.id) if service is not None else None
+        data["revival"] = failed_revival_projection(task, preflight)
         if "agentbc.revival" in extensions:
             projected_revival = public_revival_projection(extensions.get("agentbc.revival"))
             if projected_revival is None:

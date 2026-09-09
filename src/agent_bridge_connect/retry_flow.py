@@ -1,11 +1,10 @@
 """FLOW-104-003 failed-task full retry lifecycle.
 
-This module owns the narrow failed-current-head retry transaction.  It keeps
+This module owns the narrow failed-current-head retry transaction. It keeps
 the task identity and frozen policy snapshots stable while resetting execution
-state and applying the exact report/artifact cleanup boundary.  The optional
-shared protocol import is intentionally isolated so a later Hermes-owned
-``revival`` module can replace the temporary adapter without changing this
-filesystem/task transaction.
+state and applying the exact report/artifact cleanup boundary. Reservation,
+preflight, validation and public projection are owned exclusively by the
+shared :mod:`agent_bridge_connect.revival` protocol.
 """
 
 from __future__ import annotations
@@ -16,57 +15,34 @@ import shutil
 import threading
 import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-try:  # pragma: no cover - exercised after shared protocol integration
-    from .revival import (  # type: ignore[import-not-found]
-        REVIVAL_ACTIVE_INPUT,
-        REVIVAL_ACTIVE_LEASE,
-        REVIVAL_ACTIVE_WORKER,
-        REVIVAL_CHAIN_HEAD_AMBIGUOUS,
-        REVIVAL_CLEANUP_FAILED,
-        REVIVAL_CLEANUP_UNSTABLE,
-        REVIVAL_EXTENSION_KEY,
-        REVIVAL_PATH_PLAN_INVALID,
-        REVIVAL_REPORT_PATH_INVALID,
-        REVIVAL_REQUIREMENTS_UNREADABLE,
-        REVIVAL_RESERVATION_CONFLICT,
-        REVIVAL_SOURCE_NOT_FAILED,
-        REVIVAL_SOURCE_NOT_HEAD,
-        REVIVAL_STEP_FLAG_UNSUPPORTED,
-        build_revival_record,
-        digest_bytes,
-        digest_json,
-        failed_revival_projection,
-        public_revival_projection,
-        utc_now,
-        validate_revival_record,
-    )
-except ImportError:  # temporary compatibility until the shared module lands
-    from ._revival_compat import (  # noqa: F401
-        REVIVAL_ACTIVE_INPUT,
-        REVIVAL_ACTIVE_LEASE,
-        REVIVAL_ACTIVE_WORKER,
-        REVIVAL_CHAIN_HEAD_AMBIGUOUS,
-        REVIVAL_CLEANUP_FAILED,
-        REVIVAL_CLEANUP_UNSTABLE,
-        REVIVAL_EXTENSION_KEY,
-        REVIVAL_PATH_PLAN_INVALID,
-        REVIVAL_REPORT_PATH_INVALID,
-        REVIVAL_REQUIREMENTS_UNREADABLE,
-        REVIVAL_RESERVATION_CONFLICT,
-        REVIVAL_SOURCE_NOT_FAILED,
-        REVIVAL_SOURCE_NOT_HEAD,
-        REVIVAL_STEP_FLAG_UNSUPPORTED,
-        build_revival_record,
-        digest_bytes,
-        digest_json,
-        failed_revival_projection,
-        public_revival_projection,
-        utc_now,
-        validate_revival_record,
-    )
+from .revival import (
+    REVIVAL_CLEANUP_SCOPE_MANAGED_DEFAULT_ARTIFACTS,
+    REVIVAL_EXTENSION_KEY,
+    REVIVAL_INPUT_UNRESOLVED,
+    REVIVAL_PATH_PLAN_INVALID,
+    REVIVAL_REQUIREMENTS_UNREADABLE,
+    REVIVAL_RESERVATION_CONFLICT,
+    REVIVAL_RUN_LEASE_OPEN,
+    REVIVAL_SESSION_CLEANUP_UNSTABLE,
+    REVIVAL_SOURCE_NOT_CHAIN_HEAD,
+    REVIVAL_SOURCE_STATUS_INVALID,
+    REVIVAL_WORKER_ACTIVE,
+    RevivalPreflight,
+    build_revival_reservation,
+    commit_revival_reservation,
+    evaluate_revival_preflight,
+    revival_digest,
+    revival_facts_from_task,
+    revival_path_plan_digest,
+    revival_policy_digest,
+    revival_public_view,
+    revival_status_view,
+    validate_revival_reservation,
+)
 
 from .execution_policy import RESOURCE_EXTENSION_KEY, SESSION_EXTENSION_KEY, build_session_snapshot
 from .path_model import validate_path_plan_workspace
@@ -79,6 +55,9 @@ from .terminal_delivery import TERMINAL_DELIVERY_EXTENSION_KEY
 
 
 _RETRY_WRITE_LOCK = threading.RLock()
+REVIVAL_CLEANUP_FAILED = "revival_cleanup_failed"
+REVIVAL_REPORT_PATH_INVALID = "revival_report_path_invalid"
+REVIVAL_STEP_FLAG_UNSUPPORTED = "retry_step_not_supported"
 _ACTIVE_WORKER_STATES = {"accepted", "dispatching", "starting", "running"}
 _UNSTABLE_CLEANUP_STATES = {
     "pending",
@@ -144,7 +123,7 @@ class FailedTaskRetryFlow:
         if str(task.status) != "failed":
             errors.append(
                 _error(
-                    REVIVAL_SOURCE_NOT_FAILED,
+                    REVIVAL_SOURCE_STATUS_INVALID,
                     f"Task {task.id} is {task.status}; failed task full retry requires failed.",
                     allowed_statuses=["failed"],
                 )
@@ -166,7 +145,7 @@ class FailedTaskRetryFlow:
             elif len(chain.head_task_ids) != 1:
                 errors.append(
                     _error(
-                        REVIVAL_CHAIN_HEAD_AMBIGUOUS,
+                        REVIVAL_SOURCE_NOT_CHAIN_HEAD,
                         "Retry requires exactly one current chain head.",
                         head_task_ids=chain.head_task_ids,
                     )
@@ -174,7 +153,7 @@ class FailedTaskRetryFlow:
             elif not chain.requested_is_head:
                 errors.append(
                     _error(
-                        REVIVAL_SOURCE_NOT_HEAD,
+                        REVIVAL_SOURCE_NOT_CHAIN_HEAD,
                         f"Task {task.id} is not the current chain head; use {chain.current_head_task_id}.",
                         current_head_task_id=chain.current_head_task_id,
                     )
@@ -183,7 +162,7 @@ class FailedTaskRetryFlow:
         if self.service.store.is_leased(task.id):
             errors.append(
                 _error(
-                    REVIVAL_ACTIVE_LEASE,
+                    REVIVAL_RUN_LEASE_OPEN,
                     f"Task {task.id} has an active task lease; stop it before retry.",
                 )
             )
@@ -192,7 +171,7 @@ class FailedTaskRetryFlow:
         if run_lease is not None and run_lease.state != RunLeaseState.CLOSED:
             errors.append(
                 _error(
-                    REVIVAL_ACTIVE_LEASE,
+                    REVIVAL_RUN_LEASE_OPEN,
                     f"Task {task.id} RunLease is {run_lease.state}; it must be closed before retry.",
                     run_lease_state=run_lease.state,
                 )
@@ -203,7 +182,7 @@ class FailedTaskRetryFlow:
         if _active_worker_projection(execution):
             errors.append(
                 _error(
-                    REVIVAL_ACTIVE_WORKER,
+                    REVIVAL_WORKER_ACTIVE,
                     f"Task {task.id} still has an active worker or dispatch projection.",
                 )
             )
@@ -211,7 +190,7 @@ class FailedTaskRetryFlow:
         if isinstance(request, dict) and str(request.get("status") or "") == "waiting":
             errors.append(
                 _error(
-                    REVIVAL_ACTIVE_INPUT,
+                    REVIVAL_INPUT_UNRESOLVED,
                     f"Task {task.id} has unresolved input {request.get('input_id', '')}; answer or invalidate it first.",
                     input_id=request.get("input_id", ""),
                 )
@@ -225,7 +204,7 @@ class FailedTaskRetryFlow:
             if cleanup_state in _UNSTABLE_CLEANUP_STATES or cleanup_state not in _STABLE_CLEANUP_STATES:
                 errors.append(
                     _error(
-                        REVIVAL_CLEANUP_UNSTABLE,
+                        REVIVAL_SESSION_CLEANUP_UNSTABLE,
                         f"Task {task.id} session cleanup is not stable ({cleanup_state or 'invalid'}).",
                         cleanup_state=cleanup_state or "invalid",
                     )
@@ -234,7 +213,7 @@ class FailedTaskRetryFlow:
             if session_state in {"active", "input_required", "resuming", "needs_recovery"}:
                 errors.append(
                     _error(
-                        REVIVAL_CLEANUP_UNSTABLE,
+                        REVIVAL_SESSION_CLEANUP_UNSTABLE,
                         f"Task {task.id} executor session is still {session_state}.",
                         session_state=session_state,
                     )
@@ -255,7 +234,7 @@ class FailedTaskRetryFlow:
             errors.append(_error(exc.code, str(exc), **(exc.details or {})))
         if requirements_path is not None:
             try:
-                requirements_digest = digest_bytes(requirements_path.read_bytes())
+                requirements_digest = revival_digest(requirements_path.read_bytes())
             except OSError as exc:
                 errors.append(
                     _error(
@@ -268,7 +247,7 @@ class FailedTaskRetryFlow:
             try:
                 if report_path.is_symlink() or not report_path.is_file():
                     raise OSError("report is not a regular file")
-                report_digest = digest_bytes(report_path.read_bytes())
+                report_digest = revival_digest(report_path.read_bytes())
             except OSError as exc:
                 errors.append(
                     _error(
@@ -283,28 +262,67 @@ class FailedTaskRetryFlow:
             report_digest = ""
 
         existing = extensions.get(REVIVAL_EXTENSION_KEY)
-        if isinstance(existing, dict) and existing.get("state") in {"reserved", "cleaning"}:
+        if isinstance(existing, dict) and existing.get("state") == "reserved":
             errors.append(
                 _error(
                     REVIVAL_RESERVATION_CONFLICT,
                     f"Task {task.id} already has an in-progress retry reservation.",
-                    reservation_id=existing.get("reservation_id", ""),
+                    revival_id=existing.get("revival_id", ""),
                 )
             )
 
-        attempt_index = _next_attempt_index(existing)
-        cleanup_scope = (
-            "report_only_customer_path_preserved"
-            if bool(workspace.get("customer_dir"))
-            else "managed_artifacts"
-        )
-        path_digest = digest_json(_path_plan_projection(workspace))
-        policy_digest = digest_json(_frozen_policy_projection(extensions))
+        source_attempt_index = _source_attempt_index(task)
+        attempt_index = source_attempt_index + 1
+        cleanup_scope = REVIVAL_CLEANUP_SCOPE_MANAGED_DEFAULT_ARTIFACTS
+        path_digest = revival_path_plan_digest(workspace)
+        policy_digest = revival_policy_digest(extensions)
         warnings: list[str] = []
         if not report_digest:
-            warnings.append("failure_report_absent")
-        if run_lease is None:
-            warnings.append("run_lease_absent_treated_as_closed")
+            warnings.append("source_report_absent")
+        worker_active = _active_worker_projection(execution)
+        facts = revival_facts_from_task(
+            task.to_dict(),
+            is_chain_head=(
+                chain is not None
+                and not chain.anomalies
+                and len(chain.head_task_ids) == 1
+                and chain.requested_is_head
+            ),
+            lease_state=run_lease.state if run_lease is not None else "missing",
+            worker_active=worker_active,
+            dispatch_active=False,
+            requirements_readable=bool(requirements_digest),
+            lineage_valid=(chain is not None and not chain.anomalies),
+            path_plan_valid=not any(
+                item["code"] == REVIVAL_PATH_PLAN_INVALID for item in errors
+            ),
+            report_state=("readable" if report_digest else "absent"),
+            warnings=warnings,
+        )
+        raw_cleanup = (
+            session.get("cleanup")
+            if isinstance(session, dict)
+            and isinstance(session.get("cleanup"), dict)
+            else {}
+        )
+        raw_cleanup_state = str(raw_cleanup.get("state") or "").lower()
+        if raw_cleanup_state in {"retained", "succeeded", "unsupported"}:
+            facts["session_cleanup_state"] = raw_cleanup_state
+        shared_preflight = evaluate_revival_preflight(
+            facts,
+            requested_operation="retry",
+        )
+        existing_codes = {str(item.get("code") or "") for item in errors}
+        for code in shared_preflight.error_codes:
+            if code not in existing_codes:
+                errors.append(
+                    _error(
+                        code,
+                        f"Shared revival preflight rejected retry: {code}",
+                    )
+                )
+                existing_codes.add(code)
+        warnings = list(shared_preflight.warnings)
         return {
             "ok": not errors,
             "version": 1,
@@ -312,13 +330,18 @@ class FailedTaskRetryFlow:
             "task_id": task.id,
             "source_task_id": task.id,
             "target_task_id": task.id,
-            "source_attempt_index": _source_attempt_index(existing),
+            "source_attempt_index": source_attempt_index,
             "target_attempt_index": attempt_index,
             "errors": errors,
-            "allowed_next_actions": [] if errors else ["retry"],
-            "recommended_action": "retry" if not errors else "",
+            "allowed_next_actions": (
+                [] if errors else list(shared_preflight.allowed_next_actions)
+            ),
+            "recommended_action": (
+                "" if errors else shared_preflight.recommended_action
+            ),
             "attempt_index": attempt_index,
             "cleanup_scope": cleanup_scope,
+            "customer_artifacts_preserved": bool(workspace.get("customer_dir")),
             "path_plan_digest": path_digest,
             "policy_digest": policy_digest,
             "requirements_digest": requirements_digest,
@@ -342,36 +365,25 @@ class FailedTaskRetryFlow:
                     {**preflight, "preflight": preflight},
                 )
 
-            existing = (task.extensions or {}).get(REVIVAL_EXTENSION_KEY)
             source_snapshot = copy.deepcopy(task.to_dict())
-            source_attempt = _source_attempt_index(existing)
+            source_attempt = _source_attempt_index(task)
             target_attempt = int(preflight["attempt_index"])
-            reservation_id = uuid.uuid4().hex
-            history = _revival_history(existing)
-            record = build_revival_record(
+            record = build_revival_reservation(
                 operation="retry",
-                reservation_id=reservation_id,
                 source_task_id=task.id,
-                source_attempt_index=source_attempt,
-                target_task_id=task.id,
-                target_attempt_index=target_attempt,
+                source_attempt_id=f"attempt-{source_attempt}",
+                target_attempt_id=f"attempt-{target_attempt}",
+                steps=task.steps,
                 path_plan_digest=str(preflight["path_plan_digest"]),
                 policy_digest=str(preflight["policy_digest"]),
-                cleanup_scope=str(preflight["cleanup_scope"]),
-                requirements_digest=str(preflight["requirements_digest"]),
-                report_digest=str(preflight["report_digest"]),
-                resumed_step_ids=[_step_id(step, index) for index, step in enumerate(task.steps, 1)],
-                warnings=list(preflight["warnings"]),
-                history=history,
+                source_requirements_digest=str(preflight["requirements_digest"]),
+                source_report_digest=str(preflight["report_digest"]),
             )
-            record["state"] = "reserved"
-            record["reservation_state"] = "reserved"
-            record["source_session_id"] = _session_id(task)
-            record["source_run_ids"] = _session_run_ids(task)
-            record_errors = validate_revival_record(record)
+            record["warnings"] = list(preflight["warnings"])
+            record_errors = validate_revival_reservation(record)
             if record_errors:
                 raise ABCError(
-                    "revival_record_invalid",
+                    "revival_reservation_invalid",
                     "; ".join(record_errors),
                     {"record_errors": record_errors},
                 )
@@ -379,23 +391,17 @@ class FailedTaskRetryFlow:
             reserved_extensions = dict(reserved_task.extensions or {})
             reserved_extensions[REVIVAL_EXTENSION_KEY] = record
             reserved_task.extensions = reserved_extensions
-            reserved_task.updated_at = utc_now()
+            reserved_task.updated_at = _utc_now()
             self.service.store.write_task(task.id, _without_none(reserved_task.to_dict()))
 
             cleanup = _RetryCleanupTransaction(task, record)
             try:
-                record["state"] = "cleaning"
-                record["reservation_state"] = "cleaning"
-                record["updated_at"] = utc_now()
-                reserved_task.extensions[REVIVAL_EXTENSION_KEY] = record
-                self.service.store.write_task(
-                    task.id, _without_none(reserved_task.to_dict())
-                )
                 cleanup.perform()
                 committed = _prepare_retry_task(
                     reserved_task,
                     record,
                     self.service,
+                    target_attempt=target_attempt,
                 )
                 self.service.store.write_task(task.id, _without_none(committed.to_dict()))
                 cleanup.commit()
@@ -416,7 +422,7 @@ class FailedTaskRetryFlow:
                     f"Failed-task retry cleanup failed: {exc}",
                     {
                         "task_id": task.id,
-                        "reservation_id": reservation_id,
+                        "revival_id": record.get("revival_id"),
                         "cleanup_scope": record.get("cleanup_scope"),
                         "rollback_complete": rollback_error is None,
                         "rollback_error": str(rollback_error) if rollback_error else "",
@@ -431,7 +437,7 @@ class FailedTaskRetryFlow:
                     "created_at": committed.updated_at,
                     "attempt_index": target_attempt,
                     "cleanup_scope": record.get("cleanup_scope"),
-                    "reservation_id": reservation_id,
+                    "revival_id": record.get("revival_id"),
                 },
             )
             try:
@@ -441,7 +447,7 @@ class FailedTaskRetryFlow:
                     committed.updated_at,
                     attempt_index=target_attempt,
                     cleanup_scope=record.get("cleanup_scope"),
-                    reservation_id=reservation_id,
+                    revival_id=record.get("revival_id"),
                 )
             except AttributeError:
                 pass
@@ -457,8 +463,14 @@ def retry_failed_task(service: Any, task_id: str) -> Any:
     return FailedTaskRetryFlow(service).execute(task_id)
 
 
-def _prepare_retry_task(task: Any, record: dict[str, Any], service: Any) -> Any:
-    now = utc_now()
+def _prepare_retry_task(
+    task: Any,
+    record: dict[str, Any],
+    service: Any,
+    *,
+    target_attempt: int,
+) -> Any:
+    now = _utc_now()
     task.status = "pending"
     task.updated_at = now
     task.report = None
@@ -498,7 +510,7 @@ def _prepare_retry_task(task: Any, record: dict[str, Any], service: Any) -> Any:
         {
             "internal_status": "pending",
             "lease_state": RunLeaseState.CLOSED,
-            "attempt_index": int(record["target_attempt_index"]),
+            "attempt_index": int(target_attempt),
         }
     )
     extensions["agentbc.execution"] = execution
@@ -518,17 +530,10 @@ def _prepare_retry_task(task: Any, record: dict[str, Any], service: Any) -> Any:
             created_at=now,
         )
 
-    record = copy.deepcopy(record)
-    record.update(
-        {
-            "state": "committed",
-            "reservation_state": "committed",
-            "updated_at": now,
-            "allowed_next_actions": [],
-            "recommended_action": "",
-            "target_session_id": "",
-            "target_run_ids": [],
-        }
+    record = commit_revival_reservation(
+        record,
+        target_attempt_id=f"attempt-{target_attempt}",
+        now=now,
     )
     extensions[REVIVAL_EXTENSION_KEY] = record
     task.extensions = extensions
@@ -558,7 +563,7 @@ class _RetryCleanupTransaction:
                     f"Failure report is not a regular file: {self.report_path}",
                 )
             self.report_quarantine = self.report_path.parent / (
-                f".agentbc-revival-report-{self.record['reservation_id']}"
+                f".agentbc-revival-report-{self.record['revival_id']}"
             )
             if self.report_quarantine.exists():
                 raise ABCError(
@@ -567,7 +572,11 @@ class _RetryCleanupTransaction:
                 )
             os.replace(self.report_path, self.report_quarantine)
 
-        if self.record["cleanup_scope"] == "managed_artifacts":
+        if (
+            self.record["cleanup_scope"]
+            == REVIVAL_CLEANUP_SCOPE_MANAGED_DEFAULT_ARTIFACTS
+            and not bool((self.task.workspace or {}).get("customer_dir"))
+        ):
             workspace = self.task.workspace or {}
             self.artifact_root = _managed_artifact_root(workspace)
             if self.artifact_root.exists():
@@ -578,7 +587,7 @@ class _RetryCleanupTransaction:
                     )
                 self.artifact_existed = True
                 self.artifact_quarantine = self.artifact_root.parent / (
-                    f".agentbc-revival-artifacts-{self.record['reservation_id']}"
+                    f".agentbc-revival-artifacts-{self.record['revival_id']}"
                 )
                 if self.artifact_quarantine.exists():
                     raise ABCError(
@@ -756,61 +765,16 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _source_attempt_index(value: Any) -> int:
-    if not isinstance(value, dict):
+def _source_attempt_index(task: Any) -> int:
+    extensions = getattr(task, "extensions", None) or {}
+    execution = extensions.get("agentbc.execution")
+    if not isinstance(execution, dict):
         return 0
-    for field in ("target_attempt_index", "attempt_index"):
-        try:
-            number = int(value.get(field))
-        except (TypeError, ValueError):
-            continue
-        if number >= 0:
-            return number
-    return 0
-
-
-def _next_attempt_index(value: Any) -> int:
-    return _source_attempt_index(value) + 1
-
-
-def _revival_history(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, dict):
-        return []
-    history = [item for item in value.get("history", []) if isinstance(item, dict)]
-    compact = {
-        key: copy.deepcopy(value.get(key))
-        for key in (
-            "operation",
-            "state",
-            "source_task_id",
-            "target_task_id",
-            "source_attempt_index",
-            "target_attempt_index",
-            "attempt_index",
-            "cleanup_scope",
-            "path_plan_digest",
-            "policy_digest",
-            "requirements_digest",
-            "report_digest",
-            "warnings",
-            "created_at",
-            "updated_at",
-        )
-        if key in value
-    }
-    if compact:
-        history.append(compact)
-    return history[-8:]
-
-
-def _session_id(task: Any) -> str:
-    session = (task.extensions or {}).get(SESSION_EXTENSION_KEY)
-    return str(session.get("session_id") or "") if isinstance(session, dict) else ""
-
-
-def _session_run_ids(task: Any) -> list[str]:
-    session = (task.extensions or {}).get(SESSION_EXTENSION_KEY)
-    return [str(item) for item in session.get("run_ids", [])] if isinstance(session, dict) else []
+    try:
+        number = int(execution.get("attempt_index") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(number, 0)
 
 
 def _step_id(step: Any, fallback: int) -> int:
@@ -862,3 +826,53 @@ def _error(code: str, message: str, **details: Any) -> dict[str, Any]:
 
 def _without_none(data: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in data.items() if value is not None}
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def public_revival_projection(value: Any) -> dict[str, Any] | None:
+    """Backward-compatible import name backed by the canonical v1 view."""
+
+    return revival_public_view(value)
+
+
+def failed_revival_projection(
+    task: Any,
+    preflight: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return a fail-closed canonical projection without inventing eligibility."""
+
+    extensions = getattr(task, "extensions", None) or {}
+    if isinstance(preflight, dict):
+        errors = tuple(
+            str(item.get("code") or "")
+            for item in preflight.get("errors") or []
+            if isinstance(item, dict) and item.get("code")
+        )
+        shared = RevivalPreflight(
+            ok=not errors,
+            error_codes=errors,
+            allowed_next_actions=(
+                tuple(preflight.get("allowed_next_actions") or ())
+                if not errors
+                else ()
+            ),
+            recommended_action=(
+                str(preflight.get("recommended_action") or "")
+                if not errors
+                else ""
+            ),
+            warnings=tuple(preflight.get("warnings") or ()),
+        )
+    else:
+        facts = revival_facts_from_task(
+            task.to_dict() if hasattr(task, "to_dict") else {},
+            is_chain_head=False,
+            lease_state="",
+            worker_active=False,
+            dispatch_active=False,
+        )
+        shared = evaluate_revival_preflight(facts)
+    return revival_status_view(shared, extensions.get(REVIVAL_EXTENSION_KEY))

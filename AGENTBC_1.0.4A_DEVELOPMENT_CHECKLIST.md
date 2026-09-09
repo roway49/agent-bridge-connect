@@ -85,7 +85,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `FLOW-104-001` | P1 | handoff 只能声明一个 step，自由文本多步骤直到 callback 才失败 | handoff 原生结构化 steps、dispatch 前预检、严格 callback 一致性 | schema fixtures；对应 ARCH slice |
 | `FLOW-103-001` | P1 / 跨版转入 | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | task/run/session scoped 单调 progress receipt；所有公共视图同源 | `FLOW-104-001` 的 declared steps |
 | `SESSION-104-001` | **P0 / 已通过（2026-09-09，用户真机确认）** | 9 月 8 日曾出现 App Server archive/delete 后端成功但 Desktop 侧栏残留；根因修复为由 CLI 的 Node 宿主维持当前 Desktop 官方 relay，使 archive 精确触达当前应用实例，再进入既有 delete | `XQQF-001` 对精确官方 session `01a08466-7414-76a0-bceb-01e7130bc1f7` 持久化 Desktop archive acknowledged、delete acknowledged、CLI/Desktop backend absent；任务 completed、唯一合法 callback、RunLease closed。用户确认当前 Desktop 侧栏无需点击即消失，批准标记通过 | 修复提交 `5b8c3d4`；`SESSION-104-001-R1` 已关闭并回主项；原生派生子会话仍归 `PROTO-105-001` P2 |
-| `FLOW-104-003` | P0 / 恢复闭环（2026-09-09 协议层已落地，`RFT2-001`） | 当前终态 `failed` 既不能 `task retry`，也不能作为普通 handoff 源，失败后只能人工绕行 | status/report 给出机械可判定的 retry/handoff 动作；同任务重试与新 iteration 交接均保留审计和进度。`agentbc.revival` v1 协议模块与机械 preflight 已落地（`revival.py` + `test_flow104_003_revival.py`）；retry 文件清理与 failed handoff 创建仍待两个兄弟实现 | failure taxonomy；`FLOW-104-002` terminal receipts；`FLOW-104-001` steps |
+| `FLOW-104-003` | P0 / 实现收口完成，待真机回归（2026-09-09） | 终态 `failed` 缺少可审计的 retry/handoff 恢复闭环 | `RFT2-001`、`3DW2-001`、`TSBF-001` 三项已合入；Retry 与 Handoff 均统一使用唯一 `agentbc.revival` v1、共享机械 preflight 和严格 receipt。Retry 只删除 AgentBC 默认工作区产物并保留 custom path；Handoff 机械导入原要求/report、锁定 `inherited_done` 并从剩余 step 继续 | 聚焦 89 tests、全量 1970 tests（17 skipped）、Ruff、compileall、wheel/sdist build；待真实 failed-task 双 canary |
 | `INPUT-104-001` | P0 / 派发阻断 | 显式 custom path 时，位于项目根之外的 `--image`/输入文件被 `image input is outside task roots` 原子拒绝 | 项目根与只读附件根分离；Runner 受控导入外部文件且不扩大 Executor 项目权限 | PathPlan v2；atomic dispatch；input manifest |
 
 ### 2.0.1 `SESSION-104-001` 2026-09-08 现场重判（以用户侧栏证据为准）
@@ -914,7 +914,7 @@ status/report/doctor 投影命令证据。
 
 ### 4.9 `FLOW-104-003`：Failed 任务 retry 与 handoff
 
-> 2026-09-09 协议层状态（`RFT2-001`，revival core fields & protocol rerun）：共享协议模块
+> 2026-09-09 实现收口状态：`RFT2-001`、`3DW2-001`、`TSBF-001` 已合入同一实现，共享协议模块
 > `src/agent_bridge_connect/revival.py` 已落地 `agentbc.revival` v1：固定字段集、确定性校验/序列化、
 > 旧记录缺席兼容（project 为 `None`）、脱敏公共投影、幂等 replay 帮助函数，以及机械 preflight
 > （status=failed、exact current chain head、closed RunLease、无活动 worker/dispatch、无未决 input、
@@ -924,13 +924,13 @@ status/report/doctor 投影命令证据。
 > `source_report_step_mismatch` warning 而不是阻断 handoff。固定语义已写入内部 Controller contract：
 > retry 保留 Task ID、删除失败 report、重置全部 step、只清理 AgentBC 托管默认产物且绝不删除
 > custom-path 内容；handoff 保留源证据、新建 iteration、按 digest 机械导入 prior requirements/report、
-> 锁定已完成 step 为 `inherited_done` 并恢复其余。retry 文件系统清理与 failed handoff 创建归两个
-> 兄弟实现工作包，集成前不宣称生产交付。定向回归 `tests/test_flow104_003_revival.py`。
+> 锁定已完成 step 为 `inherited_done` 并恢复其余。Retry/Handoff 均已接入正式协议；临时
+> `_revival_compat.py` 已删除，测试明确断言实际构造函数来自 `agent_bridge_connect.revival`。
 
 - 为 failed terminal receipt 增加稳定 failure taxonomy 与 `allowed_next_actions` 投影，至少区分可重试的
   transport/临时环境失败、需要 recovery 的 session/lease 失败，以及必须 correction/handoff 的合同失败；
-- `agentbc task retry <id> --step <n>` 可作用于 current chain head 的 failed 任务，但只重置目标 failed/
-  blocked step；已完成 step、progress receipt、旧 terminal/report/error/attempt 审计不可删除或回退；
+- `agentbc task retry <id>` 对 current chain head 的 failed 任务从第一个 step 重新执行；删除失败 report，
+  只清理 AgentBC 默认工作区产物，绝不删除 custom path 已有内容；`retry --step` 与完整 retry 保持分离；
 - retry 保留任务冻结的权限/资源策略，撤销旧 grant 并关闭旧 RunLease。原 session 已成功清理、失效或
   不可安全恢复时必须创建新官方 session，不得恢复已删除 session 或猜测私有 ID；
 - failed current chain head 可作为 handoff 源创建新 iteration；新任务继承 PathPlan/artifact lineage，

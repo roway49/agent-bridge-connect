@@ -854,7 +854,7 @@ def command_task_logs(args: argparse.Namespace) -> int:
     last_status_line = ""
     last_status_print_at = 0.0
     while True:
-        status = task_to_status(service.get_task(args.id))
+        status = task_to_status(service.get_task(args.id), service)
         execution = _execution_snapshot(args.id, service.board_root, status)
         remote, run_id, source, error = _task_log_remote(execution)
         if remote is None:
@@ -1014,7 +1014,8 @@ def _execution_snapshot(task_id: str, board_root: Path, status: dict) -> dict:
 def _decorate_task_status(task, board_root: Path) -> dict:
     from .timing_view import build_timing_view
 
-    status = task_to_status(task)
+    service = TaskService(board_root)
+    status = task_to_status(task, service)
     try:
         chain = TaskService(board_root).resolve_chain(task.id).to_dict()
     except ABCError:
