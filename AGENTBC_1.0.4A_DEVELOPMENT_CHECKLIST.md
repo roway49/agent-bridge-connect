@@ -4,10 +4,10 @@
 > **最高优先级、不可覆盖：禁止在 `full` 运行基础上增加任何额外安全策略。安全策略不属于 AgentBC 产品特性，不为任务执行负责；凡与 `full` 任务完整执行冲突，必要时必须移除一切额外安全策略。**
 
 > 制定日期：2026-08-26
-> 状态：持续开发与回归中；`SESSION-104-001` 已于 2026-09-09 经 `XQQF-001` 当前 Codex Desktop 真机复验并由用户确认侧栏即时消失，重新标记通过；`FLOW-104-002` 的独立终态投递链已完成并通过全量门禁；当前下一开发任务为 `PERM-104-002` 最终收口，完成后转入 `INPUT-104-001` 与 `FLOW-104-003`
+> 状态：持续开发与回归中；`SESSION-104-001` 已于 2026-09-09 经 `XQQF-001` 当前 Codex Desktop 真机复验并由用户确认侧栏即时消失，重新标记通过；`FLOW-104-002` 的独立终态投递链已完成并通过全量门禁；`PERM-104-002` 已于 2026-09-09 完成最终确定性回归收口，下一开发任务转入 `INPUT-104-001` 与 `FLOW-104-003`
 > 目标版本：AgentBC `1.0.4A` / Python `1.0.4a1`
 
-## PERM-104 方案 D（2026-09-07，代码与核心实机矩阵通过）
+## PERM-104 方案 D（2026-09-07，代码与核心实机矩阵通过；2026-09-09 最终回归收口）
 
 - 生产权限路径收敛为原生 full 直接执行，以及 safe/inherit 首次可信阻塞后一次提升 full。
 - full 不再受 Runner Seatbelt、PathPlan 写入范围、Claude 工具限制、版本/full 能力探测或 permission_runtime 生命周期约束。
@@ -22,9 +22,11 @@
   Codex/Hermes 各只有 1 个 full continuation。
 - Claude 通知 UI 已统一为 `View Details / Deny / Approve Full`，用户确认 `8JY7-001` 整体符合预期；
   详情/返回零回执，`Approve Full` 精确回传同一 pending `can_use_tool` 的 native approve。
-- 当前门禁：全量 unittest 1794 项通过、17 项跳过；Ruff、compileall、diff 空白检查通过。local-alpha
+- 2026-09-09 `FNJN-001` 最终确定性矩阵补齐 Codex、Claude、Hermes 的 full handoff/retry、Approve、Deny、timeout、重复/重放/乱序 native event；4 项测试全部通过，使用确定性 native 边界 fixture，不代替或批准真实权限弹窗。
+- 当前门禁：全量 unittest 1881 项通过、17 项跳过；PERM 专项 275 项通过、3 项跳过；Runner/session、terminal-delivery、SESSION-104-001 relay/cleanup 回归均通过；Ruff、compileall、package wheel、diff 空白检查通过。完整命令与结果见 `PERM-104-002_FNJN-001_EVIDENCE.md`。
   包绑定 `private/integration@50acf9949387e21611b7558587110acee80bf718`，本机 CLI/Skill/Runner 已替换且
-  Runner PID `59193`。剩余权限验收仅为 handoff/retry 继承 full、Deny/timeout/重复事件和发布身份复核。
+  Runner PID `59193`。`FNJN-001` 已完成 handoff/retry 继承 full、Deny/timeout/重复事件的确定性回归与发布身份复核；
+  后续仅保留下一开发任务的常规全局发布门禁。
 > 来源基线：`private/integration@01f3ce1`
 > 已发布基线：`v1.0.3A2@62757a4`；公开 Formula 收口 `public/main@87c4bca`
 > 上版归档：`AGENTBC_1.0.3A_DEVELOPMENT_CHECKLIST.md`
@@ -78,7 +80,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `PROTO-104-001` | P0 / 已通过（2026-08-27） | 上游 CLI version/help/argv/event 漂移只能靠临时补测试 | 三 Executor 版本化 fixture 与 capability matrix 已建立；原生 `collaboration_spawn` 生产启用合同独立转入 `PROTO-105-001` P2，不再阻塞 1.0.4A | 无 |
 | `ARCH-104-001` | P1 / 按域执行 | Service、Runner、CLI、approval、notification 责任仍集中 | 每个功能项先完成对应窄模块机械拆分，公共 API/CLI/磁盘行为不变 | `PROTO-104-001` |
 | `PERM-104-001` | P0 / 已通过（2026-09-07） | native Deny 后 Agent 仍可用 Prompt/callback 请求 full 并启动第二 worker | Claude inherit 的首个结构化 `can_use_tool` 事件只产生一次同会话输入；`8JY7-001` 已证明 Approve Full 原子返回原始 input + `setMode/bypassPermissions/session`，同 session 完成且零 continuation | `RM7A-001`；`8JY7-001`；`tests/test_perm104_001_claude_same_session_elevation.py` |
-| `PERM-104-002` | P0-Blocker / 核心矩阵通过、收尾开放（2026-09-07） | full 必须完整后台执行；inherit/safe 首次可信阻塞后至多一次提升，不能审批循环 | 三 Executor 显式 full 零弹窗与 inherit→full 一次审批矩阵已通过；Claude `PERM-104-002-R1` 的 Details UI 已通过。关闭前补齐 handoff/retry 继承 full、Deny、timeout、重复/乱序事件和最终安装身份复核 | `PERM-104-001` 已完成；`T5KN/XE8R/QMBK/G3CQ/8JY7/9EP7` 实机证据 |
+| `PERM-104-002` | P0 / Plan D 最终回归收口完成（2026-09-09） | full 必须完整后台执行；inherit/safe 首次可信阻塞后至多一次提升，不能审批循环 | 三 Executor 显式 full 零弹窗与 inherit→full 一次审批矩阵、handoff/retry full 继承、Deny、timeout、重复/重放/乱序事件均有直接自动化证据；无第二 input/notification/decision/grant/worker/continuation，安装身份与官方 session 约束保持 | `PERM-104-001`；`T5KN/XE8R/QMBK/G3CQ/8JY7/9EP7`；`FNJN-001` evidence |
 | `FLOW-104-002` | P0 / 已通过（2026-09-08） | report/record 超限曾可跳过终态通知和 cleanup receipt | terminal、report、record、index、file/UI notification 已按独立幂等 receipt 投递并可重放；cleanup 不再依赖 report/notification 成功，业务终态不被投递故障回写 | `eb4514e`、`ab1ba49`、`1cfc043`；全量 1855 tests 通过，17 skipped；证据见 `FLOW-104-002_TERMINAL_DELIVERY_EVIDENCE.md` |
 | `FLOW-104-001` | P1 | handoff 只能声明一个 step，自由文本多步骤直到 callback 才失败 | handoff 原生结构化 steps、dispatch 前预检、严格 callback 一致性 | schema fixtures；对应 ARCH slice |
 | `FLOW-103-001` | P1 / 跨版转入 | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | task/run/session scoped 单调 progress receipt；所有公共视图同源 | `FLOW-104-001` 的 declared steps |
@@ -366,6 +368,13 @@ fail closed，不得借 full 扩大到任意用户或系统路径。
 
 对于本来就不可升级、且不属于声明授权边界的动作，最多出现一次审批并稳定 blocked；真正可升级的
 Executor 拒绝必须在同 session、同 request Approve 后精确执行。
+
+2026-09-09 `FNJN-001` 收口证据：`tests/test_perm104_002_final_matrix.py` 以确定性 `TaskService`、官方
+session receipt、native request fingerprint 和 `DialogNotifier` spy 覆盖三 Executor；显式 full 路径保持
+零审批，inherit/safe 的批准路径只允许一个同 session full continuation，Deny/timeout 不启动 continuation，
+重复、重放、乱序事件只保留一个 input、dialog、decision、grant、worker 和 continuation。未引入新的
+Seatbelt、PathPlan、版本 allowlist、permission category matcher 或额外安全策略；无真实权限弹窗被控制器批准。
+完整证据、命令和结果见 Artifact root 的 `PERM-104-002_FNJN-001_EVIDENCE.md`。
 
 派生回归项 `PERM-104-002-R1` 在上述验收完成后执行：
 
