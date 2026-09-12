@@ -1,6 +1,7 @@
 """Shared FLOW-104-003 revival protocol: ``agentbc.revival`` v1.
 
-This module owns the Core-defined revival contract for failed tasks.  It is a
+This module owns the Core-defined revival contract for failed and
+``needs_recovery`` tasks.  It is a
 focused protocol module: deterministic data, validation, serialization,
 redacted projection, mechanical preflight facts and idempotent replay
 helpers.  It deliberately does **not** execute retry filesystem cleanup and
@@ -31,8 +32,8 @@ handoff.
 Mechanical preflight
 --------------------
 
-:func:`evaluate_revival_preflight` is the common failed-current-head gate.
-It requires status ``failed``, the exact current chain head, a closed
+:func:`evaluate_revival_preflight` is the common revivable-current-head gate.
+It requires status ``failed`` or ``needs_recovery``, the exact current chain head, a closed
 RunLease, no active worker/dispatch, no unresolved input, stable session
 cleanup, readable requirements, valid lineage and PathPlan, and at most one
 open retry/handoff reservation.  ``allowed_next_actions`` and
@@ -67,6 +68,8 @@ REVIVAL_OPERATION_HANDOFF = "handoff"
 #: Canonical display/serialization order for operations.
 REVIVAL_OPERATIONS = (REVIVAL_OPERATION_RETRY, REVIVAL_OPERATION_HANDOFF)
 _REVIVAL_OPERATION_SET = frozenset(REVIVAL_OPERATIONS)
+#: Both terminal failure states use the same mechanical retry/handoff contract.
+REVIVAL_SOURCE_STATUSES = frozenset({"failed", "needs_recovery"})
 
 REVIVAL_STATE_RESERVED = "reserved"
 REVIVAL_STATE_COMMITTED = "committed"
@@ -813,7 +816,7 @@ def evaluate_revival_preflight(
     *,
     requested_operation: str | None = None,
 ) -> RevivalPreflight:
-    """Evaluate the common failed-current-head revival gate.
+    """Evaluate the common revivable-current-head revival gate.
 
     Every gate maps to one stable revival error code.  ``allowed_next_actions``
     is empty unless all mechanical gates pass; the failure taxonomy only
@@ -828,7 +831,7 @@ def evaluate_revival_preflight(
     warnings: list[str] = []
 
     status = str(facts.get("status") or "").strip().lower()
-    if status != "failed":
+    if status not in REVIVAL_SOURCE_STATUSES:
         error_codes.append(REVIVAL_SOURCE_STATUS_INVALID)
     if facts.get("is_chain_head") is not True:
         error_codes.append(REVIVAL_SOURCE_NOT_CHAIN_HEAD)
@@ -845,7 +848,13 @@ def evaluate_revival_preflight(
     if facts.get("input_unresolved") is True:
         error_codes.append(REVIVAL_INPUT_UNRESOLVED)
     cleanup_state = str(facts.get("session_cleanup_state") or "not_requested").strip().lower()
-    if cleanup_state not in REVIVAL_STABLE_CLEANUP_STATES:
+    recovery_session_not_cleaned = (
+        status == "needs_recovery" and cleanup_state == "not_requested"
+    )
+    if (
+        cleanup_state not in REVIVAL_STABLE_CLEANUP_STATES
+        and not recovery_session_not_cleaned
+    ):
         error_codes.append(REVIVAL_SESSION_CLEANUP_UNSTABLE)
     if facts.get("requirements_readable") is not True:
         error_codes.append(REVIVAL_REQUIREMENTS_UNREADABLE)
@@ -1011,6 +1020,7 @@ __all__ = [
     "REVIVAL_RESERVATION_CONFLICT",
     "REVIVAL_RETRY_CLEANUP_SCOPE",
     "REVIVAL_STABLE_CLEANUP_STATES",
+    "REVIVAL_SOURCE_STATUSES",
     "REVIVAL_WARNING_CODES",
     "REVIVAL_WARNING_REVIVAL_REPLAYED",
     "REVIVAL_WARNING_SOURCE_REPORT_ABSENT",

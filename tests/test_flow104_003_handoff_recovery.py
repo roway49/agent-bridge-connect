@@ -166,11 +166,16 @@ class HandoffSourceSelectionTests(HandoffRecoveryTestCase):
             source.id,
         )
 
-    def test_needs_recovery_source_is_rejected_by_failed_only_protocol(self):
+    def test_needs_recovery_source_uses_the_same_handoff_protocol(self):
         source = self.failed_task(recover=True)
-        with self.assertRaises(ABCError) as raised:
-            self.service.handoff_task(source.id, "codex")
-        self.assertEqual(raised.exception.code, "revival_source_status_invalid")
+        handoff = self.service.handoff_task(source.id, "codex")
+
+        self.assertEqual(handoff.id, f"{source.workspace['task_code']}-002")
+        self.assertEqual(handoff.status, "pending")
+        self.assertEqual(recovery_record(handoff)["source_status"], "needs_recovery")
+        refreshed = self.service.get_task(source.id)
+        self.assertEqual(refreshed.status, "needs_recovery")
+        self.assertEqual(refreshed.extensions["agentbc.revival"]["state"], "committed")
 
     def test_source_immutability_after_handoff(self):
         source = self.failed_task()
@@ -294,6 +299,41 @@ class HandoffSourceSelectionTests(HandoffRecoveryTestCase):
         self.assertIn(f"create {source.workspace['task_code']}-002", text)
         self.assertIn("preserve its report and artifacts", text)
         self.assertIn(f"dispatched: {source.workspace['task_code']}-002", text)
+
+    def test_plain_needs_recovery_handoff_uses_the_same_confirmation(self):
+        source = self.failed_task(recover=True)
+        from agent_bridge_connect.cli import main
+
+        result = {
+            "task_id": f"{source.workspace['task_code']}-002",
+            "assignee": "claude",
+            "workspace": source.workspace,
+            "run_id": "recovery-handoff-worker",
+            "dispatch_status": "accepted",
+            "monitor_status": "opened",
+        }
+        with (
+            mock.patch("builtins.input", return_value="y") as confirm,
+            mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.handoff_and_dispatch",
+                return_value=result,
+            ) as dispatch,
+        ):
+            code = main(
+                [
+                    "task",
+                    "handoff",
+                    source.id,
+                    "--to",
+                    "claude",
+                    "--root",
+                    str(self.board),
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        confirm.assert_called_once_with("Continue and dispatch? [y/N]: ")
+        dispatch.assert_called_once()
 
     def test_plain_handoff_no_creates_nothing_and_does_not_dispatch(self):
         source = self.failed_task()

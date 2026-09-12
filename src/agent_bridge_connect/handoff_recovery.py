@@ -42,10 +42,11 @@ from .execution_contract import INHERITED_DONE_STATUS
 from .execution_policy import RESOURCE_EXTENSION_KEY
 from .path_model import validate_path_plan_workspace
 from .protocol import ABCError, TaskModel
+from .revival import REVIVAL_SOURCE_STATUSES
 
 HANDOFF_RECOVERY_EXTENSION_KEY = "agentbc.handoff_recovery"
 HANDOFF_RECOVERY_VERSION = 1
-HANDOFF_RECOVERY_SOURCE_STATUSES = frozenset({"failed", "needs_recovery"})
+HANDOFF_RECOVERY_SOURCE_STATUSES = REVIVAL_SOURCE_STATUSES
 HANDOFF_RECOVERY_REVIVAL_ERROR = "handoff_revival_invalid"
 SOURCE_REPORT_STEP_MISMATCH = "source_report_step_mismatch"
 HANDOFF_RECOVERY_LOCK_NAME = ".handoff-recovery.lock"

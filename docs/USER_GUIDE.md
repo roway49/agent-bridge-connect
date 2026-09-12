@@ -279,6 +279,13 @@ agentbc task logs 4XMC
 - `needs_recovery`: an explicit retryable transport or infrastructure failure stopped execution.
 - `failed`: the final marker or another non-retryable execution contract was missing or invalid.
 
+Both `failed` and `needs_recovery` current chain heads support the same explicit
+revival commands. `agentbc task retry <TASK_ID>` restarts the same Task ID from
+Step 1 under the retry cleanup boundary; `agentbc task handoff <TASK_ID> --to
+<executor>` preserves the existing report and artifacts and creates the next
+mechanically imported iteration. Both interactive forms ask for confirmation
+before dispatch.
+
 Every successful Codex, Claude, or Hermes run must end its final response with
 exactly one version-1 marker on a single line:
 

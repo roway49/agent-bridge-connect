@@ -5366,13 +5366,13 @@ class TaskService:
         self._append_intervention(task_id, "retry", task.updated_at, step_id=step_id)
 
     def retry_failed_task(self, task_id: str) -> TaskModel:
-        """Retry one failed current-chain head as a new execution attempt."""
+        """Retry one failed/needs-recovery current-chain head as a new attempt."""
         from .retry_flow import retry_failed_task
 
         return retry_failed_task(self, task_id)
 
     def retry_preflight(self, task_id: str) -> dict[str, Any]:
-        """Return the stable failed-task retry preflight projection."""
+        """Return the stable retry preflight projection for a revivable task."""
         from .retry_flow import failed_retry_preflight
 
         return failed_retry_preflight(self, task_id)
@@ -6121,7 +6121,8 @@ class TaskService:
             "interventions": len(self.store.read_interventions(task_id)),
             "revival": (
                 failed_revival_projection(task, self.retry_preflight(task.id))
-                if task.status == "failed" or "agentbc.revival" in (task.extensions or {})
+                if task.status in {"failed", "needs_recovery"}
+                or "agentbc.revival" in (task.extensions or {})
                 else None
             ),
         }
@@ -6472,7 +6473,7 @@ def task_to_status(
     data["status"] = _normalize_status(raw_status)
     data["steps"] = [dict(step, status=step.get("status", "pending")) for step in data.get("steps", [])]
     extensions = dict(data.get("extensions") or {})
-    if raw_status == "failed" or "agentbc.revival" in extensions:
+    if raw_status in {"failed", "needs_recovery"} or "agentbc.revival" in extensions:
         from .retry_flow import failed_revival_projection, public_revival_projection
 
         preflight = service.retry_preflight(task.id) if service is not None else None
@@ -7271,7 +7272,7 @@ def _task_summary(task: TaskModel, board_root: str | Path | None = None) -> dict
         "health_state": health.get("state", ""),
         "health_color": health.get("color", "gray"),
     }
-    if _normalize_status(task.status) == "failed" or "agentbc.revival" in (task.extensions or {}):
+    if _normalize_status(task.status) in {"failed", "needs_recovery"} or "agentbc.revival" in (task.extensions or {}):
         from .retry_flow import failed_revival_projection
 
         summary["revival"] = failed_revival_projection(task)

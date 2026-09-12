@@ -1,4 +1,4 @@
-"""FLOW-104-003 failed-task full retry lifecycle.
+"""FLOW-104-003 failed/needs-recovery full retry lifecycle.
 
 This module owns the narrow failed-current-head retry transaction. It keeps
 the task identity and frozen policy snapshots stable while resetting execution
@@ -28,6 +28,7 @@ from .revival import (
     REVIVAL_RESERVATION_CONFLICT,
     REVIVAL_RUN_LEASE_OPEN,
     REVIVAL_SESSION_CLEANUP_UNSTABLE,
+    REVIVAL_SOURCE_STATUSES,
     REVIVAL_SOURCE_NOT_CHAIN_HEAD,
     REVIVAL_SOURCE_STATUS_INVALID,
     REVIVAL_WORKER_ACTIVE,
@@ -135,12 +136,12 @@ class FailedTaskRetryFlow:
             }
 
         errors: list[dict[str, Any]] = []
-        if str(task.status) != "failed":
+        if str(task.status).strip().lower() not in REVIVAL_SOURCE_STATUSES:
             errors.append(
                 _error(
                     REVIVAL_SOURCE_STATUS_INVALID,
-                    f"Task {task.id} is {task.status}; failed task full retry requires failed.",
-                    allowed_statuses=["failed"],
+                    f"Task {task.id} is {task.status}; full retry requires failed or needs_recovery.",
+                    allowed_statuses=sorted(REVIVAL_SOURCE_STATUSES),
                 )
             )
         try:
@@ -225,7 +226,7 @@ class FailedTaskRetryFlow:
                     )
                 )
             session_state = str(session.get("session_state") or "").strip().lower()
-            if session_state in {"active", "input_required", "resuming", "needs_recovery"}:
+            if session_state in {"active", "input_required", "resuming"}:
                 errors.append(
                     _error(
                         REVIVAL_SESSION_CLEANUP_UNSTABLE,

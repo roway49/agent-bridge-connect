@@ -85,7 +85,7 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
     workspace = task.get("workspace") or {}
     extensions = task.get("extensions") or {}
     revival = None
-    if public_status == "failed" or "agentbc.revival" in extensions:
+    if public_status in {"failed", "needs_recovery"} or "agentbc.revival" in extensions:
         from .retry_flow import failed_revival_projection, public_revival_projection
         from .service import TaskService
 

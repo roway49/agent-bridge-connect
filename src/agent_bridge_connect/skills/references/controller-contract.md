@@ -194,9 +194,9 @@ and default artifacts that will be removed, then asks `Continue? [y/N]`. Only ex
 deletes; Enter, `n`, EOF, or interrupt cancels without writes. Customer projects are always
 preserved. There is no public `task delete --confirm` mode.
 
-## Failed-Task Revival Protocol (agentbc.revival v1, FLOW-104-003)
+## Failed/Needs-Recovery Revival Protocol (agentbc.revival v1, FLOW-104-003)
 
-A `failed` task that is the exact current chain head is mechanically revivable
+A `failed` or `needs_recovery` task that is the exact current chain head is mechanically revivable
 through `agentbc.revival` v1. Status and report carry the mechanical
 projection: `revival.eligible`, `revival.allowed_next_actions`,
 `revival.recommended_action`, `revival.error_codes` and `revival.warnings`.
@@ -232,8 +232,8 @@ differ: Core keeps the task record's binding and emits the
 `source_report_absent` / `source_report_unreadable` are likewise warnings, not
 errors.
 
-The common failed-current-head preflight requires, all at once: task status
-`failed`, exact current chain head, closed RunLease, no active worker or
+The common revivable-current-head preflight requires, all at once: task status
+`failed` or `needs_recovery`, exact current chain head, closed RunLease, no active worker or
 dispatch, no unresolved input, stable session cleanup
 (`retained`/`succeeded`/`unsupported`), readable requirements, valid lineage
 and PathPlan, and at most one open retry/handoff reservation. Rejections carry

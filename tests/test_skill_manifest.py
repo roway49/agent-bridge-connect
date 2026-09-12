@@ -163,10 +163,10 @@ class SkillManifestTests(unittest.TestCase):
         fingerprints = MANAGED_SKILL_FINGERPRINTS["1.0.3a2"]
         self.assertEqual(set(fingerprints), {"codex", "claude", "hermes"})
         # FLOW-104-003 (RFT2-001): the shared controller contract documents
-        # the agentbc.revival v1 failed-task revival protocol.
+        # the agentbc.revival v1 failed/needs-recovery revival protocol.
         self.assertEqual(
             fingerprints["codex"]["files"]["references/controller-contract.md"],
-            "fdca8730830dd9f02184fdad2edb3ed7a93a36108596298672a0f3e35f960573",
+            "426320bfb2d68f4cd1e0874dbdf873a4dfd63498a92b5f251f3f38e7a752efc9",
         )
         # The Codex entrypoint changed for the Desktop archive bridge; its
         # previous bytes are preserved as a fixture below.

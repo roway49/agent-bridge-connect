@@ -286,6 +286,38 @@ class FailedTaskRetryTests(unittest.TestCase):
         self.assertEqual(report["revival"]["version"], 1)
         self.assertIs(report["revival"]["eligible"], True)
 
+    def test_needs_recovery_retries_from_zero_with_the_same_contract(self) -> None:
+        task = self._failed_task()
+        task.status = "needs_recovery"
+        extensions = dict(task.extensions or {})
+        execution = dict(extensions.get("agentbc.execution") or {})
+        execution["internal_status"] = "needs_recovery"
+        extensions["agentbc.execution"] = execution
+        session = dict(extensions.get("agentbc.session") or {})
+        session["session_state"] = "needs_recovery"
+        extensions["agentbc.session"] = session
+        task.extensions = extensions
+        self.service.store.write_task(task.id, task.to_dict())
+
+        preflight = self.service.retry_preflight(task.id)
+        self.assertTrue(preflight["ok"])
+        self.assertEqual(preflight["allowed_next_actions"], ["retry", "handoff"])
+        status = task_to_status(self.service.get_task(task.id), self.service)
+        self.assertTrue(status["revival"]["eligible"])
+
+        retried = self.service.retry_failed_task(task.id)
+
+        self.assertEqual(retried.status, "pending")
+        self.assertTrue(all(step["status"] == "pending" for step in retried.steps))
+        self.assertEqual(
+            retried.extensions["agentbc.revival"]["target_attempt_id"],
+            "attempt-1",
+        )
+        self.assertEqual(
+            retried.extensions["agentbc.session"]["session_state"],
+            "pending",
+        )
+
     def test_cleanup_failure_restores_report_artifact_and_failed_state(self) -> None:
         task = self._failed_task()
         artifact = Path(task.workspace["artifact_root"])
@@ -504,6 +536,37 @@ class FailedTaskRetryTests(unittest.TestCase):
         self.assertIn("delete the previous failure report", text)
         self.assertIn("clear previous AgentBC-managed artifacts", text)
         self.assertIn(f"dispatched: {task.id}", text)
+        self.assertEqual(self.service.get_task(task.id).status, "pending")
+
+    def test_plain_needs_recovery_retry_uses_the_same_confirm_and_dispatch(self) -> None:
+        task = self._failed_task()
+        task.status = "needs_recovery"
+        task.extensions["agentbc.execution"]["internal_status"] = "needs_recovery"
+        task.extensions["agentbc.session"]["session_state"] = "needs_recovery"
+        task.extensions["agentbc.session"]["cleanup"]["state"] = "not_requested"
+        self.service.store.write_task(task.id, task.to_dict())
+        from agent_bridge_connect.cli import main
+
+        dispatch_result = {
+            "task_id": task.id,
+            "assignee": task.assignee,
+            "workspace": task.workspace,
+            "run_id": "recovery-retry-worker",
+            "dispatch_status": "accepted",
+            "monitor_status": "opened",
+        }
+        with (
+            mock.patch("builtins.input", return_value="y") as confirm,
+            mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.dispatch_task",
+                return_value=dispatch_result,
+            ) as dispatch,
+        ):
+            code = main(["task", "retry", task.id, "--root", str(self.board)])
+
+        self.assertEqual(code, 0)
+        confirm.assert_called_once_with("Continue and dispatch? [y/N]: ")
+        dispatch.assert_called_once()
         self.assertEqual(self.service.get_task(task.id).status, "pending")
 
     def test_plain_retry_no_cancels_without_mutation_or_dispatch(self) -> None:

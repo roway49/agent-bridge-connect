@@ -375,7 +375,9 @@ def build_parser() -> argparse.ArgumentParser:
     task_correct.add_argument("--step", required=True, type=int)
     task_correct.add_argument("--message", required=True)
 
-    task_retry = task_sub.add_parser("retry", help="Retry a failed task from its current chain head.")
+    task_retry = task_sub.add_parser(
+        "retry", help="Retry a failed or needs_recovery task from its current chain head."
+    )
     add_task_root(task_retry)
     task_retry.add_argument("id")
     task_retry.add_argument(
@@ -1131,7 +1133,7 @@ def command_task_intervention(args: argparse.Namespace) -> int:
             service = _task_service(args.root, config_path)
             try:
                 source = service.get_task(args.id)
-                if str(source.status or "").lower() == "failed":
+                if str(source.status or "").lower() in {"failed", "needs_recovery"}:
                     _require_revival_action(service, source.id, "handoff")
             except ABCError as exc:
                 print(f"{exc.code}: {exc}")

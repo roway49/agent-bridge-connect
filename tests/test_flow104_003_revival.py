@@ -511,6 +511,25 @@ class RevivalPreflightTests(unittest.TestCase):
         self.assertEqual(preflight.error_codes, ())
         self.assertEqual(preflight.allowed_next_actions, REVIVAL_OPERATIONS)
 
+    def test_needs_recovery_task_allows_the_same_operations(self) -> None:
+        preflight = evaluate_revival_preflight(
+            _passing_facts(
+                status="needs_recovery", session_cleanup_state="not_requested"
+            )
+        )
+        self.assertTrue(preflight.ok)
+        self.assertEqual(preflight.error_codes, ())
+        self.assertEqual(preflight.allowed_next_actions, REVIVAL_OPERATIONS)
+
+        failed_without_cleanup = evaluate_revival_preflight(
+            _passing_facts(status="failed", session_cleanup_state="not_requested")
+        )
+        self.assertFalse(failed_without_cleanup.ok)
+        self.assertIn(
+            "revival_session_cleanup_unstable",
+            failed_without_cleanup.error_codes,
+        )
+
     def test_allowed_next_actions_and_recommended_action_are_mechanical_data(
         self,
     ) -> None:
