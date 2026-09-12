@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent_bridge_connect.cli import _decorate_task_status
+from agent_bridge_connect.cli import _decorate_task_status, _task_list_timer
 from agent_bridge_connect.notifications import build_notification_payload
 from agent_bridge_connect.reports import generate_report
 from agent_bridge_connect.run_lease import (
@@ -208,6 +208,38 @@ class TimingViewTests(unittest.TestCase):
         self.assertEqual(view["execution_duration_s"], 3 * 60 * 60)
         self.assertEqual(view["last_run_duration_s"], 60 * 60)
         self.assertEqual(view["run_count"], 3)
+
+    def test_retry_attempt_timing_excludes_prior_attempt_from_task_list(self) -> None:
+        self._write_task(status="running", created_at=_hour(0), updated_at=_hour(4))
+        data = self._task_dict()
+        extensions = dict(data.get("extensions") or {})
+        execution = dict(extensions.get("agentbc.execution") or {})
+        execution.update(
+            {
+                "attempt_index": 1,
+                "attempt_started_at": _hour(3),
+                "run_intervals": [
+                    {**self._interval("run-original", 0, 1), "attempt_index": 0},
+                    {**self._interval("run-retry", 3, 4), "attempt_index": 1},
+                ],
+            }
+        )
+        extensions["agentbc.execution"] = execution
+        data["extensions"] = extensions
+        self.store.write_task(self.task_id, data)
+
+        view = self._view(now=_hour(4))
+
+        self.assertEqual(view["wall_duration_s"], 4 * 60 * 60)
+        self.assertEqual(view["execution_duration_s"], 2 * 60 * 60)
+        self.assertEqual(view["attempt_index"], 1)
+        self.assertEqual(view["attempt_wall_duration_s"], 60 * 60)
+        self.assertEqual(view["attempt_execution_duration_s"], 60 * 60)
+        self.assertEqual(view["attempt_run_count"], 1)
+        self.assertEqual(
+            _task_list_timer({"status": "running", "timing": view}),
+            "1h00m00s",
+        )
 
     def test_historical_task_without_intervals_returns_unknown(self) -> None:
         # No run_intervals ledger, no run_lease.json: must not fabricate time.

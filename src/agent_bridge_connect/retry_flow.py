@@ -50,6 +50,12 @@ from .permission_elevation import PERMISSION_ELEVATION_EXTENSION_KEY
 from .permission_modes import PERMISSION_EXTENSION_KEY
 from .protocol import ABCError
 from .run_lease import RunLeaseState, close_lease, load_lease
+from .session import (
+    RECOVERY_FILE,
+    SESSION_RECEIPT_FILE,
+    SESSION_STATE_FILE,
+    control_root_for_task,
+)
 from .task_health import clear_task_progress
 from .terminal_delivery import TERMINAL_DELIVERY_EXTENSION_KEY
 
@@ -99,6 +105,15 @@ _STEP_RUNTIME_KEYS = {
     "started_at",
     "completed_at",
 }
+_SESSION_ACTIVE_STATE_FILES = (
+    SESSION_RECEIPT_FILE,
+    SESSION_STATE_FILE,
+    RECOVERY_FILE,
+    "permission_block_ledger.json",
+    "claude_sdk_hooks.jsonl",
+    "claude_sdk_hooks_session.json",
+    "responses",
+)
 
 
 class FailedTaskRetryFlow:
@@ -394,7 +409,12 @@ class FailedTaskRetryFlow:
             reserved_task.updated_at = _utc_now()
             self.service.store.write_task(task.id, _without_none(reserved_task.to_dict()))
 
-            cleanup = _RetryCleanupTransaction(task, record)
+            cleanup = _RetryCleanupTransaction(
+                task,
+                record,
+                board_root=self.service.board_root,
+                source_attempt_index=source_attempt,
+            )
             try:
                 cleanup.perform()
                 committed = _prepare_retry_task(
@@ -511,6 +531,7 @@ def _prepare_retry_task(
             "internal_status": "pending",
             "lease_state": RunLeaseState.CLOSED,
             "attempt_index": int(target_attempt),
+            "attempt_started_at": now,
         }
     )
     extensions["agentbc.execution"] = execution
@@ -544,17 +565,29 @@ def _prepare_retry_task(
 
 
 class _RetryCleanupTransaction:
-    def __init__(self, task: Any, record: dict[str, Any]):
+    def __init__(
+        self,
+        task: Any,
+        record: dict[str, Any],
+        *,
+        board_root: str | Path,
+        source_attempt_index: int,
+    ):
         self.task = task
         self.record = record
+        self.board_root = Path(board_root).expanduser().resolve()
+        self.source_attempt_index = max(int(source_attempt_index), 0)
         self.report_path: Path | None = None
         self.report_quarantine: Path | None = None
         self.artifact_root: Path | None = None
         self.artifact_quarantine: Path | None = None
         self.artifact_existed = False
         self.artifact_created = False
+        self.session_archive_root: Path | None = None
+        self.session_state_moves: list[tuple[Path, Path]] = []
 
     def perform(self) -> None:
+        self._archive_active_session_state()
         _, self.report_path = _authoritative_report_paths(self.task)
         if self.report_path.exists():
             if self.report_path.is_symlink() or not self.report_path.is_file():
@@ -615,7 +648,58 @@ class _RetryCleanupTransaction:
             os.replace(self.artifact_quarantine, self.artifact_root)
         if self.report_quarantine is not None and self.report_quarantine.exists():
             os.replace(self.report_quarantine, self.report_path)
+        for source, archived in reversed(self.session_state_moves):
+            if archived.exists():
+                os.replace(archived, source)
+        if self.session_archive_root is not None:
+            try:
+                self.session_archive_root.rmdir()
+                self.session_archive_root.parent.rmdir()
+            except OSError:
+                pass
         self._remove_empty_parents()
+
+    def _archive_active_session_state(self) -> None:
+        control_root = control_root_for_task(
+            self.task.id,
+            board_root=self.board_root,
+        )
+        active = [
+            control_root / name
+            for name in _SESSION_ACTIVE_STATE_FILES
+            if (control_root / name).exists()
+        ]
+        if not active:
+            return
+        archive_root = (
+            control_root
+            / "attempts"
+            / f"attempt-{self.source_attempt_index}"
+        )
+        if archive_root.exists():
+            raise ABCError(
+                REVIVAL_RESERVATION_CONFLICT,
+                f"Retry session archive already exists for attempt-{self.source_attempt_index}.",
+            )
+        archive_root.mkdir(parents=True, exist_ok=False, mode=0o700)
+        self.session_archive_root = archive_root
+        try:
+            for source in active:
+                archived = archive_root / source.name
+                os.replace(source, archived)
+                self.session_state_moves.append((source, archived))
+        except Exception:
+            for source, archived in reversed(self.session_state_moves):
+                if archived.exists():
+                    os.replace(archived, source)
+            self.session_state_moves.clear()
+            try:
+                archive_root.rmdir()
+                archive_root.parent.rmdir()
+            except OSError:
+                pass
+            self.session_archive_root = None
+            raise
 
     def _remove_empty_parents(self) -> None:
         for path in (self.report_path.parent if self.report_path else None, self.artifact_root.parent if self.artifact_root else None):

@@ -6075,6 +6075,7 @@ class TaskService:
             {
                 "run_id": lease.run_id,
                 "executor_id": lease.executor_id,
+                "attempt_index": _execution_attempt_index(merged),
                 "started_at": lease.started_at,
                 "ended_at": end_raw,
                 "duration_s": round(max((ended - started).total_seconds(), 0.0), 3),
@@ -7424,6 +7425,16 @@ def _execution_ledger(extensions: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(intervals, list):
         return []
     return [item for item in intervals if isinstance(item, dict)]
+
+
+def _execution_attempt_index(extensions: dict[str, Any]) -> int:
+    execution = extensions.get("agentbc.execution")
+    if not isinstance(execution, dict):
+        return 0
+    try:
+        return max(int(execution.get("attempt_index") or 0), 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _finalize_steps(

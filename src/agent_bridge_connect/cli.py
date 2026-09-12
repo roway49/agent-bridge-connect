@@ -2694,6 +2694,14 @@ def _task_list_timer(summary: dict, timer_now: str | None = None) -> str:
         return "cancelled"
     timing = summary.get("timing")
     if isinstance(timing, dict):
+        attempt_index = timing.get("attempt_index")
+        try:
+            is_retry_attempt = int(attempt_index or 0) > 0
+        except (TypeError, ValueError):
+            is_retry_attempt = False
+        if is_retry_attempt:
+            active = timing.get("attempt_execution_duration_s")
+            return _format_seconds_compact(active if active is not None else 0)
         wall = timing.get("wall_duration_s")
         if wall is not None:
             return _format_seconds_compact(wall)

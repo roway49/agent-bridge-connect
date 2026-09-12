@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest import mock
 from agent_bridge_connect.protocol import ABCError
 from agent_bridge_connect.service import TaskService, task_to_status
+from agent_bridge_connect.session import SessionFirstGate, control_root_for_task
 
 
 class FailedTaskRetryTests(unittest.TestCase):
@@ -162,6 +163,8 @@ class FailedTaskRetryTests(unittest.TestCase):
         )
         execution = retried.extensions["agentbc.execution"]
         self.assertEqual(execution["internal_status"], "pending")
+        self.assertEqual(execution["attempt_index"], 1)
+        self.assertTrue(execution["attempt_started_at"])
         self.assertNotIn("worker_run_id", execution)
         self.assertNotIn("dispatch_status", execution)
         revival = retried.extensions["agentbc.revival"]
@@ -176,6 +179,70 @@ class FailedTaskRetryTests(unittest.TestCase):
             "agent_bridge_connect.revival",
         )
         self.assertEqual(validate_revival_reservation(revival), [])
+
+    def test_claude_retry_archives_active_session_control_before_fresh_receipt(self) -> None:
+        task = self._failed_task(assignee="claude")
+        original_session_id = task.extensions["agentbc.session"]["session_id"]
+        control_root = control_root_for_task(task.id, board_root=self.board)
+        old_gate = SessionFirstGate(
+            control_root,
+            task_id=task.id,
+            executor="claude",
+            executor_run_id="claude-old-run",
+            expected_session_id=original_session_id,
+        )
+        old_gate.persist_official_receipt(
+            {
+                "version": 1,
+                "executor": "claude",
+                "session_id": original_session_id,
+                "resumed": False,
+                "persistence": "persistent",
+                "source": "preallocated",
+            }
+        )
+        (control_root / "recovery.json").write_text("{}\n", encoding="utf-8")
+        (control_root / "permission_block_ledger.json").write_text("{}\n", encoding="utf-8")
+        (control_root / "claude_sdk_hooks.jsonl").write_text("{}\n", encoding="utf-8")
+        (control_root / "claude_sdk_hooks_session.json").write_text("{}\n", encoding="utf-8")
+
+        retried = self.service.retry_failed_task(task.id)
+
+        archive = control_root / "attempts" / "attempt-0"
+        for name in (
+            "session_receipt.json",
+            "state.json",
+            "recovery.json",
+            "permission_block_ledger.json",
+            "claude_sdk_hooks.jsonl",
+            "claude_sdk_hooks_session.json",
+        ):
+            self.assertTrue((archive / name).is_file(), name)
+            self.assertFalse((control_root / name).exists(), name)
+        self.assertTrue((archive / "responses").is_dir())
+        self.assertFalse((control_root / "responses").exists())
+        self.assertTrue((control_root / "receipts" / "claude-old-run.json").is_file())
+
+        fresh_session_id = retried.extensions["agentbc.session"]["session_id"]
+        self.assertNotEqual(fresh_session_id, original_session_id)
+        fresh_gate = SessionFirstGate(
+            control_root,
+            task_id=task.id,
+            executor="claude",
+            executor_run_id="claude-fresh-run",
+            expected_session_id=fresh_session_id,
+        )
+        persisted = fresh_gate.persist_official_receipt(
+            {
+                "version": 1,
+                "executor": "claude",
+                "session_id": fresh_session_id,
+                "resumed": False,
+                "persistence": "persistent",
+                "source": "preallocated",
+            }
+        )
+        self.assertEqual(persisted["session_id"], fresh_session_id)
 
     def test_custom_retry_is_report_only_and_byte_identical(self) -> None:
         task = self._failed_task(customer_dir=True)
@@ -225,6 +292,12 @@ class FailedTaskRetryTests(unittest.TestCase):
         shutil.rmtree(artifact)
         artifact.write_bytes(b"customer-owned-invalid-root")
         report = Path(task.workspace["report_file"])
+        control_root = control_root_for_task(task.id, board_root=self.board)
+        control_root.mkdir(parents=True)
+        (control_root / "session_receipt.json").write_bytes(b"old receipt\n")
+        (control_root / "state.json").write_bytes(b"old state\n")
+        (control_root / "responses").mkdir()
+        (control_root / "responses" / "old.json").write_bytes(b"old response\n")
         before = self.service.store.read_task(task.id)
 
         with self.assertRaises(ABCError) as raised:
@@ -234,6 +307,13 @@ class FailedTaskRetryTests(unittest.TestCase):
         self.assertEqual(self.service.store.read_task(task.id), before)
         self.assertEqual(report.read_bytes(), b"old failure report\n")
         self.assertEqual(artifact.read_bytes(), b"customer-owned-invalid-root")
+        self.assertEqual((control_root / "session_receipt.json").read_bytes(), b"old receipt\n")
+        self.assertEqual((control_root / "state.json").read_bytes(), b"old state\n")
+        self.assertEqual(
+            (control_root / "responses" / "old.json").read_bytes(),
+            b"old response\n",
+        )
+        self.assertFalse((control_root / "attempts" / "attempt-0").exists())
 
         artifact.unlink()
         artifact.mkdir()

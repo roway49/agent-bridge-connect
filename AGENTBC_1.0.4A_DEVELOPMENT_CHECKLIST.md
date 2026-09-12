@@ -85,7 +85,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `FLOW-104-001` | P1 | handoff 只能声明一个 step，自由文本多步骤直到 callback 才失败 | handoff 原生结构化 steps、dispatch 前预检、严格 callback 一致性 | schema fixtures；对应 ARCH slice |
 | `FLOW-103-001` | P1 / 跨版转入 | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | task/run/session scoped 单调 progress receipt；所有公共视图同源 | `FLOW-104-001` 的 declared steps |
 | `SESSION-104-001` | **P0 / 已通过（2026-09-09，用户真机确认）** | 9 月 8 日曾出现 App Server archive/delete 后端成功但 Desktop 侧栏残留；根因修复为由 CLI 的 Node 宿主维持当前 Desktop 官方 relay，使 archive 精确触达当前应用实例，再进入既有 delete | `XQQF-001` 对精确官方 session `01a08466-7414-76a0-bceb-01e7130bc1f7` 持久化 Desktop archive acknowledged、delete acknowledged、CLI/Desktop backend absent；任务 completed、唯一合法 callback、RunLease closed。用户确认当前 Desktop 侧栏无需点击即消失，批准标记通过 | 修复提交 `5b8c3d4`；`SESSION-104-001-R1` 已关闭并回主项；原生派生子会话仍归 `PROTO-105-001` P2 |
-| `FLOW-104-003` | P0 / 交互恢复收口中，待真机回归（2026-09-09） | 终态 `failed` 缺少可审计且可见的 retry/handoff 恢复闭环 | `RFT2-001`、`3DW2-001`、`TSBF-001` 三项已合入；Retry 与 Handoff 均统一使用唯一 `agentbc.revival` v1、共享机械 preflight 和严格 receipt。Retry 只删除 AgentBC 默认工作区产物并保留 custom path；Handoff 机械导入原要求/report、锁定 `inherited_done` 并从剩余 step 继续。新增交互门禁：普通命令先展示影响并 `y/N`，`y` 后立即派发并打开/刷新 Task List，`--dispatch` 保留为非交互入口 | 聚焦 89 tests、全量 1970 tests（17 skipped）、Ruff、compileall、wheel/sdist build；待确认交互测试、重新封包及真实 failed-task 双 canary |
+| `FLOW-104-003` | P0 / Handoff 真机通过，Retry 修复待重新封包复验（2026-09-12） | `K3T8-001` retry 暴露两项缺陷：旧 task-scoped session control receipt 未轮换导致 `session_receipt_mismatch` 秒失败；Task List 仍按首次 `created_at` 显示跨 attempt 累计 wall time | Handoff `K3T8-002` 已完成。Retry 修复将旧 active session/control/approval 状态按 attempt 归档并纳入原事务回滚，保留 per-run receipt 与审计事件；新 attempt 可登记全新官方 session。新增 `attempt_started_at` 与 run interval `attempt_index`，Task List 对 retry 活动任务只显示当前 attempt 的权威执行累计，完整生命周期仍保留在 status/report | 聚焦 108 tests、全量 1976 tests（17 skipped）、Ruff、compileall、`git diff --check` 已通过；待重新封包后使用新的 failed current-chain-head 做同 ID retry 真机复验 |
 | `INPUT-104-001` | P0 / 派发阻断 | 显式 custom path 时，位于项目根之外的 `--image`/输入文件被 `image input is outside task roots` 原子拒绝 | 项目根与只读附件根分离；Runner 受控导入外部文件且不扩大 Executor 项目权限 | PathPlan v2；atomic dispatch；input manifest |
 
 ### 2.0.1 `SESSION-104-001` 2026-09-08 现场重判（以用户侧栏证据为准）
@@ -913,6 +913,13 @@ cleanup success。真实 0.147.0 单父 timeout canary 取得官方 thread ID；
 status/report/doctor 投影命令证据。
 
 ### 4.9 `FLOW-104-003`：Failed 任务 retry 与 handoff
+
+> 2026-09-12 `K3T8` 真机对照：failed handoff 新建 `K3T8-002` 并完成，证明 handoff 语义通过；
+> 同 ID retry 在 Executor turn 前因旧 `session_receipt.json/state/recovery/permission block/response/hook`
+> 活动状态未轮换而触发 `session_receipt_mismatch`。修复后上述活动状态事务化归档至
+> `.agentbc-control/<task>/attempts/attempt-N/`，原 per-run receipts 与 append-only events 保留；
+> 任一后续清理失败会回滚恢复旧状态。Retry 同时建立独立 `attempt_started_at`，所有新 run interval
+> 记录 `attempt_index`，列表不再把原任务首次创建以来的 wall time 当作本次活动时间。
 
 > 2026-09-09 实现收口状态：`RFT2-001`、`3DW2-001`、`TSBF-001` 已合入同一实现，共享协议模块
 > `src/agent_bridge_connect/revival.py` 已落地 `agentbc.revival` v1：固定字段集、确定性校验/序列化、
