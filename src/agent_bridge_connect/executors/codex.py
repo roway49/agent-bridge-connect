@@ -810,7 +810,7 @@ class CodexExecutor(CLIExecutorBase):
         return dict(self._app_server_capability)
 
     def collaboration_spawn_capability(self) -> dict[str, Any]:
-        """Return the two-proof collaboration gate without enabling dispatch."""
+        """Return the live protocol capability without a version allow-list."""
         if self._collaboration_spawn_capability is not None:
             return dict(self._collaboration_spawn_capability)
         if self.agent_bin is None:
@@ -843,17 +843,16 @@ class CodexExecutor(CLIExecutorBase):
                 "reason": "Codex version is unavailable for fixture matching",
             }
         )
-        enabled = bool(live.get("ok") is True and fixture.get("ok") is True)
+        enabled = bool(live.get("ok") is True)
         if enabled:
             reason = ""
-        elif not live.get("ok"):
-            reason = str(live.get("reason") or "collaboration live probe failed")
         else:
-            reason = str(fixture.get("reason") or "collaboration fixture failed")
+            reason = str(live.get("reason") or "collaboration live probe failed")
         result = {
             "enabled": enabled,
             "version": version,
             "reason": reason,
+            "verification_source": "live_schema" if enabled else "unavailable",
             "fixture": fixture,
             "live": live,
         }

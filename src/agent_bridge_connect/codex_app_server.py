@@ -115,7 +115,7 @@ CODEX_APP_SERVER_CAPABILITY_GROUPS: dict[str, dict[str, frozenset[str]]] = {
     CODEX_APP_SERVER_COLLABORATION_SPAWN_GROUP: {
         # The logical receiverThreadId marker maps to the plural
         # receiverThreadIds field used by the 0.150 candidate schema.  The
-        # group is intentionally not enabled by the production version gate.
+        # group is enabled only when the live generated schema exposes it.
         "client_methods": frozenset(),
         "server_requests": frozenset(),
         "notifications": CODEX_APP_SERVER_COLLABORATION_LIFECYCLE,
@@ -490,11 +490,12 @@ def codex_collaboration_spawn_contract(
     schema_bundle: dict[str, Any] | None = None,
     timeout: int = 15,
 ) -> dict[str, Any]:
-    """Probe the live collaboration-spawn surface without enabling it.
+    """Probe the live collaboration-spawn surface mechanically.
 
     Collaboration is a separate capability from the ordinary App Server
-    execution contract.  The caller must combine this live result with the
-    matching frozen fixture result before dispatching any collaboration work.
+    execution contract. Runtime support follows the generated schema surface,
+    not a Codex version allow-list. Frozen fixtures remain regression evidence
+    only and never gate a compatible newer release or fork.
     """
     base = codex_app_server_contract(
         executable,
@@ -566,7 +567,7 @@ def assert_codex_collaboration_spawn_capability(
     *,
     transport: str | None = None,
 ) -> dict[str, Any]:
-    """Require matching fixture and live proof before enabling collaboration."""
+    """Require live protocol proof before enabling collaboration."""
     selected = str(transport or "").strip().lower()
     if selected not in CODEX_APP_SERVER_TRANSPORT_ALIASES:
         raise ABCError(
@@ -592,13 +593,12 @@ def assert_codex_collaboration_spawn_capability(
         else str(live.get("version") or "").splitlines()[0]
     )
     fixture = codex_collaboration_spawn_fixture_contract(version)
-    if not fixture.get("ok"):
-        raise ABCError(
-            "codex_collaboration_spawn_unsupported",
-            str(fixture.get("reason") or "Codex collaboration fixture failed"),
-            {"fixture": fixture, "live": live},
-        )
-    return {"enabled": True, "fixture": fixture, "live": live}
+    return {
+        "enabled": True,
+        "verification_source": "live_schema",
+        "fixture": fixture,
+        "live": live,
+    }
 
 
 def assert_codex_app_server_capability(

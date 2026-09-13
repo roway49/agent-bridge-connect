@@ -20,6 +20,7 @@ from agent_bridge_connect.auxiliary_sessions import (
     reconcile_codex_descendants,
 )
 from agent_bridge_connect.codex_app_server import (
+    assert_codex_collaboration_spawn_capability,
     codex_collaboration_spawn_contract,
     codex_collaboration_spawn_fixture_contract,
 )
@@ -115,7 +116,7 @@ class CollaborationCapabilityTests(unittest.TestCase):
         self.assertFalse(live["ok"])
         self.assertIn("collabAgentToolCall", live["reason"])
 
-    def test_executor_requires_fixture_and_live_proof(self) -> None:
+    def test_executor_accepts_live_protocol_without_matching_fixture(self) -> None:
         live = {
             "ok": True,
             "version": "codex-cli 0.147.0",
@@ -134,9 +135,36 @@ class CollaborationCapabilityTests(unittest.TestCase):
             ),
         ):
             result = executor.collaboration_spawn_capability()
-        self.assertFalse(result["enabled"])
+        self.assertTrue(result["enabled"])
         self.assertEqual(result["version"], "0.147.0")
-        self.assertIn("fixture", result["reason"])
+        self.assertEqual(result["reason"], "")
+        self.assertEqual(result["verification_source"], "live_schema")
+        self.assertFalse(result["fixture"]["ok"])
+
+    def test_assertion_accepts_newer_live_protocol_without_fixture(self) -> None:
+        live = {
+            "ok": True,
+            "version": "codex-cli 0.153.4",
+            "version_parsed": [0, 153, 4],
+        }
+        fixture = {"ok": False, "reason": "collaboration fixture is unavailable"}
+        with (
+            mock.patch(
+                "agent_bridge_connect.codex_app_server.codex_collaboration_spawn_contract",
+                return_value=live,
+            ),
+            mock.patch(
+                "agent_bridge_connect.codex_app_server.codex_collaboration_spawn_fixture_contract",
+                return_value=fixture,
+            ),
+        ):
+            result = assert_codex_collaboration_spawn_capability(
+                "/tmp/fake-codex", transport="app-server"
+            )
+
+        self.assertTrue(result["enabled"])
+        self.assertEqual(result["verification_source"], "live_schema")
+        self.assertFalse(result["fixture"]["ok"])
 
     def test_unsupported_requested_spawn_fails_before_transport_or_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
