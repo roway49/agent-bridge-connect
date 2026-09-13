@@ -756,10 +756,25 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
                     "request_digest": "req",
                     "route_digest": "route",
                     "app_instance_digest": "app",
-                }
+                },
+                "app_server_archive": {
+                    "status": "not_requested",
+                    "checked_at": "",
+                    "request_digest": "",
+                    "route_digest": "",
+                    "app_instance_digest": "",
+                },
+                "delete": {
+                    "status": "not_requested",
+                    "checked_at": "",
+                    "request_digest": "",
+                    "route_digest": "",
+                    "app_instance_digest": "",
+                },
             },
             occurred_at=_add_seconds(T0, 1),
         )
+        self.assertEqual(failed["commands"]["desktop_archive"]["status"], "rejected")
         entry["cleanup"] = failed
         ledger["sessions"][0] = entry
         raw["extensions"][AUXILIARY_EXTENSION_KEY] = ledger

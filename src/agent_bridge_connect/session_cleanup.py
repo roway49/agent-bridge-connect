@@ -1018,7 +1018,7 @@ class SessionCleanupCoordinator:
                 CODEX_DESKTOP_ARCHIVE_REJECTED,
             }
             and isinstance(desktop, dict)
-            and desktop.get("status") in {"unavailable", "not_requested"}
+            and desktop.get("status") in {"rejected", "unavailable", "not_requested"}
         )
 
     def _crash_recovery_receipt(
