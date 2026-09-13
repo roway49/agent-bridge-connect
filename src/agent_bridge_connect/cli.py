@@ -1818,6 +1818,15 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 _request_task_list_refresh_for_service(service)
                 print(f"worker_error: executor start failed for {task.id}: {start.message}")
                 return 1
+            if args.executor == "codex":
+                # Runner sends SIGTERM to the AgentBC worker first. Translate
+                # it into the adapter's cooperative App Server cancellation;
+                # the worker remains alive until the official turn reaches a
+                # terminal state and the in-connection archive is acknowledged.
+                def _cancel_codex_turn(_signum: int, _frame: Any) -> None:
+                    executor.cancel(start.run_id)
+
+                signal.signal(signal.SIGTERM, _cancel_codex_turn)
             manages_executor_session = args.executor in {"claude", "hermes", "codex"}
             if manages_executor_session:
                 service.record_executor_run_started(task.id, start.run_id)

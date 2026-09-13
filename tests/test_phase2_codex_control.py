@@ -225,6 +225,65 @@ class ReconciledInterruptedTransport(BlockingFakeTransport):
             return self.queue.pop(0)
 
 
+class CooperativelyCancelledTransport(BlockingFakeTransport):
+    """Completes the exact turn only after the native interrupt request."""
+
+    def send(self, message: dict) -> None:
+        method = message.get("method")
+        if method == "turn/start":
+            with self.condition:
+                self.sent.append(message)
+                self.receipt_before_turn = True
+                self.queue.append(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": message["id"],
+                        "result": {
+                            "turn": {
+                                "id": "turn-fake-1",
+                                "status": "in_progress",
+                            }
+                        },
+                    }
+                )
+                self.condition.notify_all()
+            return
+        if method == "turn/interrupt":
+            with self.condition:
+                self.sent.append(message)
+                self.queue.extend(
+                    [
+                        {"jsonrpc": "2.0", "id": message["id"], "result": {}},
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "turn/completed",
+                            "params": {
+                                "threadId": "thread-fake-1",
+                                "turn": {
+                                    "id": "turn-fake-1",
+                                    "status": "interrupted",
+                                },
+                            },
+                        },
+                    ]
+                )
+                self.condition.notify_all()
+            return
+        super().send(message)
+
+    def recv(self, timeout_s: float | None = None) -> dict:
+        with self.condition:
+            deadline = time.monotonic() + (timeout_s if timeout_s is not None else 3.0)
+            while not self.queue and not self.closed:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("fake transport timed out")
+                self.condition.wait(remaining)
+            if not self.queue:
+                raise RuntimeError("fake transport closed")
+            return self.queue.pop(0)
+
+
 class CodexControlPlaneTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -554,6 +613,50 @@ class CodexControlPlaneTests(unittest.TestCase):
             if event.get("event_type") == "turn_state_reconciled"
         ]
         self.assertEqual(len(reconciled), 1)
+
+    def test_cancel_interrupts_exact_turn_before_in_connection_archive(self) -> None:
+        fake = CooperativelyCancelledTransport(self.board, self.task_id)
+        executor = CodexExecutor(
+            command=sys.executable,
+            transport="app-server",
+            transport_factory=lambda **_: fake,
+        )
+        executor._app_server_capability_override = _app_server_capability_override()
+        with (
+            mock.patch.object(executor, "_start_run_lease"),
+            mock.patch.object(executor, "_close_run_lease"),
+        ):
+            started = executor.start(self._packet())
+            self.assertTrue(started.ok)
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and not any(
+                item.get("method") == "turn/start" for item in fake.sent
+            ):
+                time.sleep(0.01)
+            cancelled = executor.cancel(started.run_id)
+            self.assertTrue(cancelled.ok)
+            # Repeated close signals remain idempotent.
+            self.assertTrue(executor.cancel(started.run_id).ok)
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and executor.poll(started.run_id).status not in {
+                "needs_recovery",
+                "failed",
+            }:
+                time.sleep(0.01)
+            result = executor.poll(started.run_id)
+
+        self.assertEqual(result.status, "needs_recovery")
+        interrupts = [
+            item for item in fake.sent if item.get("method") == "turn/interrupt"
+        ]
+        self.assertEqual(len(interrupts), 1)
+        self.assertEqual(
+            interrupts[0]["params"],
+            {"threadId": "thread-fake-1", "turnId": "turn-fake-1"},
+        )
+        methods = [item.get("method") for item in fake.sent]
+        self.assertLess(methods.index("turn/interrupt"), methods.index("thread/archive"))
+        self.assertTrue(result.result["execution_session"]["archive_acknowledged"])
 
     def test_codex_app_server_resume_uses_only_explicit_thread_id(self) -> None:
         fake = BlockingFakeTransport(self.board, self.task_id)

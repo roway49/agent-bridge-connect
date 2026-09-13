@@ -192,6 +192,13 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
   前两步，到第三步发现 Artifact root 消失，`agentbc task status 6WD5-001` 返回 `task_not_found`，最后 session
   留在 Desktop。控制面 `session_receipt.json` 与 `approval_pending` state 仍存在，证明 session 不是未知来源，
   只是失去了可清理的 Task owner。
+- `ZDVM-001` 在首轮 retry-chain 接线后的真机复验进一步锁定最后缺口：CLI close 已等待 Runner 记录进入
+  `cancelled` 且 RunLease closed，但 Runner 当时对 AgentBC worker 与 `codex app-server` 子进程组同时发送
+  `SIGTERM`，官方会话 `01a09bc0-f2c9-7f01-8f2c-3fecc0a393f6` 随后持续返回
+  `already has an active writer`。因此“worker 进程退出”不是“官方 turn writer 已终止”的权威证据。
+  修复后 Codex close 必须先只通知 worker；worker 通过仍存活的 App Server transport 对精确
+  `threadId + turnId` 发送一次 `turn/interrupt`，等待官方 `turn/completed: interrupted`，再沿用既有连接内
+  archive 和后续 cleanup。Runner 仅保留有界强制终止兜底，兜底不得伪造官方中断或 cleanup 成功。
 - 根因边界：retry 事务会把控制面的 `session_receipt.json` 等活动文件移入
   `.agentbc-control/<task>/attempts/attempt-*`，随后 `_prepare_retry_task()` 以新的 pending
   `agentbc.session` 覆盖 live primary 并删除 live auxiliary ledger；当前 cleanup coordinator 只扫描 live

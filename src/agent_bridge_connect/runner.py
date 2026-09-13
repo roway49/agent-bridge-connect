@@ -3036,13 +3036,43 @@ class RunnerState:
             record["cancel_signal"] = "SIGTERM"
             record["status"] = "cancelling"
             process = record["process"]
+            executor = str(record.get("executor") or "")
             self._write_metadata(record)
         process_group = None
         try:
             process_group = os.getpgid(process.pid)
-            os.killpg(process_group, signal.SIGTERM)
+            if executor == "codex":
+                # Keep the App Server child alive while the worker translates
+                # SIGTERM into an official turn/interrupt over its live
+                # transport. A bounded watchdog retains the old hard-stop
+                # behavior if cooperative teardown cannot finish.
+                os.kill(process.pid, signal.SIGTERM)
+            else:
+                os.killpg(process_group, signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             pass
+        if executor == "codex":
+            def _force_after_grace() -> None:
+                deadline = time.monotonic() + 10.0
+                while process.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                if process_group is None:
+                    return
+                try:
+                    os.killpg(process_group, 0)
+                except (ProcessLookupError, PermissionError):
+                    return
+                try:
+                    os.killpg(process_group, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+
+            threading.Thread(
+                target=_force_after_grace,
+                name=f"agentbc-codex-cancel-{run_id}",
+                daemon=True,
+            ).start()
+            return self.status(run_id)
         deadline = time.monotonic() + 1.0
         while process.poll() is None and time.monotonic() < deadline:
             time.sleep(0.05)

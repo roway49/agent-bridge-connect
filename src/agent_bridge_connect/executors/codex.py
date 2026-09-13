@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_bridge_connect.adapters import (
+    AdapterResult,
     ExecutorCapabilities,
     ExecutorLevel,
     PollResult,
@@ -170,7 +171,7 @@ class CodexExecutor(CLIExecutorBase):
             structured_output=True,
             streaming_events=True,
             resume=True,
-            cancel=False,
+            cancel=True,
             input_required=self._uses_app_server_transport(),
             model_selection=True,
             multimodal=True,
@@ -1063,6 +1064,8 @@ class CodexExecutor(CLIExecutorBase):
             "ready": threading.Event(),
             "started_at": time.time(),
             "transport": None,
+            "cancel_requested": threading.Event(),
+            "interrupt_sent": False,
             "collaboration_spawn": collaboration_capability,
         }
         self._app_runs[run_id] = record
@@ -1091,6 +1094,48 @@ class CodexExecutor(CLIExecutorBase):
             },
             result=dict(app_run.get("result") or {}),
         )
+
+    def cancel(self, run_id: str) -> AdapterResult:
+        """Request cooperative cancellation of one live App Server turn."""
+        record = self._app_runs.get(run_id)
+        if record is None:
+            return super().cancel(run_id)
+        cancel_requested = record.get("cancel_requested")
+        if not isinstance(cancel_requested, threading.Event):
+            return AdapterResult(False, "Codex cancellation state is unavailable")
+        cancel_requested.set()
+
+        # A native approval wait owns the App Server reader. Close that exact
+        # request through its deny choice so the same reader can deliver the
+        # official turn/interrupt. This never grants authority or starts a
+        # continuation.
+        plane: ApprovalControlPlane = record["plane"]
+        pending = plane.status().get("pending_request")
+        if isinstance(pending, dict) and pending.get("status") == "pending":
+            choice_handle = ""
+            if int(pending.get("approval_version") or 1) == 2:
+                choice_handle = next(
+                    (
+                        str(choice.get("handle") or "")
+                        for choice in pending.get("offered_choices") or []
+                        if isinstance(choice, dict) and choice.get("kind") == "deny"
+                    ),
+                    "",
+                )
+            try:
+                plane.respond_approval(
+                    str((record.get("task_packet") or {}).get("task_id") or ""),
+                    run_id,
+                    str(record.get("session_id") or ""),
+                    str(pending.get("request_id") or ""),
+                    "decline",
+                    choice_handle=choice_handle,
+                )
+            except ControlPlaneError:
+                # A concurrent human response or transport transition already
+                # closed the request. The interrupt remains requested.
+                pass
+        return AdapterResult(True, "Codex turn cancellation requested")
 
     def _make_app_server_transport(
         self,
@@ -1474,6 +1519,30 @@ class CodexExecutor(CLIExecutorBase):
         while True:
             if isinstance(record.get("completion"), dict):
                 return record["completion"]
+            cancel_requested = record.get("cancel_requested")
+            if (
+                isinstance(cancel_requested, threading.Event)
+                and cancel_requested.is_set()
+                and not record.get("interrupt_sent")
+            ):
+                thread_id = str(record.get("session_id") or "").strip()
+                turn_id = str(record.get("turn_id") or "").strip()
+                if thread_id and turn_id:
+                    # Set this before sending so repeated close signals cannot
+                    # generate a second native interrupt.
+                    record["interrupt_sent"] = True
+                    interrupt_id = self._app_rpc(
+                        record,
+                        "turn/interrupt",
+                        {"threadId": thread_id, "turnId": turn_id},
+                    )
+                    self._app_wait_response(
+                        record,
+                        interrupt_id,
+                        timeout_s=_CODEX_APP_TURN_RECONCILE_S,
+                    )
+                    if isinstance(record.get("completion"), dict):
+                        return record["completion"]
             try:
                 message = self._transport_recv(
                     record["transport"],
