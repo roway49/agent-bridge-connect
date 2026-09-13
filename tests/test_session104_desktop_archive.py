@@ -133,6 +133,23 @@ class DesktopRouteTests(unittest.TestCase):
             CODEX_DESKTOP_ARCHIVE_REJECTED,
         )
 
+    def test_native_ack_accepts_cleared_terminal_activity_pointer(self) -> None:
+        broker = AcknowledgedCodexDesktopArchiveBroker(
+            task_id="E299-001",
+            executor_run_id="run-e299",
+            session_id=SESSION_ID,
+            request_executor_run_id="",
+        )
+
+        self.assertTrue(broker.route_available())
+        self.assertTrue(
+            broker.archive(_request(executor_run_id="")).acknowledged
+        )
+        self.assertEqual(
+            broker.archive(_request(executor_run_id="other-run")).error_code,
+            CODEX_DESKTOP_ARCHIVE_REJECTED,
+        )
+
     def test_environment_context_derives_official_resource_from_node(self) -> None:
         env = {
             "CODEX_APP_TOOLS_PIPE_PATH": "/tmp/app-tools.pipe",

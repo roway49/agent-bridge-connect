@@ -2385,7 +2385,8 @@ class RunnerState:
             and (session_state == "terminal" or recovery_parking)
         )
         primary_matches = primary_eligible and primary_session_id == session_id
-        executor_run_id = str(execution.get("executor_run_id") or "").strip()
+        request_executor_run_id = str(execution.get("executor_run_id") or "").strip()
+        executor_run_id = request_executor_run_id
         if not executor_run_id:
             # Activity pointers are intentionally cleared during terminal and
             # recovery reconciliation.  The official session's immutable run
@@ -2470,6 +2471,13 @@ class RunnerState:
             task_id=task_id,
             executor_run_id=executor_run_id,
             session_id=session_id,
+            # Terminal reconciliation intentionally clears the activity
+            # pointer. Runner already validated the immutable historical run
+            # binding above, while the unchanged cleanup request still
+            # projects the now-empty activity pointer for a primary session.
+            request_executor_run_id=(
+                request_executor_run_id if primary_matches else executor_run_id
+            ),
         )
         coordinator = SessionCleanupCoordinator(
             board,
