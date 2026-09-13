@@ -294,7 +294,7 @@ class CodexSessionCleanupClient:
                 archive_at = _utc_now()
             delete_id = self._send(first, "thread/delete", {"threadId": exact_id})
             delete_sent = True
-            self._wait_delete(first, delete_id)
+            delete_status = self._wait_delete(first, delete_id)
         except CodexSessionCleanupError:
             raise
         except (TransportClosed, OSError, RuntimeError) as exc:
@@ -332,7 +332,7 @@ class CodexSessionCleanupClient:
                         "status": "acknowledged",
                         "checked_at": archive_at or checked_at,
                     },
-                    "delete": {"status": "acknowledged", "checked_at": checked_at},
+                    "delete": {"status": delete_status, "checked_at": checked_at},
                 },
             )
         except CodexSessionCleanupError:
@@ -629,11 +629,14 @@ class CodexSessionCleanupClient:
                 # Advisory only: keep waiting for the bound RPC response.
                 continue
 
-    def _wait_delete(self, transport: Any, request_id: int) -> None:
-        """Require the delete RPC acknowledgement after the archive gate.
+    def _wait_delete(self, transport: Any, request_id: int) -> str:
+        """Require a delete RPC response after the archive gate.
 
         A failure here carries partial evidence: the archive was already
         acknowledged, so a retry or Runner restart must never lose it.
+        A bounded RPC error still proves the exact request reached the server;
+        the fresh read/list phase must then prove absence before that delivery
+        may be recorded as ``confirmed``.
         """
         deadline = time.monotonic() + self.timeout_s
         while True:
@@ -661,22 +664,12 @@ class CodexSessionCleanupClient:
 
             if message.get("id") == request_id:
                 if isinstance(message.get("error"), dict):
-                    # Archive has already been authoritatively acknowledged.
-                    # A bounded target-missing response therefore means the
-                    # exact delete postcondition is already true.  Continue to
-                    # the mandatory fresh read/list absence proof instead of
-                    # turning an idempotent replay into a terminal failure.
-                    if _is_not_found(message):
-                        return
-                    raise CodexSessionCleanupError(
-                        CODEX_SESSION_DELETE_FAILED_CODE,
-                        commands=_partial_commands_after_archive(_utc_now(), "failed"),
-                    )
+                    return "confirmed"
                 # Current supported and candidate Codex builds expose the
                 # thread/deleted schema but do not reliably emit it on stdio.
                 # The RPC acknowledgement remains mandatory; authoritative
                 # absence is proved next by fresh thread/read and thread/list.
-                return
+                return "acknowledged"
             if message.get("method") == "thread/deleted":
                 # A notification is advisory. Ignore unrelated IDs and keep
                 # waiting for the bound RPC response.

@@ -361,7 +361,7 @@ class ArchiveThenDeleteOrderTests(unittest.TestCase):
         self.assertEqual(result.state, "succeeded")
         self.assertEqual(result.verification["cli"]["status"], "absent")
         self.assertEqual(result.commands["archive"]["status"], "acknowledged")
-        self.assertEqual(result.commands["delete"]["status"], "acknowledged")
+        self.assertEqual(result.commands["delete"]["status"], "confirmed")
 
     def test_capability_reports_the_archive_then_delete_strategy(self) -> None:
         executor = CodexExecutor(command=sys.executable, transport="auto")
