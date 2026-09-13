@@ -374,6 +374,85 @@ class FailedTaskRetryTests(unittest.TestCase):
         errors = self.service.retry_preflight(leased.id)["errors"]
         self.assertIn("revival_run_lease_open", {item["code"] for item in errors})
 
+    def test_codex_retry_waits_for_existing_cleanup_before_session_rotation(self) -> None:
+        task = self._failed_task()
+        session = dict(task.extensions["agentbc.session"])
+        session.update(
+            {
+                "session_id": "01a09b7e-803d-7661-8f55-389b5eb0266a",
+                "session_state": "terminal",
+                "cleanup": {"state": "not_requested", "capability": "supported"},
+            }
+        )
+        task.extensions["agentbc.session"] = session
+        self.service.store.write_task(task.id, task.to_dict())
+
+        preflight = self.service.retry_preflight(task.id)
+
+        self.assertFalse(preflight["ok"])
+        self.assertIn(
+            "revival_session_cleanup_unstable",
+            {item["code"] for item in preflight["errors"]},
+        )
+        current = self.service.get_task(task.id)
+        self.assertEqual(
+            current.extensions["agentbc.session"]["session_id"],
+            "01a09b7e-803d-7661-8f55-389b5eb0266a",
+        )
+        self.assertFalse(
+            (control_root_for_task(task.id, board_root=self.board) / "attempts").exists()
+        )
+
+    def test_retry_close_keeps_task_until_existing_cleanup_resolves(self) -> None:
+        from agent_bridge_connect.cli import main
+        from agent_bridge_connect.retry_flow import finalize_retry_chain_closes
+
+        source = self._failed_task()
+        retried = self.service.retry_failed_task(source.id)
+        self.service.start_task_run(retried.id, "codex")
+        self.service.update_execution_metadata(
+            retried.id,
+            {"executor_run_id": "codex-retry-run", "worker_run_id": "retry-worker"},
+        )
+        current = self.service.get_task(retried.id)
+        session = dict(current.extensions["agentbc.session"])
+        session.update(
+            {
+                "session_id": "01a09b7e-803d-7661-8f55-389b5eb0266a",
+                "session_state": "active",
+                "cleanup": {"state": "not_requested", "capability": "supported"},
+            }
+        )
+        current.extensions["agentbc.session"] = session
+        self.service.store.write_task(current.id, current.to_dict())
+        output = StringIO()
+        with (
+            mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.cancel",
+                return_value={"status": "cancelled"},
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            code = main(["task", "close", current.id, "--root", str(self.board)])
+
+        self.assertEqual(code, 0)
+        self.assertIn(f"close_pending_cleanup: {current.id}", output.getvalue())
+        parked = self.service.get_task(current.id)
+        self.assertEqual(parked.status, "cancelled")
+        self.assertIn("agentbc.close_intent", parked.extensions)
+
+        session = dict(parked.extensions["agentbc.session"])
+        session["cleanup"] = {"state": "succeeded", "capability": "supported"}
+        parked.extensions["agentbc.session"] = session
+        self.service.store.write_task(parked.id, parked.to_dict())
+
+        finalized = finalize_retry_chain_closes(self.service)
+
+        self.assertEqual([item["task_id"] for item in finalized], [parked.id])
+        with self.assertRaises(ABCError) as raised:
+            self.service.get_task(parked.id)
+        self.assertEqual(raised.exception.code, "task_not_found")
+
     def test_stale_worker_projection_is_restart_safe(self) -> None:
         task = self._failed_task()
         preflight = self.service.retry_preflight(task.id)

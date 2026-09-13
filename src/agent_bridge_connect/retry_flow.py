@@ -86,6 +86,7 @@ _STABLE_CLEANUP_STATES = {
     "unsupported",
     "legacy",
 }
+_RESOLVED_CLEANUP_STATES = {"succeeded", "retained", "unsupported"}
 _EXECUTION_DYNAMIC_KEYS = {
     "worker_run_id",
     "worker_pid",
@@ -116,6 +117,23 @@ _SESSION_ACTIVE_STATE_FILES = (
     "claude_sdk_hooks_session.json",
     "responses",
 )
+
+
+def _attempt_session_cleanup_ready(
+    *,
+    executor: Any,
+    retain: Any,
+    session_id: Any,
+    cleanup: Any,
+) -> bool:
+    if not str(session_id or "").strip():
+        return True
+    state = str(cleanup.get("state") or "") if isinstance(cleanup, dict) else ""
+    if retain is True:
+        return state == "retained"
+    if str(executor or "").strip().lower() == "codex":
+        return state == "succeeded"
+    return state in _RESOLVED_CLEANUP_STATES
 
 
 class FailedTaskRetryFlow:
@@ -233,6 +251,44 @@ class FailedTaskRetryFlow:
                         REVIVAL_SESSION_CLEANUP_UNSTABLE,
                         f"Task {task.id} executor session is still {session_state}.",
                         session_state=session_state,
+                    )
+                )
+            # SESSION-104-001-R2: a Codex retry must not rotate the live
+            # session projection until the existing cleanup coordinator has
+            # resolved that exact attempt.  The coordinator remains unchanged;
+            # retry only waits at its task-chain boundary.
+            if not _attempt_session_cleanup_ready(
+                executor=session.get("executor") or task.assignee,
+                retain=session.get("retain"),
+                session_id=session.get("session_id"),
+                cleanup=session.get("cleanup"),
+            ):
+                errors.append(
+                    _error(
+                        REVIVAL_SESSION_CLEANUP_UNSTABLE,
+                        "Codex retry requires the source attempt to finish existing session cleanup.",
+                        cleanup_state=cleanup_state or "invalid",
+                    )
+                )
+        auxiliary = extensions.get(AUXILIARY_EXTENSION_KEY)
+        if isinstance(auxiliary, dict):
+            unresolved_auxiliary = [
+                str(entry.get("aux_id") or "")
+                for entry in auxiliary.get("sessions") or []
+                if isinstance(entry, dict)
+                and not _attempt_session_cleanup_ready(
+                    executor=entry.get("executor"),
+                    retain=entry.get("retain"),
+                    session_id=entry.get("session_id"),
+                    cleanup=entry.get("cleanup"),
+                )
+            ]
+            if unresolved_auxiliary:
+                errors.append(
+                    _error(
+                        REVIVAL_SESSION_CLEANUP_UNSTABLE,
+                        "Retry requires every source-attempt auxiliary session to finish existing cleanup.",
+                        auxiliary_ids=unresolved_auxiliary,
                     )
                 )
 
@@ -483,6 +539,74 @@ def failed_retry_preflight(service: Any, task_id: str) -> dict[str, Any]:
 
 def retry_failed_task(service: Any, task_id: str) -> Any:
     return FailedTaskRetryFlow(service).execute(task_id)
+
+
+def is_retry_chain_task(task: Any) -> bool:
+    """Return whether a task has entered the failed-task retry chain."""
+    extensions = dict(getattr(task, "extensions", None) or {})
+    revival = extensions.get(REVIVAL_EXTENSION_KEY)
+    return isinstance(revival, dict) and str(revival.get("operation") or "") == "retry"
+
+
+def retry_close_cleanup_ready(task: Any) -> bool:
+    """Check whether existing cleanup has resolved the current retry attempt.
+
+    This is deliberately a read-only retry-chain gate.  It does not duplicate
+    or alter :class:`SessionCleanupCoordinator` transitions.
+    """
+    if not is_retry_chain_task(task):
+        return True
+    extensions = dict(getattr(task, "extensions", None) or {})
+    session = extensions.get(SESSION_EXTENSION_KEY)
+    if isinstance(session, dict) and not _attempt_session_cleanup_ready(
+        executor=session.get("executor") or getattr(task, "assignee", ""),
+        retain=session.get("retain"),
+        session_id=session.get("session_id"),
+        cleanup=session.get("cleanup"),
+    ):
+        return False
+    auxiliary = extensions.get(AUXILIARY_EXTENSION_KEY)
+    if not isinstance(auxiliary, dict):
+        return True
+    return all(
+        _attempt_session_cleanup_ready(
+            executor=entry.get("executor"),
+            retain=entry.get("retain"),
+            session_id=entry.get("session_id"),
+            cleanup=entry.get("cleanup"),
+        )
+        for entry in auxiliary.get("sessions") or []
+        if isinstance(entry, dict)
+    )
+
+
+def finalize_retry_chain_closes(service: Any) -> list[dict[str, Any]]:
+    """Purge retry-chain closes only after existing cleanup is resolved."""
+    finalized: list[dict[str, Any]] = []
+    for raw in service.store.list_tasks():
+        extensions = raw.get("extensions")
+        if not isinstance(extensions, dict):
+            continue
+        intent = extensions.get("agentbc.close_intent")
+        if not isinstance(intent, dict):
+            continue
+        try:
+            task = service.get_task(str(raw.get("id") or raw.get("task_id") or ""))
+        except ABCError:
+            continue
+        if (
+            not is_retry_chain_task(task)
+            or str(task.status or "").lower()
+            not in {"cancelled", "completed", "failed", "needs_recovery", "rejected"}
+        ):
+            continue
+        if not retry_close_cleanup_ready(task):
+            continue
+        token = str(intent.get("token") or "")
+        if not token:
+            continue
+        finalized.append(service.commit_task_close(task.id, token))
+    return finalized
 
 
 def _prepare_retry_task(

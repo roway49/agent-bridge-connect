@@ -2301,6 +2301,19 @@ class RunnerState:
                 processed.extend(
                     coordinator.maintain_board(now=now, force_retry=force_retry)
                 )
+                # SESSION-104-001-R2: retry-chain close keeps the authoritative
+                # task projection alive until the unchanged cleanup coordinator
+                # reaches a resolved state.  Purging is a retry-chain concern,
+                # never a cleanup-state-machine concern.
+                from .retry_flow import finalize_retry_chain_closes
+                from .service import TaskService
+                from .task_health import remove_dashboard_task, request_dashboard_refresh
+
+                finalized = finalize_retry_chain_closes(TaskService(board))
+                if finalized:
+                    for item in finalized:
+                        remove_dashboard_task(board, str(item.get("task_id") or ""))
+                    request_dashboard_refresh(board)
             except (ABCError, OSError, ValueError):
                 continue
         return processed
