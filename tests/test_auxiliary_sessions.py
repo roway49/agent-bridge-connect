@@ -29,7 +29,12 @@ from agent_bridge_connect.auxiliary_sessions import (
     read_auxiliary_ledger,
     redact_session_ref,
     reserve_auxiliary_session,
+    transition_auxiliary_cleanup,
     validate_auxiliary_ledger,
+)
+from agent_bridge_connect.codex_desktop_archive import (
+    AcknowledgedCodexDesktopArchiveBroker,
+    CODEX_DESKTOP_ARCHIVE_REJECTED,
 )
 from agent_bridge_connect.execution_policy import SESSION_EXTENSION_KEY
 from agent_bridge_connect.protocol import ABCError
@@ -705,6 +710,85 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
         self.assertEqual(executor.calls[0].session_id, PRIMARY_SESSION_ID)
         self.assertEqual(executor.calls[1].session_id, "CHILD-B")
         self.assertEqual(executor.calls[2].session_id, "CHILD-A")
+
+    def test_exact_native_ack_recovers_nonretryable_auxiliary_archive_failure(self) -> None:
+        child_session_id = "00000000-0000-4000-8000-000000000002"
+        task_id = _terminal_task(self.service)
+        _add_auxiliary(
+            self.service,
+            task_id,
+            [
+                {
+                    "executor": "codex",
+                    "parent_executor": "codex",
+                    "parent_session_id": PRIMARY_SESSION_ID,
+                    "session_id": child_session_id,
+                    "owner_run_id": "run-1",
+                }
+            ],
+        )
+        raw = self.service.store.read_task(task_id)
+        ledger = read_auxiliary_ledger(raw["extensions"])
+        entry = ledger["sessions"][0]
+        pending = transition_auxiliary_cleanup(
+            entry,
+            "pending",
+            task_status="completed",
+            lease_state="closed",
+            capability="supported",
+            strategy="official_session_archive_then_delete",
+            occurred_at=T0,
+        )
+        entry["cleanup"] = pending
+        failed = transition_auxiliary_cleanup(
+            entry,
+            "failed",
+            task_status="completed",
+            lease_state="closed",
+            capability="supported",
+            strategy="official_session_archive_then_delete",
+            error_code=CODEX_DESKTOP_ARCHIVE_REJECTED,
+            retryable=False,
+            commands={
+                "desktop_archive": {
+                    "status": "rejected",
+                    "checked_at": T0,
+                    "request_digest": "req",
+                    "route_digest": "route",
+                    "app_instance_digest": "app",
+                }
+            },
+            occurred_at=_add_seconds(T0, 1),
+        )
+        entry["cleanup"] = failed
+        ledger["sessions"][0] = entry
+        raw["extensions"][AUXILIARY_EXTENSION_KEY] = ledger
+        self.service.store.write_task(task_id, raw)
+
+        executor = FakeCleanupExecutor(
+            SessionCleanupResult(
+                state="succeeded",
+                capability="supported",
+                strategy="official_session_archive_then_delete",
+                verification=CODEX_ABSENT_VERIFICATION,
+            )
+        )
+        from agent_bridge_connect.session_cleanup import SessionCleanupCoordinator
+
+        result = SessionCleanupCoordinator(
+            self.board,
+            executor_port=executor,
+            desktop_archive_broker=AcknowledgedCodexDesktopArchiveBroker(
+                task_id=task_id,
+                executor_run_id="run-1",
+                session_id=child_session_id,
+            ),
+        ).request_cleanup(task_id, force_retry=True, now=_add_seconds(T0, 2))
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(result["aggregate"]["state"], "resolved")
+        self.assertEqual(executor.calls[-1].session_id, child_session_id)
+        self.assertEqual(result["auxiliary"][0]["receipt"]["state"], "succeeded")
 
     def test_auxiliary_attempts_continue_after_primary_failure(self) -> None:
         task_id = _terminal_task(self.service)

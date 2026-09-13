@@ -311,7 +311,13 @@ class SessionCleanupCoordinator:
         if state == "failed":
             if blockers:
                 return self._result(task_id, "skipped", blockers, receipt=receipt)
-            authoritative_ack = self._can_replace_failed_desktop_route(receipt)
+            execution = (task.get("extensions") or {}).get("agentbc.execution") or {}
+            authoritative_ack = self._can_replace_failed_desktop_route(
+                receipt,
+                task_id=task_id,
+                executor_run_id=str(execution.get("executor_run_id") or ""),
+                session_id=str(session.get("session_id") or ""),
+            )
             if not receipt["retryable"] and not authoritative_ack:
                 return self._result(task_id, "final", [], receipt=receipt)
             if (
@@ -508,18 +514,39 @@ class SessionCleanupCoordinator:
         if state == "failed":
             if blockers:
                 return {**base, "status": "skipped", "actioned": False, "blockers": blockers, "receipt": receipt}
-            if not receipt["retryable"]:
+            authoritative_ack = self._can_replace_failed_desktop_route(
+                receipt,
+                task_id=str(entry.get("owner_task_id") or ""),
+                executor_run_id=str(entry.get("owner_run_id") or ""),
+                session_id=str(entry.get("session_id") or ""),
+            )
+            if not receipt["retryable"] and not authoritative_ack:
                 return {**base, "status": "final", "actioned": False, "blockers": [], "receipt": receipt}
-            if not receipt["next_attempt_at"] or not _is_iso_utc(receipt["next_attempt_at"]):
+            if (
+                not authoritative_ack
+                and (
+                    not receipt["next_attempt_at"]
+                    or not _is_iso_utc(receipt["next_attempt_at"])
+                )
+            ):
                 return {**base, "status": "waiting", "actioned": False, "blockers": [], "receipt": receipt}
             if (
-                not force_retry
+                not authoritative_ack
+                and not force_retry
                 and _parse_utc(occurred_at) < _parse_utc(receipt["next_attempt_at"])
             ):
                 return {**base, "status": "waiting", "actioned": False, "blockers": [], "receipt": receipt}
-            if receipt["attempts"] >= MAX_SESSION_CLEANUP_ATTEMPTS:
+            if (
+                receipt["attempts"] >= MAX_SESSION_CLEANUP_ATTEMPTS
+                and not authoritative_ack
+            ):
                 return {**base, "status": "final", "actioned": False, "blockers": [], "receipt": receipt}
-            pending = self._auxiliary_to_pending(task, entry, occurred_at)
+            pending = self._auxiliary_to_pending(
+                task,
+                entry,
+                occurred_at,
+                authoritative_archive_ack=authoritative_ack,
+            )
             updated = self._auxiliary_with_receipt(entry, pending, occurred_at)
             self._persist_auxiliary(task, updated, "retry", occurred_at)
             if self._codex_waiting_for_desktop(entry):
@@ -593,6 +620,8 @@ class SessionCleanupCoordinator:
         task: dict[str, Any],
         entry: dict[str, Any],
         occurred_at: str,
+        *,
+        authoritative_archive_ack: bool = False,
     ) -> dict[str, Any]:
         strategy = self._auxiliary_request_strategy(entry)
         return self._transition_auxiliary(
@@ -607,6 +636,7 @@ class SessionCleanupCoordinator:
                 if str(entry.get("executor") or "").strip().lower() == "codex"
                 else "official_session_delete"
             ),
+            authoritative_archive_ack=authoritative_archive_ack,
         )
 
     def _auxiliary_crash_recovery(
@@ -958,10 +988,25 @@ class SessionCleanupCoordinator:
             authoritative_archive_ack=authoritative_archive_ack,
         )
 
-    def _can_replace_failed_desktop_route(self, receipt: dict[str, Any]) -> bool:
+    def _can_replace_failed_desktop_route(
+        self,
+        receipt: dict[str, Any],
+        *,
+        task_id: str,
+        executor_run_id: str,
+        session_id: str,
+    ) -> bool:
         """Accept one exact native ack after the old Desktop route exhausted retries."""
         broker = self._desktop_archive_broker
         if broker is None or getattr(broker, "authoritative_ack", False) is not True:
+            return False
+        if (
+            str(getattr(broker, "task_id", "") or "").strip() != str(task_id or "").strip()
+            or str(getattr(broker, "executor_run_id", "") or "").strip()
+            != str(executor_run_id or "").strip()
+            or str(getattr(broker, "session_id", "") or "").strip().lower()
+            != str(session_id or "").strip().lower()
+        ):
             return False
         commands = receipt.get("commands") if isinstance(receipt.get("commands"), dict) else {}
         desktop = commands.get("desktop_archive") if isinstance(commands, dict) else {}
@@ -970,6 +1015,7 @@ class SessionCleanupCoordinator:
             in {
                 CODEX_DESKTOP_ARCHIVE_ROUTE_UNAVAILABLE,
                 CODEX_DESKTOP_ARCHIVE_TRANSPORT_LOST,
+                CODEX_DESKTOP_ARCHIVE_REJECTED,
             }
             and isinstance(desktop, dict)
             and desktop.get("status") in {"unavailable", "not_requested"}
