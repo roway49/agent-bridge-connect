@@ -572,6 +572,60 @@ class RunnerAuxiliaryDesktopArchiveAckTestCase(unittest.TestCase):
 
         self.runner = RunnerState(self.root / "runner", [self.root], {})
 
+    def test_recovery_archive_uses_historical_run_binding_and_never_deletes(self) -> None:
+        task_id = _terminal_task(self.service, status="needs_recovery")
+        raw = self.service.store.read_task(task_id)
+        raw["extensions"]["agentbc.session"]["session_state"] = "needs_recovery"
+        raw["extensions"]["agentbc.session"]["run_ids"] = ["run-recovery-1"]
+        raw["extensions"]["agentbc.execution"].pop("executor_run_id", None)
+        raw["extensions"].pop("agentbc.final_callback", None)
+        self.service.store.write_task(task_id, raw)
+
+        with mock.patch(
+            "agent_bridge_connect.session_cleanup.SessionCleanupCoordinator"
+        ) as coordinator_type:
+            result = self.runner.acknowledge_desktop_archive(
+                {
+                    "task_id": task_id,
+                    "session_id": PRIMARY_SESSION_ID,
+                    "board_root": str(self.board),
+                }
+            )
+
+        self.assertEqual(result["status"], "parked")
+        self.assertEqual(result["delete"], "not_requested")
+        coordinator_type.assert_not_called()
+        session = self.service.get_task(task_id).extensions["agentbc.session"]
+        self.assertTrue(session["archive_acknowledged"])
+        self.assertEqual(session["parking"]["state"], "parked")
+        self.assertEqual(session["parking"]["executor_run_id"], "run-recovery-1")
+        self.assertEqual(session["cleanup"]["state"], "not_requested")
+        events = self.service.store.read_events(task_id)
+        self.assertEqual(events[-1]["event_type"], "session.recovery_parked")
+
+    def test_terminal_primary_archive_uses_historical_run_binding(self) -> None:
+        task_id = _terminal_task(self.service)
+        raw = self.service.store.read_task(task_id)
+        raw["extensions"]["agentbc.session"]["run_ids"] = ["run-terminal-1"]
+        raw["extensions"]["agentbc.execution"].pop("executor_run_id", None)
+        self.service.store.write_task(task_id, raw)
+        with mock.patch(
+            "agent_bridge_connect.session_cleanup.SessionCleanupCoordinator"
+        ) as coordinator_type:
+            coordinator_type.return_value.request_cleanup.return_value = {
+                "status": "succeeded"
+            }
+            self.runner.acknowledge_desktop_archive(
+                {
+                    "task_id": task_id,
+                    "session_id": PRIMARY_SESSION_ID,
+                    "board_root": str(self.board),
+                }
+            )
+
+        broker = coordinator_type.call_args.kwargs["desktop_archive_broker"]
+        self.assertEqual(broker.executor_run_id, "run-terminal-1")
+
     def _task_with_child(self, *, owner_run_id: str = "run-1") -> tuple[str, str]:
         child_session_id = "00000000-0000-4000-8000-000000000002"
         task_id = _terminal_task(self.service)

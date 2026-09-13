@@ -136,8 +136,45 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | --- | --- | --- | --- | --- |
 | `RESOURCE-104-001-R1` | P1 / 待回归 | `E52M-002` 的 Hermes run 使用完 `150/150` 次迭代后，Core 已持久化 `input_required(type=choice, kind=resource_limit)`、RunLease 已挂起且 CLI 可响应，但 Codex Desktop 没有显示“提高预算并继续 / 终止任务”弹窗 | 每个仍有效的 resource-limit input 都有且只有一个 Desktop 弹窗；Approve 将当前 Task 上限翻倍并恢复同一官方 session，Deny 单调终止；CLI 响应保持等价兜底，但不能替代 Desktop 真机验收 | `FLOW-104-002` notification delivery；`FLOW-103-001` progress receipt；DialogNotifier |
 | `FLOW-104-003-R1` | P1 / 待回归 | `E52M-003` 中 Hermes 0.20.1 运行 `2h37m` 后以返回码 `0` 结束，但输出停留在代码 diff、未产生 `AGENTBC_FINAL_CALLBACK`；Runner 明确记录 `output_truncated=false`、`marker_seen=false`，且没有可识别的迭代耗尽 receipt | 进程成功退出与任务合同完成继续严格分离；Hermes 必须提供结构化 terminal reason、实际/上限 turns 和最终响应边界。确属资源耗尽时生成唯一可恢复 input；仍有 pending step 却正常退出时给出稳定的 incomplete-exit 分类、保留部分进度并允许受审计 retry/handoff；不得伪造 callback | `FLOW-104-003` failed recovery；`FLOW-103-001` progress receipt；Hermes ACP/CLI terminal receipt |
-| `FLOW-104-004-R1` | P1 / 1.0.4 待回归（`A3AC-001`，2026-09-05） | Codex 原生审批于 `08:54:43Z` 成功回传，唯一 contained-full continuation 于 `08:54:45Z` 在同一官方 session `01a070c5-836a-7553-b07f-68ab7da97e8b` 启动并继续完成合并、测试与代码修改；随后官方 Codex turn 变为 `interrupted`（`error=null`、无 `completedAt`），但 App Server Adapter 未收到或未持久化 `turn/completed`，无超时地阻塞在 stdio `recv/readline`，导致 Task 长期保持 `running`、RunLease `stale`、无 terminal callback | 权限审批成功与后续 turn 中断必须独立投影；App Server 等待循环须有有界接收、活性心跳和官方 turn 状态对账。发现 `interrupted/cancelled/failed`、transport loss 或在有界窗口内无法取得可信终态时，必须停止对应 Worker、关闭 RunLease、保留同一 session/工作树证据并单调进入稳定的 `needs_recovery`，不得无限等待、伪造 completed 或自动重派；正常长任务仍不得仅因耗时被终止 | Codex App Server turn lifecycle；RunLease heartbeat/reconciliation；`FLOW-104-003` terminal recovery |
+| `FLOW-104-004-R1` | **P1 / 已实现，待真机重放验收（`A3AC-001`、`7F43-001`）** | `A3AC-001` 证明审批后的官方 Codex turn 可变为 `interrupted`，而 Adapter 阻塞在 stdio 读取；`7F43-001` 进一步证明唯一 full continuation 被精确终止后，Runner 记录丢失 `task_id/board_root`，任务没有进入 `needs_recovery`，反而由 RunLease 懒对账写成 `failed + orphaned`，并使恢复态 Desktop archive acknowledgement 因缺少 executor-run binding 被拒绝 | 已将“审批后中断”收敛为单一恢复路径：App Server 定时以精确 `thread/read` 对账并识别 `interrupted`；权威终态缺失时进入 `needs_recovery`，关闭 RunLease、清除活动 Worker 指针、保留 session/run 历史绑定并允许恢复态 Desktop archive 停车；Runner worker 元数据在 full 下也独立保存 task/board/run 绑定。禁止 `failed + orphaned`、无限等待、自动 retry/handoff、伪造 callback或读取状态生成竞争终态 | 自动化：215 项定向、2000 项全量（17 skipped）、Ruff、compileall、wheel/sdist build、`git diff --check` 均通过；尚需安装后按第 174 行真机重放才可标记通过 |
 | `SESSION-104-001-R1` | **已关闭并通过主项验收（2026-09-09）** | `Z2W7-001` 等历史反例证明仅有 App Server 回执不足以驱动当前 Desktop 侧栏收敛 | `5b8c3d4` 的当前 Desktop relay 已提供独立 archive 触达回执；`XQQF-001` 完成 archive→delete，用户确认侧栏无需点击即消失 | `SESSION-104-001` 已通过 |
+
+`FLOW-104-004-R1` 的收紧验收合同（以 `7F43-001` 为固定负向基线）：
+
+- 固定事实：`7F43-001` 于 `14:40:29Z` 完成唯一 `approve_full`，`14:40:30Z` 在官方 session
+  `01a09b35-8b9b-7701-b81a-de6d9f455ea2` 启动唯一 continuation；`interrupt-ready.txt` 已按 27 字节
+  精确落盘，continuation Runner `runner-worker-425febe7e9b3` 于 `14:42:54Z` 收到一次 `SIGTERM`，但
+  `14:43:11Z` 被错误写成 `failed/executor_exit_unconfirmed`，RunLease 留在 `orphaned`。第三步哨兵和
+  `AGENTBC_FINAL_CALLBACK` 均不存在，证明这是基础设施中断而非业务失败；历史记录不得改写。
+- Runner 创建任何 worker（含审批后的 full continuation）时，必须在 Runner 自身记录中持久化不可变的
+  `task_id + board_root + executor + worker_run_id + executor_run_id + official_session_id` 绑定。活动指针可以
+  从 Task record 清除，但不得反向清空这份退出对账凭据；取消记录还必须保存 request time、signal、returncode
+  和 ended_at。缺少绑定时不得静默跳过，必须产生稳定错误 `runner_worker_binding_missing` 并按同一恢复事务收口。
+- 官方 `turn/completed` 是 completed/failed/cancelled 业务终态的权威来源。Worker 被终止、App Server EOF、
+  pipe/stdio 断开、官方 turn 为 `interrupted`，或 Executor 已退出但没有可信 terminal event，均属于可恢复的
+  基础设施终态，统一使用稳定分类 `executor_turn_interrupted`、`executor_transport_lost` 或
+  `executor_exit_unconfirmed`，但状态必须为 `needs_recovery`；`executor_exit_unconfirmed` 不得再映射为 `failed`。
+- 终态判定只有一个写入口。Runner exit reconciliation、App Server 对账和 RunLease 懒对账必须调用同一原子
+  服务事务，按固定顺序完成：验证 task/run/session 绑定 → 写入 `needs_recovery` 与结构化 failure receipt →
+  结束 execution interval → 将 RunLease 写成 `closed/recovery_ready` → 清除活动 worker/dispatch/monitor 指针 →
+  写 report/index → 幂等发送一次 recovery notification。任一步失败可重放，但不得降级成另一种 Task 状态。
+- `agentbc task status`、report、Task List 和 doctor 只读取上述权威结果；读取操作不得把 `running/stale/orphaned`
+  直接改写为 `failed`。若仍需懒对账，它也只能调用同一恢复事务，并在单次调用结束前得到
+  `needs_recovery + closed`，不得向用户暴露 `failed + orphaned` 的中间组合。
+- 恢复事务必须保留原 `executor_run_id` 和 official session receipt 作为历史绑定，即使活动执行指针已清除。
+  对 `retain=false` 的 Codex 会话，在 RunLease 关闭后执行一次恢复态 archive 停车；Desktop acknowledgement
+  必须能使用冻结的历史 run/session binding，不得因活动 `executor_run_id` 已清除而返回
+  `Desktop archive acknowledgement has no executor run binding`，且停车阶段绝不调用 delete。
+- 不得自动 retry、handoff、resume 或创建第二个 continuation。用户随后只能通过既有 `FLOW-104-003`
+  `retry/handoff` 合同显式复活；正常长任务只要 Worker 与官方 turn 仍活跃就持续心跳，不因墙钟时间进入恢复。
+- 自动化覆盖必须包含：审批前中断、审批后 continuation 中断、`SIGTERM`/crash/App Server EOF、缺失
+  `turn/completed`、Runner 重启、对账并发与重复重放、终态投递失败重放、恢复态 archive acknowledgement。
+  每个负向用例都断言 `needs_recovery`、RunLease closed、一次 failure/recovery/notification receipt、零 callback、
+  零自动派发；同时保留正常 completed、可信 executor failed 和显式 user cancel 三个非回归对照。
+- 真机验收重放 `7F43`：一次审批后等待 marker，再精确终止唯一 continuation worker。30 秒内必须稳定得到
+  `needs_recovery + RunLease closed + recovery_ready`；第三步哨兵和 callback 不存在，官方 session ID 不变，
+  Desktop 已停车且未 delete。之后分别由用户显式执行一次 retry 与一次 handoff，验证 revival 入口可用；只有
+  全部机械证据成立才可关闭本项。
 
 `RESOURCE-104-001-R1` 的固定验收合同：
 
@@ -260,7 +297,7 @@ fixture/文档工作，但不得进入公开 RC。
 | 9 月 8 日—9 月 9 日 | **已通过：`SESSION-104-001` Desktop archive 生产接线回归** | `P3FK-002` 等旧反例已冻结；`5b8c3d4` 接通当前 Desktop 官方 relay | `XQQF-001` 的 Desktop archive 与 delete 独立 acknowledged、CLI/Desktop backend absent，用户确认侧栏即时收敛；本项不再阻塞 RC |
 | 9 月 7 日—9 月 9 日 | **已通过：`PERM-104-002` 最终收口** | 三 Executor 显式 full 与 inherit→full 核心矩阵、Claude Details UI 已通过 | `FNJN-001` 补齐 handoff/retry 继承 full、Deny、timeout、重复/乱序事件并完成质量门禁；PERM 全局开发门禁关闭 |
 | 9 月 10 日—9 月 13 日 | **已通过：`INPUT-104-001`**（`FLOW-104-002` 已通过） | `ba72f36` 完成外部输入冻结、manifest、重放与清理；本机安装身份一致 | `TEFD-001`、`8V5E-001`、`GTQW-001` 均完成 custom path + 外部冻结输入 + 跨指定目录修改，零审批，terminal delivery 与 session cleanup 无回归 |
-| 9 月 14 日—9 月 18 日 | **已通过：`FLOW-104-003`**；P1：`FLOW-104-003-R1`、`FLOW-104-004-R1` | `K3T8-002` handoff 与 `Y9JS-001` needs-recovery retry 已完成真机闭环 | 保持 Failed/needs-recovery revival 回归；继续解决 Hermes incomplete exit 与 Codex interrupted turn 的稳定终态和恢复动作 |
+| 9 月 14 日—9 月 18 日 | **已通过：`FLOW-104-003`**；P1：`FLOW-104-003-R1`；`FLOW-104-004-R1` 已实现待真机重放 | `K3T8-002` handoff 与 `Y9JS-001` needs-recovery retry 已完成真机闭环；Codex interrupted turn 修复已完成自动化门禁 | 保持 Failed/needs-recovery revival 回归；安装新包后重放 `7F43`，验收中断终态、RunLease closure 与恢复态 Desktop parking |
 | 9 月 19 日—9 月 22 日 | P1：`FLOW-104-001`、`FLOW-103-001`、`RESOURCE-104-001-R1` | steps/progress/resource input 均已有部分合同 | multi-step handoff、单调 progress、资源耗尽 Desktop 弹窗和同 session continuation 通过 |
 | 9 月 23 日—9 月 27 日 | P1 回归与局部 `ARCH-104-001` 收口 | `SESSION-104-001` 已完成重新验收 | 三 Executor E2E、session teardown、Update/Homebrew 回归完成；只做被前述工作包证明必要的机械拆分 |
 | 9 月 28 日—10 月 2 日 | Wave 5：`1.0.4a1` RC 与双机发布门禁 | 所有 P0/P1 退出条件完成 | GitHub/PyPI/bundle/bottle/manifest SHA 与 tag commit 可复验，提交用户 go/no-go |

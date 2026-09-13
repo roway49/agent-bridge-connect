@@ -79,6 +79,9 @@ CODEX_CLEANUP_UNSUPPORTED_CODE = "codex_session_delete_unavailable"
 _CODEX_FROZEN_HELP_FIXTURE = "matrix/codex/0.146.0/delete_help.txt"
 _CODEX_FROZEN_VERSION = "0.146.0"
 _CODEX_CLEANUP_TIMEOUT_S = 60
+_CODEX_APP_RECEIVE_HEARTBEAT_S = 1.0
+_CODEX_APP_TURN_RECONCILE_S = 5.0
+_CODEX_APP_TURN_UNCONFIRMED_S = 30.0
 _CODEX_SESSION_ABSENT_RE = re.compile(
     r"(?im)^(?:session|saved session).*(?:not found|does not exist)"
 )
@@ -1133,13 +1136,25 @@ class CodexExecutor(CLIExecutorBase):
         sender(message)
 
     @staticmethod
-    def _transport_recv(transport: Any) -> dict[str, Any]:
+    def _transport_recv(
+        transport: Any,
+        timeout_s: float | None = None,
+    ) -> dict[str, Any]:
         receiver = getattr(transport, "recv", None) or getattr(
             transport, "receive", None
         )
         if not callable(receiver):
             raise TransportClosed("Codex App Server fake transport has no recv method")
-        message = receiver()
+        if timeout_s is None:
+            message = receiver()
+        else:
+            try:
+                message = receiver(timeout_s=timeout_s)
+            except TypeError:
+                # Test/third-party protocol-compatible transports may expose
+                # only recv() while still returning promptly.  The official
+                # stdio transport supports the bounded keyword form.
+                message = receiver()
         if not isinstance(message, dict):
             raise TransportClosed("Codex App Server transport returned a non-object")
         return message
@@ -1355,10 +1370,27 @@ class CodexExecutor(CLIExecutorBase):
         )
 
     def _app_wait_response(
-        self, record: dict[str, Any], request_id: int
+        self,
+        record: dict[str, Any],
+        request_id: int,
+        *,
+        timeout_s: float | None = None,
     ) -> dict[str, Any]:
+        deadline = (
+            time.monotonic() + max(float(timeout_s), 0.1)
+            if timeout_s is not None
+            else None
+        )
         while True:
-            message = self._transport_recv(record["transport"])
+            receive_timeout = None
+            if deadline is not None:
+                receive_timeout = max(deadline - time.monotonic(), 0.0)
+                if receive_timeout <= 0:
+                    raise TimeoutError("Codex App Server response timed out")
+            message = self._transport_recv(
+                record["transport"],
+                timeout_s=receive_timeout,
+            )
             method = str(message.get("method") or "")
             if method in {
                 "item/commandExecution/requestApproval",
@@ -1381,11 +1413,99 @@ class CodexExecutor(CLIExecutorBase):
             ):
                 record["completion"] = message
 
+    def _app_read_turn_state(
+        self,
+        record: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Read the exact official turn when its completion event was lost."""
+        thread_id = str(record.get("session_id") or "").strip()
+        turn_id = str(record.get("turn_id") or "").strip()
+        if not thread_id or not turn_id:
+            return None
+        request_id = self._app_rpc(
+            record,
+            "thread/read",
+            {"threadId": thread_id, "includeTurns": True},
+        )
+        response = self._app_wait_response(
+            record,
+            request_id,
+            timeout_s=_CODEX_APP_TURN_RECONCILE_S,
+        )
+        result = response.get("result") if isinstance(response.get("result"), dict) else {}
+        thread = result.get("thread") if isinstance(result.get("thread"), dict) else {}
+        turns = thread.get("turns") if isinstance(thread.get("turns"), list) else []
+        matches = [
+            turn
+            for turn in turns
+            if isinstance(turn, dict) and str(turn.get("id") or "") == turn_id
+        ]
+        if len(matches) != 1:
+            return None
+        turn = dict(matches[0])
+        status = str(turn.get("status") or "").strip()
+        if status in {"inProgress", "in_progress", "running"}:
+            # A fresh, exact thread/read match is authoritative liveness
+            # evidence even though it is not a terminal result.  Keep this
+            # distinct from a missing turn so long-running turns do not age
+            # into an artificial recovery failure.
+            return {"_agentbc_turn_in_progress": True}
+        if status not in {"completed", "failed", "interrupted"}:
+            return None
+        record["events"].append(
+            {
+                "event_type": "turn_state_reconciled",
+                "source": "codex_app_server.thread/read",
+                "sequence": len(record["events"]) + 1,
+                "payload": {"threadId": thread_id, "turn": turn},
+            }
+        )
+        return {
+            "jsonrpc": "2.0",
+            "method": "turn/completed",
+            "params": {"threadId": thread_id, "turn": turn},
+        }
+
     def _app_wait_turn_completed(self, record: dict[str, Any]) -> dict[str, Any]:
         if isinstance(record.get("completion"), dict):
             return record["completion"]
+        last_confirmed_at = time.monotonic()
+        next_reconcile_at = last_confirmed_at + _CODEX_APP_TURN_RECONCILE_S
         while True:
-            message = self._transport_recv(record["transport"])
+            if isinstance(record.get("completion"), dict):
+                return record["completion"]
+            try:
+                message = self._transport_recv(
+                    record["transport"],
+                    timeout_s=_CODEX_APP_RECEIVE_HEARTBEAT_S,
+                )
+                last_confirmed_at = time.monotonic()
+            except TimeoutError:
+                if not self._transport_is_alive(record["transport"]):
+                    raise TransportClosed(
+                        "Codex App Server transport closed before turn completion"
+                    )
+                now = time.monotonic()
+                if now >= next_reconcile_at:
+                    try:
+                        reconciled = self._app_read_turn_state(record)
+                    except TimeoutError:
+                        reconciled = None
+                    if bool((reconciled or {}).get("_agentbc_turn_in_progress")):
+                        last_confirmed_at = now
+                    elif reconciled is not None:
+                        return reconciled
+                    next_reconcile_at = now + _CODEX_APP_TURN_RECONCILE_S
+                if now - last_confirmed_at >= _CODEX_APP_TURN_UNCONFIRMED_S:
+                    raise SessionRecoveryRequired(
+                        "codex_turn_state_unconfirmed",
+                        "Codex turn remained unconfirmed after bounded official reconciliation.",
+                        {
+                            "thread_id": str(record.get("session_id") or ""),
+                            "turn_id": str(record.get("turn_id") or ""),
+                        },
+                    )
+                continue
             method = str(message.get("method") or "")
             if method in {
                 "item/commandExecution/requestApproval",
@@ -1769,6 +1889,14 @@ class CodexExecutor(CLIExecutorBase):
                 executor_name="codex",
                 native_approval_authoritative=True,
             )
+            terminal_failure = terminal.failure
+            if turn_status == "interrupted":
+                terminal_failure = {
+                    "kind": "executor_turn_interrupted",
+                    "layer": "executor",
+                    "message": "Codex reported that the official turn was interrupted.",
+                    "retryable": True,
+                }
             # Archive while this exact App Server connection still owns the
             # thread writer. A separate cleanup process is rejected by Codex
             # with "already has an active writer". Publishing terminal state
@@ -1804,16 +1932,17 @@ class CodexExecutor(CLIExecutorBase):
                 "agent_callback": terminal.callback,
                 "marker_valid": validation.valid,
                 "marker_seen": validation.marker_seen,
-                "failure": terminal.failure,
+                "failure": terminal_failure,
                 "extensions": self.get_extensions(),
                 "control_events": plane.events(),
             }
             record["result"] = result
-            record["status"] = (
-                terminal.status
-                if turn_status in {"completed", "succeeded", "success"}
-                else "failed"
-            )
+            if turn_status in {"completed", "succeeded", "success"}:
+                record["status"] = terminal.status
+            elif turn_status == "interrupted":
+                record["status"] = "needs_recovery"
+            else:
+                record["status"] = "failed"
             self._runs[run_id] = PollResult(
                 status=record["status"],
                 progress={"events_seen": len(record["events"])},

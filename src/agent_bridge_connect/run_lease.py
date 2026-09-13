@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 from .protocol import ABCError
-from .task_health import clear_task_progress
 from .task_store import TaskStore
 
 
@@ -36,12 +35,6 @@ class RunLease:
     last_heartbeat_at: str
     cleanup_strategy: str
     state: str
-
-
-@dataclass
-class _TaskHealthView:
-    id: str
-    workspace: dict[str, Any]
 
 
 _LEASE_PATHS: dict[str, Path] = {}
@@ -125,38 +118,49 @@ def reconcile_task(
         return lease.state
 
     if lease.state == RunLeaseState.ORPHANED or process_lost:
-        lease.state = RunLeaseState.ORPHANED
         if status in {"pending", "running", "assigned", "working", "input_required", "needs_review", "pause_pending", "paused"}:
-            task["status"] = "failed"
-            _set_recovery_metadata(task, lease, "failed")
-            _set_internal_status(task, "failed")
-            extensions = task.get("extensions") if isinstance(task.get("extensions"), dict) else {}
-            callback = extensions.pop("agentbc.final_callback", None)
-            if isinstance(callback, dict):
-                extensions["agentbc.superseded_final_callback"] = {
-                    **callback,
-                    "superseded_by": "failed",
-                    "superseded_reason": "Executor exit could not be confirmed",
-                    "superseded_at": _utc_now(),
-                }
-            task["extensions"] = extensions
-            store.write_task(task_id, task)
-            store.append_event(
-                task_id,
-                {
-                    "event_type": "task.failed",
-                    "task_id": task_id,
-                    "created_at": _utc_now(),
-                    "error": {"code": "executor_exit_unconfirmed", "message": "Executor exit could not be confirmed"},
-                },
-            )
-            clear_task_progress(_TaskHealthView(task_id, task.get("workspace") or {}), remove_log=True)
             try:
-                from .reports import write_report_files
+                # FLOW-104-004-R1: process loss without a trusted executor
+                # terminal event is recoverable infrastructure ambiguity, not
+                # a business failure.  Use the same service transaction as
+                # Runner exit reconciliation so status reads cannot create a
+                # competing ``failed + orphaned`` terminal combination.
+                from .service import TaskService
 
-                write_report_files(task_id, root, refresh_index=refresh_index)
+                service = TaskService(root)
+                service.mark_task_needs_recovery(
+                    task_id,
+                    "executor_exit_unconfirmed",
+                    "Executor exit could not be confirmed by a trusted terminal event.",
+                    {
+                        "executor_run_id": lease.run_id,
+                        "phase": "run_lease_reconcile",
+                    },
+                    executor_run_id=lease.run_id,
+                    close_run_lease=True,
+                )
+                service.clear_execution_run_references(task_id)
+                refreshed = load_lease(task_id, root)
+                return refreshed.state if refreshed is not None else RunLeaseState.CLOSED
             except (ABCError, OSError, PermissionError):
-                pass
+                lease.state = RunLeaseState.ORPHANED
+                save_lease(lease, root)
+                return RunLeaseState.ORPHANED
+        if status == "needs_recovery":
+            try:
+                from .service import TaskService
+
+                TaskService(root).close_needs_recovery_run_lifecycle(task_id)
+                refreshed = load_lease(task_id, root)
+                return refreshed.state if refreshed is not None else RunLeaseState.CLOSED
+            except (ABCError, OSError, PermissionError):
+                lease.state = RunLeaseState.ORPHANED
+                save_lease(lease, root)
+                return RunLeaseState.ORPHANED
+        if status in {"completed", "failed", "cancelled", "rejected"}:
+            close_lease(lease, root)
+            return RunLeaseState.CLOSED
+        lease.state = RunLeaseState.ORPHANED
         save_lease(lease, root)
         return RunLeaseState.ORPHANED
 

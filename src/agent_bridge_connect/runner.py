@@ -1762,6 +1762,18 @@ class RunnerState:
                 "runner-worker",
                 run_id=worker_run_id,
                 containment=containment,
+                task_binding={
+                    "task_id": task_id,
+                    "board_root": str(board),
+                    "executor": executor,
+                    "executor_run_id": str(execution.get("executor_run_id") or ""),
+                    "official_session_id": str(
+                        ((task_model.extensions or {}).get("agentbc.session") or {}).get(
+                            "session_id"
+                        )
+                        or ""
+                    ),
+                },
             )
         except Exception as exc:
             self._reconcile_worker_start_failure(
@@ -2339,22 +2351,40 @@ class RunnerState:
         if not task_id or not session_id:
             raise RunnerError("Desktop archive acknowledgement requires task and session ids")
         board = self._atomic_board(str(request.get("board_root") or ""))
-        task = TaskService(board).get_task(task_id)
+        service = TaskService(board)
+        task = service.get_task(task_id)
         extensions = dict(task.extensions or {})
         session = extensions.get("agentbc.session")
         execution = extensions.get("agentbc.execution")
         if not isinstance(session, dict) or not isinstance(execution, dict):
             raise RunnerError("Desktop archive acknowledgement has no bound session receipt")
         primary_session_id = str(session.get("session_id") or "").strip().lower()
+        task_status = str(task.status or "").strip().lower()
+        session_state = str(session.get("session_state") or "").strip().lower()
+        recovery_parking = (
+            task_status == "needs_recovery" and session_state == "needs_recovery"
+        )
         primary_eligible = (
             str(session.get("executor") or "").strip().lower() == "codex"
             and session.get("retain") is False
             and session.get("official_receipt_bound") is True
             and bool(primary_session_id)
-            and str(session.get("session_state") or "").strip().lower() == "terminal"
+            and (session_state == "terminal" or recovery_parking)
         )
         primary_matches = primary_eligible and primary_session_id == session_id
         executor_run_id = str(execution.get("executor_run_id") or "").strip()
+        if not executor_run_id:
+            # Activity pointers are intentionally cleared during terminal and
+            # recovery reconciliation.  The official session's immutable run
+            # ledger remains the authoritative historical binding for a later
+            # Desktop archive acknowledgement.
+            historical_run_ids = [
+                str(item).strip()
+                for item in session.get("run_ids", [])
+                if str(item).strip()
+            ]
+            if historical_run_ids:
+                executor_run_id = historical_run_ids[-1]
         if not executor_run_id:
             raise RunnerError("Desktop archive acknowledgement has no executor run binding")
         if not primary_matches:
@@ -2379,6 +2409,50 @@ class RunnerState:
             ]
             if len(matches) != 1:
                 raise RunnerError("Desktop archive acknowledgement binding mismatch")
+        if recovery_parking and primary_matches:
+            from .execution_policy import SESSION_EXTENSION_KEY, validate_session_snapshot
+            from .reports import write_report_files
+
+            checked_at = _utc_now()
+            updated_session = dict(session)
+            updated_session["archive_acknowledged"] = True
+            updated_session["archive_checked_at"] = checked_at
+            updated_session["parking"] = {
+                "version": 1,
+                "state": "parked",
+                "executor_run_id": executor_run_id,
+                "checked_at": checked_at,
+            }
+            errors = validate_session_snapshot(updated_session, executor="codex")
+            if errors:
+                raise RunnerError(
+                    "Desktop archive acknowledgement binding mismatch: "
+                    + "; ".join(errors)
+                )
+            updated_extensions = dict(extensions)
+            updated_extensions[SESSION_EXTENSION_KEY] = updated_session
+            task.extensions = updated_extensions
+            task.updated_at = checked_at
+            service.store.write_task(task_id, task.to_dict())
+            service.store.append_event(
+                task_id,
+                {
+                    "event_type": "session.recovery_parked",
+                    "task_id": task_id,
+                    "executor_run_id": executor_run_id,
+                    "created_at": checked_at,
+                },
+            )
+            write_report_files(task_id, board)
+            self._refresh_worker_board_index(board)
+            return {
+                "ok": True,
+                "task_id": task_id,
+                "session_id": session_id,
+                "status": "parked",
+                "actioned": True,
+                "delete": "not_requested",
+            }
         broker = AcknowledgedCodexDesktopArchiveBroker(
             task_id=task_id,
             executor_run_id=executor_run_id,
@@ -2724,6 +2798,7 @@ class RunnerState:
         *,
         run_id: str | None = None,
         containment: dict[str, Any] | None = None,
+        task_binding: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         run_id = run_id or f"{run_prefix}-{uuid.uuid4().hex[:12]}"
         if not _EXECUTOR_RUN_ID_RE.fullmatch(run_id):
@@ -2855,10 +2930,27 @@ class RunnerState:
             if runner_ipc_channel:
                 self._cleanup_runner_ipc_channel(runner_ipc_channel)
             raise
+        binding = dict(task_binding or {})
         record: dict[str, Any] = {
             "run_id": run_id,
-            "task_id": str((containment or {}).get("task_id") or ""),
-            "board_root": str((containment or {}).get("board_root") or ""),
+            # FLOW-104-004-R1: task identity is lifecycle metadata, not a
+            # containment feature.  Full deliberately has no AgentBC
+            # Seatbelt, but its Runner worker must still retain an immutable
+            # task/run/session binding so an exit can be reconciled.
+            "task_id": str(
+                binding.get("task_id") or (containment or {}).get("task_id") or ""
+            ),
+            "board_root": str(
+                binding.get("board_root") or (containment or {}).get("board_root") or ""
+            ),
+            "task_binding": {
+                "task_id": str(binding.get("task_id") or ""),
+                "board_root": str(binding.get("board_root") or ""),
+                "executor": str(binding.get("executor") or ""),
+                "worker_run_id": run_id,
+                "executor_run_id": str(binding.get("executor_run_id") or ""),
+                "official_session_id": str(binding.get("official_session_id") or ""),
+            },
             "executor": executor,
             "command": list(wrapped_command),
             "cwd": str(work_dir),
@@ -2870,6 +2962,8 @@ class RunnerState:
             "stdout_path": str(stdout_path),
             "stderr_path": str(stderr_path),
             "cancel_requested": False,
+            "cancel_requested_at": None,
+            "cancel_signal": "",
             "containment": containment is not None,
             "profile_path": (
                 str(profile_path) if profile_path is not None else ""
@@ -2917,6 +3011,8 @@ class RunnerState:
             if record["status"] in TERMINAL_STATES:
                 return self._public_record(record)
             record["cancel_requested"] = True
+            record["cancel_requested_at"] = _utc_now()
+            record["cancel_signal"] = "SIGTERM"
             record["status"] = "cancelling"
             process = record["process"]
             self._write_metadata(record)
@@ -3849,18 +3945,39 @@ class RunnerState:
                 "rejected",
                 "needs_recovery",
             }:
+                if task.status == "needs_recovery":
+                    service.close_needs_recovery_run_lifecycle(task_id)
+                    self._invalidate_native_request_after_worker_exit(
+                        board,
+                        task,
+                        str(record.get("run_id") or ""),
+                    )
                 self._refresh_worker_board_index(board)
                 return
+            interrupted = bool(record.get("cancel_requested"))
+            failure_code = (
+                "executor_turn_interrupted" if interrupted else "worker_process_exited"
+            )
+            failure_message = (
+                "Runner worker was interrupted before a trusted executor terminal event."
+                if interrupted
+                else "Runner worker exited before a trusted executor terminal event."
+            )
             service.mark_task_needs_recovery(
                 task_id,
-                "worker_process_exited",
-                "Contained Runner worker exited before a terminal task result.",
+                failure_code,
+                failure_message,
                 {
                     "executor": record.get("executor"),
                     "worker_run_id": record.get("run_id"),
+                    "executor_run_id": execution.get("executor_run_id"),
                     "returncode": record.get("returncode"),
+                    "cancel_requested_at": record.get("cancel_requested_at"),
+                    "cancel_signal": record.get("cancel_signal"),
                     "phase": "runner_worker_exit",
                 },
+                executor_run_id=str(execution.get("executor_run_id") or ""),
+                close_run_lease=True,
             )
             service.block_permission_runtime_after_failure(task_id)
             service.clear_execution_run_references(task_id)

@@ -176,6 +176,55 @@ class BlockingFakeTransport:
         return not self.closed
 
 
+class ReconciledInterruptedTransport(BlockingFakeTransport):
+    """Drops turn/completed but exposes the exact interrupted turn to thread/read."""
+
+    def send(self, message: dict) -> None:
+        if message.get("id") == 90:
+            with self.condition:
+                self.sent.append(message)
+                self.condition.notify_all()
+            return
+        if message.get("method") == "thread/read":
+            with self.condition:
+                self.sent.append(message)
+                self.queue.append(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": message["id"],
+                        "result": {
+                            "thread": {
+                                "id": "thread-fake-1",
+                                "turns": [
+                                    {
+                                        "id": "turn-fake-1",
+                                        "status": "interrupted",
+                                        "completedAt": None,
+                                        "error": None,
+                                        "items": [],
+                                    }
+                                ],
+                            }
+                        },
+                    }
+                )
+                self.condition.notify_all()
+            return
+        super().send(message)
+
+    def recv(self, timeout_s: float | None = None) -> dict:
+        with self.condition:
+            deadline = time.monotonic() + (timeout_s if timeout_s is not None else 3.0)
+            while not self.queue and not self.closed:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("fake transport timed out")
+                self.condition.wait(remaining)
+            if not self.queue:
+                raise RuntimeError("fake transport closed")
+            return self.queue.pop(0)
+
+
 class CodexControlPlaneTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -433,6 +482,78 @@ class CodexControlPlaneTests(unittest.TestCase):
             ["session_started", "approval_requested", "turn_completed"],
         )
         self.assertNotIn("acceptForSession", json.dumps(fake.sent))
+
+    def test_missing_turn_completed_reconciles_interrupted_turn_to_recovery(self) -> None:
+        fake = ReconciledInterruptedTransport(self.board, self.task_id)
+        executor = CodexExecutor(
+            command=sys.executable,
+            transport="app-server",
+            transport_factory=lambda **_: fake,
+            approval_timeout_s=2,
+        )
+        executor._app_server_capability_override = _app_server_capability_override()
+        with (
+            mock.patch.object(executor, "_start_run_lease"),
+            mock.patch.object(executor, "_suspend_run"),
+            mock.patch.object(executor, "_resume_run"),
+            mock.patch.object(executor, "_close_run_lease"),
+            mock.patch(
+                "agent_bridge_connect.executors.codex._CODEX_APP_RECEIVE_HEARTBEAT_S",
+                0.01,
+            ),
+            mock.patch(
+                "agent_bridge_connect.executors.codex._CODEX_APP_TURN_RECONCILE_S",
+                0.02,
+            ),
+        ):
+            started = executor.start(self._packet())
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and executor.poll(started.run_id).status != "input_required":
+                time.sleep(0.01)
+            waiting = executor.poll(started.run_id)
+            approval = waiting.result["approval_request"]
+            plane = ApprovalControlPlane(
+                control_root_for_task(self.task_id, board_root=self.board),
+                task_id=self.task_id,
+                executor_run_id=started.run_id,
+                session_id="thread-fake-1",
+                create=False,
+            )
+            once_handle = next(
+                choice["handle"]
+                for choice in approval["offered_choices"]
+                if choice["kind"] == "once"
+            )
+            plane.respond_approval(
+                self.task_id,
+                started.run_id,
+                "thread-fake-1",
+                approval["request_id"],
+                "accept",
+                choice_handle=once_handle,
+            )
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and executor.poll(started.run_id).status not in {
+                "needs_recovery",
+                "failed",
+                "completed",
+            }:
+                time.sleep(0.01)
+            result = executor.poll(started.run_id)
+
+        self.assertEqual(result.status, "needs_recovery")
+        self.assertEqual(result.result["failure"]["kind"], "executor_turn_interrupted")
+        self.assertTrue(result.result["failure"]["retryable"])
+        self.assertIsNone(result.result["agent_callback"])
+        methods = [message.get("method") for message in fake.sent]
+        self.assertIn("thread/read", methods)
+        self.assertIn("thread/archive", methods)
+        reconciled = [
+            event
+            for event in result.result["events"]
+            if event.get("event_type") == "turn_state_reconciled"
+        ]
+        self.assertEqual(len(reconciled), 1)
 
     def test_codex_app_server_resume_uses_only_explicit_thread_id(self) -> None:
         fake = BlockingFakeTransport(self.board, self.task_id)

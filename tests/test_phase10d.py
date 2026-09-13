@@ -879,8 +879,8 @@ class RunLeaseTests(unittest.TestCase):
         task = self.service.store.read_task(self.task.id)
         self.assertEqual(task["status"], "working")
 
-    def test_runner_lost_reconcile_marks_failed_and_cleans_temp(self):
-        from agent_bridge_connect.run_lease import reconcile_task
+    def test_runner_lost_reconcile_marks_recovery_ready_and_closes_lease(self):
+        from agent_bridge_connect.run_lease import load_lease, reconcile_task
         from agent_bridge_connect.task_health import task_run_temp_path, write_task_progress
 
         self._working_task()
@@ -890,22 +890,38 @@ class RunLeaseTests(unittest.TestCase):
         from agent_bridge_connect.run_lease import save_lease
 
         save_lease(lease, self.board)
-        self.assertEqual(reconcile_task(self.task.id, self.board), "orphaned")
+        self.assertEqual(reconcile_task(self.task.id, self.board), "closed")
         self.assertEqual(
             self.service.store.read_task(self.task.id)["status"],
-            "failed",
+            "needs_recovery",
         )
         self.assertFalse(task_run_temp_path(self.task).exists())
+        closed = load_lease(self.task.id, self.board)
+        self.assertIsNotNone(closed)
+        self.assertEqual(closed.state, "closed")
+        task = self.service.store.read_task(self.task.id)
+        self.assertEqual(
+            task["extensions"]["run_lease"]["recovery_status"],
+            "ready_for_retry",
+        )
+        events = self.service.store.read_events(self.task.id)
+        self.assertEqual(
+            [event["event_type"] for event in events].count("task.recovery_required"),
+            1,
+        )
+        self.assertNotIn("task.failed", [event["event_type"] for event in events])
 
-    def test_reaper_lists_only_orphaned_tasks(self):
-        from agent_bridge_connect.run_lease import reap_orphaned, save_lease
+    def test_reaper_reconciles_lost_active_task_without_leaving_orphan(self):
+        from agent_bridge_connect.run_lease import load_lease, reap_orphaned, save_lease
 
         self._working_task()
         lease = self._lease(age_s=700)
         lease.pid = 99999999
         save_lease(lease, self.board)
         result = reap_orphaned(self.board)
-        self.assertEqual([item["task_id"] for item in result], [self.task.id])
+        self.assertEqual(result, [])
+        self.assertEqual(self.service.get_task(self.task.id).status, "needs_recovery")
+        self.assertEqual(load_lease(self.task.id, self.board).state, "closed")
 
     def test_cleanup_is_idempotent(self):
         from agent_bridge_connect.run_lease import cleanup_lease

@@ -366,9 +366,135 @@ class RunnerStateTests(unittest.TestCase):
         command = start.call_args.args[1]
         self.assertIn("--task-id", command)
         self.assertEqual(command[command.index("--task-id") + 1], task.id)
+        binding = start.call_args.kwargs["task_binding"]
+        self.assertEqual(binding["task_id"], task.id)
+        self.assertEqual(binding["board_root"], str(board.resolve()))
+        self.assertEqual(binding["executor"], "hermes")
         task = __import__("json").loads((task_dir / "task.json").read_text(encoding="utf-8"))
         execution = task["extensions"]["agentbc.execution"]
         self.assertEqual(execution["worker_run_id"], "runner-worker-test")
+
+    def test_full_worker_interrupt_reconciles_from_non_containment_binding(self):
+        from agent_bridge_connect.run_lease import create_lease, load_lease, save_lease
+        from agent_bridge_connect.service import TaskService
+
+        board = self.root / "interrupt-board"
+        service = TaskService(board, config={"workspace_root": str(self.root)})
+        task = service.create_task(
+            "Interrupted full worker",
+            "hermes",
+            [{"id": 1, "description": "wait"}],
+            customer_dir=True,
+            customer_path=self.root,
+            permission_mode="full",
+        )
+        service.start_task_run(task.id, "hermes")
+        worker_run_id = "runner-worker-interrupt"
+        result = self.state._spawn_process(
+            "worker:hermes",
+            [str(self.fake_hermes), "sleep"],
+            self.root,
+            "runner-worker",
+            run_id=worker_run_id,
+            containment=None,
+            task_binding={
+                "task_id": task.id,
+                "board_root": str(board.resolve()),
+                "executor": "hermes",
+                "executor_run_id": "hermes-interrupt-run",
+                "official_session_id": "session-interrupt",
+            },
+        )
+        service.update_execution_metadata(
+            task.id,
+            {
+                "worker_run_id": worker_run_id,
+                "worker_pid": result["pid"],
+                "executor_run_id": "hermes-interrupt-run",
+            },
+        )
+        save_lease(
+            create_lease(task.id, "hermes", result["pid"], str(self.root)),
+            board,
+        )
+
+        metadata = __import__("json").loads(
+            (
+                self.state.state_root / "runs" / worker_run_id / "run.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertFalse(metadata["containment"])
+        self.assertEqual(metadata["task_id"], task.id)
+        self.assertEqual(metadata["board_root"], str(board.resolve()))
+        self.assertEqual(metadata["task_binding"]["official_session_id"], "session-interrupt")
+
+        self.state.cancel(worker_run_id)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if service.get_task(task.id).status == "needs_recovery":
+                break
+            time.sleep(0.02)
+        recovered = service.get_task(task.id)
+        self.assertEqual(recovered.status, "needs_recovery")
+        self.assertEqual(load_lease(task.id, board).state, "closed")
+        self.assertNotIn(
+            "worker_run_id",
+            recovered.extensions["agentbc.execution"],
+        )
+        events = service.store.read_events(task.id)
+        self.assertIn("task.recovery_required", [event["event_type"] for event in events])
+        self.assertNotIn("task.failed", [event["event_type"] for event in events])
+
+    def test_worker_exit_closes_adapter_declared_recovery_lifecycle(self):
+        from agent_bridge_connect.run_lease import create_lease, load_lease, save_lease
+        from agent_bridge_connect.service import TaskService
+
+        board = self.root / "adapter-recovery-board"
+        service = TaskService(board, config={"workspace_root": str(self.root)})
+        task = service.create_task(
+            "Adapter recovery",
+            "codex",
+            [{"id": 1, "description": "recover"}],
+            customer_dir=True,
+            customer_path=self.root,
+        )
+        service.start_task_run(task.id, "codex")
+        service.update_execution_metadata(
+            task.id,
+            {
+                "worker_run_id": "runner-worker-adapter-recovery",
+                "worker_pid": 99999,
+                "executor_run_id": "codex-adapter-recovery",
+            },
+        )
+        lease = create_lease(task.id, "codex", 99999, str(self.root))
+        save_lease(lease, board)
+        service.mark_task_needs_recovery(
+            task.id,
+            "codex_turn_state_unconfirmed",
+            "adapter declared recovery",
+            executor_run_id="codex-adapter-recovery",
+        )
+
+        self.state._reconcile_worker_exit(
+            {
+                "run_id": "runner-worker-adapter-recovery",
+                "task_id": task.id,
+                "board_root": str(board),
+                "executor": "worker:codex",
+                "returncode": 1,
+            }
+        )
+
+        recovered = service.get_task(task.id)
+        self.assertEqual(recovered.status, "needs_recovery")
+        self.assertEqual(load_lease(task.id, board).state, "closed")
+        self.assertNotIn("worker_run_id", recovered.extensions["agentbc.execution"])
+        event_types = [
+            event["event_type"] for event in service.store.read_events(task.id)
+        ]
+        self.assertEqual(event_types.count("task.recovery_required"), 1)
+        self.assertEqual(event_types.count("task.recovery_ready"), 1)
 
     def test_dispatch_worker_allows_task_scoped_customer_path(self):
         from agent_bridge_connect.service import TaskService

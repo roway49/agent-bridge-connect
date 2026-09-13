@@ -1496,6 +1496,73 @@ class TaskService:
         self._refresh_task_index()
         return removed
 
+    def close_needs_recovery_run_lifecycle(self, task_id: str) -> bool:
+        """Idempotently close the RunLease and active pointers for recovery."""
+        from .run_lease import RunLeaseState, close_lease, load_lease
+
+        current = self.get_task(task_id)
+        if _normalize_status(current.status) != "needs_recovery":
+            return False
+        # A task must never become retry-ready while an issued or consumed
+        # permission grant may still be live.  Revoke durably before closing
+        # the lifecycle; failure propagates and leaves recovery fail-closed.
+        self.revoke_permission_grant_for_recovery(current.id)
+        current = self.get_task(task_id)
+        extensions = dict(current.extensions or {})
+        execution = dict(extensions.get("agentbc.execution") or {})
+        run_lease = load_lease(current.id, self.board_root)
+        run_id = str(run_lease.run_id if run_lease is not None else "")
+        already_ready = (
+            run_lease is None or run_lease.state == RunLeaseState.CLOSED
+        ) and str((extensions.get("run_lease") or {}).get("recovery_status") or "") == "ready_for_retry"
+        active_keys = (
+            "worker_run_id",
+            "worker_pid",
+            "executor_run_id",
+            "dispatch_status",
+            "monitor_status",
+            "monitor_message",
+        )
+        if already_ready and not any(key in execution for key in active_keys):
+            return False
+        extensions = self._record_run_interval(current.id, extensions)
+        if run_lease is not None and run_lease.state != RunLeaseState.CLOSED:
+            close_lease(run_lease, self.board_root)
+        execution = dict(extensions.get("agentbc.execution") or {})
+        for key in active_keys:
+            execution.pop(key, None)
+        execution["internal_status"] = "needs_recovery"
+        execution["lease_state"] = RunLeaseState.CLOSED
+        extensions["agentbc.execution"] = execution
+        if run_lease is not None:
+            extensions["run_lease"] = {
+                "run_id": run_lease.run_id,
+                "state": RunLeaseState.CLOSED,
+                "recovery_status": "ready_for_retry",
+                "last_heartbeat_at": run_lease.last_heartbeat_at,
+                "recommendation": (
+                    f"Run agentbc task retry {current.id} or handoff this chain head."
+                ),
+            }
+        current.extensions = extensions
+        current.updated_at = _utc_now()
+        self._release_lease(current.id)
+        self.store.write_task(current.id, _without_none(current.to_dict()))
+        self.store.append_event(
+            current.id,
+            {
+                "event_type": "task.recovery_ready",
+                "task_id": current.id,
+                "run_id": run_id,
+                "created_at": current.updated_at,
+                "recovery_status": "ready_for_retry",
+                "source": "runner_worker_exit",
+            },
+        )
+        self._refresh_task_index()
+        self._sync_terminal_report(current.id)
+        return True
+
     def _approval_receipt_for_response(
         self,
         task: TaskModel,
@@ -4625,6 +4692,7 @@ class TaskService:
         *,
         executor_run_id: str = "",
         execution_session: dict[str, Any] | None = None,
+        close_run_lease: bool = False,
     ) -> bool:
         from .task_health import clear_task_progress
 
@@ -4680,11 +4748,46 @@ class TaskService:
         from .run_lease import RunLeaseState, close_lease, load_lease
 
         run_lease = load_lease(task_id, self.board_root)
-        if run_lease is not None and run_lease.state == RunLeaseState.SUSPENDED:
+        # Record the active interval before closing it.  Worker/transport exit
+        # reconciliation opts into the authoritative close; ordinary in-worker
+        # recovery callers retain the legacy behavior so they never signal
+        # their own process group while persisting diagnostics.
+        task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
+        if run_lease is not None and (
+            close_run_lease or run_lease.state == RunLeaseState.SUSPENDED
+        ):
             close_lease(run_lease, self.board_root)
             execution_updates["lease_state"] = RunLeaseState.CLOSED
-        task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
+            if close_run_lease:
+                task.extensions = dict(task.extensions or {})
+                task.extensions["run_lease"] = {
+                    "run_id": run_lease.run_id,
+                    "state": RunLeaseState.CLOSED,
+                    "recovery_status": "ready_for_retry",
+                    "last_heartbeat_at": run_lease.last_heartbeat_at,
+                    "recommendation": (
+                        f"Run agentbc task retry {task_id} or handoff this chain head."
+                    ),
+                }
         task.extensions = _merge_execution(task.extensions, execution_updates)
+        if close_run_lease:
+            # Persist the recovery state, closed lease projection, and absence
+            # of active worker pointers in the same task-record write.  This
+            # prevents status readers from observing needs_recovery paired
+            # with a stale active worker/run snapshot.
+            extensions = dict(task.extensions or {})
+            execution = dict(extensions.get("agentbc.execution") or {})
+            for key in (
+                "worker_run_id",
+                "worker_pid",
+                "executor_run_id",
+                "dispatch_status",
+                "monitor_status",
+                "monitor_message",
+            ):
+                execution.pop(key, None)
+            extensions["agentbc.execution"] = execution
+            task.extensions = extensions
         self.revoke_permission_grant(task.id, code, model=task)
         self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
@@ -4698,6 +4801,21 @@ class TaskService:
                 "error": {"code": code, "message": compact_message},
             },
         )
+        if (
+            close_run_lease
+            and run_lease is not None
+            and run_lease.state == RunLeaseState.CLOSED
+        ):
+            self.store.append_event(
+                task_id,
+                {
+                    "event_type": "task.recovery_ready",
+                    "task_id": task_id,
+                    "created_at": now,
+                    "recovery_status": "ready_for_retry",
+                    "source": "recovery_terminal_transaction",
+                },
+            )
         if invalidated_input_id:
             self.store.append_event(
                 task_id,
