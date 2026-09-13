@@ -982,6 +982,10 @@ class CodexExecutor(CLIExecutorBase):
                 "enabled": False,
                 "reason": "collaboration_spawn_not_requested",
             }
+            # Freeze fresh-vs-resume from the incoming authoritative snapshot
+            # before appending this run ID. The current run must never make a
+            # fresh task look like a resume of itself.
+            resumed, explicit_session_id = _codex_resume_context(task_packet)
             if self._collaboration_spawn_requested(task_packet):
                 collaboration_capability = self.collaboration_spawn_capability()
                 if collaboration_capability.get("enabled") is not True:
@@ -992,7 +996,27 @@ class CodexExecutor(CLIExecutorBase):
                             or "Codex collaboration_spawn capability is not verified"
                         ),
                     )
-            resumed, explicit_session_id = _codex_resume_context(task_packet)
+                # The App Server may emit a collaboration item immediately
+                # after ``turn/start``. Register this exact run before the
+                # worker can create an official thread, then reload the
+                # authoritative task snapshot used by child-session binding.
+                # The CLI's later registration remains idempotent.
+                from agent_bridge_connect.service import TaskService
+
+                task_id = str(task_packet.get("task_id") or "")
+                board_root = (
+                    task_packet.get("task_board") or {}
+                ).get("root") or root
+                service = TaskService(
+                    board_root,
+                    config={"_runner_worker": True},
+                )
+                service.record_executor_run_started(task_id, run_id)
+                persisted_task = service.get_task(task_id)
+                refreshed_packet = dict(task_packet)
+                refreshed_packet["extensions"] = dict(persisted_task.extensions or {})
+                task_packet = refreshed_packet
+                self._task_packets[run_id] = dict(task_packet)
             command = self._build_app_server_command()
             if task_packet.get("runner_authorization_required") is True:
                 RunnerClient().authorize_command(
@@ -1644,6 +1668,32 @@ class CodexExecutor(CLIExecutorBase):
                 "source": "jsonl_thread_started",
             }
             session_event = plane.record_session_started(receipt)
+            # Persist the protocol-issued receipt in TaskStore before opening
+            # the turn gate. A native spawn event is allowed to arrive as soon
+            # as ``turn/start`` is sent, so any later write would race strict
+            # task/run/parent-session validation.
+            if collaboration_enabled:
+                from agent_bridge_connect.service import TaskService
+
+                board_root = (
+                    record["task_packet"].get("task_board") or {}
+                ).get("root") or record["root"]
+                service = TaskService(
+                    board_root,
+                    config={"_runner_worker": True},
+                )
+                service.record_executor_session_started(
+                    str(record["task_packet"].get("task_id") or ""),
+                    run_id,
+                    receipt,
+                )
+                persisted_task = service.get_task(
+                    str(record["task_packet"].get("task_id") or "")
+                )
+                refreshed_packet = dict(record["task_packet"])
+                refreshed_packet["extensions"] = dict(persisted_task.extensions or {})
+                record["task_packet"] = refreshed_packet
+                self._task_packets[run_id] = dict(refreshed_packet)
             record["execution_session"] = receipt
             record["session_id"] = official_thread_id
             record["events"].append(

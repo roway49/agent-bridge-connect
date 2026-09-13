@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from .auxiliary_sessions import AUXILIARY_EXTENSION_KEY
 from .revival import (
     REVIVAL_CLEANUP_SCOPE_MANAGED_DEFAULT_ARTIFACTS,
     REVIVAL_EXTENSION_KEY,
@@ -522,6 +523,11 @@ def _prepare_retry_task(
     extensions.pop("agentbc.completion_intent", None)
     extensions.pop("agentbc.final_callback", None)
     extensions.pop("agentbc.permission_runtime", None)
+    # Auxiliary sessions are executor-attempt runtime state. A from-zero
+    # retry must not bind its new parent/children to receipts from the failed
+    # attempt; terminal evidence remains in the append-only event/report
+    # history rather than in the live cleanup ledger.
+    extensions.pop(AUXILIARY_EXTENSION_KEY, None)
     extensions.pop(PERMISSION_ELEVATION_EXTENSION_KEY, None)
     extensions.pop(TERMINAL_DELIVERY_EXTENSION_KEY, None)
     execution = dict(extensions.get("agentbc.execution") or {})

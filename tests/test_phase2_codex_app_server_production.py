@@ -432,9 +432,21 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
-        self.task_id = "CDEX-PROD-001"
         self.board = self.root / "record"
         self.board.mkdir()
+        self.service = TaskService(
+            self.board,
+            config={"workspace_root": str(self.root)},
+        )
+        persisted = self.service.create_task(
+            "production app server chain",
+            "codex",
+            [{"id": 1, "description": "exercise approval"}],
+            customer_dir=True,
+            customer_path=self.root,
+            permission_mode="safe",
+        )
+        self.task_id = persisted.id
         self.receipt = {
             "version": 1,
             "executor": "codex",
@@ -487,6 +499,9 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
             "version": 1,
             "enabled": True,
         }
+        persisted = self.service.get_task(self.task_id)
+        persisted.extensions = dict(packet["extensions"])
+        self.service.store.write_task(persisted.id, persisted.to_dict())
         with (
             mock.patch.object(executor, "_start_run_lease"),
             mock.patch.object(executor, "_suspend_run"),
@@ -498,6 +513,12 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
                 self._wait_status(executor, started.run_id, {"input_required"}),
                 "input_required",
             )
+            persisted_session = (
+                self.service.get_task(self.task_id).extensions or {}
+            )["agentbc.session"]
+            self.assertEqual(persisted_session["session_id"], "thread-fake-1")
+            self.assertIn(started.run_id, persisted_session["run_ids"])
+            self.assertTrue(persisted_session["official_receipt_bound"])
             executor.cancel(started.run_id)
         thread_start = next(
             message for message in fake.sent if message.get("method") == "thread/start"

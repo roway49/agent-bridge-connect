@@ -64,6 +64,10 @@ class FailedTaskRetryTests(unittest.TestCase):
         extensions["agentbc.completion_intent"] = {"state": "old-intent"}
         extensions["agentbc.final_callback"] = {"marker_valid": True}
         extensions["agentbc.terminal_delivery"] = {"state": "delivered"}
+        extensions["agentbc.auxiliary_sessions"] = {
+            "version": 1,
+            "sessions": [{"owner_run_id": "old-worker"}],
+        }
         from agent_bridge_connect.permission_grants import build_permission_grant
 
         extensions["agentbc.permission_grant"] = build_permission_grant(
@@ -155,6 +159,7 @@ class FailedTaskRetryTests(unittest.TestCase):
             "agentbc.completion_intent",
             "agentbc.final_callback",
             "agentbc.terminal_delivery",
+            "agentbc.auxiliary_sessions",
         ):
             self.assertNotIn(key, retried.extensions)
         self.assertEqual(
