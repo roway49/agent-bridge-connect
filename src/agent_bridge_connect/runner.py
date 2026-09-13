@@ -2469,15 +2469,15 @@ class RunnerState:
             }
         broker = AcknowledgedCodexDesktopArchiveBroker(
             task_id=task_id,
-            executor_run_id=executor_run_id,
+            executor_run_id=(
+                request_executor_run_id if primary_matches else executor_run_id
+            ),
             session_id=session_id,
             # Terminal reconciliation intentionally clears the activity
             # pointer. Runner already validated the immutable historical run
             # binding above, while the unchanged cleanup request still
             # projects the now-empty activity pointer for a primary session.
-            request_executor_run_id=(
-                request_executor_run_id if primary_matches else executor_run_id
-            ),
+            binding_executor_run_id=executor_run_id,
         )
         coordinator = SessionCleanupCoordinator(
             board,

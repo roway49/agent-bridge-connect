@@ -624,8 +624,8 @@ class RunnerAuxiliaryDesktopArchiveAckTestCase(unittest.TestCase):
             )
 
         broker = coordinator_type.call_args.kwargs["desktop_archive_broker"]
-        self.assertEqual(broker.executor_run_id, "run-terminal-1")
-        self.assertEqual(broker.request_executor_run_id, "")
+        self.assertEqual(broker.executor_run_id, "")
+        self.assertEqual(broker.binding_executor_run_id, "run-terminal-1")
 
     def _task_with_child(self, *, owner_run_id: str = "run-1") -> tuple[str, str]:
         child_session_id = "00000000-0000-4000-8000-000000000002"

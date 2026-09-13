@@ -136,9 +136,9 @@ class DesktopRouteTests(unittest.TestCase):
     def test_native_ack_accepts_cleared_terminal_activity_pointer(self) -> None:
         broker = AcknowledgedCodexDesktopArchiveBroker(
             task_id="E299-001",
-            executor_run_id="run-e299",
+            executor_run_id="",
             session_id=SESSION_ID,
-            request_executor_run_id="",
+            binding_executor_run_id="run-e299",
         )
 
         self.assertTrue(broker.route_available())

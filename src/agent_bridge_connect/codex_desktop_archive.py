@@ -802,19 +802,19 @@ class AcknowledgedCodexDesktopArchiveBroker:
         task_id: str,
         executor_run_id: str,
         session_id: str,
-        request_executor_run_id: str | None = None,
+        binding_executor_run_id: str | None = None,
     ) -> None:
         self.task_id = str(task_id or "").strip()
         self.executor_run_id = str(executor_run_id or "").strip()
         self.session_id = _canonical_uuid(session_id)
-        self.request_executor_run_id = (
+        self.binding_executor_run_id = (
             self.executor_run_id
-            if request_executor_run_id is None
-            else str(request_executor_run_id or "").strip()
+            if binding_executor_run_id is None
+            else str(binding_executor_run_id or "").strip()
         )
 
     def route_available(self) -> bool:
-        return bool(self.task_id and self.executor_run_id and self.session_id)
+        return bool(self.task_id and self.binding_executor_run_id and self.session_id)
 
     def archive(self, request: Any) -> CodexDesktopArchiveResult:
         task_id = str(getattr(request, "task_id", "") or "").strip()
@@ -825,12 +825,12 @@ class AcknowledgedCodexDesktopArchiveBroker:
         )
         binding = {
             "task_id": task_id,
-            "executor_run_id": executor_run_id,
+            "executor_run_id": self.binding_executor_run_id,
             "session_id": session_id,
         }
         if (
             task_id != self.task_id
-            or executor_run_id != self.request_executor_run_id
+            or executor_run_id != self.executor_run_id
             or session_id != self.session_id
         ):
             return CodexDesktopArchiveResult(
