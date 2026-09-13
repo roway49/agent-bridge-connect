@@ -4,7 +4,7 @@
 > **最高优先级、不可覆盖：禁止在 `full` 运行基础上增加任何额外安全策略。安全策略不属于 AgentBC 产品特性，不为任务执行负责；凡与 `full` 任务完整执行冲突，必要时必须移除一切额外安全策略。**
 
 > 制定日期：2026-08-26
-> 状态：持续开发与回归中；`SESSION-104-001` 已于 2026-09-09 经 `XQQF-001` 当前 Codex Desktop 真机复验并由用户确认侧栏即时消失，重新标记通过；`FLOW-104-002` 的独立终态投递链已完成并通过全量门禁；`PERM-104-002` 已于 2026-09-09 完成最终确定性回归收口，下一开发任务转入 `INPUT-104-001` 与 `FLOW-104-003`
+> 状态：持续开发与回归中；`SESSION-104-001` 已于 2026-09-09 经 `XQQF-001` 当前 Codex Desktop 真机复验并由用户确认侧栏即时消失，重新标记通过；`FLOW-104-002` 的独立终态投递链已完成并通过全量门禁；`PERM-104-002` 已于 2026-09-09 完成最终确定性回归收口；`FLOW-104-003` 已于 2026-09-13 经 `K3T8-002` handoff 与 `Y9JS-001` needs-recovery retry 真机复验通过，下一开发任务转入 `INPUT-104-001` 与后续 P1 工作包
 > 目标版本：AgentBC `1.0.4A` / Python `1.0.4a1`
 
 ## PERM-104 方案 D（2026-09-07，代码与核心实机矩阵通过；2026-09-09 最终回归收口）
@@ -85,7 +85,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `FLOW-104-001` | P1 | handoff 只能声明一个 step，自由文本多步骤直到 callback 才失败 | handoff 原生结构化 steps、dispatch 前预检、严格 callback 一致性 | schema fixtures；对应 ARCH slice |
 | `FLOW-103-001` | P1 / 跨版转入 | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | task/run/session scoped 单调 progress receipt；所有公共视图同源 | `FLOW-104-001` 的 declared steps |
 | `SESSION-104-001` | **P0 / 已通过（2026-09-09，用户真机确认）** | 9 月 8 日曾出现 App Server archive/delete 后端成功但 Desktop 侧栏残留；根因修复为由 CLI 的 Node 宿主维持当前 Desktop 官方 relay，使 archive 精确触达当前应用实例，再进入既有 delete | `XQQF-001` 对精确官方 session `01a08466-7414-76a0-bceb-01e7130bc1f7` 持久化 Desktop archive acknowledged、delete acknowledged、CLI/Desktop backend absent；任务 completed、唯一合法 callback、RunLease closed。用户确认当前 Desktop 侧栏无需点击即消失，批准标记通过 | 修复提交 `5b8c3d4`；`SESSION-104-001-R1` 已关闭并回主项；原生派生子会话仍归 `PROTO-105-001` P2 |
-| `FLOW-104-003` | P0 / Handoff 真机通过，Retry 修复待重新封包复验（2026-09-12） | `K3T8-001` retry 暴露两项缺陷：旧 task-scoped session control receipt 未轮换导致 `session_receipt_mismatch` 秒失败；Task List 仍按首次 `created_at` 显示跨 attempt 累计 wall time | Handoff `K3T8-002` 已完成。Retry 修复将旧 active session/control/approval 状态按 attempt 归档并纳入原事务回滚，保留 per-run receipt 与审计事件；新 attempt 可登记全新官方 session。新增 `attempt_started_at` 与 run interval `attempt_index`，Task List 对 retry 活动任务只显示当前 attempt 的权威执行累计，完整生命周期仍保留在 status/report | 聚焦 108 tests、全量 1976 tests（17 skipped）、Ruff、compileall、`git diff --check` 已通过；待重新封包后使用新的 failed current-chain-head 做同 ID retry 真机复验 |
+| `FLOW-104-003` | **P0 / 已通过（2026-09-13，用户真机确认）** | `K3T8-001` 暴露旧 task-scoped session/control receipt 未轮换、retry 秒失败及 Task List 跨 attempt 累计 wall time；`Y9JS-001` 进一步验证 `needs_recovery` 必须与 `failed` 使用同一 revival 合同 | Handoff `K3T8-002` 保留失败基线并机械导入 requirements/report 后完成；`Y9JS-001` 同 ID retry 从零执行完成，建立全新官方主会话并真实创建 1 个派生会话，3/3 steps 与唯一 callback 有效，RunLease closed，主/子会话均 archive→delete，auxiliary aggregate 1/1 resolved；Task List 使用当前 attempt 时间 | 修复提交 `e90adc0`、`facba58`、`706bcc9`、`cd7935b`、`7cc3d25`、`6f729a0`；全量 1988 tests 通过、17 skipped；Ruff、compileall、package build、`git diff --check` 通过；用户确认整体运行符合预期 |
 | `INPUT-104-001` | P0 / 派发阻断 | 显式 custom path 时，位于项目根之外的 `--image`/输入文件被 `image input is outside task roots` 原子拒绝 | 项目根与只读附件根分离；Runner 受控导入外部文件且不扩大 Executor 项目权限 | PathPlan v2；atomic dispatch；input manifest |
 
 ### 2.0.1 `SESSION-104-001` 2026-09-08 现场重判（以用户侧栏证据为准）
@@ -220,7 +220,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 - archive 与 delete 保持两个独立动作和回执。现有 delete 逻辑不重写；禁止用 delete 成功反推 archive 已在当前 Desktop 生效；
 - 优先调查当前 Desktop 官方控制面、运行实例通知/刷新能力及跨 App Server 连接的 archive 传播语义；没有官方通道时必须明确记录上游 blocker，不扫描私有数据库、不用 GUI 自动化或强制重启伪造通过；
 - `FLOW-104-002` 先建立独立 terminal/report/notification/cleanup receipt，作为失败恢复的审计基础；
-- `FLOW-104-003` 随后开放 Failed retry/handoff，禁止用清空失败记录或复制任务伪装恢复；
+- `FLOW-104-003` 已完成 Failed/needs-recovery retry/handoff 闭环，禁止用清空失败记录或复制任务伪装恢复；
 - 三项必须共同覆盖“旧 session 已清理后 retry 不得恢复已删除 session”与“handoff 不删除派发端对话”。
 
 ### Wave 4：结构化流程与权威进度
@@ -260,7 +260,7 @@ fixture/文档工作，但不得进入公开 RC。
 | 9 月 8 日—9 月 9 日 | **已通过：`SESSION-104-001` Desktop archive 生产接线回归** | `P3FK-002` 等旧反例已冻结；`5b8c3d4` 接通当前 Desktop 官方 relay | `XQQF-001` 的 Desktop archive 与 delete 独立 acknowledged、CLI/Desktop backend absent，用户确认侧栏即时收敛；本项不再阻塞 RC |
 | 9 月 7 日—9 月 9 日 | **已通过：`PERM-104-002` 最终收口** | 三 Executor 显式 full 与 inherit→full 核心矩阵、Claude Details UI 已通过 | `FNJN-001` 补齐 handoff/retry 继承 full、Deny、timeout、重复/乱序事件并完成质量门禁；PERM 全局开发门禁关闭 |
 | 9 月 10 日—9 月 13 日 | P0：`INPUT-104-001`（`FLOW-104-002` 已通过） | 独立 terminal delivery 已完成；外部附件仍有 custom-path 阻断基线 | custom path + 外部只读附件原子派发通过，且不回归已通过的 terminal delivery 与 session cleanup |
-| 9 月 14 日—9 月 18 日 | P0：`FLOW-104-003`；P1：`FLOW-104-003-R1`、`FLOW-104-004-R1` | Failed retry/handoff 与 Codex interrupted turn 均有固定失败基线 | failed current head 可审计 retry/handoff；Hermes incomplete exit 与 Codex interrupted turn 有稳定终态和恢复动作 |
+| 9 月 14 日—9 月 18 日 | **已通过：`FLOW-104-003`**；P1：`FLOW-104-003-R1`、`FLOW-104-004-R1` | `K3T8-002` handoff 与 `Y9JS-001` needs-recovery retry 已完成真机闭环 | 保持 Failed/needs-recovery revival 回归；继续解决 Hermes incomplete exit 与 Codex interrupted turn 的稳定终态和恢复动作 |
 | 9 月 19 日—9 月 22 日 | P1：`FLOW-104-001`、`FLOW-103-001`、`RESOURCE-104-001-R1` | steps/progress/resource input 均已有部分合同 | multi-step handoff、单调 progress、资源耗尽 Desktop 弹窗和同 session continuation 通过 |
 | 9 月 23 日—9 月 27 日 | P1 回归与局部 `ARCH-104-001` 收口 | `SESSION-104-001` 已完成重新验收 | 三 Executor E2E、session teardown、Update/Homebrew 回归完成；只做被前述工作包证明必要的机械拆分 |
 | 9 月 28 日—10 月 2 日 | Wave 5：`1.0.4a1` RC 与双机发布门禁 | 所有 P0/P1 退出条件完成 | GitHub/PyPI/bundle/bottle/manifest SHA 与 tag commit 可复验，提交用户 go/no-go |
@@ -914,6 +914,14 @@ status/report/doctor 投影命令证据。
 
 ### 4.9 `FLOW-104-003`：Failed 任务 retry 与 handoff
 
+> 2026-09-13 最终验收：本项已通过。`failed` 与 `needs_recovery` current chain head 统一进入同一套
+> revival preflight、确认和事务合同；retry 保留 Task ID、清理 AgentBC 默认工作区产物并从 step 1
+> 开始，handoff 保留源报告/产物并机械导入 requirements、report 与 step 基线后创建新 iteration。
+> `K3T8-002` 已证明跨 Executor handoff 完成；`Y9JS-001` 已从 `needs_recovery` 原 Task 完成同 ID retry，
+> 最终 3/3 steps、唯一合法 callback、RunLease closed。其全新官方主会话及 1 个真实派生会话均完成
+> Desktop archive acknowledgement 后的 delete，辅助会话 aggregate 为 1/1 resolved。用户确认整体运行
+> 符合预期，批准标记完成。
+
 > 2026-09-12 `K3T8` 真机对照：failed handoff 新建 `K3T8-002` 并完成，证明 handoff 语义通过；
 > 同 ID retry 在 Executor turn 前因旧 `session_receipt.json/state/recovery/permission block/response/hook`
 > 活动状态未轮换而触发 `session_receipt_mismatch`。修复后上述活动状态事务化归档至
@@ -934,13 +942,13 @@ status/report/doctor 投影命令证据。
 > 锁定已完成 step 为 `inherited_done` 并恢复其余。Retry/Handoff 均已接入正式协议；临时
 > `_revival_compat.py` 已删除，测试明确断言实际构造函数来自 `agent_bridge_connect.revival`。
 
-- 为 failed terminal receipt 增加稳定 failure taxonomy 与 `allowed_next_actions` 投影，至少区分可重试的
+- 为 failed/needs-recovery terminal receipt 增加稳定 failure taxonomy 与 `allowed_next_actions` 投影，至少区分可重试的
   transport/临时环境失败、需要 recovery 的 session/lease 失败，以及必须 correction/handoff 的合同失败；
-- `agentbc task retry <id>` 对 current chain head 的 failed 任务从第一个 step 重新执行；删除失败 report，
+- `agentbc task retry <id>` 对 current chain head 的 failed 或 needs-recovery 任务从第一个 step 重新执行；删除失败 report，
   只清理 AgentBC 默认工作区产物，绝不删除 custom path 已有内容；`retry --step` 与完整 retry 保持分离；
 - retry 保留任务冻结的权限/资源策略，撤销旧 grant 并关闭旧 RunLease。原 session 已成功清理、失效或
   不可安全恢复时必须创建新官方 session，不得恢复已删除 session 或猜测私有 ID；
-- failed current chain head 可作为 handoff 源创建新 iteration；新任务继承 PathPlan/artifact lineage，
+- failed 或 needs-recovery current chain head 可作为 handoff 源创建新 iteration；新任务继承 PathPlan/artifact lineage，
   明确引用失败 report、未完成 steps、已有进度和恢复目标，但不把源任务改写成 completed；
 - retry/handoff 前做原子 preflight：拒绝 stale/non-head、活动 lease、未决 permission input、重复 dispatch、
   不可读 report 和不一致 lineage；并发请求至多创建一个新 run 或一个新 iteration；
@@ -1016,7 +1024,7 @@ status/report/doctor 投影命令证据。
 - `PERM-104-002` 先证明不可升级动作最多一次审批；随后 `PERM-104-002-R1` 验证每条仍合法的可审批路径
   均有 `View Details`、内容脱敏、Back 不响应且总 deadline 不重置；
 - Codex 临时会话在 CLI 与 Desktop 两个恢复入口清理前可定位、清理及重启后均不可恢复，同时保留哨兵存在；
-- Failed current head 分别完成一次同 Executor retry 与一次跨 Executor handoff，并验证 stale/concurrent 请求拒绝；
+- Failed/needs-recovery current head 分别完成一次同 Executor retry 与一次跨 Executor handoff，并验证 stale/concurrent 请求拒绝；
 - custom path 同时传入项目外单图/多图并成功原子派发，证明附件只读、父目录不可访问、失败无残留；
 - handoff 单 step 与 multi-step 分别跨至少两个不同 Executor；
 - progress canary 包含部分 step 完成后资源/permission/transport 阻塞；
@@ -1064,7 +1072,7 @@ status/report/doctor 投影命令证据。
 - 不可升级阻塞最多一次审批并稳定 blocked；之后 `PERM-104-002-R1` 证明所有仍合法的权限弹窗稳定
   提供脱敏只读详情，Details/Back 不改变审批状态或 deadline；
 - Codex Executor 临时会话经 cleanup 后在 CLI/Desktop 双入口及重启后均不可恢复，dispatcher 与保留哨兵不受影响；
-- Failed current head 的 retry/handoff 有稳定选择、原子 preflight、完整旧证据和唯一新 run/iteration；
+- Failed/needs-recovery current head 的 retry/handoff 有稳定选择、原子 preflight、完整旧证据和唯一新 run/iteration；
 - custom path 可安全组合项目外只读附件，input manifest 可复验、失败零残留且不扩大项目权限；
 - handoff multi-step 在 dispatch 前完成合同校验，callback 严格一致；
 - progress receipt 单调且不被资源/permission/terminal 覆盖回退；
