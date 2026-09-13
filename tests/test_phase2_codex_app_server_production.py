@@ -255,6 +255,7 @@ class BlockingFakeTransport:
         *,
         version: str = "0.146.0",
         emit_callback: bool = True,
+        interleave_child_completion: bool = False,
     ) -> None:
         self.board = board
         self.task_id = task_id
@@ -266,6 +267,7 @@ class BlockingFakeTransport:
         self.receipt_before_turn = False
         self.approval_count = 0
         self.emit_callback = emit_callback
+        self.interleave_child_completion = interleave_child_completion
 
     def start(self) -> None:
         return None
@@ -337,6 +339,35 @@ class BlockingFakeTransport:
                 )
             elif message.get("id") == 90:
                 self.approval_count += 1
+                if self.interleave_child_completion:
+                    self.queue.extend(
+                        [
+                            {
+                                "jsonrpc": "2.0",
+                                "method": "item/completed",
+                                "params": {
+                                    "threadId": "thread-child-1",
+                                    "turnId": "turn-child-1",
+                                    "item": {
+                                        "id": "item-child-agent-1",
+                                        "type": "agentMessage",
+                                        "text": "CHILD_SESSION_CANARY_OK",
+                                    },
+                                },
+                            },
+                            {
+                                "jsonrpc": "2.0",
+                                "method": "turn/completed",
+                                "params": {
+                                    "threadId": "thread-child-1",
+                                    "turn": {
+                                        "id": "turn-child-1",
+                                        "status": "completed",
+                                    },
+                                },
+                            },
+                        ]
+                    )
                 if self.emit_callback:
                     callback = {
                         "version": 1,
@@ -570,6 +601,52 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
             result.result["agent_callback"]["summary"],
             "app server callback accepted",
         )
+
+    def test_child_turn_completion_cannot_terminate_parent_run(self) -> None:
+        fake = BlockingFakeTransport(
+            self.board,
+            self.task_id,
+            interleave_child_completion=True,
+        )
+        executor = self._executor(fake)
+        with (
+            mock.patch.object(executor, "_start_run_lease"),
+            mock.patch.object(executor, "_suspend_run"),
+            mock.patch.object(executor, "_resume_run"),
+            mock.patch.object(executor, "_close_run_lease"),
+        ):
+            started = executor.start(self._packet())
+            self.assertEqual(
+                self._wait_status(executor, started.run_id, {"input_required"}),
+                "input_required",
+            )
+            approval = executor.poll(started.run_id).result["approval_request"]
+            once_handle = next(
+                choice["handle"]
+                for choice in approval["offered_choices"]
+                if choice["kind"] == "once"
+            )
+            self._plane(started.run_id).respond_approval(
+                self.task_id,
+                started.run_id,
+                "thread-fake-1",
+                approval["request_id"],
+                "accept",
+                choice_handle=once_handle,
+            )
+            status = self._wait_status(
+                executor,
+                started.run_id,
+                {"completed", "needs_recovery", "failed"},
+            )
+            result = executor.poll(started.run_id)
+
+        self.assertEqual(status, "completed")
+        self.assertEqual(
+            result.result["agent_callback"]["summary"],
+            "app server callback accepted",
+        )
+        self.assertEqual(result.result["summary"], "done")
 
     def test_completed_turn_without_agent_marker_fails(self) -> None:
         fake = BlockingFakeTransport(

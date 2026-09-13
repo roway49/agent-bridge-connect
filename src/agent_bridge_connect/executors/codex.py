@@ -1352,7 +1352,9 @@ class CodexExecutor(CLIExecutorBase):
                     )
                 return message
             self._app_event(record, message)
-            if method == "turn/completed":
+            if method == "turn/completed" and _app_event_matches_parent_turn(
+                record, message
+            ):
                 record["completion"] = message
 
     def _app_wait_turn_completed(self, record: dict[str, Any]) -> dict[str, Any]:
@@ -1369,7 +1371,9 @@ class CodexExecutor(CLIExecutorBase):
                 self._handle_app_approval(record, message)
                 continue
             self._app_event(record, message)
-            if method == "turn/completed":
+            if method == "turn/completed" and _app_event_matches_parent_turn(
+                record, message
+            ):
                 return message
 
     def _handle_app_approval(
@@ -1699,7 +1703,11 @@ class CodexExecutor(CLIExecutorBase):
                 turn_id=str(completed_turn.get("id") or record.get("turn_id") or ""),
                 status=turn_status,
             )
-            agent_events = _app_server_agent_message_events(record["events"])
+            agent_events = _app_server_agent_message_events(
+                record["events"],
+                thread_id=official_thread_id,
+                turn_id=str(record.get("turn_id") or ""),
+            )
             validation = extract_callback_validation_from_events(
                 agent_events,
                 record["task_packet"],
@@ -2232,8 +2240,30 @@ def _build_prompt(
     )
 
 
+def _app_event_matches_parent_turn(
+    record: dict[str, Any],
+    message: dict[str, Any],
+) -> bool:
+    """Accept a terminal notification only for this run's exact parent turn."""
+    params = message.get("params") if isinstance(message.get("params"), dict) else {}
+    turn = params.get("turn") if isinstance(params.get("turn"), dict) else {}
+    actual_thread_id = str(params.get("threadId") or "").strip()
+    actual_turn_id = str(params.get("turnId") or turn.get("id") or "").strip()
+    expected_thread_id = str(record.get("session_id") or "").strip()
+    expected_turn_id = str(record.get("turn_id") or "").strip()
+    return bool(
+        actual_thread_id
+        and actual_turn_id
+        and actual_thread_id == expected_thread_id
+        and actual_turn_id == expected_turn_id
+    )
+
+
 def _app_server_agent_message_events(
     events: list[dict[str, Any]],
+    *,
+    thread_id: str = "",
+    turn_id: str = "",
 ) -> list[dict[str, Any]]:
     """Return only completed App Server agent messages for terminal parsing.
 
@@ -2249,6 +2279,10 @@ def _app_server_agent_message_events(
         payload = event.get("payload") if isinstance(event, dict) else None
         item = payload.get("item") if isinstance(payload, dict) else None
         if not isinstance(item, dict):
+            continue
+        if thread_id and str(payload.get("threadId") or "").strip() != thread_id:
+            continue
+        if turn_id and str(payload.get("turnId") or "").strip() != turn_id:
             continue
         item_type = str(item.get("type") or "").replace("_", "").lower()
         text = item.get("text")
