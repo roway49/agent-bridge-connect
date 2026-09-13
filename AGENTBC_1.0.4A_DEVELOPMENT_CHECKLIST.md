@@ -4,7 +4,7 @@
 > **最高优先级、不可覆盖：禁止在 `full` 运行基础上增加任何额外安全策略。安全策略不属于 AgentBC 产品特性，不为任务执行负责；凡与 `full` 任务完整执行冲突，必要时必须移除一切额外安全策略。**
 
 > 制定日期：2026-08-26
-> 状态：持续开发与回归中；`SESSION-104-001` 已于 2026-09-09 经 `XQQF-001` 当前 Codex Desktop 真机复验并由用户确认侧栏即时消失，重新标记通过；`FLOW-104-002` 的独立终态投递链已完成并通过全量门禁；`PERM-104-002` 已于 2026-09-09 完成最终确定性回归收口；`FLOW-104-003` 已于 2026-09-13 经 `K3T8-002` handoff 与 `Y9JS-001` needs-recovery retry 真机复验通过，下一开发任务转入 `INPUT-104-001` 与后续 P1 工作包
+> 状态：持续开发与回归中；`SESSION-104-001` 已于 2026-09-09 经 `XQQF-001` 当前 Codex Desktop 真机复验并由用户确认侧栏即时消失，重新标记通过；`FLOW-104-002` 的独立终态投递链已完成并通过全量门禁；`PERM-104-002` 已于 2026-09-09 完成最终确定性回归收口；`FLOW-104-003` 已于 2026-09-13 经 `K3T8-002` handoff 与 `Y9JS-001` needs-recovery retry 真机复验通过；`INPUT-104-001` 已于 2026-09-13 经 Codex `TEFD-001`、Claude `8V5E-001`、Hermes `GTQW-001` 三 Executor 真机矩阵验收通过，当前主线转入剩余 P1 工作包
 > 目标版本：AgentBC `1.0.4A` / Python `1.0.4a1`
 
 ## PERM-104 方案 D（2026-09-07，代码与核心实机矩阵通过；2026-09-09 最终回归收口）
@@ -86,7 +86,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `FLOW-103-001` | P1 / 跨版转入 | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | task/run/session scoped 单调 progress receipt；所有公共视图同源 | `FLOW-104-001` 的 declared steps |
 | `SESSION-104-001` | **P0 / 已通过（2026-09-09，用户真机确认）** | 9 月 8 日曾出现 App Server archive/delete 后端成功但 Desktop 侧栏残留；根因修复为由 CLI 的 Node 宿主维持当前 Desktop 官方 relay，使 archive 精确触达当前应用实例，再进入既有 delete | `XQQF-001` 对精确官方 session `01a08466-7414-76a0-bceb-01e7130bc1f7` 持久化 Desktop archive acknowledged、delete acknowledged、CLI/Desktop backend absent；任务 completed、唯一合法 callback、RunLease closed。用户确认当前 Desktop 侧栏无需点击即消失，批准标记通过 | 修复提交 `5b8c3d4`；`SESSION-104-001-R1` 已关闭并回主项；原生派生子会话仍归 `PROTO-105-001` P2 |
 | `FLOW-104-003` | **P0 / 已通过（2026-09-13，用户真机确认）** | `K3T8-001` 暴露旧 task-scoped session/control receipt 未轮换、retry 秒失败及 Task List 跨 attempt 累计 wall time；`Y9JS-001` 进一步验证 `needs_recovery` 必须与 `failed` 使用同一 revival 合同 | Handoff `K3T8-002` 保留失败基线并机械导入 requirements/report 后完成；`Y9JS-001` 同 ID retry 从零执行完成，建立全新官方主会话并真实创建 1 个派生会话，3/3 steps 与唯一 callback 有效，RunLease closed，主/子会话均 archive→delete，auxiliary aggregate 1/1 resolved；Task List 使用当前 attempt 时间 | 修复提交 `e90adc0`、`facba58`、`706bcc9`、`cd7935b`、`7cc3d25`、`6f729a0`；全量 1988 tests 通过、17 skipped；Ruff、compileall、package build、`git diff --check` 通过；用户确认整体运行符合预期 |
-| `INPUT-104-001` | P0 / 实现完成，待真机回归 | 显式 custom path 时，位于项目根之外的 `--image`/输入文件被 `image input is outside task roots` 原子拒绝 | 显式外部输入冻结到 task-scoped input root；导入与审批解耦，full 不增加任何运行边界 | PathPlan v2；atomic dispatch；input manifest |
+| `INPUT-104-001` | **P0 / 已通过（2026-09-13，三 Executor 真机确认）** | 显式 custom path 时，位于项目根之外的 `--image`/输入文件曾被 `image input is outside task roots` 原子拒绝 | 外部输入已冻结到 task-scoped content-addressed input root；Codex `TEFD-001`、Claude `8V5E-001`、Hermes `GTQW-001` 均在 full 下完成输入读取、custom path 与指定外部目录的同特征文件修改，3/3 steps、唯一合法 callback、RunLease closed、terminal delivery 与 cleanup succeeded，且无 approval/input 事件 | 实现提交 `ba72f36`；PathPlan v2；atomic dispatch；`agentbc.inputs` v1；真机 `TEFD/8V5E/GTQW` |
 
 ### 2.0.1 `SESSION-104-001` 2026-09-08 现场重判（以用户侧栏证据为准）
 
@@ -189,7 +189,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 ### Wave 1：协议面与机械拆分
 
 1. 完成 `PROTO-104-001`；
-2. 完成 `INPUT-104-001` 的 PathPlan/input manifest schema 与原子导入边界；
+2. `INPUT-104-001` 的 PathPlan/input manifest schema、原子导入边界与三 Executor 真机矩阵已完成；
 3. 按功能域分别建立 characterization tests；
 4. 每次只拆一个责任模块，并以独立提交完成对应 `ARCH-104-001` slice；
 5. 机械拆分提交不得同时改变 schema、状态机、权限语义、CLI 文案或通知行为。
@@ -259,7 +259,7 @@ fixture/文档工作，但不得进入公开 RC。
 | --- | --- | --- | --- |
 | 9 月 8 日—9 月 9 日 | **已通过：`SESSION-104-001` Desktop archive 生产接线回归** | `P3FK-002` 等旧反例已冻结；`5b8c3d4` 接通当前 Desktop 官方 relay | `XQQF-001` 的 Desktop archive 与 delete 独立 acknowledged、CLI/Desktop backend absent，用户确认侧栏即时收敛；本项不再阻塞 RC |
 | 9 月 7 日—9 月 9 日 | **已通过：`PERM-104-002` 最终收口** | 三 Executor 显式 full 与 inherit→full 核心矩阵、Claude Details UI 已通过 | `FNJN-001` 补齐 handoff/retry 继承 full、Deny、timeout、重复/乱序事件并完成质量门禁；PERM 全局开发门禁关闭 |
-| 9 月 10 日—9 月 13 日 | P0：`INPUT-104-001`（`FLOW-104-002` 已通过） | 独立 terminal delivery 已完成；外部附件仍有 custom-path 阻断基线 | custom path + 外部只读附件原子派发通过，且不回归已通过的 terminal delivery 与 session cleanup |
+| 9 月 10 日—9 月 13 日 | **已通过：`INPUT-104-001`**（`FLOW-104-002` 已通过） | `ba72f36` 完成外部输入冻结、manifest、重放与清理；本机安装身份一致 | `TEFD-001`、`8V5E-001`、`GTQW-001` 均完成 custom path + 外部冻结输入 + 跨指定目录修改，零审批，terminal delivery 与 session cleanup 无回归 |
 | 9 月 14 日—9 月 18 日 | **已通过：`FLOW-104-003`**；P1：`FLOW-104-003-R1`、`FLOW-104-004-R1` | `K3T8-002` handoff 与 `Y9JS-001` needs-recovery retry 已完成真机闭环 | 保持 Failed/needs-recovery revival 回归；继续解决 Hermes incomplete exit 与 Codex interrupted turn 的稳定终态和恢复动作 |
 | 9 月 19 日—9 月 22 日 | P1：`FLOW-104-001`、`FLOW-103-001`、`RESOURCE-104-001-R1` | steps/progress/resource input 均已有部分合同 | multi-step handoff、单调 progress、资源耗尽 Desktop 弹窗和同 session continuation 通过 |
 | 9 月 23 日—9 月 27 日 | P1 回归与局部 `ARCH-104-001` 收口 | `SESSION-104-001` 已完成重新验收 | 三 Executor E2E、session teardown、Update/Homebrew 回归完成；只做被前述工作包证明必要的机械拆分 |
@@ -984,6 +984,22 @@ status/report/doctor 投影命令证据。
 在 full 下于单一 custom path 内搜索并修改同特征文件，以及跨受控目录搜索并修改同特征文件，均零弹窗；
 safe/inherit 跨目录则只允许沿既有原生链路至多一次提升。实际系统 TCC/SIP/Unix 权限失败归宿主错误，不能
 伪造成 AgentBC 权限申请。
+
+2026-09-13 最终真机验收：
+
+- 实现提交 `ba72f36` 已封包替换本机，安装 build identity 与该提交一致；CLI 暴露重复 `--image` 与
+  `--input-file`，Runner 同时健康提供 Codex、Claude、Hermes；
+- Codex `TEFD-001`、Claude `8V5E-001`、Hermes `GTQW-001` 各导入一个项目根之外的文本输入，公开
+  `agentbc.inputs` v1 均只投影 basename、类型、字节数、SHA-256、来源类别和导入时间；冻结副本与源文件
+  的逐字节 `cmp` 均返回 `0`；
+- 三项均在单一 custom path 内读取冻结输入，并在 custom path 与一个明确指定的外部目录中各修改一个
+  同特征文件，非匹配文件保持原字节；三个 `input104-result.json` 均与实物一致；
+- 三项均为显式 full，事件中没有 permission approval 或 input，只存在必要的 permission mode audit；
+  每项均 `completed`、3/3 steps、恰好一个有效 `AGENTBC_FINAL_CALLBACK`、RunLease closed、terminal
+  delivery 全阶段 succeeded；Claude/Hermes cleanup succeeded，Codex 精确官方 session
+  `01a09b0b-d952-7763-9596-8047cea2141b` 已取得 Desktop archive 与 delete acknowledgement，CLI 与
+  Desktop backend 均验证 absent；
+- 用户已要求按上述完成结果进行验收，`INPUT-104-001` 自此关闭，不再阻塞 P1 开发与 1.0.4A RC。
 
 ## 5. 文件所有权与派发建议
 
