@@ -661,6 +661,13 @@ class CodexSessionCleanupClient:
 
             if message.get("id") == request_id:
                 if isinstance(message.get("error"), dict):
+                    # Archive has already been authoritatively acknowledged.
+                    # A bounded target-missing response therefore means the
+                    # exact delete postcondition is already true.  Continue to
+                    # the mandatory fresh read/list absence proof instead of
+                    # turning an idempotent replay into a terminal failure.
+                    if _is_not_found(message):
+                        return
                     raise CodexSessionCleanupError(
                         CODEX_SESSION_DELETE_FAILED_CODE,
                         commands=_partial_commands_after_archive(_utc_now(), "failed"),

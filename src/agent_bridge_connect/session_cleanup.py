@@ -1010,15 +1010,19 @@ class SessionCleanupCoordinator:
             return False
         commands = receipt.get("commands") if isinstance(receipt.get("commands"), dict) else {}
         desktop = commands.get("desktop_archive") if isinstance(commands, dict) else {}
+        error_code = receipt.get("error_code")
+        desktop_status = desktop.get("status") if isinstance(desktop, dict) else ""
         return (
-            receipt.get("error_code")
+            error_code
             in {
                 CODEX_DESKTOP_ARCHIVE_ROUTE_UNAVAILABLE,
                 CODEX_DESKTOP_ARCHIVE_TRANSPORT_LOST,
                 CODEX_DESKTOP_ARCHIVE_REJECTED,
             }
-            and isinstance(desktop, dict)
-            and desktop.get("status") in {"rejected", "unavailable", "not_requested"}
+            and desktop_status in {"rejected", "unavailable", "not_requested"}
+        ) or (
+            error_code == CODEX_SESSION_DELETE_FAILED_CODE
+            and desktop_status in {"acknowledged", "confirmed"}
         )
 
     def _crash_recovery_receipt(

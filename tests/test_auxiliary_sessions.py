@@ -36,7 +36,10 @@ from agent_bridge_connect.codex_desktop_archive import (
     AcknowledgedCodexDesktopArchiveBroker,
     CODEX_DESKTOP_ARCHIVE_REJECTED,
 )
-from agent_bridge_connect.execution_policy import SESSION_EXTENSION_KEY
+from agent_bridge_connect.execution_policy import (
+    SESSION_EXTENSION_KEY,
+    build_session_cleanup_receipt,
+)
 from agent_bridge_connect.protocol import ABCError
 from agent_bridge_connect.run_lease import create_lease, save_lease
 from agent_bridge_connect.service import TaskService
@@ -804,6 +807,63 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
         self.assertEqual(result["aggregate"]["state"], "resolved")
         self.assertEqual(executor.calls[-1].session_id, child_session_id)
         self.assertEqual(result["auxiliary"][0]["receipt"]["state"], "succeeded")
+
+    def test_exact_native_ack_can_replay_acknowledged_delete_failure(self) -> None:
+        from agent_bridge_connect.session_cleanup import SessionCleanupCoordinator
+
+        child_session_id = "00000000-0000-4000-8000-000000000002"
+        receipt = build_session_cleanup_receipt()
+        receipt.update(
+            {
+                "capability": "supported",
+                "strategy": "official_session_archive_then_delete",
+                "state": "failed",
+                "attempts": 3,
+                "requested_at": T0,
+                "last_attempt_at": T0,
+                "error_code": "codex_session_delete_failed",
+                "commands": {
+                    "desktop_archive": {
+                        "status": "acknowledged",
+                        "checked_at": T0,
+                        "request_digest": "req",
+                        "route_digest": "route",
+                        "app_instance_digest": "app",
+                    },
+                    "app_server_archive": {
+                        "status": "not_requested",
+                        "checked_at": T0,
+                        "request_digest": "",
+                        "route_digest": "",
+                        "app_instance_digest": "",
+                    },
+                    "delete": {
+                        "status": "not_requested",
+                        "checked_at": T0,
+                        "request_digest": "",
+                        "route_digest": "",
+                        "app_instance_digest": "",
+                    },
+                },
+            }
+        )
+        coordinator = SessionCleanupCoordinator(
+            self.board,
+            desktop_archive_broker=AcknowledgedCodexDesktopArchiveBroker(
+                task_id="Y9JS-001",
+                executor_run_id="run-1",
+                session_id=child_session_id,
+            ),
+        )
+
+        self.assertTrue(
+            coordinator._can_replace_failed_desktop_route(  # noqa: SLF001
+                receipt,
+                task_id="Y9JS-001",
+                executor_run_id="run-1",
+                session_id=child_session_id,
+            )
+        )
 
     def test_auxiliary_attempts_continue_after_primary_failure(self) -> None:
         task_id = _terminal_task(self.service)

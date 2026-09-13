@@ -322,6 +322,47 @@ class ArchiveThenDeleteOrderTests(unittest.TestCase):
         self.assertEqual(result.commands["archive"]["status"], "acknowledged")
         self.assertEqual(result.commands["delete"]["status"], "acknowledged")
 
+    def test_prearchived_delete_target_missing_is_idempotent_after_absence_proof(self) -> None:
+        first = FakeTransport(
+            [
+                _initialize_response(1),
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "error": {
+                        "code": "thread_not_found",
+                        "message": f"thread not found: {SESSION_ID}",
+                    },
+                },
+            ]
+        )
+        second = FakeTransport(
+            [
+                _initialize_response(3),
+                {
+                    "jsonrpc": "2.0",
+                    "id": 4,
+                    "error": {"code": "thread_not_found", "message": "thread not found"},
+                },
+            ]
+        )
+        third = FakeTransport(
+            [
+                _initialize_response(5),
+                {"jsonrpc": "2.0", "id": 6, "result": {"data": [], "nextCursor": None}},
+                {"jsonrpc": "2.0", "id": 7, "result": {"data": [], "nextCursor": None}},
+            ]
+        )
+
+        result = _executor(TransportFactory(first, second, third)).cleanup_session(
+            _request(archive_acknowledged=True, archive_checked_at=T0)
+        )
+
+        self.assertEqual(result.state, "succeeded")
+        self.assertEqual(result.verification["cli"]["status"], "absent")
+        self.assertEqual(result.commands["archive"]["status"], "acknowledged")
+        self.assertEqual(result.commands["delete"]["status"], "acknowledged")
+
     def test_capability_reports_the_archive_then_delete_strategy(self) -> None:
         executor = CodexExecutor(command=sys.executable, transport="auto")
         capability = executor.session_cleanup_capability(_request())
