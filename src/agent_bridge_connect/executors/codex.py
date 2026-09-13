@@ -1213,17 +1213,22 @@ class CodexExecutor(CLIExecutorBase):
                 "codex_auxiliary_receipt_missing",
                 "Codex collaboration event has no bound parent task/session.",
             )
-        extensions = dict(task_packet.get("extensions") or {})
-        primary = dict(extensions.get(SESSION_EXTENSION_KEY) or {})
-        primary.update(
-            {
-                "session_id": parent_session_id,
-                "session_state": "active",
-                "receipt_source": "jsonl_thread_started",
-                "official_receipt_bound": True,
-            }
-        )
-        extensions[SESSION_EXTENSION_KEY] = primary
+        board = task_packet.get("task_board")
+        board_root = board.get("root") if isinstance(board, dict) else ""
+        if not board_root:
+            raise ABCError(
+                "codex_auxiliary_receipt_missing",
+                "Codex collaboration event has no authoritative task board.",
+            )
+        store = TaskStore(board_root)
+        persisted = store.read_task(task_id)
+        # The Executor packet is frozen before Runner records the official
+        # session/run binding. Collaboration events arrive later in the same
+        # process, so using that launch snapshot falsely rejects the current
+        # run. Reload the authoritative task extension for every lifecycle
+        # event; reserve_codex_collaboration_session performs the exact
+        # task/run/session/source checks against this persisted receipt.
+        extensions = dict(persisted.get("extensions") or {})
         parent_turn_id = str(
             payload.get("turnId") or payload.get("turn_id") or ""
         ).strip()
@@ -1247,15 +1252,6 @@ class CodexExecutor(CLIExecutorBase):
                 occurred_at=_cleanup_now(),
             )
         task_packet["extensions"] = updated
-        board = task_packet.get("task_board")
-        board_root = board.get("root") if isinstance(board, dict) else ""
-        if not board_root:
-            raise ABCError(
-                "codex_auxiliary_receipt_missing",
-                "Codex collaboration event has no authoritative task board.",
-            )
-        store = TaskStore(board_root)
-        persisted = store.read_task(task_id)
         persisted["extensions"] = updated
         store.write_task(task_id, persisted)
         store.append_event(

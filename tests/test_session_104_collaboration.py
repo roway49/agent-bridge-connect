@@ -470,6 +470,11 @@ class CollaborationEventPersistenceTests(unittest.TestCase):
                 "task_board": {"root": str(board)},
                 "extensions": copy.deepcopy(raw["extensions"]),
             }
+            # Executor launch packets predate the Runner's authoritative
+            # record_executor_run_started/session receipt write. The live
+            # lifecycle handler must not reject the current run merely because
+            # this frozen launch snapshot still names the previous run.
+            packet["extensions"][SESSION_EXTENSION_KEY]["run_ids"] = ["older-run"]
             executor = CodexExecutor(command=sys.executable, transport="app-server")
             record = {
                 "collaboration_spawn": {"enabled": True},
