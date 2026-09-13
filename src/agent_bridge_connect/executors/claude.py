@@ -67,6 +67,7 @@ from agent_bridge_connect.path_model import (
     validate_managed_cleanup_paths,
     validate_path_plan_workspace,
 )
+from agent_bridge_connect.media import task_image_paths
 from agent_bridge_connect.protocol import ABCError
 from agent_bridge_connect.prompt_contract import (
     NATIVE_PERMISSION_RULE,
@@ -2169,11 +2170,19 @@ def _claude_session_is_ephemeral(task_packet: dict[str, Any]) -> bool:
 
 def _build_prompt(task_packet: dict[str, Any]) -> str:
     """Build the Claude prompt: shared contract plus Claude Code rules."""
+    images = tuple(str(image) for image in task_image_paths(task_packet))
     return build_prompt_contract(
         task_packet,
         PromptPlatformExtras(
             opening="You are executing a structured AgentBC task with Claude Code.",
             task_id_line=True,
+            image_note="Frozen image inputs are available at these exact paths:",
+            image_inputs=images,
+            image_rule=(
+                "Inspect explicitly attached image inputs from their frozen paths when the task requires them."
+                if images
+                else None
+            ),
             summary_line="After completing all steps, print a concise summary.",
             extra_rules=(
                 "Do not claim user acceptance. completed only means your agent turn is finished and ready for user review.",

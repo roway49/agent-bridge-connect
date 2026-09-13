@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from .execution_policy import execution_policy_view, public_workspace_view
+from .input_manifest import INPUTS_EXTENSION_KEY, public_inputs_view
 from .permission_modes import permission_record_from_extensions
 from .permission_elevation import (
     permission_elevation_from_extensions,
@@ -196,6 +197,7 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "provenance": extensions.get("agentbc.provenance") or {},
         "lineage": extensions.get("agentbc.lineage") or {},
         "media": extensions.get("agentbc.media") or {},
+        "inputs": public_inputs_view(extensions.get(INPUTS_EXTENSION_KEY)),
         "chain": chain,
         "revival": revival,
         "final_callback": final_callback,
@@ -904,6 +906,14 @@ def _render_report_md(report: dict[str, Any]) -> str:
     image_inputs = (report.get("media") or {}).get("images") or []
     if image_inputs:
         lines.extend(["", "## Image Inputs", *[f"- `{image}`" for image in image_inputs]])
+    input_entries = (report.get("inputs") or {}).get("entries") or []
+    if input_entries:
+        lines.extend(["", "## Frozen Inputs"])
+        for entry in input_entries:
+            lines.append(
+                f"- `{entry.get('input_id')}` {entry.get('kind')}: "
+                f"`{entry.get('display_name')}` ({entry.get('size_bytes')} bytes, sha256 `{entry.get('sha256')}`)"
+            )
 
     if lineage:
         chain = report.get("chain") or {}

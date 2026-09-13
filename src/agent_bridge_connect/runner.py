@@ -997,6 +997,7 @@ class RunnerClient:
         customer_dir: bool | None = None,
         customer_path: str | Path | None = None,
         images: list[str | Path] | None = None,
+        files: list[str | Path] | None = None,
         interval_s: float = 2.0,
         monitor: bool = False,
         permission_mode: str | None = None,
@@ -1016,6 +1017,7 @@ class RunnerClient:
                 "customer_dir": customer_dir,
                 "customer_path": str(Path(customer_path).expanduser()) if customer_path else "",
                 "images": [str(Path(image).expanduser()) for image in images or []],
+                "files": [str(Path(item).expanduser()) for item in files or []],
                 "interval_s": interval_s,
                 "monitor": monitor,
                 "permission_mode": permission_mode,
@@ -1035,6 +1037,7 @@ class RunnerClient:
         branch: bool = False,
         source_platform: str | None = None,
         images: list[str | Path] | None = None,
+        files: list[str | Path] | None = None,
         session_id: str | None = None,
         permission_mode: str | None = None,
     ) -> dict[str, Any]:
@@ -1049,6 +1052,7 @@ class RunnerClient:
                 "session_id": session_id,
                 "source_platform": source_platform,
                 "images": [str(Path(image).expanduser()) for image in images] if images is not None else None,
+                "files": [str(Path(item).expanduser()) for item in files] if files is not None else None,
                 "board_root": str(Path(board_root).expanduser()),
                 "config_path": str(Path(config_path).expanduser()) if config_path else "",
                 "interval_s": interval_s,
@@ -1855,6 +1859,7 @@ class RunnerState:
             customer_dir=customer_dir,
             customer_path=customer_path or None,
             images=request.get("images") or [],
+            files=request.get("files") or [],
             permission_mode=request.get("permission_mode"),
             collaboration_spawn=request.get("collaboration_spawn") is True,
         )
@@ -2434,6 +2439,7 @@ class RunnerState:
             session_id=request.get("session_id"),
             source_platform=request.get("source_platform"),
             images=request.get("images"),
+            files=request.get("files"),
             permission_mode=request.get("permission_mode"),
         )
         return self._atomic_dispatch_task(service, task, config, request)
@@ -2479,7 +2485,7 @@ class RunnerState:
         }
 
     def _validate_task_path_plan(self, task: dict[str, Any]) -> None:
-        from .media import normalize_image_inputs, task_image_paths
+        from .input_manifest import task_input_sources
         from .path_model import validate_path_plan_workspace
 
         workspace = task.get("workspace") if isinstance(task.get("workspace"), dict) else {}
@@ -2515,7 +2521,7 @@ class RunnerState:
         if not _is_within(report_root, agentbc_root):
             raise RunnerError(f"task report directory is outside AgentBC workspace: {report_root}")
         try:
-            normalize_image_inputs(task_image_paths(task), allowed_roots=path_roots)
+            task_input_sources(task)
         except ABCError as exc:
             raise RunnerError(str(exc)) from exc
 

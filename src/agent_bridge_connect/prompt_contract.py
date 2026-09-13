@@ -31,6 +31,7 @@ from agent_bridge_connect.handoff_recovery import (
     HANDOFF_RECOVERY_EXTENSION_KEY,
     recovery_prompt_lines,
 )
+from agent_bridge_connect.input_manifest import task_input_paths
 from agent_bridge_connect.protocol import resumed_input_prompt_lines, task_step_text
 
 #: Common rules emitted once per prompt for every executor. Wording is the
@@ -159,6 +160,11 @@ def build_prompt_contract(
             )
     else:
         lines.append("")
+    file_inputs = task_input_paths(task_packet, kind="file")
+    if file_inputs:
+        lines.extend(["", "Frozen file inputs:"])
+        lines.extend(f"- {path}" for path in file_inputs)
+        lines.append("Use these exact files as task inputs; do not attempt to reopen the original source paths.")
     lines.append("Steps:")
 
     resume_context = resumed_input_prompt_lines(task_packet)

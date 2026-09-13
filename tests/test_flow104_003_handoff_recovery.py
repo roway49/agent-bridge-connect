@@ -27,6 +27,7 @@ from agent_bridge_connect.execution_contract import (
     validate_callback_payload,
 )
 from agent_bridge_connect.execution_policy import execution_policy_view
+from agent_bridge_connect.media import task_image_paths
 from agent_bridge_connect.handoff_recovery import (
     HANDOFF_RECOVERY_EXTENSION_KEY,
     HANDOFF_RECOVERY_LOCK_STALE_S,
@@ -702,10 +703,8 @@ class FrozenPolicyInheritanceTests(HandoffRecoveryTestCase):
         self.service.store.write_task(source.id, task.to_dict())
 
         handoff = self.service.handoff_task(source.id, "codex", "add a changelog entry")
-        self.assertEqual(
-            (handoff.extensions or {}).get("agentbc.media", {}).get("images"),
-            [str(image.resolve())],
-        )
+        self.assertEqual(task_image_paths(handoff.to_dict()), [image.resolve()])
+        self.assertIn("agentbc.inputs", handoff.extensions or {})
         self.assertEqual(recovery_record(handoff)["additive_message"], "add a changelog entry")
 
 

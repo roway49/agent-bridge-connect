@@ -423,11 +423,12 @@ class ClaudePromptContractTests(unittest.TestCase):
         self.assertLess(prompt.index("Resume context:"), prompt.index("1. Step 1 description."))
         self.assertLess(prompt.index("Steps:"), prompt.index("Resume context:"))
 
-    def test_image_inputs_are_not_supported(self):
+    def test_image_inputs_are_exposed_as_frozen_paths(self):
         plain = claude_prompt(managed_packet())
         with_image = claude_prompt(with_images(managed_packet(), ["/Users/abc/artifacts/a.png"]))
-        self.assertEqual(with_image, plain)
-        self.assertNotIn("image", plain.lower())
+        self.assertNotEqual(with_image, plain)
+        self.assertIn("Frozen image inputs are available at these exact paths:", with_image)
+        self.assertIn("/Users/abc/artifacts/a.png", with_image)
 
     def test_permission_modes_do_not_change_prompt(self):
         base = claude_prompt(managed_packet())

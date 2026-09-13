@@ -69,7 +69,13 @@ from .handoff_recovery import (
     rollback_created_iteration,
     write_source_snapshots,
 )
-from .media import media_extension, normalize_image_inputs, task_image_paths
+from .input_manifest import (
+    cleanup_task_input_root,
+    prepare_task_inputs,
+    task_input_paths,
+    task_input_sources,
+)
+from .media import task_image_paths
 from .migration import (
     assert_legacy_cutover_clear,
     assert_maintenance_command_allowed,
@@ -278,6 +284,7 @@ class TaskService:
         artifacts_dir: str | Path | None = None,
         lineage: dict[str, Any] | None = None,
         images: list[str | Path] | None = None,
+        files: list[str | Path] | None = None,
         permission_mode: str | None = None,
         inherited_permission: dict[str, Any] | None = None,
         collaboration_spawn: bool = False,
@@ -334,10 +341,13 @@ class TaskService:
         task_id = path_plan.task_id
         workspace = path_plan.to_workspace()
         workspace["internal_task_dir"] = str(self.store.tasks_dir / workspace["task_code"] / workspace["iteration"])
-        normalized_images = normalize_image_inputs(
-            images,
-            allowed_roots=(workspace.get("agentbc_root"), workspace.get("project_root")),
+        input_extension, committed_input_root = prepare_task_inputs(
+            images=images,
+            files=files,
+            workspace=workspace,
         )
+        if committed_input_root is not None:
+            workspace["input_root"] = str(committed_input_root)
         task_lineage = _build_lineage(task_id, workspace, lineage_data if lineage is not None else None)
         permission = build_permission_record(
             explicit_mode=permission_mode,
@@ -368,7 +378,7 @@ class TaskService:
                     "mode": PERMISSION_ELEVATION_MODE,
                     "decisions": ["approve_full", "deny"],
                 },
-                **media_extension(normalized_images),
+                **input_extension,
             },
             resources=resources,
             session=executor_session,
@@ -397,12 +407,14 @@ class TaskService:
             extensions=extensions,
         )
         task_dir = self.store.tasks_dir / workspace["task_code"] / workspace["iteration"]
-        (task_dir / "steps").mkdir(parents=True, exist_ok=False)
         try:
+            (task_dir / "steps").mkdir(parents=True, exist_ok=False)
             if not workspace.get("customer_dir"):
                 Path(workspace["artifacts_dir"]).mkdir(parents=True, exist_ok=True)
             Path(workspace["task_file"]).parent.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
+            shutil.rmtree(task_dir, ignore_errors=True)
+            cleanup_task_input_root(committed_input_root)
             raise ABCError(
                 "task_create_error",
                 f"workspace root is not writable: {workspace['root']}",
@@ -414,6 +426,8 @@ class TaskService:
         try:
             _write_task_requirements(task, Path(workspace["task_file"]))
         except OSError as exc:
+            shutil.rmtree(task_dir, ignore_errors=True)
+            cleanup_task_input_root(committed_input_root)
             raise ABCError(
                 "task_create_error",
                 f"workspace root is not writable: {workspace['root']}",
@@ -426,6 +440,7 @@ class TaskService:
             assert_task_record_budget(task_dir)
         except ABCError:
             shutil.rmtree(task_dir, ignore_errors=True)
+            cleanup_task_input_root(committed_input_root)
             if not workspace.get("customer_dir"):
                 try:
                     Path(workspace["artifacts_dir"]).rmdir()
@@ -5442,6 +5457,7 @@ class TaskService:
         branch: bool = False,
         source_platform: str | None = None,
         images: list[str | Path] | None = None,
+        files: list[str | Path] | None = None,
         session_id: str | None = None,
         permission_mode: str | None = None,
     ) -> TaskModel:
@@ -5484,6 +5500,7 @@ class TaskService:
                 branch=branch,
                 source_platform=source_platform,
                 images=images,
+                files=files,
                 session_id=session_id,
                 permission_mode=permission_mode,
             )
@@ -5543,6 +5560,8 @@ class TaskService:
             f"{source_context} Then perform this handoff request: "
             f"{message or 'review current state and complete the next required action.'}"
         )
+        inherited_images, inherited_files = task_input_sources(source.to_dict())
+        replace_inputs = images is not None or files is not None
         handoff = self.create_task(
             title=f"Handoff from {source.id}: {source.title}",
             assignee=target_assignee,
@@ -5552,7 +5571,8 @@ class TaskService:
             customer_dir=bool(workspace.get("customer_dir")),
             customer_path=workspace.get("customer_path") or None,
             lineage=_next_lineage(source, workspace, branch=branch),
-            images=images if images is not None else task_image_paths(source.to_dict()),
+            images=(images or []) if replace_inputs else inherited_images,
+            files=(files or []) if replace_inputs else inherited_files,
             permission_mode=permission_mode,
             inherited_permission=source_permission if permission_mode is None else None,
         )
@@ -5589,6 +5609,7 @@ class TaskService:
         branch: bool = False,
         source_platform: str | None = None,
         images: list[str | Path] | None = None,
+        files: list[str | Path] | None = None,
         session_id: str | None = None,
         permission_mode: str | None = None,
     ) -> TaskModel:
@@ -5777,6 +5798,8 @@ class TaskService:
             source.extensions = source_extensions
             self.store.write_task(source.id, _without_none(source.to_dict()))
             try:
+                inherited_images, inherited_files = task_input_sources(source.to_dict())
+                replace_inputs = images is not None or files is not None
                 task = self.create_task(
                     title=f"Handoff recovery from {source.id}: {source.title}",
                     assignee=target_assignee,
@@ -5786,7 +5809,8 @@ class TaskService:
                     customer_dir=bool(workspace.get("customer_dir")),
                     customer_path=workspace.get("customer_path") or None,
                     lineage=_next_lineage(source, workspace, branch=branch),
-                    images=images if images is not None else task_image_paths(source.to_dict()),
+                    images=(images or []) if replace_inputs else inherited_images,
+                    files=(files or []) if replace_inputs else inherited_files,
                     permission_mode=permission_mode,
                     inherited_permission=(
                         None if permission_override else source_permission
@@ -6334,6 +6358,7 @@ def create_task(
     artifacts_dir: str | Path | None = None,
     lineage: dict[str, Any] | None = None,
     images: list[str | Path] | None = None,
+    files: list[str | Path] | None = None,
     permission_mode: str | None = None,
 ) -> TaskModel:
     return TaskService(board_root).create_task(
@@ -6349,6 +6374,7 @@ def create_task(
         artifacts_dir=artifacts_dir,
         lineage=lineage,
         images=images,
+        files=files,
         permission_mode=permission_mode,
     )
 
@@ -6427,6 +6453,7 @@ def handoff_task(
     branch: bool = False,
     source_platform: str | None = None,
     images: list[str | Path] | None = None,
+    files: list[str | Path] | None = None,
     session_id: str | None = None,
     permission_mode: str | None = None,
 ) -> TaskModel:
@@ -6438,6 +6465,7 @@ def handoff_task(
         session_id=session_id,
         source_platform=source_platform,
         images=images,
+        files=files,
         permission_mode=permission_mode,
     )
 
@@ -6834,6 +6862,7 @@ def _write_task_requirements(task: TaskModel, path: Path) -> None:
     lineage = task.extensions.get("agentbc.lineage") or {}
     recovery = task.extensions.get(HANDOFF_RECOVERY_EXTENSION_KEY)
     images = task_image_paths(task.to_dict())
+    files = task_input_paths(task.to_dict(), kind="file")
     permission = permission_record_from_extensions(task.extensions)
     policy = execution_policy_view(task.extensions)
     resources = policy.get("resources") or {}
@@ -6876,6 +6905,8 @@ def _write_task_requirements(task: TaskModel, path: Path) -> None:
     ]
     if images:
         lines.extend(["", "## Image Inputs", *[f"- `{image}`" for image in images]])
+    if files:
+        lines.extend(["", "## File Inputs", *[f"- `{item}`" for item in files]])
     lines.extend(["", "## Requirements"])
     for index, step in enumerate(task.steps, 1):
         lines.append(f"{index}. {task_step_text(step)}")
@@ -7109,6 +7140,24 @@ def _task_chain_delete_ownership(
         delete_objects.append(
             {"kind": "index_entry", "task_id": task.id, "path": f"task_index:{task.id}", "exists": True}
         )
+        input_root_text = str(workspace.get("input_root") or "").strip()
+        if input_root_text:
+            input_base = agentbc_root / "tasks" / "inputs"
+            expected_input_root = input_base / task_date / task_code / task.id
+            input_root = _require_owned_delete_path(
+                input_root_text,
+                expected_input_root,
+                input_base,
+                f"input root for {task.id}",
+            )
+            delete_objects.append(
+                {"kind": "inputs", "task_id": task.id, "path": str(input_root), "exists": input_root.exists()}
+            )
+            if input_root.exists():
+                targets_by_path.setdefault(
+                    str(input_root),
+                    {"kind": "inputs", "path": str(input_root), "allowed_root": str(input_base.resolve())},
+                )
         if bool(workspace.get("customer_dir")):
             customer_path = str(Path(str(workspace.get("project_root") or "")).expanduser().resolve())
             if customer_path and customer_path not in customer_paths:

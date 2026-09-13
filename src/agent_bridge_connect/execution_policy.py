@@ -1211,6 +1211,7 @@ def public_workspace_view(workspace: Any) -> dict[str, Any]:
     """Remove executor-only path-plan fields from a public workspace projection."""
     public = copy.deepcopy(workspace) if isinstance(workspace, dict) else {}
     public.pop("executor_project_root", None)
+    public.pop("input_root", None)
     return public
 
 
@@ -1233,6 +1234,10 @@ def public_extensions_view(extensions: Any) -> dict[str, Any]:
     )
 
     public = copy.deepcopy(extensions) if isinstance(extensions, dict) else {}
+    from .input_manifest import INPUTS_EXTENSION_KEY, public_inputs_view
+
+    if INPUTS_EXTENSION_KEY in public:
+        public[INPUTS_EXTENSION_KEY] = public_inputs_view(public.get(INPUTS_EXTENSION_KEY))
     session = public.get(SESSION_EXTENSION_KEY)
     if isinstance(session, dict):
         session.pop("project_path", None)

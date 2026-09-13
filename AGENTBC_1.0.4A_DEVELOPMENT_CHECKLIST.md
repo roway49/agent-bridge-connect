@@ -86,7 +86,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `FLOW-103-001` | P1 / 跨版转入 | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | task/run/session scoped 单调 progress receipt；所有公共视图同源 | `FLOW-104-001` 的 declared steps |
 | `SESSION-104-001` | **P0 / 已通过（2026-09-09，用户真机确认）** | 9 月 8 日曾出现 App Server archive/delete 后端成功但 Desktop 侧栏残留；根因修复为由 CLI 的 Node 宿主维持当前 Desktop 官方 relay，使 archive 精确触达当前应用实例，再进入既有 delete | `XQQF-001` 对精确官方 session `01a08466-7414-76a0-bceb-01e7130bc1f7` 持久化 Desktop archive acknowledged、delete acknowledged、CLI/Desktop backend absent；任务 completed、唯一合法 callback、RunLease closed。用户确认当前 Desktop 侧栏无需点击即消失，批准标记通过 | 修复提交 `5b8c3d4`；`SESSION-104-001-R1` 已关闭并回主项；原生派生子会话仍归 `PROTO-105-001` P2 |
 | `FLOW-104-003` | **P0 / 已通过（2026-09-13，用户真机确认）** | `K3T8-001` 暴露旧 task-scoped session/control receipt 未轮换、retry 秒失败及 Task List 跨 attempt 累计 wall time；`Y9JS-001` 进一步验证 `needs_recovery` 必须与 `failed` 使用同一 revival 合同 | Handoff `K3T8-002` 保留失败基线并机械导入 requirements/report 后完成；`Y9JS-001` 同 ID retry 从零执行完成，建立全新官方主会话并真实创建 1 个派生会话，3/3 steps 与唯一 callback 有效，RunLease closed，主/子会话均 archive→delete，auxiliary aggregate 1/1 resolved；Task List 使用当前 attempt 时间 | 修复提交 `e90adc0`、`facba58`、`706bcc9`、`cd7935b`、`7cc3d25`、`6f729a0`；全量 1988 tests 通过、17 skipped；Ruff、compileall、package build、`git diff --check` 通过；用户确认整体运行符合预期 |
-| `INPUT-104-001` | P0 / 派发阻断 | 显式 custom path 时，位于项目根之外的 `--image`/输入文件被 `image input is outside task roots` 原子拒绝 | 项目根与只读附件根分离；Runner 受控导入外部文件且不扩大 Executor 项目权限 | PathPlan v2；atomic dispatch；input manifest |
+| `INPUT-104-001` | P0 / 实现完成，待真机回归 | 显式 custom path 时，位于项目根之外的 `--image`/输入文件被 `image input is outside task roots` 原子拒绝 | 显式外部输入冻结到 task-scoped input root；导入与审批解耦，full 不增加任何运行边界 | PathPlan v2；atomic dispatch；input manifest |
 
 ### 2.0.1 `SESSION-104-001` 2026-09-08 现场重判（以用户侧栏证据为准）
 
@@ -962,23 +962,28 @@ status/report/doctor 投影命令证据。
 
 ### 4.10 `INPUT-104-001`：custom path 与外部输入附件
 
-- `--customer-path` 继续唯一决定项目/产物根；显式 `--image` 或后续通用 `--input-file` 可以来自项目根
-  之外，但只作为用户明确选择的只读附件，绝不自动变成额外 writable root；
-- Runner 在原子 create/dispatch 内独立校验每个外部输入：必须是存在、可读、允许类型和大小的普通文件，
-  拒绝目录、设备、socket、symlink/realpath 漂移、路径替换、超限数量与 dispatch 中途内容变化；
+- `--customer-path` 继续唯一决定项目/产物根；显式 `--image` 或通用 `--input-file` 可以来自项目根之外，
+  并冻结为用户明确选择的任务输入；输入导入本身不创建权限审批；
+- Core/Runner 在原子 create/dispatch 内独立校验每个显式外部输入：必须是存在、可读的普通文件，拒绝目录、
+  设备、socket、symlink/realpath 漂移、路径替换与导入期间内容变化；AgentBC 不设置类型白名单、单文件大小、
+  文件数量或总字节数限制；
 - 校验后由 Runner 导入到 AgentBC-owned、task-scoped、content-addressed 的不可变 input root，记录原始
   basename、媒体类型、字节数、SHA-256、来源类别和导入时间；源文件永不移动、覆盖或删除；
-- Executor packet 只获得项目根和导入后的只读附件路径，不获得外部父目录权限；公开 status/report 默认
-  不暴露原始绝对路径，诊断视图只显示脱敏来源与 hash 摘要；
+- Executor packet 获得项目根和导入后的冻结附件路径，不传递或授权原始外部父目录；这条输入导入合同不得
+  改写 Executor 的运行权限：full 仍按既有无限制运行语义执行，safe/inherit 只由真实原生阻塞进入既有审批；
+  公开 status/report 不暴露原始绝对路径，只显示来源类别与 hash 摘要；
 - 任一附件失败时 create/dispatch 全部回滚，不创建 task/index/workspace/worker/RunLease，也不遗留部分导入；
 - Codex 支持重复 `--image`，Hermes 保持当前单图限制；handoff 默认继承冻结的 input manifest，替换附件
   时生成新 iteration manifest，不回读可能已变化的源文件；
 - customer path 内文件保持现有直读语义；外部输入导入是 Runner 官方能力，不能由 controller 预复制文件
   或临时扩大 containment 来模拟。
 
-测试覆盖 custom path + 单/多外部图片、项目内外混合附件、同名不同 hash、symlink/TOCTOU、超限、
-不可读文件、Runner 崩溃重放、handoff 继承/替换、脱敏以及失败零残留。真实 E2E 必须复现本次
-`image input is outside task roots` 基线，并证明新合同下可以安全派发且项目外父目录仍不可访问。
+测试覆盖 custom path + 单/多外部图片、通用文件、项目内外混合附件、同名不同 hash、symlink/TOCTOU、
+大文件/多文件不被 AgentBC 资源策略拒绝、不可读文件、Runner 崩溃重放、retry、handoff 继承/替换、脱敏
+以及失败零残留。真实 E2E 除复现 `image input is outside task roots` 基线外，还必须覆盖：三个 Executor
+在 full 下于单一 custom path 内搜索并修改同特征文件，以及跨受控目录搜索并修改同特征文件，均零弹窗；
+safe/inherit 跨目录则只允许沿既有原生链路至多一次提升。实际系统 TCC/SIP/Unix 权限失败归宿主错误，不能
+伪造成 AgentBC 权限申请。
 
 ## 5. 文件所有权与派发建议
 
@@ -993,7 +998,7 @@ status/report/doctor 投影命令证据。
 | `FLOW-104-002` | terminal delivery、reports、record budget、notifications/cleanup receipt | 不改变任务质量含义或权限策略 |
 | `SESSION-104-001` | Codex cleanup adapter、session receipt、CLI/Desktop E2E fixtures | 不扫描/改写 Codex 私有会话库，不触碰 dispatcher conversation |
 | `FLOW-104-003` | failure taxonomy、retry/handoff preflight、attempt/lineage projection | 不清空旧失败证据，不绕过 current-head/lease/PathPlan 合同 |
-| `INPUT-104-001` | Runner PathPlan/input manifest、CLI attachment parsing、atomic staging tests | 不扩大 writable root，不由 controller 复制附件绕过授权 |
+| `INPUT-104-001` | Runner/Core input manifest、CLI attachment parsing、atomic staging tests | 不增加资源上限，不改变 full/approval/session cleanup，不由 controller 预复制附件 |
 
 派发前必须为每个任务写明 owned files、公共接口、不可修改文件、基线 commit、定向测试和唯一 callback。
 共享文件冲突时按上表依赖串行，不以“先合后修”处理并行冲突。

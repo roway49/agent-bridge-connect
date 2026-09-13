@@ -203,6 +203,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Attach an existing image input. Repeat for multiple images when the executor supports it.",
     )
+    task_create.add_argument(
+        "--input-file",
+        action="append",
+        type=Path,
+        default=[],
+        help="Attach an existing file input. Repeat for multiple files.",
+    )
     task_create.add_argument("--session-id")
     task_create.add_argument("--source-platform")
     task_create.add_argument(
@@ -425,6 +432,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Replace inherited image inputs for this iteration. Repeat when supported.",
     )
+    task_handoff.add_argument(
+        "--input-file",
+        action="append",
+        type=Path,
+        default=None,
+        help="Replace inherited inputs with these files for this iteration. Repeat as needed.",
+    )
     task_handoff.add_argument("--session-id")
     task_handoff.add_argument("--source-platform")
     task_handoff.add_argument(
@@ -584,6 +598,7 @@ def command_task_create(args: argparse.Namespace) -> int:
                 customer_dir=customer_dir,
                 customer_path=customer_path or DEFAULT_CUSTOMER_PATH,
                 images=_image_args(args),
+                files=_input_file_args(args),
                 interval_s=getattr(args, "interval", 2),
                 monitor=getattr(args, "monitor", False),
                 permission_mode=_permission_mode_arg(args),
@@ -605,6 +620,7 @@ def command_task_create(args: argparse.Namespace) -> int:
             customer_dir=customer_dir,
             customer_path=customer_path,
             images=_image_args(args),
+            files=_input_file_args(args),
             permission_mode=_permission_mode_arg(args),
             collaboration_spawn=getattr(args, "collaboration_spawn", False) is True,
         )
@@ -1154,6 +1170,7 @@ def command_task_intervention(args: argparse.Namespace) -> int:
                 session_id=session_id,
                 source_platform=source_platform,
                 images=_image_args(args, inherit_when_missing=True),
+                files=_input_file_args(args, inherit_when_missing=True),
                 permission_mode=_permission_mode_arg(args),
             )
         except RunnerError as exc:
@@ -1433,6 +1450,19 @@ def _image_args(
         return None if inherit_when_missing else []
     if isinstance(value, (list, tuple)):
         return [Path(image).expanduser() for image in value]
+    return None if inherit_when_missing else []
+
+
+def _input_file_args(
+    args: argparse.Namespace,
+    *,
+    inherit_when_missing: bool = False,
+) -> list[Path] | None:
+    value = getattr(args, "input_file", None)
+    if value is None:
+        return None if inherit_when_missing else []
+    if isinstance(value, (list, tuple)):
+        return [Path(item).expanduser() for item in value]
     return None if inherit_when_missing else []
 
 
