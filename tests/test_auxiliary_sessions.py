@@ -17,6 +17,7 @@ import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 from agent_bridge_connect.adapters import SessionCleanupResult
 from agent_bridge_connect.auxiliary_sessions import (
@@ -544,6 +545,96 @@ def _add_auxiliary(
                 extensions, _ = mark_auxiliary_terminal(extensions, aux_id=bound["aux_id"])
     raw["extensions"] = extensions
     service.store.write_task(task_id, raw)
+
+
+class RunnerAuxiliaryDesktopArchiveAckTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.board = self.root / "record"
+        self.service = TaskService(
+            self.board,
+            config={
+                "workspace_root": str(self.root / "workspace"),
+                "sessions": {"retain_executor_sessions": False},
+            },
+        )
+        from agent_bridge_connect.runner import RunnerState
+
+        self.runner = RunnerState(self.root / "runner", [self.root], {})
+
+    def _task_with_child(self, *, owner_run_id: str = "run-1") -> tuple[str, str]:
+        child_session_id = "00000000-0000-4000-8000-000000000002"
+        task_id = _terminal_task(self.service)
+        raw = self.service.store.read_task(task_id)
+        raw["extensions"]["agentbc.execution"]["executor_run_id"] = "run-1"
+        self.service.store.write_task(task_id, raw)
+        _add_auxiliary(
+            self.service,
+            task_id,
+            [
+                {
+                    "executor": "codex",
+                    "parent_executor": "codex",
+                    "parent_session_id": PRIMARY_SESSION_ID,
+                    "session_id": child_session_id,
+                    "owner_run_id": owner_run_id,
+                }
+            ],
+        )
+        return task_id, child_session_id
+
+    def test_acknowledgement_accepts_exact_current_run_auxiliary_session(self) -> None:
+        task_id, child_session_id = self._task_with_child()
+        with mock.patch(
+            "agent_bridge_connect.session_cleanup.SessionCleanupCoordinator"
+        ) as coordinator_type:
+            coordinator_type.return_value.request_cleanup.return_value = {
+                "status": "succeeded"
+            }
+            result = self.runner.acknowledge_desktop_archive(
+                {
+                    "task_id": task_id,
+                    "session_id": child_session_id,
+                    "board_root": str(self.board),
+                }
+            )
+
+        self.assertTrue(result["ok"])
+        broker = coordinator_type.call_args.kwargs["desktop_archive_broker"]
+        self.assertEqual(broker.task_id, task_id)
+        self.assertEqual(broker.executor_run_id, "run-1")
+        self.assertEqual(broker.session_id, child_session_id)
+        coordinator_type.return_value.request_cleanup.assert_called_once_with(
+            task_id, force_retry=True
+        )
+
+    def test_acknowledgement_rejects_auxiliary_session_from_prior_run(self) -> None:
+        from agent_bridge_connect.runner import RunnerError
+
+        task_id, child_session_id = self._task_with_child(owner_run_id="old-run")
+        with self.assertRaisesRegex(RunnerError, "binding mismatch"):
+            self.runner.acknowledge_desktop_archive(
+                {
+                    "task_id": task_id,
+                    "session_id": child_session_id,
+                    "board_root": str(self.board),
+                }
+            )
+
+    def test_acknowledgement_rejects_unregistered_auxiliary_session(self) -> None:
+        from agent_bridge_connect.runner import RunnerError
+
+        task_id, _child_session_id = self._task_with_child()
+        with self.assertRaisesRegex(RunnerError, "binding mismatch"):
+            self.runner.acknowledge_desktop_archive(
+                {
+                    "task_id": task_id,
+                    "session_id": "00000000-0000-4000-8000-000000000003",
+                    "board_root": str(self.board),
+                }
+            )
 
 
 class CoordinatorAuxiliaryTestCase(unittest.TestCase):

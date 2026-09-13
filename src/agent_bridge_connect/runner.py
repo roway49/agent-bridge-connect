@@ -2325,6 +2325,7 @@ class RunnerState:
 
     def acknowledge_desktop_archive(self, request: dict[str, Any]) -> dict[str, Any]:
         """Validate one Codex app acknowledgement, then run existing delete."""
+        from .auxiliary_sessions import read_auxiliary_ledger
         from .service import TaskService
         from .session_cleanup import SessionCleanupCoordinator
 
@@ -2339,17 +2340,40 @@ class RunnerState:
         execution = extensions.get("agentbc.execution")
         if not isinstance(session, dict) or not isinstance(execution, dict):
             raise RunnerError("Desktop archive acknowledgement has no bound session receipt")
-        if (
-            str(session.get("executor") or "").strip().lower() != "codex"
-            or session.get("retain") is not False
-            or session.get("official_receipt_bound") is not True
-            or str(session.get("session_id") or "").strip().lower() != session_id
-            or str(session.get("session_state") or "").strip().lower() != "terminal"
-        ):
-            raise RunnerError("Desktop archive acknowledgement binding mismatch")
+        primary_session_id = str(session.get("session_id") or "").strip().lower()
+        primary_eligible = (
+            str(session.get("executor") or "").strip().lower() == "codex"
+            and session.get("retain") is False
+            and session.get("official_receipt_bound") is True
+            and bool(primary_session_id)
+            and str(session.get("session_state") or "").strip().lower() == "terminal"
+        )
+        primary_matches = primary_eligible and primary_session_id == session_id
         executor_run_id = str(execution.get("executor_run_id") or "").strip()
         if not executor_run_id:
             raise RunnerError("Desktop archive acknowledgement has no executor run binding")
+        if not primary_matches:
+            if not primary_eligible:
+                raise RunnerError("Desktop archive acknowledgement binding mismatch")
+            # Auxiliary Codex sessions are first-class cleanup targets, but the
+            # acknowledgement must still bind mechanically to this task's
+            # current primary run.  Exact IDs are required; no recent-session,
+            # title, or private-store discovery is permitted here.
+            matches = [
+                entry
+                for entry in read_auxiliary_ledger(extensions)["sessions"]
+                if str(entry.get("session_id") or "").strip().lower() == session_id
+                and str(entry.get("owner_task_id") or "").strip() == task_id
+                and str(entry.get("owner_run_id") or "").strip() == executor_run_id
+                and str(entry.get("parent_executor") or "").strip().lower() == "codex"
+                and str(entry.get("parent_session_id") or "").strip().lower()
+                == primary_session_id
+                and str(entry.get("executor") or "").strip().lower() == "codex"
+                and entry.get("retain") is False
+                and str(entry.get("session_state") or "").strip().lower() == "terminal"
+            ]
+            if len(matches) != 1:
+                raise RunnerError("Desktop archive acknowledgement binding mismatch")
         broker = AcknowledgedCodexDesktopArchiveBroker(
             task_id=task_id,
             executor_run_id=executor_run_id,
