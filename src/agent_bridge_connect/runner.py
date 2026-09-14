@@ -695,6 +695,44 @@ def _terminate_runner_pids(
     return stopped, [pid for pid in forced if pid not in remaining], remaining
 
 
+def _snapshot_descendant_pids(root_pid: int) -> list[int]:
+    """Return the recursive process subtree below one exact live worker."""
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,ppid="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return []
+    if result.returncode != 0:
+        return []
+    children: dict[int, list[int]] = {}
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 2:
+            continue
+        try:
+            pid, ppid = (int(value) for value in fields)
+        except ValueError:
+            continue
+        if pid <= 0 or ppid < 0:
+            continue
+        children.setdefault(ppid, []).append(pid)
+    descendants: list[int] = []
+    pending = list(children.get(int(root_pid), []))
+    seen: set[int] = set()
+    while pending:
+        pid = pending.pop(0)
+        if pid in seen or pid == os.getpid():
+            continue
+        seen.add(pid)
+        descendants.append(pid)
+        pending.extend(children.get(pid, []))
+    return descendants
+
+
 def _tail_text(path: Path, max_chars: int = 4000) -> str:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -3063,6 +3101,15 @@ class RunnerState:
             record["status"] = "cancelling"
             process = record["process"]
             executor = str(record.get("executor") or "")
+            descendant_pids = (
+                _snapshot_descendant_pids(process.pid)
+                if executor in {"codex", "worker:codex"}
+                else []
+            )
+            record["cancel_descendant_pids"] = descendant_pids
+            record["cancel_cleanup_pending"] = bool(
+                executor in {"codex", "worker:codex"}
+            )
             self._write_metadata(record)
         process_group = None
         try:
@@ -3079,19 +3126,43 @@ class RunnerState:
             pass
         if executor in {"codex", "worker:codex"}:
             def _force_after_grace() -> None:
-                deadline = time.monotonic() + 10.0
-                while process.poll() is None and time.monotonic() < deadline:
+                # The Codex App Server and its command process may each create
+                # their own process group. Snapshot the exact worker subtree
+                # before signalling so re-parenting cannot escape the bounded
+                # task cancellation fallback.
+                deadline = time.monotonic() + 3.0
+                while time.monotonic() < deadline:
+                    worker_alive = process.poll() is None
+                    descendants_alive = any(
+                        _pid_is_alive(pid) for pid in descendant_pids
+                    )
+                    if not worker_alive and not descendants_alive:
+                        break
                     time.sleep(0.05)
-                if process_group is None:
-                    return
-                try:
-                    os.killpg(process_group, 0)
-                except (ProcessLookupError, PermissionError):
-                    return
-                try:
-                    os.killpg(process_group, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    pass
+                _terminate_runner_pids(set(descendant_pids), timeout_s=1.0)
+                if process_group is not None:
+                    try:
+                        os.killpg(process_group, 0)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+                    else:
+                        try:
+                            os.killpg(process_group, signal.SIGKILL)
+                        except (ProcessLookupError, PermissionError):
+                            pass
+                reconciliation: dict[str, Any] | None = None
+                with self.lock:
+                    current = self.runs.get(run_id)
+                    if current is None:
+                        return
+                    current["cancel_cleanup_pending"] = False
+                    current["cancel_cleanup_completed_at"] = _utc_now()
+                    if current.get("process_exit_observed"):
+                        current["status"] = "cancelled"
+                        reconciliation = dict(current)
+                    self._write_metadata(current)
+                if reconciliation is not None:
+                    self._reconcile_worker_exit(reconciliation)
 
             threading.Thread(
                 target=_force_after_grace,
@@ -3142,6 +3213,7 @@ class RunnerState:
         for run_id in run_ids:
             runs.append(self.cancel(run_id))
         return {
+            "ok": True,
             "task_id": normalized_task_id,
             "board_root": str(board),
             "runs": runs,
@@ -3949,11 +4021,19 @@ class RunnerState:
             record = self.runs[run_id]
             record["returncode"] = returncode
             record["ended_at"] = _utc_now()
-            record["status"] = (
-                "cancelled"
-                if record["cancel_requested"]
-                else "completed" if returncode == 0 else "failed"
+            defer_cancel_reconciliation = bool(
+                record["cancel_requested"]
+                and record.get("cancel_cleanup_pending")
             )
+            if defer_cancel_reconciliation:
+                record["process_exit_observed"] = True
+                record["status"] = "cancelling"
+            else:
+                record["status"] = (
+                    "cancelled"
+                    if record["cancel_requested"]
+                    else "completed" if returncode == 0 else "failed"
+                )
             profile_path = record.get("profile_path")
             if profile_path:
                 try:
@@ -3963,10 +4043,13 @@ class RunnerState:
                 record["profile_path"] = None
             runner_ipc_channel = str(record.get("runner_ipc_channel") or "")
             self._write_metadata(record)
-            reconciliation = dict(record)
+            reconciliation = (
+                None if defer_cancel_reconciliation else dict(record)
+            )
         if runner_ipc_channel:
             self._cleanup_runner_ipc_channel(runner_ipc_channel)
-        self._reconcile_worker_exit(reconciliation)
+        if reconciliation is not None:
+            self._reconcile_worker_exit(reconciliation)
 
     def _reconcile_worker_start_failure(
         self,

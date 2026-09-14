@@ -4,6 +4,7 @@ import os
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -210,6 +211,7 @@ class RunnerStateTests(unittest.TestCase):
 
         cancelled = self.state.cancel_task_runs("abcd-001", str(board))
 
+        self.assertIs(cancelled["ok"], True)
         self.assertEqual(cancelled["task_id"], "ABCD-001")
         self.assertEqual(
             [item["run_id"] for item in cancelled["runs"]],
@@ -240,6 +242,70 @@ class RunnerStateTests(unittest.TestCase):
         killpg.assert_not_called()
         os.killpg(process_group, signal.SIGKILL)
         process.wait(timeout=2)
+
+    def test_cancel_worker_codex_reaps_detached_descendant(self):
+        child_pid_file = self.root / "detached-child.pid"
+        child_activity_file = self.root / "detached-child.activity"
+        child_script = self.root / "detached-child.py"
+        child_script.write_text(
+            "import pathlib, sys, time\n"
+            "path = pathlib.Path(sys.argv[1])\n"
+            "while True:\n"
+            "    with path.open('a', encoding='utf-8') as handle:\n"
+            "        handle.write('tick\\n')\n"
+            "    time.sleep(0.05)\n",
+            encoding="utf-8",
+        )
+        parent_script = self.root / "detached-parent.py"
+        parent_script.write_text(
+            "import pathlib, subprocess, sys, time\n"
+            "child = subprocess.Popen([sys.executable, sys.argv[2], sys.argv[3]], start_new_session=True)\n"
+            "pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding='utf-8')\n"
+            "time.sleep(30)\n",
+            encoding="utf-8",
+        )
+        result = self.state._spawn_process(
+            "worker:codex",
+            [
+                sys.executable,
+                str(parent_script),
+                str(child_pid_file),
+                str(child_script),
+                str(child_activity_file),
+            ],
+            self.root,
+            "runner-worker-detached",
+        )
+        deadline = time.monotonic() + 3
+        while not child_pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+
+        with mock.patch(
+            "agent_bridge_connect.runner._snapshot_descendant_pids",
+            return_value=[child_pid],
+        ):
+            cancelled = self.state.cancel(result["run_id"])
+        self.assertEqual(cancelled["status"], "cancelling")
+        terminal = self._wait_terminal(result["run_id"], attempts=800)
+
+        self.assertEqual(terminal["status"], "cancelled")
+        size_after_cancel = child_activity_file.stat().st_size
+        time.sleep(0.2)
+        self.assertEqual(child_activity_file.stat().st_size, size_after_cancel)
+
+    def test_snapshot_descendant_pids_recurses_exact_worker_tree(self):
+        from agent_bridge_connect.runner import _snapshot_descendant_pids
+
+        sample = mock.Mock(
+            returncode=0,
+            stdout="10 1\n11 10\n12 11\n13 10\n99 1\n",
+        )
+        with mock.patch(
+            "agent_bridge_connect.runner.subprocess.run",
+            return_value=sample,
+        ):
+            self.assertEqual(_snapshot_descendant_pids(10), [11, 13, 12])
 
     def test_dispatch_worker_publishes_run_id_before_spawn(self):
         from agent_bridge_connect.service import TaskService
@@ -1110,6 +1176,39 @@ class RunnerStateTests(unittest.TestCase):
             runner_service.shutdown()
             thread.join(timeout=2)
 
+    def test_cancel_task_runs_file_spool_response_is_successful(self):
+        from agent_bridge_connect.runner import RunnerClient, RunnerService
+
+        board = self.root / "cancel-task-board"
+        board.mkdir()
+        run = self.state._spawn_process(
+            "worker:hermes",
+            [str(self.fake_hermes), "sleep"],
+            self.root,
+            "runner-worker-client-cancel",
+            task_binding={
+                "task_id": "ABCD-001",
+                "board_root": str(board),
+                "executor": "hermes",
+            },
+        )
+        spool = self.root / "cancel-task-spool"
+        token = spool / "token"
+        runner_service = RunnerService(spool, token, self.state, interval_s=0.01)
+        thread = threading.Thread(target=runner_service.serve_forever, daemon=True)
+        thread.start()
+        try:
+            client = RunnerClient(spool, token, timeout_s=2)
+            result = client.cancel_task_runs("ABCD-001", board)
+            self.assertIs(result["ok"], True)
+            self.assertEqual(
+                [item["run_id"] for item in result["runs"]],
+                [run["run_id"]],
+            )
+        finally:
+            runner_service.shutdown()
+            thread.join(timeout=2)
+
     def test_file_spool_client_service_round_trip(self):
         from agent_bridge_connect.runner import RunnerClient, RunnerService
 
@@ -1349,8 +1448,8 @@ class RunnerStateTests(unittest.TestCase):
 
         self.assertFalse((board / "tasks").exists())
 
-    def _wait_terminal(self, run_id: str):
-        for _ in range(300):
+    def _wait_terminal(self, run_id: str, *, attempts: int = 300):
+        for _ in range(attempts):
             status = self.state.status(run_id)
             if status["status"] in {"completed", "failed", "cancelled"}:
                 return status
