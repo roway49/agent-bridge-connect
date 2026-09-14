@@ -4,7 +4,7 @@
 > **最高优先级、不可覆盖：禁止在 `full` 运行基础上增加任何额外安全策略。安全策略不属于 AgentBC 产品特性，不为任务执行负责；凡与 `full` 任务完整执行冲突，必要时必须移除一切额外安全策略。**
 
 > 制定日期：2026-08-26
-> 状态：持续开发与回归中；`SESSION-104-001` 已于 2026-09-09 经 `XQQF-001` 当前 Codex Desktop 真机复验并由用户确认侧栏即时消失，重新标记通过；`FLOW-104-002` 的独立终态投递链已完成并通过全量门禁；`PERM-104-002` 已于 2026-09-09 完成最终确定性回归收口；`FLOW-104-003` 已于 2026-09-13 经 `K3T8-002` handoff 与 `Y9JS-001` needs-recovery retry 真机复验通过；`INPUT-104-001` 已于 2026-09-13 经 Codex `TEFD-001`、Claude `8V5E-001`、Hermes `GTQW-001` 三 Executor 真机矩阵验收通过；`FLOW-104-004-R1` 阶段性通过并降为 P2 优化；当前优先处理 retry 覆盖旧 attempt session receipt 导致临时会话残留的 `SESSION-104-001-R2` P1 回归
+> 状态：持续开发与回归中；`SESSION-104-001` 已于 2026-09-09 经 `XQQF-001` 当前 Codex Desktop 真机复验并由用户确认侧栏即时消失，重新标记通过；`FLOW-104-002` 的独立终态投递链已完成并通过全量门禁；`PERM-104-002` 已于 2026-09-09 完成最终确定性回归收口；`FLOW-104-003` 已于 2026-09-13 经 `K3T8-002` handoff 与 `Y9JS-001` needs-recovery retry 真机复验通过；`INPUT-104-001` 已于 2026-09-13 经 Codex `TEFD-001`、Claude `8V5E-001`、Hermes `GTQW-001` 三 Executor 真机矩阵验收通过；`FLOW-104-004-R1` 阶段性通过并降为 P2 优化；Task List 终态窗口自动关闭与 retry 活动会话侧栏可见性已登记为 GUI 阶段 P2，均不阻塞派发；当前继续以 `SESSION-104-001-R2` 的 close 后 Executor writer 与清理收口为 P1 回归
 > 目标版本：AgentBC `1.0.4A` / Python `1.0.4a1`
 
 ## PERM-104 方案 D（2026-09-07，代码与核心实机矩阵通过；2026-09-09 最终回归收口）
@@ -138,7 +138,9 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `FLOW-104-003-R1` | P1 / 待回归 | `E52M-003` 中 Hermes 0.20.1 运行 `2h37m` 后以返回码 `0` 结束，但输出停留在代码 diff、未产生 `AGENTBC_FINAL_CALLBACK`；Runner 明确记录 `output_truncated=false`、`marker_seen=false`，且没有可识别的迭代耗尽 receipt | 进程成功退出与任务合同完成继续严格分离；Hermes 必须提供结构化 terminal reason、实际/上限 turns 和最终响应边界。确属资源耗尽时生成唯一可恢复 input；仍有 pending step 却正常退出时给出稳定的 incomplete-exit 分类、保留部分进度并允许受审计 retry/handoff；不得伪造 callback | `FLOW-104-003` failed recovery；`FLOW-103-001` progress receipt；Hermes ACP/CLI terminal receipt |
 | `FLOW-104-004-R1` | **P2 / 阶段性通过，受控中断列为优化** | `A3AC-001` 与 `7F43-001` 固定了 interrupted turn、Runner binding 丢失和 `failed + orphaned` 负向基线 | `dc407cb` 已完成统一恢复事务、worker binding 与读取无副作用修复；`AMRV-001` 证明未中断对照可在一次审批后同官方 session 完整完成并正常清理。受控终止后 30 秒内进入 `needs_recovery + RunLease closed/recovery_ready` 的真机重放保留为 P2 优化，不再阻塞当前 P1 | 修复提交 `dc407cb`；215 项定向、2000 项全量（17 skipped）及质量门禁通过；`AMRV-001` 4/4 steps、唯一 callback、RunLease closed、一次 full elevation、Desktop archive 与 delete acknowledged、CLI/Desktop backend absent |
 | `SESSION-104-001-R1` | **已关闭并通过主项验收（2026-09-09）** | `Z2W7-001` 等历史反例证明仅有 App Server 回执不足以驱动当前 Desktop 侧栏收敛 | `5b8c3d4` 的当前 Desktop relay 已提供独立 archive 触达回执；`XQQF-001` 完成 archive→delete，用户确认侧栏无需点击即消失 | `SESSION-104-001` 已通过 |
-| `SESSION-104-001-R2` | **P1 / 已实现，待封包真机验收（2026-09-14）** | `Y9JS-001` 证明 retry 只清理最后 attempt、旧 attempt session 脱离候选；`6WD5-001` 进一步证明 failed→retry→close 时，close 仅收到异步 `cancelling` 就删除 Task record、报告和默认 Artifact root，Executor 尚未退出便读到 `task_not_found`，新 retry session 留在 Desktop | **现有 `SessionCleanupCoordinator`、Codex Desktop relay 及 archive→delete 运行逻辑保持冻结。** Retry 现在必须等待来源 attempt 的主/辅助会话由现有清理器稳定收口后才能轮换；retry 后 close 必须先取得精确 Runner 终态，将 Task 停车为 terminal 供现有清理器处理，清理 resolved 后由 Runner 自动完成原 close 删除 | 实现修改限定于 `retry_flow`、CLI close 调度与 Runner 收尾接线；306 项定向及 2002 项全量（17 skipped）通过，Ruff、compileall、package build、`git diff --check` 通过；待替换本机后复刻 `6WD5` 路径确认 Desktop 无残留 |
+| `SESSION-104-001-R2` | **P1 / close 后 writer 收口未通过（2026-09-14）** | `Y9JS-001` 证明 retry 只清理最后 attempt、旧 attempt session 脱离候选；`6WD5-001` 证明早删 Task owner；`29KM-001` 进一步证明 Task/RunLease 虽已 cancelled/closed，精确 Codex Executor 仍保持 active writer，导致 archive 被拒绝且 cleanup failed/retryable | **现有 `SessionCleanupCoordinator`、Codex Desktop relay 及 archive→delete 运行逻辑保持冻结。** Retry 现在必须等待来源 attempt 的主/辅助会话由现有清理器稳定收口后才能轮换；retry 后 close 必须取得精确 Runner 与官方 turn 终态，确认 writer 已停止，再把 Task 停车为 terminal 供现有清理器处理，清理 resolved 后由 Runner 自动完成原 close 删除 | 实现修改限定于 `retry_flow`、CLI close 调度与 Runner 收尾接线；已修复 attempt ledger 与 continuation 引用竞态，但 `29KM-001` 的 active-writer 反例尚未通过，继续作为 P1 核心清理回归 |
+| `GUI-104-001` | **P2 / GUI 阶段待回归，不阻塞派发** | 用户 close `29KM-001` 后，Task List 已刷新为 `cancelled`，但独立监控终端窗口仍保持打开 | GUI/monitor 在被监控任务进入终态后自动退出或关闭窗口；不得改变 Task 终态、Runner、session cleanup 或派发语义 | 仅属监控窗口生命周期体验优化；CLI 状态与终态投递仍为权威依据 |
+| `GUI-104-002` | **P2 / GUI 阶段待回归，不阻塞派发** | retry attempt 的 Codex 临时会话在整个活动执行期间未出现在 Desktop 对话列表，用户无法从侧栏观察其运行态 | 后续 GUI 为活动 retry session 提供稳定、可识别的临时可见性；终态仍复用既有 archive→delete 清理，不把侧栏实时显示设为派发或完成门禁 | 仅属运行态可见性优化；不得为此修改已验证的 retry、权限或清理协议 |
 
 `FLOW-104-004-R1` 的收紧验收合同（以 `7F43-001` 为固定负向基线）：
 
@@ -205,6 +207,12 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
   cancelled，无法定位并通知仍运行的 continuation，cleanup 停在 `waiting_for_desktop/not_requested`。修复限定为
   run-identity compare-and-clear：CLI 以精确旧 executor run ID、Runner 以精确旧 worker run ID 清引用；身份不匹配
   必须零写入。现有 archive→delete 清理器及其状态机保持不变。
+- `29KM-001` 在引用竞态修复后的 close 真机复验中，Task 于 `09:19:39Z` 进入 `cancelled`、RunLease
+  写为 closed，但精确 Executor session `01a09f35-8eab-7721-ab34-024e1bc90d58` 仍保持 active writer，Artifact
+  heartbeat 在 close 后继续增长；当前 Desktop 原生 archive 明确返回 `already has an active writer`，cleanup receipt
+  因而为 `failed/retryable`，delete 未触发。这证明“Task/RunLease 已终态”仍不能替代官方 writer 已停止的确认，继续
+  作为 `SESSION-104-001-R2` P1 阻塞证据。与此同时，Task List 窗口未自动关闭和 retry 活动会话不显示在侧栏已分别
+  登记为 `GUI-104-001`、`GUI-104-002` P2；二者不阻塞派发，也不得掩盖本条核心清理失败。
 - 根因边界：retry 事务会把控制面的 `session_receipt.json` 等活动文件移入
   `.agentbc-control/<task>/attempts/attempt-*`，随后 `_prepare_retry_task()` 以新的 pending
   `agentbc.session` 覆盖 live primary 并删除 live auxiliary ledger；当前 cleanup coordinator 只扫描 live
@@ -360,7 +368,7 @@ fixture/文档工作，但不得进入公开 RC。
 | 9 月 8 日—9 月 9 日 | **已通过：`SESSION-104-001` Desktop archive 生产接线回归** | `P3FK-002` 等旧反例已冻结；`5b8c3d4` 接通当前 Desktop 官方 relay | `XQQF-001` 的 Desktop archive 与 delete 独立 acknowledged、CLI/Desktop backend absent，用户确认侧栏即时收敛；本项不再阻塞 RC |
 | 9 月 7 日—9 月 9 日 | **已通过：`PERM-104-002` 最终收口** | 三 Executor 显式 full 与 inherit→full 核心矩阵、Claude Details UI 已通过 | `FNJN-001` 补齐 handoff/retry 继承 full、Deny、timeout、重复/乱序事件并完成质量门禁；PERM 全局开发门禁关闭 |
 | 9 月 10 日—9 月 13 日 | **已通过：`INPUT-104-001`**（`FLOW-104-002` 已通过） | `ba72f36` 完成外部输入冻结、manifest、重放与清理；本机安装身份一致 | `TEFD-001`、`8V5E-001`、`GTQW-001` 均完成 custom path + 外部冻结输入 + 跨指定目录修改，零审批，terminal delivery 与 session cleanup 无回归 |
-| 9 月 14 日—9 月 18 日 | **优先 P1：`SESSION-104-001-R2`**；`FLOW-104-003-R1` 待回归；`FLOW-104-004-R1` 降为 P2 | `Y9JS-001` 已证明 retry 后仅最后 attempt session 进入 cleanup，旧 attempt receipt 留在归档控制目录且 Desktop 仍有残留；`AMRV-001` 正常对照通过 | 建立 attempt-scoped session cleanup ledger，连续 retry 的每个主/子会话均 archive→delete 且侧栏无残留；随后再处理 Hermes incomplete-exit；受控 interruption 不阻塞本窗口 |
+| 9 月 14 日—9 月 18 日 | **优先 P1：`SESSION-104-001-R2`**；`FLOW-104-003-R1` 待回归；`FLOW-104-004-R1`、`GUI-104-001/002` 为 P2 | `Y9JS-001` 已证明 retry 后仅最后 attempt session 进入 cleanup；`29KM-001` 证明 close 后 Task/RunLease 已终态但官方 writer 仍活动；Task List 窗口和 retry 会话运行态可见性另列 GUI P2 | 连续 retry 的每个主/子会话均经既有清理器 archive→delete，close 后官方 writer 确认停止且无 Desktop 残留；GUI P2 延后到 GUI 开发阶段，不阻塞派发 |
 | 9 月 19 日—9 月 22 日 | P1：`FLOW-104-001`、`FLOW-103-001`、`RESOURCE-104-001-R1` | steps/progress/resource input 均已有部分合同 | multi-step handoff、单调 progress、资源耗尽 Desktop 弹窗和同 session continuation 通过 |
 | 9 月 23 日—9 月 27 日 | P1 回归与局部 `ARCH-104-001` 收口 | `SESSION-104-001` 已完成重新验收 | 三 Executor E2E、session teardown、Update/Homebrew 回归完成；只做被前述工作包证明必要的机械拆分 |
 | 9 月 28 日—10 月 2 日 | Wave 5：`1.0.4a1` RC 与双机发布门禁 | 所有 P0/P1 退出条件完成 | GitHub/PyPI/bundle/bottle/manifest SHA 与 tag commit 可复验，提交用户 go/no-go |
