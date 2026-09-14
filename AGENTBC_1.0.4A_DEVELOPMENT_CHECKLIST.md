@@ -4,7 +4,7 @@
 > **最高优先级、不可覆盖：禁止在 `full` 运行基础上增加任何额外安全策略。安全策略不属于 AgentBC 产品特性，不为任务执行负责；凡与 `full` 任务完整执行冲突，必要时必须移除一切额外安全策略。**
 
 > 制定日期：2026-08-26
-> 状态：持续开发与回归中；`SESSION-104-001` 已于 2026-09-09 经 `XQQF-001` 当前 Codex Desktop 真机复验并由用户确认侧栏即时消失，重新标记通过；`FLOW-104-002` 的独立终态投递链已完成并通过全量门禁；`PERM-104-002` 已于 2026-09-09 完成最终确定性回归收口；`FLOW-104-003` 已于 2026-09-13 经 `K3T8-002` handoff 与 `Y9JS-001` needs-recovery retry 真机复验通过；`INPUT-104-001` 已于 2026-09-13 经 Codex `TEFD-001`、Claude `8V5E-001`、Hermes `GTQW-001` 三 Executor 真机矩阵验收通过；`FLOW-104-004-R1` 阶段性通过并降为 P2 优化；Task List 终态窗口自动关闭与 retry 活动会话侧栏可见性已登记为 GUI 阶段 P2，均不阻塞派发；`SESSION-104-001-R2` 的 active-writer close 子项已于 2026-09-14 经 `43R4-001` 真机验证通过
+> 状态：持续开发与回归中；`SESSION-104-001` 已于 2026-09-09 经 `XQQF-001` 当前 Codex Desktop 真机复验并由用户确认侧栏即时消失，重新标记通过；`FLOW-104-002` 的独立终态投递链已完成并通过全量门禁；`PERM-104-002` 已于 2026-09-09 完成最终确定性回归收口；`FLOW-104-003` 已于 2026-09-13 经 `K3T8-002` handoff 与 `Y9JS-001` needs-recovery retry 真机复验通过；`INPUT-104-001` 已于 2026-09-13 经 Codex `TEFD-001`、Claude `8V5E-001`、Hermes `GTQW-001` 三 Executor 真机矩阵验收通过；`FLOW-104-004-R1` 阶段性通过并降为 P2 优化；Task List 终态窗口自动关闭、retry 活动会话侧栏可见性，以及 Desktop route 缺失时的免监控清理体验已登记为 GUI/体验阶段 P2，均不阻塞派发；`SESSION-104-001-R2` 的 active-writer close 子项已于 2026-09-14 经 `43R4-001` 真机验证通过
 > 目标版本：AgentBC `1.0.4A` / Python `1.0.4a1`
 
 ## PERM-104 方案 D（2026-09-07，代码与核心实机矩阵通过；2026-09-09 最终回归收口）
@@ -141,6 +141,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `SESSION-104-001-R2` | **P1 / active-writer 子项已通过（2026-09-14）** | `Y9JS-001` 证明 retry 只清理最后 attempt、旧 attempt session 脱离候选；`6WD5-001` 证明早删 Task owner；`29KM-001` 与首轮 `SMG5-001` 进一步证明 Task/RunLease 虽已关闭，Codex App Server 的独立进程组仍可留下 active writer | **现有 `SessionCleanupCoordinator`、Codex Desktop relay 及 archive→delete 运行逻辑保持冻结。** `2994190` 在发送官方 cooperative interrupt 前快照精确 task-bound worker 后代；宽限期后只回收该快照中的残留进程，并使 `cancel_task_runs` 返回权威成功回执 | 全量 2012 tests 通过、17 skipped；Ruff、compileall、package build、checksum 与 `git diff --check` 通过。`43R4-001` 在一次 inherit→full 后进入前台 heartbeat；`task close --confirm` 成功，Runner run `runner-worker-68b47b86347a` 为 `cancelled`/`returncode=-15`/cleanup completed，7 个快照后代均无残留活动。精确 Executor session `01a0a00b-7da1-74c1-87cb-ee2391d5749f` 由既有 Codex controller heartbeat 归档并从 active 列表消失；该 canary 不把 controller archive 误记为清理器自动 delete 证据 |
 | `GUI-104-001` | **P2 / GUI 阶段待回归，不阻塞派发** | 用户 close `29KM-001` 后，Task List 已刷新为 `cancelled`，但独立监控终端窗口仍保持打开 | GUI/monitor 在被监控任务进入终态后自动退出或关闭窗口；不得改变 Task 终态、Runner、session cleanup 或派发语义 | 仅属监控窗口生命周期体验优化；CLI 状态与终态投递仍为权威依据 |
 | `GUI-104-002` | **P2 / GUI 阶段待回归，不阻塞派发** | retry attempt 的 Codex 临时会话在整个活动执行期间未出现在 Desktop 对话列表，用户无法从侧栏观察其运行态 | 后续 GUI 为活动 retry session 提供稳定、可识别的临时可见性；终态仍复用既有 archive→delete 清理，不把侧栏实时显示设为派发或完成门禁 | 仅属运行态可见性优化；不得为此修改已验证的 retry、权限或清理协议 |
+| `GUI-104-003` | **P2 / 体验阶段待优化，不阻塞派发** | 2026-09-14 `J9NT-001` 的任务结束弹窗与 `ui_notification=succeeded` 已成功触发既有清理器，但 Runner 重启后当前 Desktop archive route 未注册，cleanup 停在 `waiting_for_desktop`，archive/delete 均为 `not_requested`；通过当前 Desktop 原生 `set_thread_archived` 和精确 acknowledgement 后，既有 delete 立即成功并验证 CLI/Desktop backend absent | 当前版本不新增 task-scoped heartbeat、轮询或额外清理监控。后续 GUI/控制面阶段再提供无需人工监管的 Desktop route 生命周期与重注册体验；仅在精确官方 Executor session、成功任务结束弹窗回执之后转交既有 archive→delete 清理器 | 不重新打开 `SESSION-104-001`，不改变现有清理器运行逻辑，不把 Desktop 即时隐藏或 route 可用性设为任务完成、retry、handoff 或派发门禁 |
 
 `FLOW-104-004-R1` 的收紧验收合同（以 `7F43-001` 为固定负向基线）：
 
@@ -281,6 +282,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | ID | 优先级 | 现场基线 | 优化目标 | 发布关系 |
 | --- | --- | --- | --- | --- |
 | `PROTO-105-001` | P2 / 待优化 | Codex 0.150.1 schema、fixture 与 live probe 均声明 `collabAgentToolCall`/`spawnAgent`，且 AgentBC 已显式选择 collaboration 与 Ultra；但 `C5FN-001`、`NMY4-001` 仍由父模型直接输出 `CHILD_SESSION_CANARY_OK`，没有官方 `spawnAgent` lifecycle、receiver thread ID 或 auxiliary ledger | 找到官方、可验证的原生协作工具启用合同；只有收到真实 `item/started`→`item/completed`、官方 receiver thread receipt 并完成父子 cleanup 后才算通过。禁止把模型文字或模拟子代理当作成功 | 不重新打开 `SESSION-104-001`；根据 1.0.5A 开发容量决定是否并入，未并入时继续 fail closed |
+| `GUI-104-003` | P2 / 待优化 | `J9NT-001` 已证明 task-end dialog receipt 能机械触发清理，但 Desktop route 缺失时仍需当前 Codex controller 执行原生 archive 并回写 acknowledgement | 在后续 GUI/控制面迭代中消除对人工监管的依赖，同时维持精确 session 隔离和既有 archive→delete 顺序 | 当前 1.0.4A 不增加 heartbeat/轮询，不阻塞派发、任务完成或 RC |
 
 `PROTO-105-001` 不属于 `1.0.4A` 发布门禁。当前主会话 completed/failed cleanup 已通过；由于上述 canary
 没有实际创建派生会话，它既不能证明派生清理通过，也不能否定已登记 auxiliary receipt 的现有清理实现。
@@ -373,7 +375,7 @@ fixture/文档工作，但不得进入公开 RC。
 | 9 月 8 日—9 月 9 日 | **已通过：`SESSION-104-001` Desktop archive 生产接线回归** | `P3FK-002` 等旧反例已冻结；`5b8c3d4` 接通当前 Desktop 官方 relay | `XQQF-001` 的 Desktop archive 与 delete 独立 acknowledged、CLI/Desktop backend absent，用户确认侧栏即时收敛；本项不再阻塞 RC |
 | 9 月 7 日—9 月 9 日 | **已通过：`PERM-104-002` 最终收口** | 三 Executor 显式 full 与 inherit→full 核心矩阵、Claude Details UI 已通过 | `FNJN-001` 补齐 handoff/retry 继承 full、Deny、timeout、重复/乱序事件并完成质量门禁；PERM 全局开发门禁关闭 |
 | 9 月 10 日—9 月 13 日 | **已通过：`INPUT-104-001`**（`FLOW-104-002` 已通过） | `ba72f36` 完成外部输入冻结、manifest、重放与清理；本机安装身份一致 | `TEFD-001`、`8V5E-001`、`GTQW-001` 均完成 custom path + 外部冻结输入 + 跨指定目录修改，零审批，terminal delivery 与 session cleanup 无回归 |
-| 9 月 14 日—9 月 18 日 | **优先 P1：`SESSION-104-001-R2`**；`FLOW-104-003-R1` 待回归；`FLOW-104-004-R1`、`GUI-104-001/002` 为 P2 | `Y9JS-001` 已证明 retry 后仅最后 attempt session 进入 cleanup；`29KM-001` 证明 close 后 Task/RunLease 已终态但官方 writer 仍活动；Task List 窗口和 retry 会话运行态可见性另列 GUI P2 | 连续 retry 的每个主/子会话均经既有清理器 archive→delete，close 后官方 writer 确认停止且无 Desktop 残留；GUI P2 延后到 GUI 开发阶段，不阻塞派发 |
+| 9 月 14 日—9 月 18 日 | **优先 P1：`SESSION-104-001-R2`**；`FLOW-104-003-R1` 待回归；`FLOW-104-004-R1`、`GUI-104-001/002/003` 为 P2 | `Y9JS-001` 已证明 retry 后仅最后 attempt session 进入 cleanup；`29KM-001` 证明 close 后 Task/RunLease 已终态但官方 writer 仍活动；Task List 窗口、retry 会话运行态可见性和 Desktop route 缺失时的免监控清理体验另列 GUI/体验 P2 | 连续 retry 的每个主/子会话均经既有清理器 archive→delete，close 后官方 writer 确认停止且无 Desktop 残留；GUI/体验 P2 延后处理，不增加当前清理监控，也不阻塞派发 |
 | 9 月 19 日—9 月 22 日 | P1：`FLOW-104-001`、`FLOW-103-001`、`RESOURCE-104-001-R1` | steps/progress/resource input 均已有部分合同 | multi-step handoff、单调 progress、资源耗尽 Desktop 弹窗和同 session continuation 通过 |
 | 9 月 23 日—9 月 27 日 | P1 回归与局部 `ARCH-104-001` 收口 | `SESSION-104-001` 已完成重新验收 | 三 Executor E2E、session teardown、Update/Homebrew 回归完成；只做被前述工作包证明必要的机械拆分 |
 | 9 月 28 日—10 月 2 日 | Wave 5：`1.0.4a1` RC 与双机发布门禁 | 所有 P0/P1 退出条件完成 | GitHub/PyPI/bundle/bottle/manifest SHA 与 tag commit 可复验，提交用户 go/no-go |
