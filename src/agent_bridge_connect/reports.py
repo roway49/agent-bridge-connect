@@ -229,6 +229,7 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "terminal_delivery": terminal_delivery,
         "delivery_health": delivery_health,
         "execution_policy": execution_policy_view(extensions),
+        "progress": execution_policy_view(extensions).get("progress"),
         "run_lease_state": lease_state,
         "time_since_last_heartbeat_s": heartbeat_age,
         "recovery_recommendation": (
@@ -785,6 +786,7 @@ def _render_report_md(report: dict[str, Any]) -> str:
         lines.append("- None")
 
     policy = report.get("execution_policy") or {}
+    progress = report.get("progress") or {}
     resources = policy.get("resources") or {}
     executor_session = policy.get("session") or {}
     session_cleanup = executor_session.get("cleanup") or {}
@@ -902,6 +904,19 @@ def _render_report_md(report: dict[str, Any]) -> str:
                 f"attempts=`{cleanup.get('attempts', 0)}` "
                 f"error=`{cleanup.get('error_code') or 'none'}`"
             )
+
+    if progress:
+        lines.extend(
+            [
+                "",
+                "## Confirmed Progress",
+                f"- Evidence: `{progress.get('evidence_quality') or 'unknown'}`",
+                f"- Attempt: `{progress.get('attempt_index', 0)}`",
+                f"- Latest sequence: `{progress.get('latest_sequence', 0)}`",
+                f"- Confirmed steps: `{', '.join(str(item) for item in progress.get('confirmed_step_ids') or []) or 'none'}`",
+                f"- Updated: `{progress.get('updated_at') or 'unknown'}`",
+            ]
+        )
 
     image_inputs = (report.get("media") or {}).get("images") or []
     if image_inputs:

@@ -95,8 +95,11 @@ ZERO_EXIT_RULE = (
     "A zero CLI exit without a valid marker fails the task. completed means flow execution "
     "ended, not user acceptance or quality approval."
 )
-PROGRESS_LEAD = "For long-running work, refresh AgentBC progress at least every few minutes:"
-PROGRESS_COMMAND = 'agentbc task progress TEST-001 --root /tmp/abc-record --summary "describe current progress"'
+PROGRESS_LEAD = "After each step, record authoritative completion:"
+PROGRESS_COMMAND = (
+    "agentbc task progress TEST-001 --root /tmp/abc-record "
+    '--step <id> --summary "evidence"'
+)
 
 CLAUDE_EXTRA_RULES = (
     "Do not claim user acceptance. completed only means your agent turn is finished and ready for user review.",
@@ -137,8 +140,8 @@ Iteration: 1
 Base artifact root: /tmp/abc-worktree/artifacts
 
 After completing all steps, write a summary of what you did.
-For long-running work, refresh AgentBC progress at least every few minutes:
-agentbc task progress TEST-001 --root /tmp/abc-record --summary "describe current progress"
+After each step, record authoritative completion:
+agentbc task progress TEST-001 --root /tmp/abc-record --step <id> --summary "evidence"
 
 End with exactly one marker. Use each Step ID once; description numbers are not Step IDs:
 AGENTBC_FINAL_CALLBACK: {"version":1,"task_id":"TEST-001","final_state":"completed","summary":"concise summary","step_results":[{"id":1,"status":"done"},{"id":2,"status":"done"}]}
@@ -180,8 +183,8 @@ Iteration: 1
 Base artifact root: /tmp/abc-worktree/artifacts
 
 After completing all steps, print a concise summary.
-For long-running work, refresh AgentBC progress at least every few minutes:
-agentbc task progress TEST-001 --root /tmp/abc-record --summary "describe current progress"
+After each step, record authoritative completion:
+agentbc task progress TEST-001 --root /tmp/abc-record --step <id> --summary "evidence"
 
 End with exactly one marker. Use each Step ID once; description numbers are not Step IDs:
 AGENTBC_FINAL_CALLBACK: {"version":1,"task_id":"TEST-001","final_state":"completed","summary":"concise summary","step_results":[{"id":1,"status":"done"},{"id":2,"status":"done"}]}
@@ -217,8 +220,8 @@ Iteration: 1
 Base artifact root: /tmp/abc-worktree/artifacts
 
 Return a concise execution summary and mention any files changed.
-For long-running work, refresh AgentBC progress at least every few minutes:
-agentbc task progress TEST-001 --root /tmp/abc-record --summary "describe current progress"
+After each step, record authoritative completion:
+agentbc task progress TEST-001 --root /tmp/abc-record --step <id> --summary "evidence"
 
 End with exactly one marker. Use each Step ID once; description numbers are not Step IDs:
 AGENTBC_FINAL_CALLBACK: {"version":1,"task_id":"TEST-001","final_state":"completed","summary":"concise summary","step_results":[{"id":1,"status":"done"},{"id":2,"status":"done"}]}
@@ -353,7 +356,7 @@ class CodexPromptContractTests(unittest.TestCase):
         prompt = codex_prompt(managed_packet(step_count=10))
         self.assertEqual(prompt.count(DELIVERABLES_RULE), 1)
         self.assertEqual(prompt.count("agentbc task progress"), 1)
-        self.assertEqual(len(prompt), 3584)
+        self.assertEqual(len(prompt), 3553)
 
     def test_resumed_input_context(self):
         prompt = codex_prompt(with_resume(managed_packet()))
@@ -412,7 +415,7 @@ class ClaudePromptContractTests(unittest.TestCase):
         prompt = claude_prompt(managed_packet(step_count=10))
         self.assertEqual(prompt.count(DELIVERABLES_RULE), 1)
         self.assertEqual(prompt.count("agentbc task progress"), 1)
-        self.assertEqual(len(prompt), 4366)
+        self.assertEqual(len(prompt), 4335)
 
     def test_resumed_input_context(self):
         prompt = claude_prompt(with_resume(managed_packet()))
@@ -473,7 +476,7 @@ class HermesPromptContractTests(unittest.TestCase):
         prompt = hermes_prompt(managed_packet(step_count=10))
         self.assertEqual(prompt.count(DELIVERABLES_RULE), 1)
         self.assertEqual(prompt.count("agentbc task progress"), 1)
-        self.assertEqual(len(prompt), 3595)
+        self.assertEqual(len(prompt), 3564)
 
     def test_resumed_input_context(self):
         prompt = hermes_prompt(with_resume(managed_packet()))

@@ -285,11 +285,17 @@ dispatcher conversation.
 
 ## Progress, Completion, Intervention, And Acceptance
 
-For long-running work, refresh progress at least every few minutes:
+After completing each declared step, persist its authoritative completion receipt. The same command
+also refreshes task health; omit `--step` only for a heartbeat that must not change step state:
 
 ```bash
-agentbc task progress <task-id> --root <board-root> --summary "short progress update"
+agentbc task progress <task-id> --root <board-root> --step <id> --summary "evidence"
 ```
+
+Core accepts only a persisted declared step ID while the current Runner run and official Executor
+session agree. The receipt is monotonic and attempt-scoped: duplicate calls are idempotent, a later
+input/resource/recovery/final callback cannot regress confirmed `done`, and a from-zero retry clears
+the live receipt while preserving historical events. Progress never completes a task by itself.
 
 An executor completing structured work must end its final response with exactly one valid
 `AGENTBC_FINAL_CALLBACK` marker for the actual task and every declared step exactly once. A zero exit

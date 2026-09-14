@@ -166,7 +166,7 @@ class SkillManifestTests(unittest.TestCase):
         # the agentbc.revival v1 failed/needs-recovery revival protocol.
         self.assertEqual(
             fingerprints["codex"]["files"]["references/controller-contract.md"],
-            "426320bfb2d68f4cd1e0874dbdf873a4dfd63498a92b5f251f3f38e7a752efc9",
+            "a8548e70a6c5d16d9f856e346918d5c3b10584c817f54a4b3cd83312edfac2fc",
         )
         # The Codex entrypoint changed for the Desktop archive bridge; its
         # previous bytes are preserved as a fixture below.

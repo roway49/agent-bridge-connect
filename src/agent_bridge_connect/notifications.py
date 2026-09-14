@@ -636,15 +636,22 @@ def build_notification_payload(
     status = terminal_status_label(task.status) or str(task.status or level or "unknown")
     timing = build_timing_view(task, service.board_root)
     duration_text = format_duration_seconds(timing.get("wall_duration_s"))
-    body = "\n".join(
-        [
-            f"Task: {task_id} {status}",
-            f"Title: {compact_notification_text(task.title, 96)}",
-            f"Dispatcher/Executor: {dispatcher} -> {executor}",
-            f"Duration: {duration_text}",
-            f"Report: {report_path}",
-        ]
-    )
+    progress = execution_policy_view(extensions).get("progress")
+    progress_view = progress or {}
+    body_lines = [
+        f"Task: {task_id} {status}",
+        f"Title: {compact_notification_text(task.title, 96)}",
+        f"Dispatcher/Executor: {dispatcher} -> {executor}",
+        f"Duration: {duration_text}",
+        f"Report: {report_path}",
+    ]
+    if progress:
+        body_lines.append(
+            "Confirmed progress: "
+            f"{progress_view.get('confirmed_count', 0)}/{len(task.steps)} steps "
+            f"(sequence {progress_view.get('latest_sequence', 0)})"
+        )
+    body = "\n".join(body_lines)
     payload = {
         "task_id": task_id,
         "event_type": event_type,
@@ -652,6 +659,7 @@ def build_notification_payload(
         "level": level,
         "message": body,
         "report_path": report_path,
+        "progress": progress,
     }
     payload.update(
         {

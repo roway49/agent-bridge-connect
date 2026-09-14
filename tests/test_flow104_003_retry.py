@@ -61,6 +61,13 @@ class FailedTaskRetryTests(unittest.TestCase):
             "summary": "old answer",
         }
         extensions["agentbc.permission_runtime"] = {"state": "old-runtime"}
+        extensions["agentbc.progress"] = {
+            "version": 1,
+            "task_id": task.id,
+            "attempt_index": 0,
+            "latest_sequence": 1,
+            "receipts": [{"step_id": 1, "status": "done"}],
+        }
         extensions["agentbc.completion_intent"] = {"state": "old-intent"}
         extensions["agentbc.final_callback"] = {"marker_valid": True}
         extensions["agentbc.terminal_delivery"] = {"state": "delivered"}
@@ -160,6 +167,7 @@ class FailedTaskRetryTests(unittest.TestCase):
             "agentbc.final_callback",
             "agentbc.terminal_delivery",
             "agentbc.auxiliary_sessions",
+            "agentbc.progress",
         ):
             self.assertNotIn(key, retried.extensions)
         self.assertEqual(

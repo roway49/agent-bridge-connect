@@ -647,6 +647,10 @@ def _prepare_retry_task(
     extensions.pop("agentbc.completion_intent", None)
     extensions.pop("agentbc.final_callback", None)
     extensions.pop("agentbc.permission_runtime", None)
+    # FLOW-103-001 progress is attempt-scoped. A from-zero retry keeps the
+    # historical event ledger but must not carry authoritative done facts into
+    # the new attempt.
+    extensions.pop("agentbc.progress", None)
     # Auxiliary sessions are executor-attempt runtime state. A from-zero
     # retry must not bind its new parent/children to receipts from the failed
     # attempt; terminal evidence remains in the append-only event/report

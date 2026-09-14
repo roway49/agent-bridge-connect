@@ -37,18 +37,20 @@
 `1.0.4A` 不再扩展 AgentBC 的权限等级或支持平台，而是把 `1.0.3A` 已经可用、但仍依赖
 Prompt、共享大模块或脆弱终态顺序的控制链变成 Core-owned、可机械验证、可重放的合同。
 
-本版只承担十个权威开发项：
+本版只承担九个权威开发项：
 
 1. `PROTO-104-001`：三 Executor 版本化协议 fixture matrix；
 2. `ARCH-104-001`：在 characterization 保护下进行局部机械拆分；
 3. `PERM-104-001`：审批资格、Deny 和 fallback eligibility 机械判定；
 4. `PERM-104-002`：阻塞来源域与不可升级动作收敛；
-5. `FLOW-104-001`：handoff 结构化多 steps；
-6. `FLOW-104-002`：终态通知、报告、record budget 与 cleanup 解耦；
-7. `FLOW-103-001`：从 1.0.3A 转入的权威单调 progress receipt；
-8. `SESSION-104-001`：Codex CLI/Desktop 双入口临时会话清理验收；
-9. `FLOW-104-003`：Failed 任务的 retry 与 handoff 恢复闭环；
-10. `INPUT-104-001`：custom path 与外部输入附件的安全双根合同。
+5. `FLOW-104-002`：终态通知、报告、record budget 与 cleanup 解耦；
+6. `FLOW-103-001`：从 1.0.3A 转入的权威单调 progress receipt；
+7. `SESSION-104-001`：Codex CLI/Desktop 双入口临时会话清理验收；
+8. `FLOW-104-003`：Failed 任务的 retry 与 handoff 恢复闭环；
+9. `INPUT-104-001`：custom path 与外部输入附件的安全双根合同。
+
+`FLOW-104-001`（handoff 结构化多 steps）推迟到 `1.0.5A`，不再是 `FLOW-103-001` 或
+`1.0.4A` RC 的前置门禁。`FLOW-103-001` 直接引用当前已持久化的 declared step ID。
 
 原独立项 `UX-104-001` 降级为 `PERM-104-002-R1` 派生回归项：不单独占用开发 Wave，必须在
 `PERM-104-002` 完成并证明不可升级阻塞已收敛后再执行弹窗详情回归。
@@ -82,8 +84,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `PERM-104-001` | P0 / 已通过（2026-09-07） | native Deny 后 Agent 仍可用 Prompt/callback 请求 full 并启动第二 worker | Claude inherit 的首个结构化 `can_use_tool` 事件只产生一次同会话输入；`8JY7-001` 已证明 Approve Full 原子返回原始 input + `setMode/bypassPermissions/session`，同 session 完成且零 continuation | `RM7A-001`；`8JY7-001`；`tests/test_perm104_001_claude_same_session_elevation.py` |
 | `PERM-104-002` | P0 / Plan D 最终回归收口完成（2026-09-09） | full 必须完整后台执行；inherit/safe 首次可信阻塞后至多一次提升，不能审批循环 | 三 Executor 显式 full 零弹窗与 inherit→full 一次审批矩阵、handoff/retry full 继承、Deny、timeout、重复/重放/乱序事件均有直接自动化证据；无第二 input/notification/decision/grant/worker/continuation，安装身份与官方 session 约束保持 | `PERM-104-001`；`T5KN/XE8R/QMBK/G3CQ/8JY7/9EP7`；`FNJN-001` evidence |
 | `FLOW-104-002` | P0 / 已通过（2026-09-08） | report/record 超限曾可跳过终态通知和 cleanup receipt | terminal、report、record、index、file/UI notification 已按独立幂等 receipt 投递并可重放；cleanup 不再依赖 report/notification 成功，业务终态不被投递故障回写 | `eb4514e`、`ab1ba49`、`1cfc043`；全量 1855 tests 通过，17 skipped；证据见 `FLOW-104-002_TERMINAL_DELIVERY_EVIDENCE.md` |
-| `FLOW-104-001` | P1 | handoff 只能声明一个 step，自由文本多步骤直到 callback 才失败 | handoff 原生结构化 steps、dispatch 前预检、严格 callback 一致性 | schema fixtures；对应 ARCH slice |
-| `FLOW-103-001` | P1 / 跨版转入 | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | task/run/session scoped 单调 progress receipt；所有公共视图同源 | `FLOW-104-001` 的 declared steps |
+| `FLOW-103-001` | **P1 / 实现完成，待真机回归（2026-09-14）** | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | `agentbc.progress` v1 已建立 task/attempt/run/session/step 绑定的有界单调 receipt；status/report/notification 同源，retry 清除当前 attempt receipt，terminal authority 不变 | 当前持久化 declared steps；不依赖 `FLOW-104-001`；57 项定向与 2021 项全量 unittest 通过（17 skipped） |
 | `SESSION-104-001` | **P0 / 已通过（2026-09-09，用户真机确认）** | 9 月 8 日曾出现 App Server archive/delete 后端成功但 Desktop 侧栏残留；根因修复为由 CLI 的 Node 宿主维持当前 Desktop 官方 relay，使 archive 精确触达当前应用实例，再进入既有 delete | `XQQF-001` 对精确官方 session `01a08466-7414-76a0-bceb-01e7130bc1f7` 持久化 Desktop archive acknowledged、delete acknowledged、CLI/Desktop backend absent；任务 completed、唯一合法 callback、RunLease closed。用户确认当前 Desktop 侧栏无需点击即消失，批准标记通过 | 修复提交 `5b8c3d4`；`SESSION-104-001-R1` 已关闭并回主项；原生派生子会话仍归 `PROTO-105-001` P2 |
 | `FLOW-104-003` | **P0 / Revival 主合同已通过（2026-09-13）；旧 attempt cleanup 转 `SESSION-104-001-R2`** | `K3T8-001` 暴露旧 task-scoped session/control receipt 未轮换、retry 秒失败及 Task List 跨 attempt 累计 wall time；`Y9JS-001` 进一步验证 `needs_recovery` 必须与 `failed` 使用同一 revival 合同 | Handoff `K3T8-002` 保留失败基线并机械导入 requirements/report 后完成；`Y9JS-001` 同 ID retry 从零执行完成，建立全新官方主会话并真实创建 1 个派生会话，3/3 steps 与唯一 callback 有效，RunLease closed，最后 attempt 主/子会话均 archive→delete，auxiliary aggregate 1/1 resolved；Task List 使用当前 attempt 时间。2026-09-14 复核发现更早 attempt session 未纳入 cleanup，该缺口不推翻 retry/handoff 语义验收，转由 `SESSION-104-001-R2` P1 修复 | 修复提交 `e90adc0`、`facba58`、`706bcc9`、`cd7935b`、`7cc3d25`、`6f729a0`；全量 1988 tests 通过、17 skipped；Ruff、compileall、package build、`git diff --check` 通过；用户确认 revival 运行语义符合预期 |
 | `INPUT-104-001` | **P0 / 已通过（2026-09-13，三 Executor 真机确认）** | 显式 custom path 时，位于项目根之外的 `--image`/输入文件曾被 `image input is outside task roots` 原子拒绝 | 外部输入已冻结到 task-scoped content-addressed input root；Codex `TEFD-001`、Claude `8V5E-001`、Hermes `GTQW-001` 均在 full 下完成输入读取、custom path 与指定外部目录的同特征文件修改，3/3 steps、唯一合法 callback、RunLease closed、terminal delivery 与 cleanup succeeded，且无 approval/input 事件 | 实现提交 `ba72f36`；PathPlan v2；atomic dispatch；`agentbc.inputs` v1；真机 `TEFD/8V5E/GTQW` |
@@ -282,6 +283,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | ID | 优先级 | 现场基线 | 优化目标 | 发布关系 |
 | --- | --- | --- | --- | --- |
 | `PROTO-105-001` | P2 / 待优化 | Codex 0.150.1 schema、fixture 与 live probe 均声明 `collabAgentToolCall`/`spawnAgent`，且 AgentBC 已显式选择 collaboration 与 Ultra；但 `C5FN-001`、`NMY4-001` 仍由父模型直接输出 `CHILD_SESSION_CANARY_OK`，没有官方 `spawnAgent` lifecycle、receiver thread ID 或 auxiliary ledger | 找到官方、可验证的原生协作工具启用合同；只有收到真实 `item/started`→`item/completed`、官方 receiver thread receipt 并完成父子 cleanup 后才算通过。禁止把模型文字或模拟子代理当作成功 | 不重新打开 `SESSION-104-001`；根据 1.0.5A 开发容量决定是否并入，未并入时继续 fail closed |
+| `FLOW-104-001` | 1.0.5A / 已推迟 | handoff 只能声明一个 step，自由文本多步骤直到 callback 才失败 | handoff 原生结构化 steps、dispatch 前预检、严格 callback 一致性 | 不阻塞 `FLOW-103-001` 或 1.0.4A RC；1.0.5A 独立实施 |
 | `GUI-104-003` | P2 / 待优化 | `J9NT-001` 已证明 task-end dialog receipt 能机械触发清理，但 Desktop route 缺失时仍需当前 Codex controller 执行原生 archive 并回写 acknowledgement | 在后续 GUI/控制面迭代中消除对人工监管的依赖，同时维持精确 session 隔离和既有 archive→delete 顺序 | 当前 1.0.4A 不增加 heartbeat/轮询，不阻塞派发、任务完成或 RC |
 
 `PROTO-105-001` 不属于 `1.0.4A` 发布门禁。当前主会话 completed/failed cleanup 已通过；由于上述 canary
@@ -340,9 +342,9 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 
 ### Wave 4：结构化流程与权威进度
 
-- 先完成 `FLOW-104-001` 的 declared steps schema、旧任务双读和 dispatch preflight；
-- 再完成 `FLOW-103-001`，progress receipt 只能引用已持久化 declared step ID；
-- 两项不得放宽 callback 的未知/重复/缺失 step fail-closed 校验。
+- 当前只完成 `FLOW-103-001`，progress receipt 只能引用现有 task 中已持久化的 declared step ID；
+- `FLOW-104-001` 推迟到 1.0.5A，不作为本项依赖；
+- 不得放宽 callback 的未知、重复或缺失 step fail-closed 校验。
 
 ### Wave 5：集成与发布候选
 
@@ -362,7 +364,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | 8 月 31 日—9 月 4 日 | Wave 1：协议 fixtures、外部输入双根合同与首批机械拆分 | `PROTO-104-001`、`INPUT-104-001` 完成，后续功能修改有 characterization 保护 |
 | 9 月 7 日—9 月 11 日 | Wave 2：`PERM-104-001`、`PERM-104-002`，随后执行 `PERM-104-002-R1` | 不可升级 blocked 先收敛，再通过 Approve/Deny/Details 回归 canary |
 | 9 月 14 日—9 月 18 日 | Wave 3：`FLOW-104-002`、`FLOW-104-003`、`SESSION-104-001` | Failed retry/handoff 与 Codex 双入口清理矩阵通过 |
-| 9 月 21 日—9 月 25 日 | Wave 4：`FLOW-104-001`、`FLOW-103-001` | multi-step handoff 与单调 progress 全链路通过 |
+| 9 月 21 日—9 月 25 日 | Wave 4：`FLOW-103-001` | 现有 declared steps 的单调 progress 全链路通过；`FLOW-104-001` 留待 1.0.5A |
 | 9 月 28 日—10 月 2 日 | Wave 5：全量回归、双机 RC、发布材料 | `1.0.4a1` RC 可复验，进入用户 go/no-go |
 
 节奏按 Gate 退出，不按日期强行推进。任一 P0 真机 canary 未通过时，后续 Wave 可以继续做不冲突的
@@ -376,7 +378,7 @@ fixture/文档工作，但不得进入公开 RC。
 | 9 月 7 日—9 月 9 日 | **已通过：`PERM-104-002` 最终收口** | 三 Executor 显式 full 与 inherit→full 核心矩阵、Claude Details UI 已通过 | `FNJN-001` 补齐 handoff/retry 继承 full、Deny、timeout、重复/乱序事件并完成质量门禁；PERM 全局开发门禁关闭 |
 | 9 月 10 日—9 月 13 日 | **已通过：`INPUT-104-001`**（`FLOW-104-002` 已通过） | `ba72f36` 完成外部输入冻结、manifest、重放与清理；本机安装身份一致 | `TEFD-001`、`8V5E-001`、`GTQW-001` 均完成 custom path + 外部冻结输入 + 跨指定目录修改，零审批，terminal delivery 与 session cleanup 无回归 |
 | 9 月 14 日—9 月 18 日 | **优先 P1：`SESSION-104-001-R2`**；`FLOW-104-003-R1` 待回归；`FLOW-104-004-R1`、`GUI-104-001/002/003` 为 P2 | `Y9JS-001` 已证明 retry 后仅最后 attempt session 进入 cleanup；`29KM-001` 证明 close 后 Task/RunLease 已终态但官方 writer 仍活动；Task List 窗口、retry 会话运行态可见性和 Desktop route 缺失时的免监控清理体验另列 GUI/体验 P2 | 连续 retry 的每个主/子会话均经既有清理器 archive→delete，close 后官方 writer 确认停止且无 Desktop 残留；GUI/体验 P2 延后处理，不增加当前清理监控，也不阻塞派发 |
-| 9 月 19 日—9 月 22 日 | P1：`FLOW-104-001`、`FLOW-103-001`、`RESOURCE-104-001-R1` | steps/progress/resource input 均已有部分合同 | multi-step handoff、单调 progress、资源耗尽 Desktop 弹窗和同 session continuation 通过 |
+| 9 月 19 日—9 月 22 日 | P1：`FLOW-103-001`、`RESOURCE-104-001-R1` | progress/resource input 均已有部分合同；`FLOW-104-001` 已移至 1.0.5A | 单调 progress、资源耗尽 Desktop 弹窗和同 session continuation 通过 |
 | 9 月 23 日—9 月 27 日 | P1 回归与局部 `ARCH-104-001` 收口 | `SESSION-104-001` 已完成重新验收 | 三 Executor E2E、session teardown、Update/Homebrew 回归完成；只做被前述工作包证明必要的机械拆分 |
 | 9 月 28 日—10 月 2 日 | Wave 5：`1.0.4a1` RC 与双机发布门禁 | 所有 P0/P1 退出条件完成 | GitHub/PyPI/bundle/bottle/manifest SHA 与 tag commit 可复验，提交用户 go/no-go |
 
@@ -897,6 +899,8 @@ Seatbelt、PathPlan、版本 allowlist、permission category matcher 或额外�
 
 ### 4.5 `FLOW-104-001`：handoff 结构化多 steps
 
+> 2026-09-14 排期调整：本项推迟到 `1.0.5A`，不再阻塞 `FLOW-103-001` 或 1.0.4A RC。
+
 - `agentbc task handoff` 接受与根任务一致的结构化 `steps[].description` 输入；
 - handoff 继续继承 chain、PathPlan、artifact root、权限/资源/session 冻结策略；
 - 自由文本 message 只描述上下文，不隐式创建 Step 2+；message 与 steps 的优先级必须唯一；
@@ -909,6 +913,10 @@ Seatbelt、PathPlan、版本 allowlist、permission category matcher 或额外�
 callback invalid。
 
 ### 4.6 `FLOW-103-001`：权威单调 progress receipt
+
+> 2026-09-14 实现状态：代码与自动化门禁完成，等待重新封包后的三 Executor 真机回归。
+> `task progress --step <id>` 只在权威 active Runner run 与官方 session 完全一致时写入；同一步
+> 重放幂等，Core 自增 sequence，公共 projection 不包含 run/session ID。旧 heartbeat-only 命令继续兼容。
 
 - receipt 至少绑定 task、executor run、官方 session、declared step ID、单调状态、序号与证据来源；
 - `done` 只能由运行期间已落盘并校验的 receipt 推进；乱序、重复或重放不能回退；
@@ -1124,7 +1132,7 @@ safe/inherit 跨目录则只允许沿既有原生链路至多一次提升。实�
 | `ARCH-104-001` | 每次仅一个目标模块及 import compatibility tests | 不夹带 schema、状态机、文案变化 |
 | `PERM-104-001` | approval/permission decision、TaskService approval lifecycle | 不改 handoff、update、notification pipeline |
 | `PERM-104-002`（含 `R1`） | permission failure taxonomy、fingerprint/domain projection、三来源 full runtime capability 闭环；完成后 approval detail/DialogNotifier 回归 | 不新增 Git/path 穷举预检；不先做 UI 修复绕过阻塞与 full 生效闭环 |
-| `FLOW-104-001` | handoff CLI/schema/task packet/prompt contract | 不放宽 callback validator |
+| `FLOW-104-001`（1.0.5A） | handoff CLI/schema/task packet/prompt contract | 不放宽 callback validator；不作为 1.0.4A 门禁 |
 | `FLOW-103-001` | progress receipt/store/projection | 不改变 terminal completion authority |
 | `FLOW-104-002` | terminal delivery、reports、record budget、notifications/cleanup receipt | 不改变任务质量含义或权限策略 |
 | `SESSION-104-001` | Codex cleanup adapter、session receipt、CLI/Desktop E2E fixtures | 不扫描/改写 Codex 私有会话库，不触碰 dispatcher conversation |

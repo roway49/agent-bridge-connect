@@ -48,7 +48,7 @@ COMMON_RULES = (
     "AgentBC Core owns the execution report. Do not write or replace REPORT.md.",
 )
 
-PROGRESS_LEAD = "For long-running work, refresh AgentBC progress at least every few minutes:"
+PROGRESS_LEAD = "After each step, record authoritative completion:"
 
 MARKER_LEAD = (
     "End with exactly one marker. Use each Step ID once; description numbers are not Step IDs:"
@@ -122,7 +122,7 @@ def build_prompt_contract(
         recovery_record = value if isinstance(value, dict) else {}
     progress_command = (
         f"agentbc task progress {shlex.quote(task_id)} --root {shlex.quote(board_root)} "
-        '--summary "describe current progress"'
+        '--step <id> --summary "evidence"'
     )
 
     lines = [platform.opening, ""]

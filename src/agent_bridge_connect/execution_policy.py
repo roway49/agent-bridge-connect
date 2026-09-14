@@ -1161,6 +1161,7 @@ def execution_policy_view(extensions: Any) -> dict[str, Any]:
         delivery_health_view,
         terminal_delivery_view,
     )
+    from .progress_receipts import PROGRESS_EXTENSION_KEY, progress_public_projection
 
     value = extensions if isinstance(extensions, dict) else {}
     resource = value.get(RESOURCE_EXTENSION_KEY)
@@ -1200,6 +1201,7 @@ def execution_policy_view(extensions: Any) -> dict[str, Any]:
         "delivery_health": delivery_health_view(
             value.get(TERMINAL_DELIVERY_EXTENSION_KEY)
         ),
+        "progress": progress_public_projection(value.get(PROGRESS_EXTENSION_KEY)),
     }
 
 
@@ -1228,12 +1230,19 @@ def public_extensions_view(extensions: Any) -> dict[str, Any]:
         TERMINAL_DELIVERY_EXTENSION_KEY,
         terminal_delivery_view,
     )
+    from .progress_receipts import PROGRESS_EXTENSION_KEY, progress_public_projection
 
     public = copy.deepcopy(extensions) if isinstance(extensions, dict) else {}
     from .input_manifest import INPUTS_EXTENSION_KEY, public_inputs_view
 
     if INPUTS_EXTENSION_KEY in public:
         public[INPUTS_EXTENSION_KEY] = public_inputs_view(public.get(INPUTS_EXTENSION_KEY))
+    if PROGRESS_EXTENSION_KEY in public:
+        projected_progress = progress_public_projection(public.get(PROGRESS_EXTENSION_KEY))
+        if projected_progress is None:
+            public.pop(PROGRESS_EXTENSION_KEY, None)
+        else:
+            public[PROGRESS_EXTENSION_KEY] = projected_progress
     session = public.get(SESSION_EXTENSION_KEY)
     if isinstance(session, dict):
         session.pop("project_path", None)

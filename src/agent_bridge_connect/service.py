@@ -144,6 +144,12 @@ from .permission_modes import (
     permission_runtime_policy,
 )
 from .protocol import ABCError, PreflightResult, TaskModel, task_step_text
+from .progress_receipts import (
+    PROGRESS_EXTENSION_KEY,
+    PROGRESS_RECEIPT_VERSION,
+    progress_public_projection,
+    validate_progress_record,
+)
 from .schema import validate_task
 from .state_machine import validate_transition
 from .task_id import format_task_id, is_task_like, split_task_ref, task_iteration
@@ -874,6 +880,161 @@ class TaskService:
         task.updated_at = _utc_now()
         self.store.write_task(task_id, _without_none(task.to_dict()))
         self.store.append_event(task_id, {"event_type": "step_executed", "task_id": task_id, "step_id": step_id, "created_at": task.updated_at, "result": result})
+
+    @_serialize_task_elevation_write
+    def record_step_progress(self, task_id: str, step_id: int) -> dict[str, Any]:
+        """Persist one Core-owned, run/session-bound monotonic step receipt."""
+        task = self.get_task(task_id)
+        if _normalize_status(task.status) != "running":
+            raise ABCError(
+                "progress_task_not_running",
+                f"Authoritative step progress requires a running task, not {task.status}",
+            )
+        if isinstance(step_id, bool) or not isinstance(step_id, int) or step_id <= 0:
+            raise ABCError("progress_receipt_step_invalid", "Step ID must be a positive integer")
+        declared_steps = {
+            int(step.get("id", index))
+            for index, step in enumerate(task.steps, 1)
+            if isinstance(step.get("id", index), int)
+            and not isinstance(step.get("id", index), bool)
+        }
+        if step_id not in declared_steps:
+            raise ABCError("progress_receipt_step_unknown", f"Unknown declared step ID: {step_id}")
+        selected_step = next(
+            (step for index, step in enumerate(task.steps, 1) if step.get("id", index) == step_id),
+            None,
+        )
+        if selected_step is not None and is_locked_inherited_step(selected_step):
+            raise ABCError(
+                "inherited_step_locked",
+                f"Step {step_id} is locked inherited work and cannot receive a new progress receipt",
+            )
+
+        extensions = dict(task.extensions or {})
+        session = extensions.get(SESSION_EXTENSION_KEY)
+        session_errors = validate_session_snapshot(session, executor=task.assignee)
+        if session_errors:
+            raise ABCError(
+                "progress_session_receipt_invalid",
+                "; ".join(session_errors),
+                {"errors": session_errors},
+            )
+        session = dict(session)
+        if session.get("official_receipt_bound") is not True:
+            raise ABCError(
+                "progress_session_receipt_unbound",
+                "Authoritative progress requires an official Executor session receipt",
+            )
+        run_ids = list(session.get("run_ids") or [])
+        executor_run_id = str(run_ids[-1] if run_ids else "").strip()
+        session_id = str(session.get("session_id") or "").strip()
+        execution = extensions.get("agentbc.execution")
+        active_run_id = (
+            str(execution.get("executor_run_id") or "").strip()
+            if isinstance(execution, dict)
+            else ""
+        )
+        if (
+            not executor_run_id
+            or not session_id
+            or session.get("session_state") != "active"
+            or active_run_id != executor_run_id
+        ):
+            raise ABCError(
+                "progress_session_drift",
+                "Authoritative progress requires the active Runner run and official session to match",
+            )
+
+        attempt_index = _execution_attempt_index(extensions)
+        existing = extensions.get(PROGRESS_EXTENSION_KEY)
+        if existing is None:
+            record = {
+                "version": PROGRESS_RECEIPT_VERSION,
+                "task_id": task.id,
+                "attempt_index": attempt_index,
+                "latest_sequence": 0,
+                "receipts": [],
+                "updated_at": task.updated_at,
+            }
+        else:
+            record = validate_progress_record(
+                existing,
+                task_id=task.id,
+                declared_step_ids=declared_steps,
+            )
+            if int(record.get("attempt_index") or 0) != attempt_index:
+                raise ABCError(
+                    "progress_receipt_attempt_mismatch",
+                    "Progress receipt belongs to a different task attempt",
+                )
+        prior = next(
+            (item for item in record["receipts"] if item.get("step_id") == step_id),
+            None,
+        )
+        if isinstance(prior, dict):
+            projection = progress_public_projection(record)
+            if projection is None:
+                raise ABCError("progress_receipt_invalid", "Stored progress receipt is invalid")
+            return {**projection, "step_id": step_id, "replayed": True}
+
+        now = _utc_now()
+        sequence = int(record.get("latest_sequence") or 0) + 1
+        receipt = {
+            "step_id": step_id,
+            "status": "done",
+            "sequence": sequence,
+            "evidence_source": "agent_cli",
+            "recorded_at": now,
+            "binding": {
+                "executor": str(task.assignee or "").strip().lower(),
+                "executor_run_id": executor_run_id,
+                "session_id": session_id,
+            },
+        }
+        record["receipts"] = [*record["receipts"], receipt]
+        record["latest_sequence"] = sequence
+        record["updated_at"] = now
+        validate_progress_record(
+            record,
+            task_id=task.id,
+            declared_step_ids=declared_steps,
+        )
+        task.steps = [
+            _update_step(
+                step,
+                step_id,
+                {
+                    "status": "done",
+                    "progress_receipt": {
+                        "version": PROGRESS_RECEIPT_VERSION,
+                        "sequence": sequence,
+                        "evidence_source": "agent_cli",
+                    },
+                },
+            )
+            for step in task.steps
+        ]
+        extensions[PROGRESS_EXTENSION_KEY] = record
+        task.extensions = extensions
+        task.updated_at = now
+        self.store.write_task(task.id, _without_none(task.to_dict()))
+        self.store.append_event(
+            task.id,
+            {
+                "event_type": "task.progress_recorded",
+                "task_id": task.id,
+                "step_id": step_id,
+                "status": "done",
+                "sequence": sequence,
+                "evidence_source": "agent_cli",
+                "created_at": now,
+            },
+        )
+        self._refresh_task_index()
+        projection = progress_public_projection(record)
+        if projection is None:
+            raise ABCError("progress_receipt_invalid", "Stored progress receipt is invalid")
+        return {**projection, "step_id": step_id, "replayed": False}
 
     def complete_task(self, task_id: str) -> None:
         raise ABCError(
@@ -7674,11 +7835,30 @@ def _finalize_steps(
         if result is None:
             finalized.append(dict(step))
             continue
+        existing_status = str(step.get("status") or "").strip().lower()
+        incoming_status = str(result.get("status") or "").strip().lower()
+        if existing_status == "inherited_done":
+            finalized.append(dict(step))
+            continue
+        if existing_status in {"done", "completed"} and incoming_status not in {"done", "completed"}:
+            finalized.append(dict(step))
+            continue
+        merged_result: dict[str, Any] = {
+            "status": result["status"],
+            "executor_result": result,
+        }
+        existing_result = step.get("result")
+        if isinstance(existing_result, dict) and isinstance(
+            existing_result.get("progress_receipt"), dict
+        ):
+            merged_result["progress_receipt"] = dict(
+                existing_result["progress_receipt"]
+            )
         finalized.append(
             _update_step(
                 step,
                 step_id,
-                {"status": result["status"], "executor_result": result},
+                merged_result,
             )
         )
     return finalized

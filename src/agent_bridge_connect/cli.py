@@ -340,6 +340,17 @@ def build_parser() -> argparse.ArgumentParser:
     task_progress.add_argument("--state", default="running")
     task_progress.add_argument("--summary", required=True)
     task_progress.add_argument("--source", default="agent")
+    task_progress.add_argument(
+        "--step",
+        type=int,
+        help="Persist authoritative completion progress for one declared step.",
+    )
+    task_progress.add_argument(
+        "--step-status",
+        choices=["done"],
+        default="done",
+        help="Authoritative step state (currently only done).",
+    )
 
     task_pause = task_sub.add_parser("pause", help="Pause a task.")
     add_task_root(task_pause)
@@ -800,6 +811,11 @@ def command_task_progress(args: argparse.Namespace) -> int:
     service = _task_service(args.root)
     try:
         task = service.get_task(args.id)
+        step_receipt = None
+        requested_step = getattr(args, "step", None)
+        if isinstance(requested_step, int) and not isinstance(requested_step, bool):
+            step_receipt = service.record_step_progress(task.id, requested_step)
+            task = service.get_task(task.id)
         payload = write_task_progress(
             task,
             state=str(args.state or "running"),
@@ -815,6 +831,10 @@ def command_task_progress(args: argparse.Namespace) -> int:
     print(f"progress: {payload['task_id']}")
     print(f"state: {payload['state']}")
     print(f"updated_at: {payload['updated_at']}")
+    if step_receipt is not None:
+        print(f"confirmed_step: {step_receipt['step_id']}")
+        print(f"sequence: {step_receipt['latest_sequence']}")
+        print(f"replayed: {'yes' if step_receipt['replayed'] else 'no'}")
     return 0
 
 
@@ -2921,6 +2941,17 @@ def _print_atomic_dispatch(result: dict[str, Any]) -> None:
 def _print_execution_policy(policy: Any) -> None:
     if not isinstance(policy, dict):
         return
+    progress = policy.get("progress")
+    if isinstance(progress, dict):
+        confirmed = ",".join(
+            str(item) for item in progress.get("confirmed_step_ids") or []
+        )
+        print(
+            "Confirmed progress: "
+            f"steps={confirmed or '-'} "
+            f"sequence={progress.get('latest_sequence', 0)} "
+            f"evidence={progress.get('evidence_quality') or 'unknown'}"
+        )
     resources = policy.get("resources")
     if isinstance(resources, dict):
         print(
