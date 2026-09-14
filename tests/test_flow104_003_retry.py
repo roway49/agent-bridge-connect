@@ -428,6 +428,10 @@ class FailedTaskRetryTests(unittest.TestCase):
         output = StringIO()
         with (
             mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.cancel_task_runs",
+                return_value={"runs": []},
+            ),
+            mock.patch(
                 "agent_bridge_connect.runner.RunnerClient.cancel",
                 return_value={"status": "cancelled"},
             ),

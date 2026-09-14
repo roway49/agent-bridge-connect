@@ -643,7 +643,13 @@ class RunLeaseTests(unittest.TestCase):
             ["task", "close", self.task.id, "--root", str(self.board), "--confirm"]
         )
         output = io.StringIO()
-        with contextlib.redirect_stdout(output):
+        with (
+            mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.cancel_task_runs",
+                return_value={"runs": []},
+            ),
+            contextlib.redirect_stdout(output),
+        ):
             code = command_task_intervention(args)
 
         self.assertEqual(code, 0)
@@ -714,7 +720,14 @@ class RunLeaseTests(unittest.TestCase):
             ["task", "close", code, "--root", str(self.board)]
         )
         confirm_output = io.StringIO()
-        with contextlib.redirect_stdout(confirm_output), mock.patch("sys.stdin", io.StringIO("y\n")):
+        with (
+            mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.cancel_task_runs",
+                return_value={"runs": []},
+            ),
+            contextlib.redirect_stdout(confirm_output),
+            mock.patch("sys.stdin", io.StringIO("y\n")),
+        ):
             confirm_code = command_task_intervention(confirm_args)
 
         self.assertEqual(confirm_code, 0)
@@ -811,8 +824,12 @@ class RunLeaseTests(unittest.TestCase):
         output = io.StringIO()
         with (
             mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.cancel_task_runs",
+                return_value={"runs": []},
+            ),
+            mock.patch(
                 "agent_bridge_connect.runner.RunnerClient.cancel",
-                return_value={"status": "cancelling"},
+                return_value={"status": "cancelled"},
             ) as cancel,
             contextlib.redirect_stdout(output),
         ):
@@ -830,6 +847,35 @@ class RunLeaseTests(unittest.TestCase):
         self.assertFalse(record_dir.exists())
         self.assertFalse(report_dir.exists())
         self.assertFalse(artifact_dir.exists())
+        self.assertIn(f"close: {self.task.id}", output.getvalue())
+
+    def test_task_close_cancels_task_bound_worker_when_projection_is_missing(self):
+        from agent_bridge_connect.cli import main
+
+        self.service.start_task_run(self.task.id, "shell")
+        output = io.StringIO()
+        with (
+            mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.cancel_task_runs",
+                return_value={
+                    "runs": [
+                        {
+                            "run_id": "runner-worker-bound",
+                            "status": "cancelled",
+                        }
+                    ]
+                },
+            ) as cancel_task_runs,
+            mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.cancel",
+            ) as cancel,
+            contextlib.redirect_stdout(output),
+        ):
+            code = main(["task", "close", self.task.id, "--root", str(self.board)])
+
+        self.assertEqual(code, 0)
+        cancel_task_runs.assert_called_once_with(self.task.id, self.board.resolve())
+        cancel.assert_not_called()
         self.assertIn(f"close: {self.task.id}", output.getvalue())
 
     def test_heartbeat_refreshes_timestamp(self):

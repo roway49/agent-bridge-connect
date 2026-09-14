@@ -1191,7 +1191,7 @@ def command_task_intervention(args: argparse.Namespace) -> int:
                 return 1
             task = service.get_task(args.id)
             service.cancel_task(task.id)
-            cancellation_errors = _cancel_task_runner_runs(task)
+            cancellation_errors = _cancel_task_runner_runs(task, service.board_root)
             _finish_task_close_cleanup(task, service.board_root)
             _write_terminal_report(task.id, service.board_root)
             _notify_terminal(
@@ -1219,7 +1219,7 @@ def command_task_intervention(args: argparse.Namespace) -> int:
                 confirmed=bool(args.confirm or plan["is_chain_iteration"]),
             )
             task = reservation["task"]
-            cancellation_errors = _cancel_task_runner_runs(task)
+            cancellation_errors = _cancel_task_runner_runs(task, service.board_root)
             if cancellation_errors:
                 service.abort_task_close(reservation["task_id"], reservation["close_token"])
                 for error in cancellation_errors:
@@ -1335,12 +1335,13 @@ def command_task_delete(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cancel_task_runner_runs(task: Any) -> list[str]:
+def _cancel_task_runner_runs(task: Any, board_root: str | Path) -> list[str]:
     from .runner import RunnerClient, RunnerError
-    from .retry_flow import is_retry_chain_task
 
     execution = dict((getattr(task, "extensions", None) or {}).get("agentbc.execution") or {})
-    require_terminal = is_retry_chain_task(task)
+    # close/cancel must never report success while a task-bound Executor is
+    # still active.  This applies to roots and retry chains alike.
+    require_terminal = True
     candidates = (
         ("executor", str(execution.get("executor_run_id") or "")),
         ("worker", str(execution.get("worker_run_id") or "")),
@@ -1348,6 +1349,34 @@ def _cancel_task_runner_runs(task: Any) -> list[str]:
     client = RunnerClient()
     errors: list[str] = []
     seen: set[str] = set()
+    try:
+        task_result = client.cancel_task_runs(task.id, board_root)
+    except RunnerError as exc:
+        errors.append(f"task-bound runs for {task.id}: {exc}")
+        task_result = {"runs": []}
+    for result in task_result.get("runs") or []:
+        if not isinstance(result, dict):
+            continue
+        run_id = str(result.get("run_id") or "").strip()
+        if run_id:
+            seen.add(run_id)
+        status = str(result.get("status") or "").strip().lower()
+        if not require_terminal or not run_id:
+            continue
+        deadline = time.monotonic() + 12.0
+        while status not in {"completed", "failed", "cancelled"} and time.monotonic() < deadline:
+            time.sleep(0.05)
+            try:
+                result = client.status(run_id)
+            except RunnerError as exc:
+                errors.append(f"task-bound run {run_id}: {exc}")
+                break
+            status = str(result.get("status") or "").strip().lower()
+        if status not in {"completed", "failed", "cancelled"}:
+            errors.append(
+                f"task-bound run {run_id}: cancellation did not reach a terminal state "
+                f"({status or 'unknown'})"
+            )
     for source, run_id in candidates:
         if not run_id or run_id in seen:
             continue

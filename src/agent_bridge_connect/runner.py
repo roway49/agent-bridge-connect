@@ -759,6 +759,20 @@ class RunnerClient:
     def cancel(self, run_id: str) -> dict[str, Any]:
         return self._request({"op": "cancel", "run_id": run_id})
 
+    def cancel_task_runs(
+        self,
+        task_id: str,
+        board_root: str | Path,
+    ) -> dict[str, Any]:
+        """Cancel every live Runner run immutably bound to one exact task."""
+        return self._request(
+            {
+                "op": "cancel_task_runs",
+                "task_id": str(task_id),
+                "board_root": str(Path(board_root).expanduser()),
+            }
+        )
+
     def write_report(self, path: str | Path, content: str) -> dict[str, Any]:
         return self._request({"op": "write_report", "path": str(Path(path).expanduser()), "content": content})
 
@@ -1754,6 +1768,18 @@ class RunnerState:
         ]
         if config is not None:
             command.extend(["--config", str(config)])
+        # Publish the immutable Runner run identity before the child can claim
+        # the task.  Publishing it after ``Popen`` allowed the child
+        # ``start_task_run`` write (or the previous elevation worker's reap)
+        # to win the race and erase the only pointer that task close used.
+        # Start failure reconciliation compare-and-clears this reservation.
+        service.update_execution_metadata(
+            task_id,
+            {
+                "worker_run_id": worker_run_id,
+                "dispatch_status": "starting",
+            },
+        )
         try:
             result = self._spawn_process(
                 f"worker:{executor}",
@@ -3041,7 +3067,7 @@ class RunnerState:
         process_group = None
         try:
             process_group = os.getpgid(process.pid)
-            if executor == "codex":
+            if executor in {"codex", "worker:codex"}:
                 # Keep the App Server child alive while the worker translates
                 # SIGTERM into an official turn/interrupt over its live
                 # transport. A bounded watchdog retains the old hard-stop
@@ -3051,7 +3077,7 @@ class RunnerState:
                 os.killpg(process_group, signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             pass
-        if executor == "codex":
+        if executor in {"codex", "worker:codex"}:
             def _force_after_grace() -> None:
                 deadline = time.monotonic() + 10.0
                 while process.poll() is None and time.monotonic() < deadline:
@@ -3087,6 +3113,39 @@ class RunnerState:
                 except (ProcessLookupError, PermissionError):
                     pass
         return self.status(run_id)
+
+    def cancel_task_runs(self, task_id: str, board_root: str) -> dict[str, Any]:
+        """Cancel live processes by their immutable task binding.
+
+        Task execution pointers are projections and may transiently disappear
+        while an elevation continuation is being claimed.  Runner run records
+        retain the authoritative task and board binding, so close/cancel must
+        also resolve through this index instead of trusting only those mutable
+        pointers.
+        """
+        normalized_task_id = str(task_id or "").strip().upper()
+        if not normalized_task_id:
+            raise RunnerError("runner task cancellation requires a task id")
+        board = self._atomic_board(board_root)
+        with self.lock:
+            run_ids = sorted(
+                str(run_id)
+                for run_id, record in self.runs.items()
+                if str(record.get("task_id") or "").strip().upper()
+                == normalized_task_id
+                and str(record.get("board_root") or "").strip()
+                and Path(str(record.get("board_root"))).expanduser().resolve()
+                == board
+                and str(record.get("status") or "") not in TERMINAL_STATES
+            )
+        runs: list[dict[str, Any]] = []
+        for run_id in run_ids:
+            runs.append(self.cancel(run_id))
+        return {
+            "task_id": normalized_task_id,
+            "board_root": str(board),
+            "runs": runs,
+        }
 
     def write_report(self, path: str, content: str) -> dict[str, Any]:
         target = Path(path).expanduser().resolve()
@@ -4471,6 +4530,11 @@ def _dispatch_request(state: RunnerState, request: dict[str, Any]) -> dict[str, 
         return state.status(str(request.get("run_id") or ""))
     if operation == "cancel":
         return state.cancel(str(request.get("run_id") or ""))
+    if operation == "cancel_task_runs":
+        return state.cancel_task_runs(
+            str(request.get("task_id") or ""),
+            str(request.get("board_root") or ""),
+        )
     if operation == "write_report":
         return state.write_report(str(request.get("path") or ""), str(request.get("content") or ""))
     if operation == "terminal_delivery":

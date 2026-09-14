@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import stat
 import subprocess
 import tempfile
@@ -191,6 +192,91 @@ class RunnerStateTests(unittest.TestCase):
         self.assertIn(cancelled["status"], {"cancelling", "cancelled"})
         terminal = self._wait_terminal(result["run_id"])
         self.assertEqual(terminal["status"], "cancelled")
+
+    def test_cancel_task_runs_uses_immutable_runner_binding(self):
+        board = self.root / "task-board"
+        board.mkdir()
+        result = self.state._spawn_process(
+            "worker:hermes",
+            [str(self.fake_hermes), "sleep"],
+            self.root,
+            "runner-worker",
+            task_binding={
+                "task_id": "ABCD-001",
+                "board_root": str(board),
+                "executor": "hermes",
+            },
+        )
+
+        cancelled = self.state.cancel_task_runs("abcd-001", str(board))
+
+        self.assertEqual(cancelled["task_id"], "ABCD-001")
+        self.assertEqual(
+            [item["run_id"] for item in cancelled["runs"]],
+            [result["run_id"]],
+        )
+        terminal = self._wait_terminal(result["run_id"])
+        self.assertEqual(terminal["status"], "cancelled")
+
+    def test_cancel_worker_codex_signals_worker_before_process_group(self):
+        result = self.state._spawn_process(
+            "worker:codex",
+            [str(self.fake_hermes), "sleep"],
+            self.root,
+            "runner-worker",
+        )
+        record = self.state.runs[result["run_id"]]
+        process = record["process"]
+        process_group = os.getpgid(process.pid)
+        with (
+            mock.patch("agent_bridge_connect.runner.os.kill") as kill,
+            mock.patch("agent_bridge_connect.runner.os.killpg") as killpg,
+            mock.patch("agent_bridge_connect.runner.threading.Thread.start"),
+        ):
+            cancelled = self.state.cancel(result["run_id"])
+
+        self.assertEqual(cancelled["status"], "cancelling")
+        kill.assert_called_once_with(process.pid, signal.SIGTERM)
+        killpg.assert_not_called()
+        os.killpg(process_group, signal.SIGKILL)
+        process.wait(timeout=2)
+
+    def test_dispatch_worker_publishes_run_id_before_spawn(self):
+        from agent_bridge_connect.service import TaskService
+
+        packet = self._authorized_task(mode="full")
+        task_id = packet["task_id"]
+        board = Path(packet["task_board"]["root"])
+
+        def observe_spawn(*_args, **kwargs):
+            current = TaskService(board).get_task(task_id)
+            execution = current.extensions["agentbc.execution"]
+            self.assertEqual(execution["worker_run_id"], kwargs["run_id"])
+            self.assertEqual(execution["dispatch_status"], "starting")
+            return {
+                "run_id": kwargs["run_id"],
+                "pid": 43210,
+                "status": "running",
+            }
+
+        with mock.patch.object(
+            self.state,
+            "_spawn_process",
+            side_effect=observe_spawn,
+        ):
+            result = self.state.dispatch_worker(
+                task_id,
+                "hermes",
+                str(board),
+                "",
+                0.1,
+                False,
+            )
+
+        current = TaskService(board).get_task(task_id)
+        execution = current.extensions["agentbc.execution"]
+        self.assertEqual(execution["worker_run_id"], result["run_id"])
+        self.assertEqual(execution["dispatch_status"], "accepted")
 
     def test_token_is_owner_only(self):
         from agent_bridge_connect.runner import _load_or_create_token
