@@ -2103,7 +2103,10 @@ def command_worker_run(args: argparse.Namespace) -> int:
                         # receipt; approval dispatches exactly one continuation
                         # bound to the same official session.
                         try:
-                            service.clear_execution_run_references(task.id)
+                            service.clear_execution_run_references(
+                                task.id,
+                                expected_executor_run_id=start.run_id,
+                            )
                         except (ABCError, OSError):
                             # Runner reconciliation has the same v3 waiting
                             # predicate and will clear stale worker pointers
@@ -3194,7 +3197,10 @@ def _arbitrate_waiting_task_elevation(
             notified_request_ids.add(request_id)
     _request_task_list_refresh_for_service(service)
     try:
-        service.clear_execution_run_references(task_id)
+        service.clear_execution_run_references(
+            task_id,
+            expected_executor_run_id=executor_run_id,
+        )
     except (ABCError, OSError):
         # Runner reconciliation shares the same v3 waiting predicate and will
         # clear the stale worker pointers without converting this expected

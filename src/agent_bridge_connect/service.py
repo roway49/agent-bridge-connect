@@ -1461,11 +1461,30 @@ class TaskService:
         self._refresh_task_index()
         return True
 
-    def clear_execution_run_references(self, task_id: str) -> list[str]:
-        """Remove active worker/run pointers after the Runner reaps a worker."""
+    def clear_execution_run_references(
+        self,
+        task_id: str,
+        *,
+        expected_worker_run_id: str = "",
+        expected_executor_run_id: str = "",
+    ) -> list[str]:
+        """Remove pointers only when they still identify the exiting run.
+
+        A permission-elevation continuation may be dispatched before the
+        original worker finishes unwinding.  The old worker must never erase
+        the newly published worker/executor pointers.
+        """
         current = self.get_task(task_id)
         extensions = dict(current.extensions or {})
         execution = dict(extensions.get("agentbc.execution") or {})
+        if expected_worker_run_id and str(execution.get("worker_run_id") or "") != str(
+            expected_worker_run_id
+        ):
+            return []
+        if expected_executor_run_id and str(
+            execution.get("executor_run_id") or ""
+        ) != str(expected_executor_run_id):
+            return []
         keys = (
             "worker_run_id",
             "worker_pid",

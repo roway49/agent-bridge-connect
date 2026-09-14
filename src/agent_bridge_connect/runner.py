@@ -3933,7 +3933,10 @@ class RunnerState:
                 },
             )
             service.block_permission_runtime_after_failure(task_id)
-            service.clear_execution_run_references(task_id)
+            service.clear_execution_run_references(
+                task_id,
+                expected_worker_run_id=worker_run_id,
+            )
             if marked:
                 # FLOW-104-002: the durable stage split replaces the composed
                 # report entry point so a report failure stays independently
@@ -3986,7 +3989,10 @@ class RunnerState:
                 # request is durably persisted.  This is not a lost worker or
                 # a recovery condition; only its stale execution pointers are
                 # removed so one later approval can dispatch the continuation.
-                service.clear_execution_run_references(task_id)
+                service.clear_execution_run_references(
+                    task_id,
+                    expected_worker_run_id=str(record.get("run_id") or ""),
+                )
                 self._refresh_worker_board_index(board)
                 return
             if task.status in {
@@ -4031,7 +4037,10 @@ class RunnerState:
                 close_run_lease=True,
             )
             service.block_permission_runtime_after_failure(task_id)
-            service.clear_execution_run_references(task_id)
+            service.clear_execution_run_references(
+                task_id,
+                expected_worker_run_id=str(record.get("run_id") or ""),
+            )
             self._invalidate_native_request_after_worker_exit(
                 board,
                 task,

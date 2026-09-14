@@ -199,6 +199,12 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
   修复后 Codex close 必须先只通知 worker；worker 通过仍存活的 App Server transport 对精确
   `threadId + turnId` 发送一次 `turn/interrupt`，等待官方 `turn/completed: interrupted`，再沿用既有连接内
   archive 和后续 cleanup。Runner 仅保留有界强制终止兜底，兜底不得伪造官方中断或 cleanup 成功。
+- `27YF-001` 在协作中断版本上继续定位到提权 continuation 的引用竞态：新 full continuation
+  `runner-worker-2e17ccf1c1e7 / codex-27YF-001-382be923` 已先写入 Task，但旧 elevation worker 随后无条件执行
+  `clear_execution_run_references()`，把新 worker/executor 指针一并删除。用户 close 因而只能把 Task 标记为
+  cancelled，无法定位并通知仍运行的 continuation，cleanup 停在 `waiting_for_desktop/not_requested`。修复限定为
+  run-identity compare-and-clear：CLI 以精确旧 executor run ID、Runner 以精确旧 worker run ID 清引用；身份不匹配
+  必须零写入。现有 archive→delete 清理器及其状态机保持不变。
 - 根因边界：retry 事务会把控制面的 `session_receipt.json` 等活动文件移入
   `.agentbc-control/<task>/attempts/attempt-*`，随后 `_prepare_retry_task()` 以新的 pending
   `agentbc.session` 覆盖 live primary 并删除 live auxiliary ledger；当前 cleanup coordinator 只扫描 live

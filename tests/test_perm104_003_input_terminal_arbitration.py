@@ -405,6 +405,40 @@ class InputTerminalArbitrationTests(unittest.TestCase):
         self.harness = _WorkerHarness()
         self.addCleanup(self.harness.close)
 
+    def test_old_elevation_worker_cannot_clear_new_continuation_references(self) -> None:
+        harness = self.harness
+        task_id = harness.create_task()
+        harness.service.update_execution_metadata(
+            task_id,
+            {
+                "worker_run_id": "runner-worker-continuation",
+                "worker_pid": 4242,
+                "executor_run_id": "codex-continuation-run",
+                "dispatch_status": "accepted",
+            },
+        )
+
+        removed = harness.service.clear_execution_run_references(
+            task_id,
+            expected_executor_run_id="codex-elevation-worker-old",
+        )
+
+        self.assertEqual(removed, [])
+        execution = harness.service.get_task(task_id).extensions["agentbc.execution"]
+        self.assertEqual(execution["worker_run_id"], "runner-worker-continuation")
+        self.assertEqual(execution["executor_run_id"], "codex-continuation-run")
+
+        removed = harness.service.clear_execution_run_references(
+            task_id,
+            expected_executor_run_id="codex-continuation-run",
+        )
+
+        self.assertIn("worker_run_id", removed)
+        self.assertIn("executor_run_id", removed)
+        execution = harness.service.get_task(task_id).extensions["agentbc.execution"]
+        self.assertNotIn("worker_run_id", execution)
+        self.assertNotIn("executor_run_id", execution)
+
     # -- the Y7SW-001 race -------------------------------------------------
 
     def test_waiting_elevation_outlives_completion_marker_missing(self) -> None:
