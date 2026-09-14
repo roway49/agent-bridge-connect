@@ -1574,9 +1574,13 @@ class HermesExecutor(CLIExecutorBase):
             command.extend(["--resume", session_id])
         if images:
             command.extend(["--image", str(images[0])])
-        # AgentBC task runs require Hermes' machine-readable single-query path:
-        # it emits the authoritative ``session_id:`` receipt on stderr.
-        if self.quiet or _task_has_session_policy(task_packet):
+        # Hermes ``-Q`` suppresses its native iteration-budget lifecycle line.
+        # Keep quiet output for standalone/legacy calls, but use the official
+        # one-shot surface for frozen AgentBC max-turn tasks so exhaustion is
+        # mechanically observable instead of being guessed from model prose.
+        if _task_has_hermes_turn_limit(task_packet):
+            command.append("--oneshot")
+        elif self.quiet or _task_has_session_policy(task_packet):
             command.append("-Q")
         if self.provider:
             command.extend(["--provider", self.provider])
@@ -1940,6 +1944,21 @@ def _task_has_session_policy(task_packet: dict[str, Any] | None) -> bool:
     extensions = task_packet.get("extensions")
     return isinstance(extensions, dict) and isinstance(
         extensions.get("agentbc.session"), dict
+    )
+
+
+def _task_has_hermes_turn_limit(task_packet: dict[str, Any] | None) -> bool:
+    """Return whether one task carries a frozen Hermes max-turn snapshot."""
+    if not isinstance(task_packet, dict):
+        return False
+    extensions = task_packet.get("extensions")
+    if not isinstance(extensions, dict):
+        return False
+    resources = extensions.get("agentbc.resources")
+    return (
+        isinstance(resources, dict)
+        and str(resources.get("executor") or "").strip().lower() == "hermes"
+        and resources.get("resource") == "max_turns"
     )
 
 

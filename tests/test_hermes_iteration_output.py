@@ -473,6 +473,28 @@ class HermesOutputExtractionTests(unittest.TestCase):
         self.assertIn("--model", command)
         self.assertIn("gpt-5", command)
 
+    def test_frozen_turn_limit_uses_visible_native_oneshot_surface(self) -> None:
+        executor = HermesExecutor(command=sys.executable, transport="direct")
+        packet = dict(self.packet)
+        packet["extensions"] = {
+            "agentbc.resources": {
+                "version": 1,
+                "executor": "hermes",
+                "resource": "max_turns",
+                "configured_limit": 2,
+                "current_limit": 2,
+                "multiplier": 2,
+                "exhaustion_count": 0,
+                "last_decision": "",
+                "source": "configured",
+                "created_at": "2026-09-15T00:00:00Z",
+            }
+        }
+        command = executor._build_command(_build_prompt(packet), task_packet=packet)
+        self.assertIn("--max-turns", command)
+        self.assertIn("--oneshot", command)
+        self.assertNotIn("-Q", command)
+
     # ---- contract-level helpers ---------------------------------------------
 
     def test_marker_validation_uses_final_response_not_raw_stdout(self) -> None:

@@ -1,9 +1,21 @@
 from __future__ import annotations
 
+import contextlib
+import io
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from agent_bridge_connect.adapters import (
+    ExecutorCapabilities,
+    ExecutorLevel,
+    PollResult,
+    ProbeResult,
+    StartResult,
+)
+from agent_bridge_connect.cli import command_task_progress, command_worker_run
 from agent_bridge_connect.execution_policy import SESSION_RECEIPT_SOURCES
 from agent_bridge_connect.notifications import build_notification_payload
 from agent_bridge_connect.progress_receipts import (
@@ -165,6 +177,168 @@ class Flow103ProgressReceiptTests(unittest.TestCase):
         self.assertIsNone(progress_public_projection({"version": 99}))
         with self.assertRaises(ABCError):
             validate_progress_record({"version": 99})
+
+    def test_runner_owned_hermes_progress_binds_live_process_session(self) -> None:
+        task = self.service.create_task(
+            "Hermes live progress bridge",
+            "hermes",
+            [{"id": 1, "description": "record one step"}],
+            customer_dir=True,
+            customer_path=self.project,
+            permission_mode="full",
+        )
+        self.service.start_task_run(task.id, "hermes")
+        run_id = f"hermes-{task.id}-live"
+        self.service.record_executor_run_started(task.id, run_id)
+        self.service.update_execution_metadata(task.id, {"executor_run_id": run_id})
+        args = mock.Mock(
+            root=self.board,
+            id=task.id,
+            step=1,
+            state="running",
+            summary="step one complete",
+            source="agent",
+        )
+        output = io.StringIO()
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "AGENTBC_RUNNER_SPOOL": str(self.root / "spool"),
+                    "AGENTBC_RUNNER_CHANNEL": "flow103-test",
+                    "HERMES_SESSION_ID": "20260915_010203_flow103",
+                },
+                clear=False,
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            code = command_task_progress(args)
+
+        self.assertEqual(code, 0, output.getvalue())
+        current = self.service.get_task(task.id)
+        self.assertEqual(current.steps[0]["status"], "done")
+        self.assertTrue(current.extensions["agentbc.session"]["official_receipt_bound"])
+        self.assertEqual(
+            current.extensions["agentbc.session"]["session_id"],
+            "20260915_010203_flow103",
+        )
+
+    def test_hermes_progress_env_without_runner_context_cannot_bind(self) -> None:
+        task = self.service.create_task(
+            "Hermes untrusted progress bridge",
+            "hermes",
+            [{"id": 1, "description": "record one step"}],
+            customer_dir=True,
+            customer_path=self.project,
+            permission_mode="full",
+        )
+        self.service.start_task_run(task.id, "hermes")
+        run_id = f"hermes-{task.id}-live"
+        self.service.record_executor_run_started(task.id, run_id)
+        self.service.update_execution_metadata(task.id, {"executor_run_id": run_id})
+        args = mock.Mock(
+            root=self.board,
+            id=task.id,
+            step=1,
+            state="running",
+            summary="step one complete",
+            source="agent",
+        )
+        output = io.StringIO()
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"HERMES_SESSION_ID": "20260915_010203_untrusted"},
+                clear=True,
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            code = command_task_progress(args)
+
+        self.assertEqual(code, 1)
+        self.assertIn("progress_session_receipt_unbound", output.getvalue())
+
+    def test_worker_preallocates_full_hermes_run_before_synchronous_start(self) -> None:
+        task = self.service.create_task(
+            "Hermes preallocated full run",
+            "hermes",
+            [{"id": 1, "description": "finish"}],
+            customer_dir=True,
+            customer_path=self.project,
+            permission_mode="full",
+        )
+        service = self.service
+
+        class InspectingHermesExecutor:
+            def __init__(self) -> None:
+                self.run_id = ""
+
+            def probe(self):
+                return ProbeResult(ok=True, message="ready")
+
+            def capabilities(self):
+                return ExecutorCapabilities(level=ExecutorLevel.L2)
+
+            def start(self, packet):
+                self.run_id = packet["_agentbc_executor_run_id"]
+                persisted = service.get_task(task.id)
+                session = persisted.extensions["agentbc.session"]
+                execution = persisted.extensions["agentbc.execution"]
+                assert session["run_ids"] == [self.run_id]
+                assert session["run_resume_facts"] == {self.run_id: False}
+                assert execution["executor_run_id"] == self.run_id
+                assert packet["_agentbc_resume_fact"] == {
+                    "run_id": self.run_id,
+                    "resumed": False,
+                    "session_id": "",
+                }
+                return StartResult(ok=True, run_id=self.run_id, message="started")
+
+            def poll(self, run_id):
+                return PollResult(
+                    status="completed",
+                    result={
+                        "returncode": 0,
+                        "summary": "done",
+                        "agent_callback": {
+                            "version": 1,
+                            "task_id": task.id,
+                            "final_state": "completed",
+                            "summary": "done",
+                            "step_results": [{"id": 1, "status": "done"}],
+                        },
+                        "execution_session": {
+                            "version": 1,
+                            "executor": "hermes",
+                            "session_id": "20260915_010203_prealloc",
+                            "resumed": False,
+                            "persistence": "persistent",
+                            "source": "stderr_receipt",
+                        },
+                    },
+                )
+
+        executor = InspectingHermesExecutor()
+        with (
+            mock.patch("agent_bridge_connect.cli.get_executor", return_value=executor),
+            mock.patch("agent_bridge_connect.cli._notify_terminal"),
+        ):
+            code = command_worker_run(
+                mock.Mock(
+                    root=self.board,
+                    executor="hermes",
+                    task_id=task.id,
+                    once=True,
+                    interval=0.01,
+                    config=None,
+                    detach=False,
+                    monitor=False,
+                    runner_authorize=True,
+                )
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.service.get_task(task.id).status, "completed")
 
 
 if __name__ == "__main__":

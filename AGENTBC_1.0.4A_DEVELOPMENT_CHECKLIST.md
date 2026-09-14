@@ -84,7 +84,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | `PERM-104-001` | P0 / 已通过（2026-09-07） | native Deny 后 Agent 仍可用 Prompt/callback 请求 full 并启动第二 worker | Claude inherit 的首个结构化 `can_use_tool` 事件只产生一次同会话输入；`8JY7-001` 已证明 Approve Full 原子返回原始 input + `setMode/bypassPermissions/session`，同 session 完成且零 continuation | `RM7A-001`；`8JY7-001`；`tests/test_perm104_001_claude_same_session_elevation.py` |
 | `PERM-104-002` | P0 / Plan D 最终回归收口完成（2026-09-09） | full 必须完整后台执行；inherit/safe 首次可信阻塞后至多一次提升，不能审批循环 | 三 Executor 显式 full 零弹窗与 inherit→full 一次审批矩阵、handoff/retry full 继承、Deny、timeout、重复/重放/乱序事件均有直接自动化证据；无第二 input/notification/decision/grant/worker/continuation，安装身份与官方 session 约束保持 | `PERM-104-001`；`T5KN/XE8R/QMBK/G3CQ/8JY7/9EP7`；`FNJN-001` evidence |
 | `FLOW-104-002` | P0 / 已通过（2026-09-08） | report/record 超限曾可跳过终态通知和 cleanup receipt | terminal、report、record、index、file/UI notification 已按独立幂等 receipt 投递并可重放；cleanup 不再依赖 report/notification 成功，业务终态不被投递故障回写 | `eb4514e`、`ab1ba49`、`1cfc043`；全量 1855 tests 通过，17 skipped；证据见 `FLOW-104-002_TERMINAL_DELIVERY_EVIDENCE.md` |
-| `FLOW-103-001` | **P1 / 实现完成，待真机回归（2026-09-14）** | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退 | `agentbc.progress` v1 已建立 task/attempt/run/session/step 绑定的有界单调 receipt；status/report/notification 同源，retry 清除当前 attempt receipt，terminal authority 不变 | 当前持久化 declared steps；不依赖 `FLOW-104-001`；57 项定向与 2021 项全量 unittest 通过（17 skipped） |
+| `FLOW-103-001` | **P1 / QPAQ 缺陷已修，待重新封包真机回归（2026-09-15）** | 资源耗尽或系统终态覆盖 callback 时会把真实部分进度回退；`QPAQ-001` 进一步暴露 full Hermes 在退出前尚未绑定 run/session，且 `-Q` 会抑制原生迭代耗尽状态 | `agentbc.progress` v1 已建立 task/attempt/run/session/step 绑定的有界单调 receipt；full Hermes 在进入同步 chat 前预登记唯一 run，Runner 所有的进程内 progress 可用 Hermes 官方 `HERMES_SESSION_ID` 绑定 session；冻结 max-turns 的任务改用官方 `--oneshot` 暴露原生耗尽状态；terminal authority 不变 | 当前持久化 declared steps；不依赖 `FLOW-104-001`；130 项相关回归与 2025 项全量 unittest 通过（17 skipped），Ruff、compileall、package build、`git diff --check` 通过；仍需安装后复刻 `QPAQ-001` 真机路径 |
 | `SESSION-104-001` | **P0 / 已通过（2026-09-09，用户真机确认）** | 9 月 8 日曾出现 App Server archive/delete 后端成功但 Desktop 侧栏残留；根因修复为由 CLI 的 Node 宿主维持当前 Desktop 官方 relay，使 archive 精确触达当前应用实例，再进入既有 delete | `XQQF-001` 对精确官方 session `01a08466-7414-76a0-bceb-01e7130bc1f7` 持久化 Desktop archive acknowledged、delete acknowledged、CLI/Desktop backend absent；任务 completed、唯一合法 callback、RunLease closed。用户确认当前 Desktop 侧栏无需点击即消失，批准标记通过 | 修复提交 `5b8c3d4`；`SESSION-104-001-R1` 已关闭并回主项；原生派生子会话仍归 `PROTO-105-001` P2 |
 | `FLOW-104-003` | **P0 / Revival 主合同已通过（2026-09-13）；旧 attempt cleanup 转 `SESSION-104-001-R2`** | `K3T8-001` 暴露旧 task-scoped session/control receipt 未轮换、retry 秒失败及 Task List 跨 attempt 累计 wall time；`Y9JS-001` 进一步验证 `needs_recovery` 必须与 `failed` 使用同一 revival 合同 | Handoff `K3T8-002` 保留失败基线并机械导入 requirements/report 后完成；`Y9JS-001` 同 ID retry 从零执行完成，建立全新官方主会话并真实创建 1 个派生会话，3/3 steps 与唯一 callback 有效，RunLease closed，最后 attempt 主/子会话均 archive→delete，auxiliary aggregate 1/1 resolved；Task List 使用当前 attempt 时间。2026-09-14 复核发现更早 attempt session 未纳入 cleanup，该缺口不推翻 retry/handoff 语义验收，转由 `SESSION-104-001-R2` P1 修复 | 修复提交 `e90adc0`、`facba58`、`706bcc9`、`cd7935b`、`7cc3d25`、`6f729a0`；全量 1988 tests 通过、17 skipped；Ruff、compileall、package build、`git diff --check` 通过；用户确认 revival 运行语义符合预期 |
 | `INPUT-104-001` | **P0 / 已通过（2026-09-13，三 Executor 真机确认）** | 显式 custom path 时，位于项目根之外的 `--image`/输入文件曾被 `image input is outside task roots` 原子拒绝 | 外部输入已冻结到 task-scoped content-addressed input root；Codex `TEFD-001`、Claude `8V5E-001`、Hermes `GTQW-001` 均在 full 下完成输入读取、custom path 与指定外部目录的同特征文件修改，3/3 steps、唯一合法 callback、RunLease closed、terminal delivery 与 cleanup succeeded，且无 approval/input 事件 | 实现提交 `ba72f36`；PathPlan v2；atomic dispatch；`agentbc.inputs` v1；真机 `TEFD/8V5E/GTQW` |
@@ -914,7 +914,12 @@ callback invalid。
 
 ### 4.6 `FLOW-103-001`：权威单调 progress receipt
 
-> 2026-09-14 实现状态：代码与自动化门禁完成，等待重新封包后的三 Executor 真机回归。
+> 2026-09-15 实现状态：`QPAQ-001` 的 Hermes 真机回归发现 full 同步 chat 在进程退出前尚未
+> 持久化官方 session，导致运行中 `task progress` 被 `progress_session_receipt_unbound` 拒绝；同时
+> `-Q` 抑制 Hermes 原生迭代耗尽状态，Core 只能得到 `completion_marker_missing`。修复后在启动 chat
+> 前预登记唯一 run，并只允许 Runner 所有的进程内 progress 使用 Hermes 已导出的官方
+> `HERMES_SESSION_ID` 完成绑定；冻结 max-turns 的任务使用官方 `--oneshot`，不从模型文本猜测耗尽。
+> 代码和自动化门禁已完成，等待重新封包后复刻 QPAQ 路径及三 Executor 真机回归。
 > `task progress --step <id>` 只在权威 active Runner run 与官方 session 完全一致时写入；同一步
 > 重放幂等，Core 自增 sequence，公共 projection 不包含 run/session ID。旧 heartbeat-only 命令继续兼容。
 

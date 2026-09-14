@@ -814,6 +814,7 @@ def command_task_progress(args: argparse.Namespace) -> int:
         step_receipt = None
         requested_step = getattr(args, "step", None)
         if isinstance(requested_step, int) and not isinstance(requested_step, bool):
+            _bind_live_hermes_progress_session(service, task)
             step_receipt = service.record_step_progress(task.id, requested_step)
             task = service.get_task(task.id)
         payload = write_task_progress(
@@ -836,6 +837,58 @@ def command_task_progress(args: argparse.Namespace) -> int:
         print(f"sequence: {step_receipt['latest_sequence']}")
         print(f"replayed: {'yes' if step_receipt['replayed'] else 'no'}")
     return 0
+
+
+def _bind_live_hermes_progress_session(service: TaskService, task: Any) -> None:
+    """Bind Hermes' official live session before recording step progress.
+
+    ``hermes chat`` exposes the durable session ID to every tool subprocess as
+    ``HERMES_SESSION_ID`` as soon as the session exists, but prints its stderr
+    receipt only when the one-shot process exits. A Runner-owned AgentBC
+    progress command is therefore the earliest authoritative bridge for a
+    full-mode task. Require the task-scoped Runner IPC environment and the
+    already-persisted executor run binding; arbitrary controller invocations
+    cannot manufacture this transition.
+    """
+    if str(getattr(task, "assignee", "") or "").strip().lower() != "hermes":
+        return
+    extensions = dict(getattr(task, "extensions", None) or {})
+    session = extensions.get("agentbc.session")
+    if not isinstance(session, dict) or session.get("official_receipt_bound") is True:
+        return
+    if not (
+        str(os.environ.get("AGENTBC_RUNNER_SPOOL") or "").strip()
+        and str(os.environ.get("AGENTBC_RUNNER_CHANNEL") or "").strip()
+    ):
+        return
+    session_id = str(os.environ.get("HERMES_SESSION_ID") or "").strip()
+    execution = extensions.get("agentbc.execution")
+    run_id = (
+        str(execution.get("executor_run_id") or "").strip()
+        if isinstance(execution, dict)
+        else ""
+    )
+    run_ids = list(session.get("run_ids") or [])
+    resume_facts = session.get("run_resume_facts")
+    if not session_id or not run_id or run_id not in run_ids:
+        return
+    resumed = (
+        bool(resume_facts.get(run_id))
+        if isinstance(resume_facts, dict) and type(resume_facts.get(run_id)) is bool
+        else run_ids.index(run_id) > 0
+    )
+    service.record_executor_session_started(
+        task.id,
+        run_id,
+        {
+            "version": 1,
+            "executor": "hermes",
+            "session_id": session_id,
+            "resumed": resumed,
+            "persistence": "persistent",
+            "source": "stderr_receipt",
+        },
+    )
 
 
 def command_task_status(args: argparse.Namespace) -> int:
@@ -1801,6 +1854,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
             service.start_task_run(task.id, args.executor)
             claimed_task = service.get_task(task.id)
             preallocated_run_id = ""
+            preallocated_run: dict[str, Any] | None = None
             from .permission_elevation import permission_elevation_from_extensions
 
             elevation = permission_elevation_from_extensions(
@@ -1826,9 +1880,33 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 # executor's later idempotent registration is retained for
                 # compatibility, but session-first ordering is authoritative
                 # for the resumed full transport.
-                service.record_executor_run_started(
+                preallocated_run = service.record_executor_run_started(
                     claimed_task.id,
                     preallocated_run_id,
+                )
+                claimed_task = service.get_task(claimed_task.id)
+            elif args.executor == "hermes" and getattr(args, "runner_authorize", False) is True:
+                permission = (claimed_task.extensions or {}).get(PERMISSION_EXTENSION_KEY)
+                if (
+                    isinstance(permission, dict)
+                    and str(permission.get("effective_mode") or "").strip().lower() == "full"
+                ):
+                    # Full Hermes uses the synchronous ``chat --yolo`` path.
+                    # Register its unique run before entering that process so
+                    # an in-turn ``agentbc task progress`` call can bind the
+                    # official HERMES_SESSION_ID exposed by Hermes itself.
+                    preallocated_run_id = (
+                        f"{args.executor}-{claimed_task.id}-{uuid.uuid4().hex[:8]}"
+                    )
+                    preallocated_run = service.record_executor_run_started(
+                        claimed_task.id,
+                        preallocated_run_id,
+                    )
+                    claimed_task = service.get_task(claimed_task.id)
+            if preallocated_run_id:
+                service.update_execution_metadata(
+                    claimed_task.id,
+                    {"executor_run_id": preallocated_run_id},
                 )
                 claimed_task = service.get_task(claimed_task.id)
             task_packet = {
@@ -1845,6 +1923,16 @@ def command_worker_run(args: argparse.Namespace) -> int:
             }
             if preallocated_run_id:
                 task_packet["_agentbc_executor_run_id"] = preallocated_run_id
+                task_packet["_agentbc_resume_fact"] = {
+                    "run_id": preallocated_run_id,
+                    "resumed": bool((preallocated_run or {}).get("resumed")),
+                    "session_id": str(
+                        ((claimed_task.extensions or {}).get("agentbc.session") or {}).get(
+                            "session_id"
+                        )
+                        or ""
+                    ),
+                }
             start = executor.start(task_packet)
             if not start.ok:
                 start_code = (
