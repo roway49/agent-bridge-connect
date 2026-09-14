@@ -227,13 +227,13 @@ class TerminalDeliveryReceiptTests(unittest.TestCase):
         self.assertEqual(results, [])
         self.assertEqual(updated["stages"]["report"]["state"], "succeeded")
 
-    def test_delivery_eligibility_excludes_input_required_and_recovery(self) -> None:
+    def test_delivery_eligibility_excludes_only_non_end_outcomes(self) -> None:
         self.assertTrue(terminal_delivery_eligible({"status": "completed"}))
         self.assertTrue(terminal_delivery_eligible({"status": "failed"}))
         self.assertTrue(terminal_delivery_eligible({"status": "cancelled"}))
         self.assertTrue(terminal_delivery_eligible({"status": "rejected"}))
         self.assertFalse(terminal_delivery_eligible({"status": "input_required"}))
-        self.assertFalse(terminal_delivery_eligible({"status": "needs_recovery"}))
+        self.assertTrue(terminal_delivery_eligible({"status": "needs_recovery"}))
         self.assertFalse(terminal_delivery_eligible({"status": "running"}))
 
     def test_public_projections_are_path_free_and_total(self) -> None:
@@ -551,7 +551,7 @@ class TerminalDeliveryBoardTests(TerminalDeliveryBoardSetup):
         self.assertTrue(health["healthy"])
         self.assertEqual(health["state"], "succeeded")
 
-    def test_maintenance_never_touches_input_required_or_recovery(self) -> None:
+    def test_maintenance_skips_input_required_and_delivers_recovery(self) -> None:
         input_task = self._terminal_task(status="input_required")
         recovery_task = self._terminal_task()
         raw = self.service.store.read_task(recovery_task)
@@ -562,7 +562,7 @@ class TerminalDeliveryBoardTests(TerminalDeliveryBoardSetup):
         results = self._coordinator().maintain_board(now=T0)
         processed = {item["task_id"] for item in results}
         self.assertNotIn(input_task, processed)
-        self.assertNotIn(recovery_task, processed)
+        self.assertIn(recovery_task, processed)
         self.assertEqual(
             self.service.store.read_task(input_task)["status"], "input_required"
         )
@@ -744,7 +744,7 @@ class CleanupGateRemovalTests(unittest.TestCase):
         save_lease(lease, self.board)
         return task.id
 
-    def test_cleanup_is_eligible_without_report_or_notification_evidence(self) -> None:
+    def test_cleanup_waits_for_task_end_dialog_even_without_report(self) -> None:
         from agent_bridge_connect.session_cleanup import SessionCleanupCoordinator
 
         # No report file, no notification_delivery event at all.
@@ -752,8 +752,8 @@ class CleanupGateRemovalTests(unittest.TestCase):
         coordinator = SessionCleanupCoordinator(self.board)
         result = coordinator.request_cleanup(task_id, now=T0)
         self.assertNotIn("report_not_written", result.get("blockers") or [])
-        self.assertNotIn("notification_not_recorded", result.get("blockers") or [])
-        self.assertNotEqual(result["status"], "skipped")
+        self.assertIn("task_end_dialog_not_delivered", result.get("blockers") or [])
+        self.assertEqual(result["status"], "skipped")
         self.assertEqual(self.service.store.read_task(task_id)["status"], "completed")
 
     def test_cleanup_failure_never_changes_task_status(self) -> None:

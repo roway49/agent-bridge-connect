@@ -156,6 +156,7 @@ class CleanupTransitionTests(unittest.TestCase):
         defaults = {
             "task_status": "completed",
             "lease_state": "closed",
+            "task_end_dialog_delivered": True,
             "occurred_at": T1,
         }
         defaults.update(kwargs)
@@ -326,9 +327,7 @@ class CleanupTransitionTests(unittest.TestCase):
 
     def test_all_fail_closed_blockers_prevent_request(self) -> None:
         cases = (
-            ({"task_status": "input_required"}, "task_not_terminal"),
-            ({"task_status": "needs_recovery"}, "task_not_terminal"),
-            ({"task_status": "running"}, "task_not_terminal"),
+            ({"task_end_dialog_delivered": False}, "task_end_dialog_not_delivered"),
             ({"lease_state": "active"}, "run_lease_not_closed"),
             ({"lease_state": "stale"}, "run_lease_not_closed"),
         )
@@ -339,6 +338,9 @@ class CleanupTransitionTests(unittest.TestCase):
                     task_status=str(override.get("task_status", "completed")),
                     lease_state=str(override.get("lease_state", "closed")),
                     session=session,
+                    task_end_dialog_delivered=bool(
+                        override.get("task_end_dialog_delivered", True)
+                    ),
                 )
                 self.assertIn(expected, blockers)
                 with self.assertRaises(ABCError):
@@ -348,8 +350,8 @@ class CleanupTransitionTests(unittest.TestCase):
             with self.subTest(session_state=session_state):
                 session = self._session()
                 session["session_state"] = session_state
-                with self.assertRaises(ABCError):
-                    self._transition(session, "pending")
+                receipt = self._transition(session, "pending")
+                self.assertEqual(receipt["state"], "pending")
 
     def test_invalid_result_metadata_cannot_store_raw_or_private_data(self) -> None:
         session = self._session()

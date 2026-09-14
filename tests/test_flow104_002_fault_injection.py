@@ -289,8 +289,8 @@ class FaultInjectionTestCase(Flow104BoardTestCase):
         self.assertEqual(receipt["stages"]["ui_notification"]["last_error_code"], "ui_notification_failed")
         self.assertEqual(receipt["stages"]["file_notification"]["state"], "succeeded")
         result = self._cleanup_pass(task_id)
-        self.assertNotIn("notification_not_recorded", result.get("blockers") or [])
-        self.assertNotEqual(result["status"], "skipped")
+        self.assertIn("task_end_dialog_not_delivered", result.get("blockers") or [])
+        self.assertEqual(result["status"], "skipped")
 
     # ------------------------------------------ fault: concurrent terminal callbacks
     def test_concurrent_terminal_callbacks(self) -> None:
@@ -492,15 +492,18 @@ class ApprovalSystemIsolationTests(Flow104BoardTestCase):
         self.assertIn("task_not_business_terminal", result["blockers"])
         self._assert_unchanged(before, self._snapshot())
 
-    def test_needs_recovery_session_is_never_mutated(self) -> None:
+    def test_needs_recovery_task_end_delivery_runs_without_status_rewrite(self) -> None:
         raw = self.service.store.read_task(self.task_id)
         raw["status"] = "needs_recovery"
         raw["extensions"][SESSION_EXTENSION_KEY]["session_state"] = "needs_recovery"
         self.service.store.write_task(self.task_id, raw)
-        before = self._snapshot()
         results = TerminalDeliveryCoordinator(self.board).maintain_board(now=_at(400))
-        self.assertEqual(results, [])
-        self.assertEqual(self._snapshot(), before)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(self.service.store.read_task(self.task_id)["status"], "needs_recovery")
+        self.assertEqual(
+            self.service.store.read_task(self.task_id)["extensions"][SESSION_EXTENSION_KEY]["session_state"],
+            "needs_recovery",
+        )
 
     def test_permission_mode_and_session_survive_a_terminal_delivery_pass(self) -> None:
         """A sibling terminal task's delivery must not disturb the waiting task."""

@@ -21,15 +21,15 @@ def _deliver_terminal_side_effects(
     """Route the terminal side effects through the durable stage receipt.
 
     FLOW-104-002: the receipt is the production authority for the report, record,
-    index, file-notification and UI-notification stages of a business terminal
+    index, file-notification and UI-notification stages of a task-end
     outcome.  Delivering them here records each stage on the receipt, so Runner
     maintenance replays only the unconfirmed stages instead of repeating a
     terminal notification the user has already seen.
 
     ``input_required`` is never routed here: the actionable nonterminal input
     notice stays owned by :func:`notify_input_required`.  A task without a
-    receipt (``needs_recovery``, cancelled, or a legacy record) returns ``False``
-    and keeps the historical direct behaviour.
+    receipt (a legacy record) returns ``False`` and keeps the historical direct
+    behaviour.
     """
     from .terminal_delivery_coordinator import deliver_terminal_outcome
 

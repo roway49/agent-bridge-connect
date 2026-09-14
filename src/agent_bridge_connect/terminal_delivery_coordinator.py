@@ -10,8 +10,8 @@ terminal delivery replay:
 - confirmed stages are never repeated;
 - an interrupted ``in_progress`` noninteractive notification may be retried once
   with ``delivery_uncertain`` evidence;
-- it never processes ``input_required`` tasks and never mutates a
-  ``needs_recovery`` session;
+- it never processes ``input_required`` tasks; ``needs_recovery`` is delivered
+  as a task-end outcome without changing the session state;
 - it never changes a business terminal state, a final callback, step results,
   session terminal state, a RunLease, or the ``agentbc.session`` cleanup state.
 
@@ -253,13 +253,10 @@ class TerminalDeliveryCoordinator:
 
     # ------------------------------------------------------------ eligibility
     def _eligibility_blockers(self, task: dict[str, Any]) -> list[str]:
-        """Fail-closed gates; input_required and needs_recovery are never touched."""
+        """Fail-closed gate: only task-end outcomes own this receipt."""
         blockers: list[str] = []
         if not terminal_delivery_eligible(task):
             blockers.append("task_not_business_terminal")
-        session = (task.get("extensions") or {}).get("agentbc.session")
-        if isinstance(session, dict) and str(session.get("session_state") or "") == "needs_recovery":
-            blockers.append("session_needs_recovery")
         return blockers
 
     def _authoritative_receipt(self, task: dict[str, Any]) -> dict[str, Any]:
@@ -664,10 +661,9 @@ def deliver_terminal_outcome(
       notification, UI notification) attempted under it and each result recorded
       on it, so Runner maintenance replays only the unconfirmed stages and can
       never duplicate a terminal notification.
-    - ``input_required`` tasks and ``needs_recovery`` sessions are never routed
-      through the receipt: they return ``routed: False`` and keep the historical
-      direct behaviour, split into independently catchable operations.  No
-      receipt is ever invented for them.
+    - ``input_required`` is never routed through the receipt. All task-end
+      outcomes, including ``needs_recovery``, use the same durable UI-delivery
+      acknowledgement.
     """
     from .notifications import notify_terminal
 
@@ -682,7 +678,7 @@ def deliver_terminal_outcome(
         return {"routed": False, "result": {}}
     extensions = dict(getattr(task, "extensions", None) or {})
     if TERMINAL_DELIVERY_EXTENSION_KEY not in extensions:
-        # needs_recovery / cancelled / legacy: no receipt, no coordinator and no
+        # Legacy records: no receipt, no coordinator and no
         # maintenance replay, so the historical direct notification stands.  The
         # report/record/index stages are already the caller's (or Core's) via
         # ``TaskService.run_terminal_side_effects``; no receipt is ever invented.

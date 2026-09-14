@@ -2436,17 +2436,11 @@ class RunnerState:
         if not isinstance(session, dict) or not isinstance(execution, dict):
             raise RunnerError("Desktop archive acknowledgement has no bound session receipt")
         primary_session_id = str(session.get("session_id") or "").strip().lower()
-        task_status = str(task.status or "").strip().lower()
-        session_state = str(session.get("session_state") or "").strip().lower()
-        recovery_parking = (
-            task_status == "needs_recovery" and session_state == "needs_recovery"
-        )
         primary_eligible = (
             str(session.get("executor") or "").strip().lower() == "codex"
             and session.get("retain") is False
             and session.get("official_receipt_bound") is True
             and bool(primary_session_id)
-            and (session_state == "terminal" or recovery_parking)
         )
         primary_matches = primary_eligible and primary_session_id == session_id
         request_executor_run_id = str(execution.get("executor_run_id") or "").strip()
@@ -2483,54 +2477,9 @@ class RunnerState:
                 == primary_session_id
                 and str(entry.get("executor") or "").strip().lower() == "codex"
                 and entry.get("retain") is False
-                and str(entry.get("session_state") or "").strip().lower() == "terminal"
             ]
             if len(matches) != 1:
                 raise RunnerError("Desktop archive acknowledgement binding mismatch")
-        if recovery_parking and primary_matches:
-            from .execution_policy import SESSION_EXTENSION_KEY, validate_session_snapshot
-            from .reports import write_report_files
-
-            checked_at = _utc_now()
-            updated_session = dict(session)
-            updated_session["archive_acknowledged"] = True
-            updated_session["archive_checked_at"] = checked_at
-            updated_session["parking"] = {
-                "version": 1,
-                "state": "parked",
-                "executor_run_id": executor_run_id,
-                "checked_at": checked_at,
-            }
-            errors = validate_session_snapshot(updated_session, executor="codex")
-            if errors:
-                raise RunnerError(
-                    "Desktop archive acknowledgement binding mismatch: "
-                    + "; ".join(errors)
-                )
-            updated_extensions = dict(extensions)
-            updated_extensions[SESSION_EXTENSION_KEY] = updated_session
-            task.extensions = updated_extensions
-            task.updated_at = checked_at
-            service.store.write_task(task_id, task.to_dict())
-            service.store.append_event(
-                task_id,
-                {
-                    "event_type": "session.recovery_parked",
-                    "task_id": task_id,
-                    "executor_run_id": executor_run_id,
-                    "created_at": checked_at,
-                },
-            )
-            write_report_files(task_id, board)
-            self._refresh_worker_board_index(board)
-            return {
-                "ok": True,
-                "task_id": task_id,
-                "session_id": session_id,
-                "status": "parked",
-                "actioned": True,
-                "delete": "not_requested",
-            }
         broker = AcknowledgedCodexDesktopArchiveBroker(
             task_id=task_id,
             executor_run_id=(
@@ -2557,8 +2506,9 @@ class RunnerState:
         attempts delivery immediately when a terminal task write lands and then
         replays only the stages that are not confirmed and whose backoff has
         elapsed (immediate, then earliest 60s, then capped at 300s).  Confirmed
-        stages never repeat.  ``input_required`` tasks are never processed and
-        ``needs_recovery`` sessions are never mutated here.
+        stages never repeat. ``input_required`` tasks are never processed;
+        recovery-required task-end dialogs use the same receipt without
+        changing the session state.
         """
         from .terminal_delivery_coordinator import TerminalDeliveryCoordinator
 
@@ -3276,8 +3226,8 @@ class RunnerState:
 
         FLOW-104-002: the Runner is the production owner of terminal delivery.
         This op delivers the incomplete stages right away; Runner maintenance
-        later replays anything still outstanding.  ``input_required`` tasks are
-        never processed and ``needs_recovery`` sessions are never mutated.
+        later replays anything still outstanding. ``input_required`` tasks are
+        never processed; recovery-required task-end dialogs use the same receipt.
         """
         from .terminal_delivery_coordinator import TerminalDeliveryCoordinator
 

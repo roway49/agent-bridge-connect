@@ -157,17 +157,19 @@ class SessionSnapshotTests(unittest.TestCase):
                 task_status="completed",
                 lease_state="closed",
                 session=session,
+                task_end_dialog_delivered=True,
             )
         )
         blockers = session_cleanup_blockers(
             task_status="input_required",
             lease_state="suspended",
             session=session,
+            task_end_dialog_delivered=False,
         )
         self.assertEqual(
             blockers,
             [
-                "task_not_terminal",
+                "task_end_dialog_not_delivered",
                 "run_lease_not_closed",
             ],
         )
@@ -185,6 +187,7 @@ class SessionSnapshotTests(unittest.TestCase):
                 task_status="completed",
                 lease_state="closed",
                 session=session,
+                task_end_dialog_delivered=True,
             )
         )
 
@@ -199,6 +202,7 @@ class SessionSnapshotTests(unittest.TestCase):
             task_status="failed",
             lease_state="closed",
             session=session,
+            task_end_dialog_delivered=True,
         )
         self.assertIn("retention_enabled", blockers)
 

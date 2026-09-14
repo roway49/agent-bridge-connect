@@ -2,7 +2,8 @@
 
 This module owns the bounded durable ``agentbc.terminal_delivery`` receipt that
 is created in the *same authoritative task write* that records a business
-terminal task state (``completed`` / ``failed`` / ``cancelled`` / ``rejected``).
+task-end state (``completed`` / ``failed`` / ``cancelled`` / ``rejected`` /
+``needs_recovery``).
 
 Why it exists
 -------------
@@ -36,8 +37,8 @@ Design rules
    :func:`record_management._compact_terminal_extensions`).
 5. ``agentbc.session.cleanup`` and the auxiliary cleanup receipts stay the sole
    cleanup authority; this receipt never duplicates their state.
-6. Only Runner replays incomplete stages, and never for ``input_required`` tasks
-   or ``needs_recovery`` sessions.
+6. Only Runner replays incomplete stages. ``input_required`` is interactive and
+   never enters this pipeline; ``needs_recovery`` is a task-end outcome and does.
 """
 
 from __future__ import annotations
@@ -54,7 +55,7 @@ TERMINAL_DELIVERY_RECEIPT_VERSION = 1
 
 #: Business terminal states that create a delivery receipt.
 TERMINAL_DELIVERY_STATUSES = frozenset(
-    {"completed", "failed", "cancelled", "rejected"}
+    {"completed", "failed", "cancelled", "rejected", "needs_recovery"}
 )
 
 #: Terminal events that may anchor a receipt.
@@ -77,6 +78,7 @@ TERMINAL_DELIVERY_NOTIFICATION_EVENTS = {
     "cancelled": "task.finalized",
     "failed": "task.failed",
     "rejected": "task.rejected",
+    "needs_recovery": "task.recovery_required",
 }
 
 #: The notification level bound to each business terminal state.
@@ -85,6 +87,7 @@ TERMINAL_DELIVERY_NOTIFICATION_LEVELS = {
     "cancelled": "info",
     "failed": "error",
     "rejected": "info",
+    "needs_recovery": "warning",
 }
 
 #: Independent, individually catchable terminal side effects.
@@ -886,8 +889,9 @@ def _stage_error_code(stage: str, exc: BaseException | None = None) -> str:
 def terminal_delivery_eligible(task: dict[str, Any]) -> bool:
     """Return whether a task may be handled by the terminal delivery coordinator.
 
-    ``input_required`` is never processed here, and a ``needs_recovery`` session
-    is never mutated by this coordinator.
+    ``input_required`` is never processed here. ``needs_recovery`` is eligible
+    because its task-end dialog is now the same durable lifecycle signal as any
+    other task-end dialog.
     """
     status = str((task or {}).get("status") or "").strip().lower()
     return status in TERMINAL_DELIVERY_STATUSES

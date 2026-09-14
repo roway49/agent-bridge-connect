@@ -464,10 +464,9 @@ class InputResponseLifecycleTests(unittest.TestCase):
     def test_expiry_maintenance_keeps_delivery_receipt_ownership_isolated(self) -> None:
         """YBNW-002: maintenance never duplicates or misroutes a notification.
 
-        A deadline expiry that stays ``needs_recovery`` is not a business
-        terminal state, so it keeps the historical direct notification and never
-        gains a ``agentbc.terminal_delivery`` receipt.  A task that *does* carry
-        a receipt is delivered through it, exactly once.
+        A deadline expiry that stays ``needs_recovery`` is still a task-end
+        outcome, so its dialog is owned by the same durable receipt and is
+        delivered exactly once.
         """
         from agent_bridge_connect.terminal_delivery import (
             TERMINAL_DELIVERY_EXTENSION_KEY,
@@ -495,9 +494,9 @@ class InputResponseLifecycleTests(unittest.TestCase):
         current = self.service.get_task(self.task.id)
         self.assertEqual(current.status, "needs_recovery")
         self.assertEqual(current.errors[-1]["code"], "input_deadline_expired")
-        # No receipt is invented for a needs_recovery session, so the Runner
-        # terminal coordinator must never touch it.
-        self.assertNotIn(TERMINAL_DELIVERY_EXTENSION_KEY, current.extensions)
+        receipt = current.extensions[TERMINAL_DELIVERY_EXTENSION_KEY]
+        self.assertEqual(receipt["terminal_state"], "needs_recovery")
+        self.assertEqual(receipt["stages"]["ui_notification"]["state"], "succeeded")
         self.assertEqual(len(dialogs), 1)
         with mock.patch(
             "agent_bridge_connect.notifications.DialogNotifier.send", side_effect=_dialog
@@ -505,7 +504,7 @@ class InputResponseLifecycleTests(unittest.TestCase):
             self.assertEqual(
                 self._runner_state().maintain_terminal_delivery(now=after_deadline),
                 [],
-                "the terminal coordinator processed a needs_recovery session",
+                "the terminal coordinator repeated a confirmed recovery dialog",
             )
         self.assertEqual(len(dialogs), 1)
 

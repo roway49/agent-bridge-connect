@@ -332,8 +332,12 @@ def build_session_cleanup_diagnostics(
     """Build structured cleanup health data consumed by doctor text and JSON."""
     from .execution_policy import (
         SESSION_EXTENSION_KEY,
-        TERMINAL_SESSION_CLEANUP_STATUSES,
         session_cleanup_view,
+    )
+    from .terminal_delivery import (
+        TERMINAL_DELIVERY_EVENTS,
+        TERMINAL_DELIVERY_EXTENSION_KEY,
+        read_terminal_delivery_receipt,
     )
 
     current = _parse_timestamp(now) if now else None
@@ -350,10 +354,23 @@ def build_session_cleanup_diagnostics(
         )
         if not isinstance(session, dict) or "cleanup" not in session:
             continue
-        task_status = str(task.get("status") or "").strip().lower()
-        if task_status in TERMINAL_SESSION_CLEANUP_STATUSES:
+        try:
+            delivery = read_terminal_delivery_receipt(
+                extensions.get(TERMINAL_DELIVERY_EXTENSION_KEY)
+            )
+        except Exception:  # noqa: BLE001 - diagnostics never alter task state
+            delivery = {}
+        stages = delivery.get("stages") if isinstance(delivery, dict) else {}
+        ui = stages.get("ui_notification") if isinstance(stages, dict) else {}
+        if (
+            delivery.get("terminal_event") in TERMINAL_DELIVERY_EVENTS
+            and isinstance(ui, dict)
+            and ui.get("state") == "succeeded"
+        ):
             diagnostics.extend(
-                _auxiliary_cleanup_diagnostics(extensions, _safe_label(task.get("id"), "unknown"), current)
+                _auxiliary_cleanup_diagnostics(
+                    extensions, _safe_label(task.get("id"), "unknown"), current
+                )
             )
         cleanup = session_cleanup_view(session.get("cleanup"))
         state = cleanup["state"]

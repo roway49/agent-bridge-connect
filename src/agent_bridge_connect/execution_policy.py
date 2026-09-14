@@ -102,10 +102,6 @@ CLEANUP_RECEIPT_FIELDS_V3 = CLEANUP_RECEIPT_FIELDS_V2
 CLEANUP_RECEIPT_FIELDS_V4 = CLEANUP_RECEIPT_FIELDS_V2 | {"commands"}
 CLEANUP_RECEIPT_FIELDS = CLEANUP_RECEIPT_FIELDS_V4
 RESOURCE_DECISIONS = frozenset({"", "increase", "terminate"})
-TERMINAL_SESSION_CLEANUP_STATUSES = frozenset(
-    {"completed", "failed", "cancelled", "rejected"}
-)
-
 _HERMES_SESSION_RECEIPT_RE = re.compile(
     r"(?m)^[ \t]*session_id:[ \t]*([^\s]+)[ \t]*$"
 )
@@ -1296,20 +1292,23 @@ def session_cleanup_blockers(
     task_status: str,
     lease_state: str,
     session: Any,
+    task_end_dialog_delivered: bool,
 ) -> list[str]:
-    """Return the ordered reasons post-terminal session cleanup must not run.
+    """Return the ordered reasons task-end-dialog session cleanup must not run.
 
     FLOW-104-002 removed ``report_written`` and ``notification_recorded`` as
     cleanup gates: report and notification delivery are now independent
     ``agentbc.terminal_delivery`` stages, and a report/notifications failure must
     never block executor-session cleanup or change a task terminal state.
-    Cleanup eligibility requires only a business-terminal task, a closed
-    RunLease, terminal session state, ``retain=false`` and a valid exact
-    official session receipt.
+    The task/session status values are intentionally not lifecycle gates. The
+    sole lifecycle signal is a persisted successful task-end dialog delivery;
+    RunLease closure, retention and exact receipt binding remain execution
+    isolation gates.
     """
     blockers: list[str] = []
-    if str(task_status or "").strip().lower() not in TERMINAL_SESSION_CLEANUP_STATUSES:
-        blockers.append("task_not_terminal")
+    del task_status
+    if task_end_dialog_delivered is not True:
+        blockers.append("task_end_dialog_not_delivered")
     if str(lease_state or "").strip().lower() != "closed":
         blockers.append("run_lease_not_closed")
     session_errors = validate_session_snapshot(session)
@@ -1318,8 +1317,6 @@ def session_cleanup_blockers(
         return blockers
     if session.get("retain") is True:
         blockers.append("retention_enabled")
-    if str(session.get("session_state") or "") != "terminal":
-        blockers.append("session_not_terminal")
     if not str(session.get("session_id") or "").strip():
         blockers.append("session_id_missing")
     if (
@@ -1360,6 +1357,7 @@ def transition_session_cleanup(
     *,
     task_status: str,
     lease_state: str,
+    task_end_dialog_delivered: bool,
     capability: str | None = None,
     strategy: str | None = None,
     error_code: str = "",
@@ -1396,6 +1394,7 @@ def transition_session_cleanup(
         task_status=task_status,
         lease_state=lease_state,
         session=session,
+        task_end_dialog_delivered=task_end_dialog_delivered,
     )
     if target_state == "retained":
         if current_state != "not_requested" or session.get("retain") is not True:

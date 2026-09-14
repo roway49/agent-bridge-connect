@@ -1,12 +1,12 @@
-"""Terminal session cleanup coordinator (AgentBC 1.0.2A Phase 5 Task 2).
+"""Task-end-dialog session cleanup coordinator.
 
-This module owns the post-terminal executor-session cleanup lifecycle.  Every
+This module owns executor-session cleanup after a confirmed task-end dialog. Every
 pass re-reads the authoritative task/session snapshot from disk, re-validates
 every eligibility gate under a per-task file lock, then either:
 
-- marks ``retain=true`` terminal sessions ``retained`` without touching an
+- marks ``retain=true`` sessions ``retained`` without touching an
   Executor;
-- transitions a gated terminal session to ``pending`` and dispatches exactly
+- transitions a dialog-unlocked session to ``pending`` and dispatches exactly
   one ``ExecutorPort.cleanup_session`` request, atomically persisting the
   receipt/event afterwards;
 - converts a ``pending`` receipt left over from a crashed process into a stable
@@ -64,7 +64,6 @@ from .execution_policy import (
     RESOLVED_CLEANUP_STATES,
     SESSION_EXTENSION_KEY,
     SESSION_RECEIPT_SOURCES,
-    TERMINAL_SESSION_CLEANUP_STATUSES,
     _empty_cleanup_verification,
     cleanup_verification_public_view,
     normalize_cleanup_commands,
@@ -79,6 +78,11 @@ from .record_management import append_bounded_jsonl
 from .run_lease import load_lease
 from .task_id import split_task_ref
 from .task_store import TaskStore
+from .terminal_delivery import (
+    TERMINAL_DELIVERY_EVENTS,
+    TERMINAL_DELIVERY_EXTENSION_KEY,
+    read_terminal_delivery_receipt,
+)
 
 CLEANUP_EVENT_TYPE = "session.cleanup"
 CLEANUP_EVENTS_FILE = "cleanup.jsonl"
@@ -372,14 +376,12 @@ class SessionCleanupCoordinator:
         now: str | None = None,
         force_retry: bool = False,
     ) -> list[dict[str, Any]]:
-        """Scan this board for terminal sessions needing a cleanup pass."""
+        """Scan this board for sessions whose task-end dialog unlocked cleanup."""
         results: list[dict[str, Any]] = []
         tasks = self._list_tasks()
         for task in tasks:
             task_id = str(task.get("id") or task.get("task_id") or "")
             if not task_id:
-                continue
-            if str(task.get("status") or "") not in TERMINAL_SESSION_CLEANUP_STATUSES:
                 continue
             session = (task.get("extensions") or {}).get(SESSION_EXTENSION_KEY)
             if not isinstance(session, dict):
@@ -476,7 +478,6 @@ class SessionCleanupCoordinator:
         executor = str(entry.get("executor") or "").strip().lower()
         ref = redact_session_ref(str(entry.get("session_id") or ""))
         base = {"aux_id": aux_id, "executor": executor, "ref": ref}
-        entry = self._auxiliary_terminal_entry(task, entry, occurred_at)
         try:
             receipt = read_session_cleanup_receipt(entry.get("cleanup"))
         except ABCError:
@@ -573,24 +574,6 @@ class SessionCleanupCoordinator:
 
         return {**base, "status": "noop", "actioned": False, "blockers": [], "receipt": receipt}
 
-    def _auxiliary_terminal_entry(
-        self,
-        task: dict[str, Any],
-        entry: dict[str, Any],
-        occurred_at: str,
-    ) -> dict[str, Any]:
-        """A bound auxiliary session is terminal once the task is terminal."""
-        if str(task.get("status") or "") not in TERMINAL_SESSION_CLEANUP_STATUSES:
-            return entry
-        if not str(entry.get("session_id") or "").strip():
-            return entry
-        if str(entry.get("session_state") or "") == "terminal":
-            return entry
-        updated = copy.deepcopy(entry)
-        updated["session_state"] = "terminal"
-        updated["updated_at"] = occurred_at
-        return updated
-
     def _auxiliary_handle_retained(
         self,
         task: dict[str, Any],
@@ -673,6 +656,7 @@ class SessionCleanupCoordinator:
             target,
             task_status=str(task.get("status") or ""),
             lease_state=self._lease_state(task_id),
+            task_end_dialog_delivered=self._task_end_dialog_delivered(task),
             occurred_at=occurred_at,
             **kwargs,
         )
@@ -796,8 +780,8 @@ class SessionCleanupCoordinator:
     def _auxiliary_gates(self, task: dict[str, Any], entry: dict[str, Any]) -> list[str]:
         task_id = str(task.get("id") or task.get("task_id") or "")
         blockers: list[str] = []
-        if str(task.get("status") or "").strip().lower() not in TERMINAL_SESSION_CLEANUP_STATUSES:
-            blockers.append("task_not_terminal")
+        if not self._task_end_dialog_delivered(task):
+            blockers.append("task_end_dialog_not_delivered")
         if str(self._lease_state(task_id) or "").strip().lower() != "closed":
             blockers.append("run_lease_not_closed")
         # FLOW-104-002: report/notification evidence is no longer an auxiliary
@@ -1063,6 +1047,7 @@ class SessionCleanupCoordinator:
             target,
             task_status=str(task.get("status") or ""),
             lease_state=self._lease_state(task_id),
+            task_end_dialog_delivered=self._task_end_dialog_delivered(task),
             occurred_at=occurred_at,
             **kwargs,
         )
@@ -1293,7 +1278,69 @@ class SessionCleanupCoordinator:
             task_status=str(task.get("status") or ""),
             lease_state=self._lease_state(task_id),
             session=session,
+            task_end_dialog_delivered=self._task_end_dialog_delivered(task),
         )
+
+    def _task_end_dialog_delivered(self, task: dict[str, Any]) -> bool:
+        """Return the sole lifecycle trigger for executor-session cleanup.
+
+        Dialog text and task/session status are deliberately ignored. A legacy
+        notification event is accepted only for the current retry attempt, so
+        an old popup cannot unlock a newly requeued run.
+        """
+        extensions = (
+            task.get("extensions") if isinstance(task.get("extensions"), dict) else {}
+        )
+        task_id = str(task.get("id") or task.get("task_id") or "")
+        execution = (
+            extensions.get("agentbc.execution")
+            if isinstance(extensions.get("agentbc.execution"), dict)
+            else {}
+        )
+        attempt_started_at = str(execution.get("attempt_started_at") or "")
+        stored = extensions.get(TERMINAL_DELIVERY_EXTENSION_KEY)
+        if isinstance(stored, dict):
+            try:
+                receipt = read_terminal_delivery_receipt(stored)
+            except ABCError:
+                receipt = {}
+            stages = receipt.get("stages") if isinstance(receipt, dict) else {}
+            ui = stages.get("ui_notification") if isinstance(stages, dict) else {}
+            if (
+                receipt.get("task_id") == task_id
+                and receipt.get("terminal_event") in TERMINAL_DELIVERY_EVENTS
+                and isinstance(ui, dict)
+                and ui.get("state") == "succeeded"
+                and self._belongs_to_current_attempt(
+                    str(receipt.get("committed_at") or ""), attempt_started_at
+                )
+            ):
+                return True
+        for event in reversed(self._read_events(task_id)):
+            if not isinstance(event, dict) or event.get("event_type") != "notification_delivery":
+                continue
+            if str(event.get("task_id") or "") != task_id:
+                continue
+            if event.get("notification_event") not in TERMINAL_DELIVERY_EVENTS:
+                continue
+            if event.get("dialog_ok") is not True:
+                continue
+            created_at = str(event.get("created_at") or "")
+            if not self._belongs_to_current_attempt(created_at, attempt_started_at):
+                continue
+            return True
+        return False
+
+    @staticmethod
+    def _belongs_to_current_attempt(delivered_at: str, attempt_started_at: str) -> bool:
+        if not attempt_started_at:
+            return bool(delivered_at)
+        if not delivered_at:
+            return False
+        try:
+            return _parse_utc(delivered_at) >= _parse_utc(attempt_started_at)
+        except (TypeError, ValueError):
+            return False
 
     def _lease_state(self, task_id: str) -> str:
         try:

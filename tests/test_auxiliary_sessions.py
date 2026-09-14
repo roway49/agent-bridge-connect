@@ -495,6 +495,22 @@ def _terminal_task(
         "final_state": "completed",
         "summary": "done",
     }
+    from agent_bridge_connect.terminal_delivery import (
+        TERMINAL_DELIVERY_EXTENSION_KEY,
+        build_terminal_delivery_receipt,
+        transition_terminal_delivery_stage,
+    )
+
+    delivery = build_terminal_delivery_receipt(
+        task.id,
+        terminal_state=(status if status in {"completed", "failed", "cancelled", "rejected", "needs_recovery"} else "completed"),
+        terminal_event=("task.recovery_required" if status == "needs_recovery" else "task.finalized"),
+        committed_at=T0,
+    )
+    delivery = transition_terminal_delivery_stage(
+        delivery, "ui_notification", "succeeded", occurred_at=T0
+    )
+    raw["extensions"][TERMINAL_DELIVERY_EXTENSION_KEY] = delivery
     report_file = Path(str(raw["workspace"]["report_file"]))
     report_file.parent.mkdir(parents=True, exist_ok=True)
     report_file.write_text("# terminal report\n", encoding="utf-8")
@@ -504,7 +520,8 @@ def _terminal_task(
         {
             "event_type": "notification_delivery",
             "task_id": task.id,
-            "notification_event": "task.completed",
+            "notification_event": "task.finalized",
+            "dialog_ok": True,
             "created_at": T0,
         },
     )
@@ -572,7 +589,7 @@ class RunnerAuxiliaryDesktopArchiveAckTestCase(unittest.TestCase):
 
         self.runner = RunnerState(self.root / "runner", [self.root], {})
 
-    def test_recovery_archive_uses_historical_run_binding_and_never_deletes(self) -> None:
+    def test_recovery_archive_uses_historical_run_binding_and_requests_delete(self) -> None:
         task_id = _terminal_task(self.service, status="needs_recovery")
         raw = self.service.store.read_task(task_id)
         raw["extensions"]["agentbc.session"]["session_state"] = "needs_recovery"
@@ -584,6 +601,9 @@ class RunnerAuxiliaryDesktopArchiveAckTestCase(unittest.TestCase):
         with mock.patch(
             "agent_bridge_connect.session_cleanup.SessionCleanupCoordinator"
         ) as coordinator_type:
+            coordinator_type.return_value.request_cleanup.return_value = {
+                "status": "succeeded"
+            }
             result = self.runner.acknowledge_desktop_archive(
                 {
                     "task_id": task_id,
@@ -592,16 +612,10 @@ class RunnerAuxiliaryDesktopArchiveAckTestCase(unittest.TestCase):
                 }
             )
 
-        self.assertEqual(result["status"], "parked")
-        self.assertEqual(result["delete"], "not_requested")
-        coordinator_type.assert_not_called()
-        session = self.service.get_task(task_id).extensions["agentbc.session"]
-        self.assertTrue(session["archive_acknowledged"])
-        self.assertEqual(session["parking"]["state"], "parked")
-        self.assertEqual(session["parking"]["executor_run_id"], "run-recovery-1")
-        self.assertEqual(session["cleanup"]["state"], "not_requested")
-        events = self.service.store.read_events(task_id)
-        self.assertEqual(events[-1]["event_type"], "session.recovery_parked")
+        self.assertEqual(result["status"], "succeeded")
+        coordinator_type.assert_called_once()
+        broker = coordinator_type.call_args.kwargs["desktop_archive_broker"]
+        self.assertEqual(broker.binding_executor_run_id, "run-recovery-1")
 
     def test_terminal_primary_archive_uses_historical_run_binding(self) -> None:
         task_id = _terminal_task(self.service)
@@ -793,6 +807,7 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
             "pending",
             task_status="completed",
             lease_state="closed",
+            task_end_dialog_delivered=True,
             capability="supported",
             strategy="official_session_archive_then_delete",
             occurred_at=T0,
@@ -803,6 +818,7 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
             "failed",
             task_status="completed",
             lease_state="closed",
+            task_end_dialog_delivered=True,
             capability="supported",
             strategy="official_session_archive_then_delete",
             error_code=CODEX_DESKTOP_ARCHIVE_REJECTED,
@@ -1223,7 +1239,7 @@ class AuxiliaryDoctorReportTestCase(unittest.TestCase):
             " ".join(item["message"] for item in diagnostics["diagnostics"]),
         )
 
-    def test_doctor_ignores_auxiliary_while_task_is_active(self) -> None:
+    def test_doctor_reports_auxiliary_after_end_dialog_even_if_task_status_is_active(self) -> None:
         from agent_bridge_connect.doctor import build_session_cleanup_diagnostics
 
         # Task still running: the auxiliary session is in use and must not be
@@ -1245,7 +1261,7 @@ class AuxiliaryDoctorReportTestCase(unittest.TestCase):
             [self.service.store.read_task(task_id)],
             now=T0,
         )
-        self.assertEqual(diagnostics["warnings"], 0)
+        self.assertGreaterEqual(diagnostics["warnings"], 1)
 
     def test_report_and_public_view_render_only_redacted_auxiliary_fields(self) -> None:
         from agent_bridge_connect.reports import generate_report_md

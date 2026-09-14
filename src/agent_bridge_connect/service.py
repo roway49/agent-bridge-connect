@@ -4809,6 +4809,29 @@ class TaskService:
             task.extensions = extensions
         self.revoke_permission_grant(task.id, code, model=task)
         self._release_lease(task_id)
+        # A recovery-required outcome still ends this execution attempt.  It
+        # therefore owns the same durable task-end dialog receipt as completed,
+        # failed, cancelled and rejected outcomes.  Session cleanup consumes
+        # only the confirmed UI stage of this receipt, never the task status.
+        from .terminal_delivery import (
+            build_terminal_delivery_receipt,
+            read_terminal_delivery_receipt,
+        )
+
+        stored_delivery = task.extensions.get(TERMINAL_DELIVERY_EXTENSION_KEY)
+        try:
+            existing_delivery = read_terminal_delivery_receipt(stored_delivery)
+        except ABCError:
+            existing_delivery = {}
+        if existing_delivery.get("terminal_state") != "needs_recovery":
+            task.extensions[TERMINAL_DELIVERY_EXTENSION_KEY] = (
+                build_terminal_delivery_receipt(
+                    task_id,
+                    terminal_state="needs_recovery",
+                    terminal_event="task.recovery_required",
+                    committed_at=now,
+                )
+            )
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)
         self.store.append_event(
@@ -4975,6 +4998,16 @@ class TaskService:
         task.extensions = _merge_execution(task.extensions, execution_updates)
         self.revoke_permission_grant(task.id, "task_cancelled", model=task)
         self._release_lease(task_id)
+        from .terminal_delivery import build_terminal_delivery_receipt
+
+        task.extensions[TERMINAL_DELIVERY_EXTENSION_KEY] = (
+            build_terminal_delivery_receipt(
+                task_id,
+                terminal_state="cancelled",
+                terminal_event="task.cancelled",
+                committed_at=task.updated_at,
+            )
+        )
         self.store.write_task(task_id, _without_none(task.to_dict()))
         cleanup_cancelled_task_files(task)
         clear_task_progress(task, remove_log=True)
@@ -6300,9 +6333,10 @@ class TaskService:
         """Request one authoritative post-terminal session cleanup pass.
 
         The coordinator re-reads the task/session from disk, re-validates every
-        eligibility gate (terminal task, closed RunLease, written report,
-        recorded terminal notification, terminal session with an exact session
-        ID) under a per-task lock, and only then transitions the cleanup receipt.
+        eligibility gate (confirmed task-end dialog, closed RunLease, retention,
+        and exact official session binding) under a per-task lock, and only then
+        transitions the cleanup receipt. Task and session status values are not
+        cleanup lifecycle gates.
         The primary ``agentbc.session`` is processed first, then every registered
         auxiliary session deepest/newest first; auxiliary attempts continue even
         when the primary pass fails.  Retained sessions are marked ``retained``;

@@ -384,7 +384,11 @@ class RevivalFactsTests(unittest.TestCase):
             project_mode="none",
         )
         pending = transition_session_cleanup(
-            snap, "pending", task_status="failed", lease_state="closed"
+            snap,
+            "pending",
+            task_status="failed",
+            lease_state="closed",
+            task_end_dialog_delivered=True,
         )
         snap["cleanup"] = pending
         succeeded = transition_session_cleanup(
@@ -392,6 +396,7 @@ class RevivalFactsTests(unittest.TestCase):
             "succeeded",
             task_status="failed",
             lease_state="closed",
+            task_end_dialog_delivered=True,
             capability="supported",
             strategy="official_session_delete",
             verification={

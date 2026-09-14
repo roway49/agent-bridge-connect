@@ -704,6 +704,7 @@ class CodexCleanupContractTests(unittest.TestCase):
             task_status="completed",
             lease_state="closed",
             session=session,
+            task_end_dialog_delivered=True,
         )
         self.assertIn("session_receipt_unbound", blockers)
         retained = build_session_snapshot(
@@ -717,6 +718,7 @@ class CodexCleanupContractTests(unittest.TestCase):
             task_status="completed",
             lease_state="closed",
             session=retained,
+            task_end_dialog_delivered=True,
         )
         self.assertNotIn("session_receipt_unbound", retained_blockers)
 
@@ -758,6 +760,7 @@ class V4TransitionGateTests(unittest.TestCase):
         defaults = {
             "task_status": "completed",
             "lease_state": "closed",
+            "task_end_dialog_delivered": True,
             "occurred_at": T0,
         }
         defaults.update(kwargs)
@@ -994,6 +997,7 @@ class PrimaryAuxiliaryIsolationTests(unittest.TestCase):
             task_status="completed",
             lease_state="closed",
             session=session,
+            task_end_dialog_delivered=True,
         )
         self.assertEqual(blockers, [])
 

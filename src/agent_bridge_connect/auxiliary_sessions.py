@@ -38,7 +38,6 @@ from .execution_policy import (
     RESOLVED_CLEANUP_STATES,
     SESSION_EXTENSION_KEY,
     SESSION_RECEIPT_SOURCES,
-    TERMINAL_SESSION_CLEANUP_STATUSES,
     build_session_cleanup_receipt,
     _empty_cleanup_commands,
     _empty_cleanup_verification,
@@ -830,6 +829,7 @@ def auxiliary_cleanup_blockers(
     *,
     task_status: str,
     lease_state: str,
+    task_end_dialog_delivered: bool,
 ) -> list[str]:
     """Return the ordered reasons one auxiliary session must not be cleaned.
 
@@ -838,8 +838,9 @@ def auxiliary_cleanup_blockers(
     stages and must never block an auxiliary session cleanup.
     """
     blockers: list[str] = []
-    if str(task_status or "").strip().lower() not in TERMINAL_SESSION_CLEANUP_STATUSES:
-        blockers.append("task_not_terminal")
+    del task_status
+    if task_end_dialog_delivered is not True:
+        blockers.append("task_end_dialog_not_delivered")
     if str(lease_state or "").strip().lower() != "closed":
         blockers.append("run_lease_not_closed")
     entry_errors = validate_auxiliary_entry(entry)
@@ -853,8 +854,6 @@ def auxiliary_cleanup_blockers(
         blockers.append("auxiliary_session_receipt_unbound")
     if entry.get("retain") is True:
         blockers.append("retention_enabled")
-    if str(entry.get("session_state") or "") != "terminal":
-        blockers.append("auxiliary_session_not_terminal")
     if not str(entry.get("session_id") or "").strip():
         blockers.append("auxiliary_session_pending_reservation")
     cleanup = read_session_cleanup_receipt(entry.get("cleanup"))
@@ -869,6 +868,7 @@ def transition_auxiliary_cleanup(
     *,
     task_status: str,
     lease_state: str,
+    task_end_dialog_delivered: bool,
     capability: str | None = None,
     strategy: str | None = None,
     error_code: str = "",
@@ -904,6 +904,7 @@ def transition_auxiliary_cleanup(
         entry,
         task_status=task_status,
         lease_state=lease_state,
+        task_end_dialog_delivered=task_end_dialog_delivered,
     )
     if target_state == "retained":
         if current_state != "not_requested" or entry.get("retain") is not True:
@@ -1147,11 +1148,6 @@ def auxiliary_aggregate_view(ledger: Any) -> dict[str, Any]:
     unresolved = 0
     for entry in entries:
         try:
-            blockers = auxiliary_cleanup_blockers(
-                entry,
-                task_status="completed",
-                lease_state="closed",
-            )
             cleanup = read_session_cleanup_receipt(entry.get("cleanup"))
         except ABCError:
             unresolved += 1
@@ -1162,9 +1158,6 @@ def auxiliary_aggregate_view(ledger: Any) -> dict[str, Any]:
             unresolved += 1
             continue
         if cleanup["state"] in RESOLVED_CLEANUP_STATES:
-            continue
-        if blockers and "auxiliary_session_not_terminal" in blockers:
-            # Still in use; not an acceptance failure while the task is active.
             continue
         unresolved += 1
     return {
