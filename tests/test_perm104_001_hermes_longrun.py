@@ -330,10 +330,15 @@ class HermesAcpTerminalResultTests(_AcpBoardBase):
         # never a completed run.
         self.assertEqual(status, "failed")
         payload = result.result
-        self.assertEqual(payload["failure"]["kind"], "completion_marker_missing")
+        self.assertEqual(payload["failure"]["kind"], "incomplete_normal_exit")
         self.assertFalse(payload["marker_seen"])
         self.assertIsNone(payload["agent_callback"])
         self.assertEqual(payload["returncode"], 0)
+        terminal = payload["terminal_receipt"]
+        self.assertEqual(terminal["task_id"], TASK_ID)
+        self.assertEqual(terminal["session_id"], SESSION_ID)
+        self.assertEqual(terminal["session_source"], "acp_session")
+        self.assertEqual(terminal["reason"], "incomplete_normal_exit")
 
     def test_duplicate_marker_is_rejected(self) -> None:
         executor = self._executor("duplicate_marker")

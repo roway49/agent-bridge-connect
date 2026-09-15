@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -612,24 +613,44 @@ class HermesExecutor(CLIExecutorBase):
             stderr = exc.stderr or ""
             self._store_run(run_id, root, None)
             self._mark_run_stale(run_id)
-            result: dict[str, Any] = {
-                "stdout": _coerce_output(stdout),
-                "stderr": _coerce_output(stderr),
-                "reason": f"hermes safety runtime exceeded after {self.timeout_s}s",
-                "timeout_is_failure": False,
-                "failure": {
-                    "kind": "executor_timeout",
-                    "layer": "executor",
-                    "message": f"hermes safety runtime exceeded after {self.timeout_s}s",
-                    "retryable": True,
-                },
-                "extensions": self.get_extensions(),
+            coerced_stdout = _coerce_output(stdout)
+            coerced_stderr = _coerce_output(stderr)
+            final_response = _extract_final_response(coerced_stdout, task_packet)
+            validation = extract_callback_validation_from_output(
+                final_response,
+                task_packet,
+                run_id,
+            )
+            failure = {
+                "kind": "executor_timeout",
+                "layer": "executor",
+                "message": f"hermes safety runtime exceeded after {self.timeout_s}s",
+                "retryable": True,
             }
             receipt = _execution_session_receipt(
-                _coerce_output(stderr),
+                coerced_stderr,
                 task_packet,
-                stdout=_coerce_output(stdout),
+                stdout=coerced_stdout,
             )
+            terminal_receipt = _hermes_terminal_receipt(
+                validation,
+                1,
+                task_packet=task_packet,
+                executor_run_id=run_id,
+                execution_session=receipt,
+                iteration=_iteration_budget_diagnostics(coerced_stdout, coerced_stderr),
+                failure=failure,
+                final_response=final_response,
+            )
+            result: dict[str, Any] = {
+                "stdout": coerced_stdout,
+                "stderr": coerced_stderr,
+                "reason": f"hermes safety runtime exceeded after {self.timeout_s}s",
+                "timeout_is_failure": False,
+                "failure": failure,
+                "terminal_receipt": terminal_receipt,
+                "extensions": self.get_extensions(),
+            }
             if receipt is not None:
                 result["execution_session"] = receipt
             self._runs[run_id] = PollResult(
@@ -654,6 +675,17 @@ class HermesExecutor(CLIExecutorBase):
             task_packet,
             run_id,
         )
+        receipt = _execution_session_receipt(stderr, task_packet, stdout=stdout)
+        terminal_receipt = _hermes_terminal_receipt(
+            validation,
+            completed.returncode,
+            task_packet=task_packet,
+            executor_run_id=run_id,
+            execution_session=receipt,
+            iteration=iteration,
+            failure=failure,
+            final_response=final_response,
+        )
         terminal = _route_hermes_terminal(
             validation,
             completed.returncode,
@@ -661,6 +693,7 @@ class HermesExecutor(CLIExecutorBase):
             failure=failure,
             iteration=iteration,
             task_packet=task_packet,
+            terminal_receipt=terminal_receipt,
         )
         status = terminal.status
         self._store_run(
@@ -682,9 +715,9 @@ class HermesExecutor(CLIExecutorBase):
             "marker_seen": validation.marker_seen,
             "iteration": iteration,
             "resource_exhaustion": terminal.resource_exhaustion,
+            "terminal_receipt": terminal_receipt,
             "extensions": self.get_extensions(),
         }
-        receipt = _execution_session_receipt(stderr, task_packet, stdout=stdout)
         if receipt is not None:
             result["execution_session"] = receipt
         self._runs[run_id] = PollResult(
@@ -771,6 +804,20 @@ class HermesExecutor(CLIExecutorBase):
             task_packet,
             run_id,
         )
+        receipt = _execution_session_receipt(stderr, task_packet, stdout=stdout)
+        output_truncated = bool(remote.get("output_truncated"))
+        terminal_receipt = _hermes_terminal_receipt(
+            validation,
+            returncode if isinstance(returncode, int) else 1,
+            task_packet=task_packet,
+            executor_run_id=run_id,
+            execution_session=receipt,
+            iteration=iteration,
+            failure=failure,
+            final_response=final_response,
+            output_truncated=output_truncated,
+            stop_reason="user_stop" if remote_status == "cancelled" else "",
+        )
         terminal = _route_hermes_terminal(
             validation,
             returncode if isinstance(returncode, int) else 1,
@@ -778,6 +825,8 @@ class HermesExecutor(CLIExecutorBase):
             failure=failure,
             iteration=iteration,
             task_packet=task_packet,
+            terminal_receipt=terminal_receipt,
+            output_truncated=output_truncated,
         )
         status = "cancelled" if remote_status == "cancelled" else terminal.status
         self._store_run(
@@ -800,10 +849,10 @@ class HermesExecutor(CLIExecutorBase):
             "marker_seen": validation.marker_seen,
             "iteration": iteration,
             "resource_exhaustion": None if remote_status == "cancelled" else terminal.resource_exhaustion,
+            "terminal_receipt": terminal_receipt,
             "transport": "runner",
             "extensions": self.get_extensions(),
         }
-        receipt = _execution_session_receipt(stderr, task_packet, stdout=stdout)
         if receipt is not None:
             result_payload["execution_session"] = receipt
         result = PollResult(
@@ -811,7 +860,7 @@ class HermesExecutor(CLIExecutorBase):
             progress={
                 "returncode": returncode,
                 "runner_status": remote_status,
-                "output_truncated": bool(remote.get("output_truncated")),
+                "output_truncated": output_truncated,
             },
             result=result_payload,
         )
@@ -1052,6 +1101,7 @@ class HermesExecutor(CLIExecutorBase):
                 "resumed": bool(record["resumed"]),
                 "persistence": "persistent",
                 "source": "stderr_receipt",
+                "evidence_source": "acp_session",
             }
             session_event = plane.record_session_started(receipt)
             record["execution_session"] = receipt
@@ -1143,13 +1193,26 @@ class HermesExecutor(CLIExecutorBase):
                 record["task_packet"],
                 run_id,
             )
+            iteration = _iteration_budget_diagnostics(assistant_text, stderr)
+            terminal_receipt = _hermes_terminal_receipt(
+                validation,
+                0,
+                task_packet=record["task_packet"],
+                executor_run_id=run_id,
+                execution_session=receipt,
+                iteration=iteration,
+                failure=None,
+                final_response=final_response,
+                stop_reason=stop_reason,
+            )
             terminal = _route_hermes_terminal(
                 validation,
                 0,
                 stderr=stderr,
                 failure=None,
-                iteration=_iteration_budget_diagnostics(assistant_text, stderr),
+                iteration=iteration,
                 task_packet=record["task_packet"],
+                terminal_receipt=terminal_receipt,
             )
             status = terminal.status
             result_payload: dict[str, Any] = {
@@ -1164,10 +1227,11 @@ class HermesExecutor(CLIExecutorBase):
                 "marker_valid": validation.valid,
                 "marker_seen": validation.marker_seen,
                 "iteration": (
-                    _iteration_budget_diagnostics(assistant_text, stderr)
+                    iteration
                     if terminal.resource_exhaustion is None
                     else terminal.resource_exhaustion
                 ),
+                "terminal_receipt": terminal_receipt,
                 "stop_reason": stop_reason,
                 "execution_session": receipt,
                 "control_events": plane.events(),
@@ -1271,9 +1335,30 @@ class HermesExecutor(CLIExecutorBase):
                     "code": getattr(exc, "code", ""),
                     "details": dict(getattr(exc, "details", {}) or {}),
                 }
+            terminal_validation = extract_callback_validation_from_output(
+                "",
+                record["task_packet"],
+                run_id,
+            )
+            terminal_receipt = _hermes_terminal_receipt(
+                terminal_validation,
+                1,
+                task_packet=record["task_packet"],
+                executor_run_id=run_id,
+                execution_session=(
+                    record.get("execution_session")
+                    if isinstance(record.get("execution_session"), dict)
+                    else None
+                ),
+                iteration=_iteration_budget_diagnostics("", ""),
+                failure=failure,
+                final_response="",
+                stop_reason=("user_stop" if record.get("cancelled") is True else ""),
+            )
             result_payload = {
                 "stderr": transport.stderr_evidence() if transport is not None else "",
                 "failure": failure,
+                "terminal_receipt": terminal_receipt,
                 "execution_session": record.get("execution_session"),
                 "control_events": plane.events(),
                 "extensions": self.get_extensions(),
@@ -1984,12 +2069,14 @@ def _execution_session_receipt(
     stdout: str = "",
 ) -> dict[str, Any] | None:
     session_id = extract_hermes_session_id(stderr)
+    evidence_source = "stderr_receipt"
     if session_id is None:
         session_id = _hermes_exit_summary_session_id(stdout)
+        evidence_source = "stdout_exit_summary"
     if session_id is None:
         return None
     resumed, _ = _task_resume_session(task_packet)
-    return {
+    receipt = {
         "version": 1,
         "executor": "hermes",
         "session_id": session_id,
@@ -1997,6 +2084,9 @@ def _execution_session_receipt(
         "persistence": "persistent",
         "source": "stderr_receipt",
     }
+    if evidence_source != "stderr_receipt":
+        receipt["evidence_source"] = evidence_source
+    return receipt
 
 
 def _hermes_exit_summary_session_id(stdout: str) -> str | None:
@@ -2152,6 +2242,154 @@ def _iteration_budget_diagnostics(stdout: str, stderr: str) -> dict[str, Any]:
     }
 
 
+def _hermes_terminal_receipt(
+    validation: CallbackValidation,
+    returncode: int,
+    *,
+    task_packet: dict[str, Any] | None,
+    executor_run_id: str,
+    execution_session: dict[str, Any] | None,
+    iteration: dict[str, Any] | None,
+    failure: dict[str, Any] | None,
+    final_response: str,
+    output_truncated: bool = False,
+    stop_reason: str = "",
+) -> dict[str, Any]:
+    """Build the task/run/session-bound Hermes terminal evidence receipt.
+
+    This receipt classifies only mechanical adapter evidence.  It never
+    creates an AgentBC callback and it never infers completion from a process
+    return code or human-readable assistant text.
+    """
+    packet = task_packet if isinstance(task_packet, dict) else {}
+    extensions = packet.get("extensions")
+    resources = (
+        extensions.get("agentbc.resources")
+        if isinstance(extensions, dict)
+        else None
+    )
+    resource_snapshot: dict[str, Any] | None = None
+    if isinstance(resources, dict):
+        resource_snapshot = {
+            key: resources.get(key)
+            for key in (
+                "version",
+                "executor",
+                "resource",
+                "configured_limit",
+                "current_limit",
+                "multiplier",
+                "exhaustion_count",
+                "source",
+                "created_at",
+            )
+            if key in resources
+        }
+    snapshot_digest = (
+        hashlib.sha256(
+            json.dumps(
+                resource_snapshot,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if resource_snapshot is not None
+        else ""
+    )
+
+    diagnostic = iteration if isinstance(iteration, dict) else {}
+    session = execution_session if isinstance(execution_session, dict) else {}
+    raw_native_reason = " ".join(str(stop_reason or "").split())[:160]
+    native_reason = re.sub(r"[^A-Za-z0-9_.:-]+", "_", raw_native_reason)[:80]
+    normalized_reason = native_reason.lower().replace("-", "_")
+    callback = validation.callback if validation.valid else None
+    callback_state = (
+        str(callback.get("final_state") or "")
+        if isinstance(callback, dict)
+        else ""
+    )
+
+    if returncode == 0 and validation.valid:
+        reason = "user_stop" if callback_state == "cancelled" else "completed"
+        reason_source = "callback"
+    elif diagnostic.get("iteration_exhausted") is True:
+        reason = "max_turns_exhausted"
+        reason_source = "native_iteration_receipt"
+    elif normalized_reason in {
+        "cancelled",
+        "canceled",
+        "abort",
+        "aborted",
+        "user_stop",
+        "user_cancelled",
+        "user_canceled",
+    }:
+        reason = "user_stop"
+        reason_source = "acp_stop_reason"
+    elif isinstance(failure, dict) and failure.get("retryable") is True:
+        reason = "transport_failure"
+        reason_source = "runtime_failure"
+    elif output_truncated:
+        reason = "unknown"
+        reason_source = "runner_output_truncated"
+    elif native_reason:
+        if normalized_reason in _ACP_COMPLETED_STOP_REASONS:
+            reason = "incomplete_normal_exit"
+        elif normalized_reason in {
+            "context_exhausted",
+            "context_window_exhausted",
+            "max_context_length",
+        }:
+            reason = "context_exhausted"
+        else:
+            reason = "unknown"
+        reason_source = "acp_stop_reason"
+    elif returncode == 0 and session:
+        reason = "incomplete_normal_exit"
+        reason_source = str(session.get("evidence_source") or "official_session_receipt")
+    else:
+        reason = "unknown"
+        reason_source = "process_exit"
+
+    observed_limit = diagnostic.get("iteration_limit")
+    snapshot_limit = resource_snapshot_limit(packet, "hermes")
+    return {
+        "version": 1,
+        "executor": "hermes",
+        "task_id": str(packet.get("task_id") or ""),
+        "executor_run_id": str(executor_run_id or ""),
+        "official_session_bound": bool(session.get("session_id")),
+        "session_id": str(session.get("session_id") or ""),
+        "session_source": str(
+            session.get("evidence_source") or session.get("source") or ""
+        ),
+        "resumed": bool(session.get("resumed")),
+        "resource_snapshot": resource_snapshot,
+        "resource_snapshot_digest": snapshot_digest,
+        "process": {
+            "returncode": returncode,
+            "output_truncated": bool(output_truncated),
+        },
+        "reason": reason,
+        "reason_source": reason_source,
+        "native_reason": native_reason if reason == "unknown" else "",
+        "turns": {
+            "used": diagnostic.get("iteration_used"),
+            "limit": observed_limit if observed_limit is not None else snapshot_limit,
+            "snapshot_limit": snapshot_limit,
+            "source": str(diagnostic.get("iteration_source") or "unavailable"),
+        },
+        "final_response": {
+            "present": bool(final_response.strip()),
+            "bytes": len(final_response.encode("utf-8")),
+            "marker_seen": validation.marker_seen,
+            "marker_valid": validation.valid,
+            "declared_final_state": callback_state,
+        },
+    }
+
+
 def _route_hermes_terminal(
     validation: CallbackValidation,
     returncode: int,
@@ -2160,6 +2398,8 @@ def _route_hermes_terminal(
     failure: dict[str, Any] | None,
     iteration: dict[str, Any],
     task_packet: dict[str, Any] | None = None,
+    terminal_receipt: dict[str, Any] | None = None,
+    output_truncated: bool = False,
 ) -> ExecutorTerminalResult:
     """Route the Hermes terminal with iteration-budget classification.
 
@@ -2171,6 +2411,23 @@ def _route_hermes_terminal(
     the shared resource contract, and a receipt limit that conflicts with the
     task snapshot fails closed to ``needs_recovery``.
     """
+    receipt = terminal_receipt if isinstance(terminal_receipt, dict) else {}
+    if output_truncated and not validation.valid:
+        return ExecutorTerminalResult(
+            "needs_recovery",
+            None,
+            {
+                "kind": "executor_output_truncated",
+                "layer": "transport",
+                "message": (
+                    "Hermes terminal output was truncated before a valid final "
+                    "callback could be verified."
+                ),
+                "retryable": True,
+                "terminal_receipt": receipt,
+            },
+        )
+
     exhaustion = _hermes_resource_exhaustion(iteration, task_packet)
     routed_validation = validation
     callback = validation.callback if validation.valid else None
@@ -2194,7 +2451,7 @@ def _route_hermes_terminal(
             code="hermes_resource_exhaustion_authoritative",
             message="Hermes reported native max-turn exhaustion",
         )
-    return route_executor_terminal(
+    routed = route_executor_terminal(
         routed_validation,
         returncode,
         executor_name="hermes",
@@ -2202,6 +2459,56 @@ def _route_hermes_terminal(
         runtime_failure=failure,
         resource_exhaustion=exhaustion,
     )
+    routed_failure = routed.failure
+    if (
+        routed.status == "failed"
+        and isinstance(routed_failure, dict)
+        and routed_failure.get("kind") == "completion_marker_missing"
+    ):
+        reason = str(receipt.get("reason") or "")
+        if reason == "incomplete_normal_exit":
+            return ExecutorTerminalResult(
+                "failed",
+                None,
+                {
+                    "kind": "incomplete_normal_exit",
+                    "layer": "flow_contract",
+                    "message": (
+                        "Hermes ended its official session normally without the "
+                        "required AgentBC final callback."
+                    ),
+                    "retryable": False,
+                    "terminal_receipt": receipt,
+                },
+            )
+        if reason == "context_exhausted":
+            return ExecutorTerminalResult(
+                "needs_recovery",
+                None,
+                {
+                    "kind": "hermes_context_exhausted",
+                    "layer": "executor",
+                    "message": "Hermes reported native context exhaustion.",
+                    "retryable": True,
+                    "terminal_receipt": receipt,
+                },
+            )
+        if reason == "unknown" and receipt.get("reason_source") == "acp_stop_reason":
+            return ExecutorTerminalResult(
+                "needs_recovery",
+                None,
+                {
+                    "kind": "hermes_terminal_reason_unknown",
+                    "layer": "executor",
+                    "message": (
+                        "Hermes returned an unsupported native terminal reason; "
+                        "the task remains recoverable for diagnosis."
+                    ),
+                    "retryable": True,
+                    "terminal_receipt": receipt,
+                },
+            )
+    return routed
 
 
 def _hermes_resource_exhaustion(

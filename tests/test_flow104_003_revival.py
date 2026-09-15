@@ -576,6 +576,20 @@ class RevivalPreflightTests(unittest.TestCase):
         self.assertEqual(inverse.recommended_action, REVIVAL_OPERATION_RETRY)
         self.assertIn(REVIVAL_OPERATION_HANDOFF, inverse.allowed_next_actions)
 
+    def test_incomplete_normal_exit_allows_audited_retry_and_handoff(self) -> None:
+        preflight = evaluate_revival_preflight(
+            _passing_facts(
+                failure_kind="incomplete_normal_exit",
+                failure_layer="flow_contract",
+            )
+        )
+        self.assertTrue(preflight.ok)
+        self.assertEqual(preflight.allowed_next_actions, REVIVAL_OPERATIONS)
+        self.assertEqual(preflight.recommended_action, REVIVAL_OPERATION_HANDOFF)
+        view = revival_status_view(preflight)
+        self.assertEqual(view["allowed_next_actions"], ["retry", "handoff"])
+        self.assertTrue(view["eligible"])
+
     def test_unknown_operation_is_rejected(self) -> None:
         preflight = evaluate_revival_preflight(
             _passing_facts(), requested_operation="restart"
