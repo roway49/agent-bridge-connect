@@ -95,6 +95,17 @@ _HERMES_SESSION_ABSENT_RE = re.compile(
 _HERMES_INITIALIZING_LINE_RE = re.compile(
     r"(?m)^[ \t]*Initializing agent\.\.\.[ \t]*\r?$"
 )
+_HERMES_EXIT_SUMMARY_RE = re.compile(
+    r"(?ms)\n?Resume this session with:[ \t]*\r?\n"
+    r"[ \t]+hermes --resume (?P<resume>\S+)"
+    r"(?:[ \t]+-p[ \t]+\S+)?[ \t]*\r?\n"
+    r"(?:[ \t]+hermes -c [^\r\n]*\r?\n)?"
+    r"[ \t]*\r?\n"
+    r"Session:[ \t]+(?P<session>\S+)[ \t]*\r?\n"
+    r"(?:Title:[^\r\n]*\r?\n)?"
+    r"Duration:[^\r\n]*\r?\n"
+    r"Messages:[^\r\n]*(?:\r?\n)?[ \t]*\Z"
+)
 # ACP ``stopReason`` values that mean the turn ran to a normal completion.
 _ACP_COMPLETED_STOP_REASONS = frozenset({"end_turn", "success", "completed"})
 # ACP run statuses that describe a live run (RunLease heartbeat eligible).
@@ -614,7 +625,11 @@ class HermesExecutor(CLIExecutorBase):
                 },
                 "extensions": self.get_extensions(),
             }
-            receipt = _execution_session_receipt(_coerce_output(stderr), task_packet)
+            receipt = _execution_session_receipt(
+                _coerce_output(stderr),
+                task_packet,
+                stdout=_coerce_output(stdout),
+            )
             if receipt is not None:
                 result["execution_session"] = receipt
             self._runs[run_id] = PollResult(
@@ -669,7 +684,7 @@ class HermesExecutor(CLIExecutorBase):
             "resource_exhaustion": terminal.resource_exhaustion,
             "extensions": self.get_extensions(),
         }
-        receipt = _execution_session_receipt(stderr, task_packet)
+        receipt = _execution_session_receipt(stderr, task_packet, stdout=stdout)
         if receipt is not None:
             result["execution_session"] = receipt
         self._runs[run_id] = PollResult(
@@ -788,7 +803,7 @@ class HermesExecutor(CLIExecutorBase):
             "transport": "runner",
             "extensions": self.get_extensions(),
         }
-        receipt = _execution_session_receipt(stderr, task_packet)
+        receipt = _execution_session_receipt(stderr, task_packet, stdout=stdout)
         if receipt is not None:
             result_payload["execution_session"] = receipt
         result = PollResult(
@@ -1965,8 +1980,12 @@ def _task_has_hermes_turn_limit(task_packet: dict[str, Any] | None) -> bool:
 def _execution_session_receipt(
     stderr: str,
     task_packet: dict[str, Any],
+    *,
+    stdout: str = "",
 ) -> dict[str, Any] | None:
     session_id = extract_hermes_session_id(stderr)
+    if session_id is None:
+        session_id = _hermes_exit_summary_session_id(stdout)
     if session_id is None:
         return None
     resumed, _ = _task_resume_session(task_packet)
@@ -1978,6 +1997,25 @@ def _execution_session_receipt(
         "persistence": "persistent",
         "source": "stderr_receipt",
     }
+
+
+def _hermes_exit_summary_session_id(stdout: str) -> str | None:
+    """Extract the official session ID from Hermes' non-quiet exit summary.
+
+    Frozen max-turn tasks use ``hermes chat --oneshot`` so native lifecycle
+    output remains visible.  Hermes writes the complete exit summary to stdout
+    on that path instead of emitting the legacy ``session_id:`` stderr line.
+    Match the complete final summary block and require its resume/session IDs
+    to agree; ordinary assistant text is never treated as a receipt.
+    """
+    match = _HERMES_EXIT_SUMMARY_RE.search(str(stdout or ""))
+    if match is None:
+        return None
+    resume_id = str(match.group("resume") or "").strip()
+    session_id = str(match.group("session") or "").strip()
+    if resume_id != session_id or _HERMES_SESSION_ID_RE.fullmatch(session_id) is None:
+        return None
+    return session_id
 
 
 def _hermes_transport_from_permission(permission: dict[str, Any]) -> str:
@@ -2035,6 +2073,9 @@ def _extract_final_response(stdout: str, task_packet: dict[str, Any]) -> str:
     output = (stdout or "").strip()
     if not output:
         return output
+    exit_summary = _HERMES_EXIT_SUMMARY_RE.search(output)
+    if exit_summary is not None:
+        output = output[: exit_summary.start()].rstrip()
     initialization = _HERMES_INITIALIZING_LINE_RE.search(output)
     if initialization is not None:
         return output[initialization.end():].lstrip()

@@ -220,6 +220,32 @@ class RunnerStateTests(unittest.TestCase):
         terminal = self._wait_terminal(result["run_id"])
         self.assertEqual(terminal["status"], "cancelled")
 
+    def test_uncontained_spawn_exports_immutable_runner_task_binding(self):
+        run_id = "runner-worker-flow103identity"
+        result = self.state._spawn_process(
+            "worker:hermes",
+            [
+                "/bin/sh",
+                "-c",
+                'printf "%s|%s" "$AGENTBC_RUNNER_TASK_ID" "$AGENTBC_RUNNER_WORKER_ID"',
+            ],
+            self.root,
+            "runner-worker",
+            run_id=run_id,
+            containment=None,
+            task_binding={
+                "task_id": "FLOW-001",
+                "board_root": str(self.root / "board"),
+                "executor": "hermes",
+            },
+        )
+
+        terminal = self._wait_terminal(result["run_id"])
+
+        self.assertEqual(terminal["status"], "completed", terminal.get("stderr"))
+        self.assertEqual(terminal["stdout"], f"FLOW-001|{run_id}")
+        self.assertFalse(self.state.runs[run_id]["containment"])
+
     def test_cancel_worker_codex_signals_worker_before_process_group(self):
         result = self.state._spawn_process(
             "worker:codex",

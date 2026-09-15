@@ -15,7 +15,9 @@ from agent_bridge_connect.execution_contract import (
 from agent_bridge_connect.executors.hermes import (
     HermesExecutor,
     _build_prompt,
+    _execution_session_receipt,
     _extract_final_response,
+    _hermes_exit_summary_session_id,
     _iteration_budget_diagnostics,
 )
 
@@ -494,6 +496,45 @@ class HermesOutputExtractionTests(unittest.TestCase):
         self.assertIn("--max-turns", command)
         self.assertIn("--oneshot", command)
         self.assertNotIn("-Q", command)
+
+    def test_native_oneshot_exit_summary_binds_official_session_receipt(self) -> None:
+        session_id = "20260915_154026_a1b2c3"
+        stdout = (
+            "assistant result\n\n"
+            "Resume this session with:\n"
+            f"  hermes --resume {session_id}\n\n"
+            f"Session:        {session_id}\n"
+            "Duration:       1m 23s\n"
+            "Messages:       4 (1 user, 1 tool calls)\n"
+        )
+
+        self.assertEqual(_hermes_exit_summary_session_id(stdout), session_id)
+        receipt = _execution_session_receipt("", self.packet, stdout=stdout)
+        self.assertIsNotNone(receipt)
+        self.assertEqual(receipt["session_id"], session_id)
+        self.assertEqual(_extract_final_response(stdout, self.packet), "assistant result")
+        poll = self._run_direct(stdout)
+        self.assertEqual(poll.result["execution_session"]["session_id"], session_id)
+        self.assertEqual(poll.result["final_text"], "assistant result")
+
+    def test_native_oneshot_exit_summary_must_be_complete_and_consistent(self) -> None:
+        session_id = "20260915_154026_a1b2c3"
+        mismatched = (
+            "Resume this session with:\n"
+            f"  hermes --resume {session_id}\n\n"
+            "Session:        20260915_154026_deadbe\n"
+            "Duration:       2s\n"
+            "Messages:       2 (1 user, 0 tool calls)\n"
+        )
+        incomplete = (
+            "Resume this session with:\n"
+            f"  hermes --resume {session_id}\n\n"
+            f"Session:        {session_id}\n"
+        )
+
+        self.assertIsNone(_hermes_exit_summary_session_id(mismatched))
+        self.assertIsNone(_hermes_exit_summary_session_id(incomplete))
+        self.assertIsNone(_execution_session_receipt("", self.packet, stdout=incomplete))
 
     # ---- contract-level helpers ---------------------------------------------
 

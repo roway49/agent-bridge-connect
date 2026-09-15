@@ -846,20 +846,17 @@ def _bind_live_hermes_progress_session(service: TaskService, task: Any) -> None:
     ``HERMES_SESSION_ID`` as soon as the session exists, but prints its stderr
     receipt only when the one-shot process exits. A Runner-owned AgentBC
     progress command is therefore the earliest authoritative bridge for a
-    full-mode task. Require the task-scoped Runner IPC environment and the
-    already-persisted executor run binding; arbitrary controller invocations
-    cannot manufacture this transition.
+    full-mode task. Require the immutable task/worker identity exported by the
+    Runner and the already-persisted executor run binding; arbitrary
+    controller invocations cannot manufacture this transition.  This identity
+    is lifecycle metadata and remains available when Plan-D full correctly
+    runs without containment or a private Runner IPC channel.
     """
     if str(getattr(task, "assignee", "") or "").strip().lower() != "hermes":
         return
     extensions = dict(getattr(task, "extensions", None) or {})
     session = extensions.get("agentbc.session")
     if not isinstance(session, dict) or session.get("official_receipt_bound") is True:
-        return
-    if not (
-        str(os.environ.get("AGENTBC_RUNNER_SPOOL") or "").strip()
-        and str(os.environ.get("AGENTBC_RUNNER_CHANNEL") or "").strip()
-    ):
         return
     session_id = str(os.environ.get("HERMES_SESSION_ID") or "").strip()
     execution = extensions.get("agentbc.execution")
@@ -868,9 +865,25 @@ def _bind_live_hermes_progress_session(service: TaskService, task: Any) -> None:
         if isinstance(execution, dict)
         else ""
     )
+    worker_run_id = (
+        str(execution.get("worker_run_id") or "").strip()
+        if isinstance(execution, dict)
+        else ""
+    )
+    runner_task_id = str(os.environ.get("AGENTBC_RUNNER_TASK_ID") or "").strip()
+    runner_worker_id = str(
+        os.environ.get("AGENTBC_RUNNER_WORKER_ID") or ""
+    ).strip()
     run_ids = list(session.get("run_ids") or [])
     resume_facts = session.get("run_resume_facts")
-    if not session_id or not run_id or run_id not in run_ids:
+    if (
+        not session_id
+        or not run_id
+        or run_id not in run_ids
+        or runner_task_id.upper() != str(task.id).upper()
+        or not worker_run_id
+        or runner_worker_id != worker_run_id
+    ):
         return
     resumed = (
         bool(resume_facts.get(run_id))

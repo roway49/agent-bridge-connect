@@ -189,8 +189,12 @@ class Flow103ProgressReceiptTests(unittest.TestCase):
         )
         self.service.start_task_run(task.id, "hermes")
         run_id = f"hermes-{task.id}-live"
+        worker_run_id = "runner-worker-flow103live"
         self.service.record_executor_run_started(task.id, run_id)
-        self.service.update_execution_metadata(task.id, {"executor_run_id": run_id})
+        self.service.update_execution_metadata(
+            task.id,
+            {"executor_run_id": run_id, "worker_run_id": worker_run_id},
+        )
         args = mock.Mock(
             root=self.board,
             id=task.id,
@@ -204,8 +208,8 @@ class Flow103ProgressReceiptTests(unittest.TestCase):
             mock.patch.dict(
                 os.environ,
                 {
-                    "AGENTBC_RUNNER_SPOOL": str(self.root / "spool"),
-                    "AGENTBC_RUNNER_CHANNEL": "flow103-test",
+                    "AGENTBC_RUNNER_TASK_ID": task.id,
+                    "AGENTBC_RUNNER_WORKER_ID": worker_run_id,
                     "HERMES_SESSION_ID": "20260915_010203_flow103",
                 },
                 clear=False,
@@ -235,7 +239,13 @@ class Flow103ProgressReceiptTests(unittest.TestCase):
         self.service.start_task_run(task.id, "hermes")
         run_id = f"hermes-{task.id}-live"
         self.service.record_executor_run_started(task.id, run_id)
-        self.service.update_execution_metadata(task.id, {"executor_run_id": run_id})
+        self.service.update_execution_metadata(
+            task.id,
+            {
+                "executor_run_id": run_id,
+                "worker_run_id": "runner-worker-real",
+            },
+        )
         args = mock.Mock(
             root=self.board,
             id=task.id,
@@ -248,7 +258,11 @@ class Flow103ProgressReceiptTests(unittest.TestCase):
         with (
             mock.patch.dict(
                 os.environ,
-                {"HERMES_SESSION_ID": "20260915_010203_untrusted"},
+                {
+                    "AGENTBC_RUNNER_TASK_ID": task.id,
+                    "AGENTBC_RUNNER_WORKER_ID": "runner-worker-wrong",
+                    "HERMES_SESSION_ID": "20260915_010203_untrusted",
+                },
                 clear=True,
             ),
             contextlib.redirect_stdout(output),

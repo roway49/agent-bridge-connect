@@ -2944,6 +2944,18 @@ class RunnerState:
                 if runner_ipc_channel:
                     self._cleanup_runner_ipc_channel(runner_ipc_channel)
                 raise
+        binding = dict(task_binding or {})
+        if binding:
+            # FLOW-103-001: lifecycle identity is not containment.  Full
+            # workers deliberately run without AgentBC Seatbelt, but their
+            # descendants still need the immutable Runner task/run binding so
+            # an in-turn ``agentbc task progress`` call can bind Hermes'
+            # official HERMES_SESSION_ID before the CLI process exits.
+            environment = dict(os.environ) if environment is None else environment
+            environment["AGENTBC_RUNNER_TASK_ID"] = str(
+                binding.get("task_id") or ""
+            )
+            environment["AGENTBC_RUNNER_WORKER_ID"] = run_id
         try:
             process = subprocess.Popen(
                 wrapped_command,
@@ -2965,7 +2977,6 @@ class RunnerState:
             if runner_ipc_channel:
                 self._cleanup_runner_ipc_channel(runner_ipc_channel)
             raise
-        binding = dict(task_binding or {})
         record: dict[str, Any] = {
             "run_id": run_id,
             # FLOW-104-004-R1: task identity is lifecycle metadata, not a
