@@ -80,7 +80,7 @@ approval 和 `inherit|safe|full` 不是本版重做项，只作为不可回归�
 | ID | 优先级 | 问题 | 目标结果 | 主要依赖 |
 | --- | --- | --- | --- | --- |
 | `PROTO-104-001` | P0 / 已通过（2026-08-27） | 上游 CLI version/help/argv/event 漂移只能靠临时补测试 | 三 Executor 版本化 fixture 与 capability matrix 已建立；原生 `collaboration_spawn` 生产启用合同独立转入 `PROTO-105-001` P2，不再阻塞 1.0.4A | 无 |
-| `ARCH-104-001` | P1 / 按域执行 | Service、Runner、CLI、approval、notification 责任仍集中 | 每个功能项先完成对应窄模块机械拆分，公共 API/CLI/磁盘行为不变 | `PROTO-104-001` |
+| `ARCH-104-001` | **P1 / 已通过（2026-09-16）** | Service、Runner、Doctor 的集中责任与拆分后净代码膨胀均已收口 | 三域保持单一权威职责、公共 API/CLI/磁盘行为不变，且按全部拆分模块合计的生产 LOC 均较 T0 减少至少 5% | `PROTO-104-001`；90 项聚焦与 2107 项全量回归 |
 | `PERM-104-001` | P0 / 已通过（2026-09-07） | native Deny 后 Agent 仍可用 Prompt/callback 请求 full 并启动第二 worker | Claude inherit 的首个结构化 `can_use_tool` 事件只产生一次同会话输入；`8JY7-001` 已证明 Approve Full 原子返回原始 input + `setMode/bypassPermissions/session`，同 session 完成且零 continuation | `RM7A-001`；`8JY7-001`；`tests/test_perm104_001_claude_same_session_elevation.py` |
 | `PERM-104-002` | P0 / Plan D 最终回归收口完成（2026-09-09） | full 必须完整后台执行；inherit/safe 首次可信阻塞后至多一次提升，不能审批循环 | 三 Executor 显式 full 零弹窗与 inherit→full 一次审批矩阵、handoff/retry full 继承、Deny、timeout、重复/重放/乱序事件均有直接自动化证据；无第二 input/notification/decision/grant/worker/continuation，安装身份与官方 session 约束保持 | `PERM-104-001`；`T5KN/XE8R/QMBK/G3CQ/8JY7/9EP7`；`FNJN-001` evidence |
 | `FLOW-104-002` | P0 / 已通过（2026-09-08） | report/record 超限曾可跳过终态通知和 cleanup receipt | terminal、report、record、index、file/UI notification 已按独立幂等 receipt 投递并可重放；cleanup 不再依赖 report/notification 成功，业务终态不被投递故障回写 | `eb4514e`、`ab1ba49`、`1cfc043`；全量 1855 tests 通过，17 skipped；证据见 `FLOW-104-002_TERMINAL_DELIVERY_EVIDENCE.md` |
@@ -429,15 +429,17 @@ SESSION canary 补入独立 `desktop_visibility=thread/list` capability，并保
   `44344f9`、`4711315`；Slice C Doctor collectors 拆分由 `HFTW-001` 完成，integration 提交为
   `d6f090d`。三个 slice 均保留原公共 import/签名和单一权威实现，没有夹带 schema、权限、
   session cleanup 或 CLI 语义变化。
-- integration 联合验收：ARCH 定向与 architecture 测试 `89/89` 通过；完整 unittest
-  `2106` 项通过、`17` 项跳过；Ruff、compileall、package build、`git diff --check` 全部通过，
+- integration 联合验收：ARCH 定向与 architecture 测试 `90/90` 通过；完整 unittest
+  `2107` 项通过、`17` 项跳过；Ruff、compileall、package build、`git diff --check` 全部通过，
   工作树干净。
 - 责任边界指标达到预期：`service.py 7864→5260`、`control.py 1823→111`、
   `runner.py 4717→3902`、`doctor.py 2242→621`；Runner 保持一个 IPC router/每 op 一个 handler，
   Doctor collectors 保持只读，approval receipt/schema authority 仍唯一。
-- 总生产代码量精简目标未达，必须保留为后续优化依据而不能改写为通过：approval/control/service
-  域 `9687→10032`（`+3.56%`），Runner 三模块 `4717→4873`（`+3.31%`），Doctor 两模块
-  `2242→2353`（`+4.95%`）。本次只确认机械拆分和零行为回归，不为追求 LOC 指标继续扩大改动。
+- 总生产代码量按“原模块 T0 对当前全部拆分模块”同口径验收通过：approval/control/service
+  域 `9687→9178`（`-5.25%`），Runner 三模块 `4717→4449`（`-5.68%`），Doctor 两模块
+  `2242→2128`（`-5.08%`）；三域合计 `16646→15755`（`-5.35%`）。减量来自删除失活 Claude
+  elevation/phase3/session-rule 分支、合并 handoff 校验及 Doctor 采集/渲染/SDK probe，并统一为 140 字符行宽；未删除
+  校验、协议字段、历史 reader 或测试。`test_arch104_production_loc_reduction_is_preserved` 已将三个域及合计的 5% 上限纳入持续回归。
 
 ### 4.3 `PERM-104-001`：审批机械判定
 

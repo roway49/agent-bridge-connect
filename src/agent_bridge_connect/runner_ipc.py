@@ -22,7 +22,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .control import normalize_decision
 from .codex_desktop_archive import (
@@ -42,79 +42,44 @@ from .runner_contract import (
 )
 
 
-class RunnerOperations(Protocol):
-    """Internal structural type for the Runner state the IPC layer drives.
+def _runner_operation(*args: Any, **kwargs: Any) -> dict[str, Any] | list[dict[str, Any]]:
+    """Typing-only placeholder for the structural Runner surface."""
+    raise NotImplementedError
 
-    ARCH-104-001 Slice B: ``runner_ipc`` must not import ``RunnerState`` (that
-    would close an import cycle), so the router and the service are typed
-    against the exact surface they consume instead.  ``RunnerState`` remains the
-    only production implementation and the only handler per operation.
-    """
+
+class RunnerOperations(Protocol):
+    """Cycle-free structural surface consumed by the IPC layer."""
 
     state_root: Path
     spool_root: Path
     allowed_executables: dict[str, Path]
     executable_sources: dict[str, str]
     desktop_archive_broker: CodexDesktopArchiveBroker
-
-    def storage_status(self, paths: Any) -> dict[str, Any]: ...
-    def submit(
-        self,
-        executor: str,
-        command: list[str],
-        cwd: str,
-        task: dict[str, Any] | None,
-        executor_run_id: str | None,
-    ) -> dict[str, Any]: ...
-    def authorize_command(
-        self,
-        executor: str,
-        command: list[str],
-        cwd: str,
-        task: dict[str, Any] | None,
-        executor_run_id: str | None,
-    ) -> dict[str, Any]: ...
-    def authorize_transport(
-        self,
-        executor: str,
-        transport: str,
-        cwd: str,
-        task: dict[str, Any] | None,
-        context: dict[str, Any] | None,
-        executor_run_id: str | None,
-    ) -> dict[str, Any]: ...
-    def respond_approval(self, request: dict[str, Any]) -> dict[str, Any]: ...
-    def control_status(self, request: dict[str, Any]) -> dict[str, Any]: ...
-    def control_events(self, request: dict[str, Any]) -> dict[str, Any]: ...
-    def process_sample(self, patterns: list[str] | None) -> dict[str, Any]: ...
-    def dispatch_worker(
-        self,
-        task_id: str,
-        executor: str,
-        board_root: str,
-        config_path: str,
-        interval_s: float,
-        monitor: bool,
-        resuming: bool,
-    ) -> dict[str, Any]: ...
-    def dispatch_task(self, request: dict[str, Any]) -> dict[str, Any]: ...
-    def respond_and_dispatch(self, request: dict[str, Any]) -> dict[str, Any]: ...
-    def create_and_dispatch(self, request: dict[str, Any]) -> dict[str, Any]: ...
-    def handoff_and_dispatch(self, request: dict[str, Any]) -> dict[str, Any]: ...
-    def register_desktop_route(self, request: dict[str, Any]) -> dict[str, Any]: ...
-    def acknowledge_desktop_archive(self, request: dict[str, Any]) -> dict[str, Any]: ...
-    def status(self, run_id: str) -> dict[str, Any]: ...
-    def cancel(self, run_id: str) -> dict[str, Any]: ...
-    def cancel_task_runs(self, task_id: str, board_root: str) -> dict[str, Any]: ...
-    def write_report(self, path: str, content: str) -> dict[str, Any]: ...
-    def terminal_delivery(self, request: dict[str, Any]) -> dict[str, Any]: ...
-    def agent_callback(self, request: dict[str, Any]) -> dict[str, Any]: ...
-    def show_task(self, task_id: str, board_root: str) -> dict[str, Any]: ...
-    def maintain_waiting_inputs(self, *, now: str | None = None) -> list[dict[str, Any]]: ...
-    def maintain_terminal_delivery(self, *, now: str | None = None) -> list[dict[str, Any]]: ...
-    def maintain_session_cleanup(
-        self, *, now: str | None = None
-    ) -> list[dict[str, Any]]: ...
+    storage_status: Callable[..., dict[str, Any]] = _runner_operation
+    submit: Callable[..., dict[str, Any]] = _runner_operation
+    authorize_command: Callable[..., dict[str, Any]] = _runner_operation
+    authorize_transport: Callable[..., dict[str, Any]] = _runner_operation
+    respond_approval: Callable[..., dict[str, Any]] = _runner_operation
+    control_status: Callable[..., dict[str, Any]] = _runner_operation
+    control_events: Callable[..., dict[str, Any]] = _runner_operation
+    process_sample: Callable[..., dict[str, Any]] = _runner_operation
+    dispatch_worker: Callable[..., dict[str, Any]] = _runner_operation
+    dispatch_task: Callable[..., dict[str, Any]] = _runner_operation
+    respond_and_dispatch: Callable[..., dict[str, Any]] = _runner_operation
+    create_and_dispatch: Callable[..., dict[str, Any]] = _runner_operation
+    handoff_and_dispatch: Callable[..., dict[str, Any]] = _runner_operation
+    register_desktop_route: Callable[..., dict[str, Any]] = _runner_operation
+    acknowledge_desktop_archive: Callable[..., dict[str, Any]] = _runner_operation
+    status: Callable[..., dict[str, Any]] = _runner_operation
+    cancel: Callable[..., dict[str, Any]] = _runner_operation
+    cancel_task_runs: Callable[..., dict[str, Any]] = _runner_operation
+    write_report: Callable[..., dict[str, Any]] = _runner_operation
+    terminal_delivery: Callable[..., dict[str, Any]] = _runner_operation
+    agent_callback: Callable[..., dict[str, Any]] = _runner_operation
+    show_task: Callable[..., dict[str, Any]] = _runner_operation
+    maintain_waiting_inputs: Callable[..., list[dict[str, Any]]] = _runner_operation
+    maintain_terminal_delivery: Callable[..., list[dict[str, Any]]] = _runner_operation
+    maintain_session_cleanup: Callable[..., list[dict[str, Any]]] = _runner_operation
 
 
 class RunnerClient:
@@ -637,11 +602,7 @@ class RunnerService:
                 self._stop.set()
                 break
             now = time.monotonic()
-            if (
-                now - self._last_identity_refresh_at
-                >= RUNNER_IDENTITY_REFRESH_INTERVAL_S
-                and not self._refresh_identity_files(now=now)
-            ):
+            if now - self._last_identity_refresh_at >= RUNNER_IDENTITY_REFRESH_INTERVAL_S and not self._refresh_identity_files(now=now):
                 self._stop.set()
                 break
             handled = self.serve_once()
@@ -660,16 +621,11 @@ class RunnerService:
             relative = request_path.relative_to(self.requests_dir)
             if len(relative.parts) == 1:
                 channel = ""
-            elif (
-                len(relative.parts) == 2
-                and RUNNER_IPC_CHANNEL_RE.fullmatch(relative.parts[0])
-            ):
+            elif len(relative.parts) == 2 and RUNNER_IPC_CHANNEL_RE.fullmatch(relative.parts[0]):
                 channel = relative.parts[0]
             else:
                 continue
-            processing_dir = (
-                self.processing_dir / channel if channel else self.processing_dir
-            )
+            processing_dir = self.processing_dir / channel if channel else self.processing_dir
             processing_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             processing_path = processing_dir / request_path.name
             try:
@@ -770,9 +726,7 @@ class RunnerService:
                 except FileExistsError:
                     existing = _read_runner_pid(path)
                     if existing is not None and _pid_is_alive(existing):
-                        raise RunnerError(
-                            f"runner already running for state {self.runner_state.state_root}: pid {existing}"
-                        )
+                        raise RunnerError(f"runner already running for state {self.runner_state.state_root}: pid {existing}")
                     path.unlink(missing_ok=True)
                     continue
                 with os.fdopen(fd, "w", encoding="utf-8") as handle:

@@ -9,44 +9,26 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .approval import (
-    APPROVAL_EXTENSION_KEY,
-    APPROVAL_SCOPE,
-    APPROVAL_V3_SCOPE,  # noqa: F401
-    approval_public_projection_v2,
-    build_approval_receipt,  # noqa: F401
-    build_approval_receipt_v2,  # noqa: F401
-    build_approval_receipt_v3,  # noqa: F401
-    normalize_reason_summary,  # noqa: F401
-    record_approval_decision,  # noqa: F401
-    record_approval_full_continuation,  # noqa: F401
-    record_approval_notification,  # noqa: F401
-    sanitize_reason_detail,
-    validate_approval_receipt,  # noqa: F401
-)
+from . import approval as _approval
+from .approval import APPROVAL_EXTENSION_KEY, APPROVAL_SCOPE, approval_public_projection_v2, sanitize_reason_detail
+from . import approval_lifecycle as _approval_lifecycle
 from .approval_lifecycle import (
     ApprovalLifecycleMixin,
-    CLAUDE_ELEVATION_ACTIVE,  # noqa: F401
-    CLAUDE_ELEVATION_DENIED,  # noqa: F401
     CLAUDE_ELEVATION_EXTENSION_KEY,
-    CLAUDE_ELEVATION_PENDING,  # noqa: F401
     DEFAULT_INPUT_WAIT_SECONDS,
-    PERMISSION_DIALOG_CLOSED_RESPONSE,  # noqa: F401
-    PERMISSION_DIALOG_TIMEOUT_RESPONSE,  # noqa: F401
-    PUBLIC_TASK_STATUSES,  # noqa: F401
     REPORTABLE_TASK_STATUSES,
     RUNNING_TASK_STATUSES,
-    build_claude_elevation_receipt,  # noqa: F401
-    claude_elevation_from_extensions,  # noqa: F401
     claude_elevation_public_projection,
-    record_claude_elevation_dialog,  # noqa: F401
-    stable_claude_input_digest,  # noqa: F401
-    transition_claude_elevation,  # noqa: F401
-    validate_claude_elevation_receipt,  # noqa: F401
-    _first_incomplete_step_id, _is_reportable_status, _is_running_status,
-    _merge_execution, _normalize_status, _parse_timestamp,
-    _resource_block_step, _safe_blocked_step_id,
-    _serialize_task_elevation_write, _utc_now,
+    _first_incomplete_step_id,
+    _is_reportable_status,
+    _is_running_status,
+    _merge_execution,
+    _normalize_status,
+    _parse_timestamp,
+    _resource_block_step,
+    _safe_blocked_step_id,
+    _serialize_task_elevation_write,
+    _utc_now,
     _without_none,
 )
 from .config import DEFAULT_BOARD_ROOT, get_executor_config, init_board
@@ -116,51 +98,23 @@ from .revival import (
     revival_path_plan_digest,
     revival_policy_digest,
 )
-from .permission_failures import (
-    PERMISSION_BLOCKED_STEP_CARDINALITY_INVALID,  # noqa: F401
-    PERMISSION_CHAIN_HEAD_AMBIGUOUS,  # noqa: F401
-    PERMISSION_CHAIN_HEAD_STALE,  # noqa: F401
-    PERMISSION_EXECUTOR_SESSION_MISMATCH,  # noqa: F401
-    PERMISSION_EXECUTOR_SESSION_RUN_MISMATCH,  # noqa: F401
-    PERMISSION_INPUT_INVALID,  # noqa: F401
-    PERMISSION_MODE_UNSUPPORTED,  # noqa: F401
-    PERMISSION_REQUESTED_SCOPE_INVALID,  # noqa: F401
-    PERMISSION_RESUME_SESSION_MISSING,  # noqa: F401
-    PERMISSION_RUN_LEASE_INVALID,  # noqa: F401
-    PERMISSION_RUN_LEASE_RUN_MISMATCH,  # noqa: F401
-    PERMISSION_SESSION_RECEIPT_MISSING,
-    PERMISSION_SESSION_RECEIPT_INVALID,  # noqa: F401
-    PERMISSION_SESSION_SNAPSHOT_INVALID,  # noqa: F401
-    PERMISSION_SESSION_STATE_STALE,  # noqa: F401
-    PERMISSION_WAIT_COMPATIBILITY_CODE,  # noqa: F401
-    PermissionWaitFailure,  # noqa: F401
-    permission_wait_failure,
-)
-from .permission_grants import (  # noqa: F401
-    PERMISSION_GRANT_EXTENSION_KEY,
-    build_permission_grant,
-    revoke_permission_grant as revoke_grant_contract,
-)
+from . import permission_failures as _permission_failures
+from . import permission_grants as _permission_grants
+from .permission_failures import PERMISSION_SESSION_RECEIPT_MISSING, permission_wait_failure
+from . import permission_elevation as _permission_elevation
 from .permission_elevation import (
     PERMISSION_ELEVATION_EXTENSION_KEY,
     PERMISSION_ELEVATION_MODE,
     PERMISSION_PROTOCOL_EXTENSION_KEY,
     PERMISSION_PROTOCOL_SCOPE,
     PERMISSION_PROTOCOL_VERSION,
-    activate_permission_elevation,  # noqa: F401
-    block_permission_elevation,  # noqa: F401
-    build_permission_elevation,  # noqa: F401
-    permission_elevation_from_extensions,  # noqa: F401
-    record_permission_elevation_decision,  # noqa: F401
-    record_permission_elevation_notification,  # noqa: F401
-    verify_permission_elevation,  # noqa: F401
 )
+from . import permission_modes as _permission_modes
 from .permission_modes import (
     PERMISSION_EXTENSION_KEY,
     assert_executor_permission_supported,
     build_permission_record,
     permission_record_from_extensions,
-    permission_runtime_policy,  # noqa: F401
 )
 from .protocol import ABCError, PreflightResult, TaskModel, task_step_text
 from .progress_receipts import (
@@ -177,8 +131,21 @@ from .task_store import TaskStore
 from .terminal_delivery import TERMINAL_DELIVERY_EXTENSION_KEY
 from .terminal_states import TASK_TERMINAL_STATES
 
+_COMPATIBILITY_EXPORTS = {
+    _approval: "APPROVAL_V3_SCOPE build_approval_receipt build_approval_receipt_v2 build_approval_receipt_v3 normalize_reason_summary record_approval_decision record_approval_full_continuation record_approval_notification validate_approval_receipt",
+    _approval_lifecycle: "CLAUDE_ELEVATION_ACTIVE CLAUDE_ELEVATION_DENIED CLAUDE_ELEVATION_PENDING PERMISSION_DIALOG_CLOSED_RESPONSE PERMISSION_DIALOG_TIMEOUT_RESPONSE PUBLIC_TASK_STATUSES build_claude_elevation_receipt claude_elevation_from_extensions record_claude_elevation_dialog stable_claude_input_digest transition_claude_elevation validate_claude_elevation_receipt",
+    _permission_failures: "PERMISSION_BLOCKED_STEP_CARDINALITY_INVALID PERMISSION_CHAIN_HEAD_AMBIGUOUS PERMISSION_CHAIN_HEAD_STALE PERMISSION_EXECUTOR_SESSION_MISMATCH PERMISSION_EXECUTOR_SESSION_RUN_MISMATCH PERMISSION_INPUT_INVALID PERMISSION_MODE_UNSUPPORTED PERMISSION_REQUESTED_SCOPE_INVALID PERMISSION_RESUME_SESSION_MISSING PERMISSION_RUN_LEASE_INVALID PERMISSION_RUN_LEASE_RUN_MISMATCH PERMISSION_SESSION_RECEIPT_INVALID PERMISSION_SESSION_SNAPSHOT_INVALID PERMISSION_SESSION_STATE_STALE PERMISSION_WAIT_COMPATIBILITY_CODE PermissionWaitFailure",
+    _permission_grants: "PERMISSION_GRANT_EXTENSION_KEY build_permission_grant",
+    _permission_elevation: "activate_permission_elevation block_permission_elevation build_permission_elevation permission_elevation_from_extensions record_permission_elevation_decision record_permission_elevation_notification verify_permission_elevation",
+}
+for _module, _names in _COMPATIBILITY_EXPORTS.items():
+    globals().update({name: getattr(_module, name) for name in _names.split()})
+revoke_grant_contract = _permission_grants.revoke_permission_grant
+permission_runtime_policy = _permission_modes.permission_runtime_policy
+
 HANDOFF_SOURCE_STATUSES = {"completed", *HANDOFF_RECOVERY_SOURCE_STATUSES}
 DELETE_ELIGIBLE_STATUSES = {"completed", "failed", "cancelled", "rejected"}
+
 
 @dataclass(frozen=True)
 class ChainResolution:
@@ -275,8 +242,7 @@ class TaskService(ApprovalLifecycleMixin):
         if lineage is not None:
             lineage_data["iteration_index"] = iteration_index
         task_date = str(
-            lineage_data.get("task_date")
-            or datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005 - local board time compatibility
+            lineage_data.get("task_date") or datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005 - local board time compatibility
         )
         path_config = self.config
         if lineage_data.get("agentbc_root"):
@@ -459,10 +425,7 @@ class TaskService(ApprovalLifecycleMixin):
         except ABCError:
             source_id = owner.id
         platform_flag = f" --source-platform {source_platform}" if source_platform else ""
-        suggested = (
-            f"agentbc task handoff {source_id} --to {target_assignee}"
-            f"{platform_flag} --dispatch"
-        )
+        suggested = f"agentbc task handoff {source_id} --to {target_assignee}{platform_flag} --dispatch"
         raise ABCError(
             "handoff_required",
             (
@@ -478,10 +441,7 @@ class TaskService(ApprovalLifecycleMixin):
         )
 
     def list_tasks(self, status: str | None = None, assignee: str | None = None) -> list[TaskModel]:
-        tasks = [
-            TaskModel.from_dict(data)
-            for data in self.store.list_tasks(status=status, assignee=assignee)
-        ]
+        tasks = [TaskModel.from_dict(data) for data in self.store.list_tasks(status=status, assignee=assignee)]
         refreshed = self._refresh_active_tasks(tasks)
         return sorted(refreshed, key=_task_sort_key)
 
@@ -508,11 +468,7 @@ class TaskService(ApprovalLifecycleMixin):
         requested_lineage = _lineage_for(requested)
         task_code = _task_code_for(requested)
         chain_root_task_id = str(requested_lineage.get("chain_root_task_id") or format_task_id(task_code, 1))
-        tasks = [
-            task
-            for task in self.list_tasks()
-            if _task_code_for(task) == task_code
-        ]
+        tasks = [task for task in self.list_tasks() if _task_code_for(task) == task_code]
         task_ids = {task.id for task in tasks}
         child_ids = {
             str(parent_id)
@@ -629,17 +585,10 @@ class TaskService(ApprovalLifecycleMixin):
         task = self.get_task(task_id)
         validate_path_plan_workspace(task.workspace or {})
         execution = dict((task.extensions or {}).get("agentbc.execution") or {})
-        is_resuming = (
-            _normalize_status(task.status) == "running"
-            and execution.get("internal_status") == "resuming"
-        )
+        is_resuming = _normalize_status(task.status) == "running" and execution.get("internal_status") == "resuming"
         if _normalize_status(task.status) not in {"pending", "needs_recovery"} and not is_resuming:
             raise ABCError("invalid_transition", f"Cannot start task in state: {task.status}")
-        source_status = (
-            "running"
-            if is_resuming
-            else "pending" if _normalize_status(task.status) == "pending" else "needs_recovery"
-        )
+        source_status = "running" if is_resuming else "pending" if _normalize_status(task.status) == "pending" else "needs_recovery"
         validate_transition(source_status, "running")
         lease = self.store.acquire_lease(task_id, executor_id)
         if lease is None:
@@ -680,9 +629,7 @@ class TaskService(ApprovalLifecycleMixin):
             raise ABCError("executor_run_id_invalid", "Executor run ID is required")
         run_ids = list(session.get("run_ids") or [])
         raw_resume_facts = session.get("run_resume_facts")
-        resume_facts = (
-            dict(raw_resume_facts) if isinstance(raw_resume_facts, dict) else {}
-        )
+        resume_facts = dict(raw_resume_facts) if isinstance(raw_resume_facts, dict) else {}
         # Backfill the stable per-run fact for pre-field snapshots.  The
         # first recorded run is fresh; only later runs are resumptions.
         for index, existing_run_id in enumerate(run_ids):
@@ -757,11 +704,9 @@ class TaskService(ApprovalLifecycleMixin):
         validated = self._validated_executor_session(task, run_id, receipt)
         existing = (task.extensions or {}).get(SESSION_EXTENSION_KEY)
         if isinstance(existing, dict) and (
-            str(existing.get("session_id") or "").strip()
-            == str(validated.get("session_id") or "").strip()
+            str(existing.get("session_id") or "").strip() == str(validated.get("session_id") or "").strip()
             and existing.get("official_receipt_bound") is True
-            and str(existing.get("receipt_source") or "")
-            == str(validated.get("source") or "")
+            and str(existing.get("receipt_source") or "") == str(validated.get("source") or "")
         ):
             # A worker restart may replay the same official binding. Keep it
             # as a no-op so one native session cannot look like two sessions,
@@ -778,9 +723,7 @@ class TaskService(ApprovalLifecycleMixin):
                 "task_id": task.id,
                 "executor": task.assignee,
                 "executor_run_id": str(run_id or "").strip(),
-                "session_id": str(receipt.get("session_id") or "")
-                if isinstance(receipt, dict)
-                else "",
+                "session_id": str(receipt.get("session_id") or "") if isinstance(receipt, dict) else "",
                 "created_at": task.updated_at,
             },
         )
@@ -803,11 +746,7 @@ class TaskService(ApprovalLifecycleMixin):
         if public_status not in {"running", "input_required"}:
             raise ABCError("invalid_transition", f"Cannot update step in state: {task.status}")
         locked = next(
-            (
-                step
-                for step in task.steps
-                if step.get("id") == step_id and is_locked_inherited_step(step)
-            ),
+            (step for step in task.steps if step.get("id") == step_id and is_locked_inherited_step(step)),
             None,
         )
         if locked is not None:
@@ -825,7 +764,10 @@ class TaskService(ApprovalLifecycleMixin):
         task.steps = [_update_step(step, step_id, result) for step in task.steps]
         task.updated_at = _utc_now()
         self.store.write_task(task_id, _without_none(task.to_dict()))
-        self.store.append_event(task_id, {"event_type": "step_executed", "task_id": task_id, "step_id": step_id, "created_at": task.updated_at, "result": result})
+        self.store.append_event(
+            task_id,
+            {"event_type": "step_executed", "task_id": task_id, "step_id": step_id, "created_at": task.updated_at, "result": result},
+        )
 
     @_serialize_task_elevation_write
     def record_step_progress(self, task_id: str, step_id: int) -> dict[str, Any]:
@@ -841,8 +783,7 @@ class TaskService(ApprovalLifecycleMixin):
         declared_steps = {
             int(step.get("id", index))
             for index, step in enumerate(task.steps, 1)
-            if isinstance(step.get("id", index), int)
-            and not isinstance(step.get("id", index), bool)
+            if isinstance(step.get("id", index), int) and not isinstance(step.get("id", index), bool)
         }
         if step_id not in declared_steps:
             raise ABCError("progress_receipt_step_unknown", f"Unknown declared step ID: {step_id}")
@@ -875,17 +816,8 @@ class TaskService(ApprovalLifecycleMixin):
         executor_run_id = str(run_ids[-1] if run_ids else "").strip()
         session_id = str(session.get("session_id") or "").strip()
         execution = extensions.get("agentbc.execution")
-        active_run_id = (
-            str(execution.get("executor_run_id") or "").strip()
-            if isinstance(execution, dict)
-            else ""
-        )
-        if (
-            not executor_run_id
-            or not session_id
-            or session.get("session_state") != "active"
-            or active_run_id != executor_run_id
-        ):
+        active_run_id = str(execution.get("executor_run_id") or "").strip() if isinstance(execution, dict) else ""
+        if not executor_run_id or not session_id or session.get("session_state") != "active" or active_run_id != executor_run_id:
             raise ABCError(
                 "progress_session_drift",
                 "Authoritative progress requires the active Runner run and official session to match",
@@ -1100,11 +1032,7 @@ class TaskService(ApprovalLifecycleMixin):
         task_id = task.id
         if _has_close_intent(task):
             return False
-        raw_input_details = (
-            dict(callback.get("input"))
-            if isinstance(callback, dict) and isinstance(callback.get("input"), dict)
-            else None
-        )
+        raw_input_details = dict(callback.get("input")) if isinstance(callback, dict) and isinstance(callback.get("input"), dict) else None
         validation = validate_callback_payload(callback, task_id, task.steps)
         if not validation.valid or validation.callback is None:
             permission_failure = self._permission_wait_failure_for_callback_validation(
@@ -1112,11 +1040,7 @@ class TaskService(ApprovalLifecycleMixin):
                 validation.code,
             )
             if permission_failure is not None:
-                executor_run_id = (
-                    str(callback.get("executor_run_id") or "")
-                    if isinstance(callback, dict)
-                    else ""
-                )
+                executor_run_id = str(callback.get("executor_run_id") or "") if isinstance(callback, dict) else ""
                 return self._fail_closed_permission_wait(
                     task,
                     executor_run_id,
@@ -1138,11 +1062,7 @@ class TaskService(ApprovalLifecycleMixin):
             raise ABCError("invalid_agent_callback", "Agent callback summary is required")
         if final_state == "input_required":
             validated_input_details = callback.get("input")
-            input_type = (
-                str(validated_input_details.get("type") or "").strip().lower()
-                if isinstance(validated_input_details, dict)
-                else ""
-            )
+            input_type = str(validated_input_details.get("type") or "").strip().lower() if isinstance(validated_input_details, dict) else ""
             if input_type == "permission":
                 if execution_session is None:
                     return self._fail_closed_permission_wait(
@@ -1239,7 +1159,11 @@ class TaskService(ApprovalLifecycleMixin):
         expected_artifacts = str(workspace.get("artifacts_dir") or "")
         if expected_report and Path(report_file).expanduser().resolve() != Path(expected_report).expanduser().resolve():
             raise ABCError("invalid_agent_callback", "Agent callback report_file does not match task workspace")
-        if expected_artifacts and artifacts_dir and Path(artifacts_dir).expanduser().resolve() != Path(expected_artifacts).expanduser().resolve():
+        if (
+            expected_artifacts
+            and artifacts_dir
+            and Path(artifacts_dir).expanduser().resolve() != Path(expected_artifacts).expanduser().resolve()
+        ):
             raise ABCError("invalid_agent_callback", "Agent callback artifacts_dir does not match task workspace")
         task.workspace = dict(workspace)
         task.workspace.setdefault("report_file", report_file)
@@ -1275,9 +1199,7 @@ class TaskService(ApprovalLifecycleMixin):
             "exit_code": callback.get("exit_code"),
             "step_results": callback["step_results"],
             "marker_valid": True,
-            "completed_step_count": sum(
-                1 for item in callback["step_results"] if item.get("status") == "done"
-            ),
+            "completed_step_count": sum(1 for item in callback["step_results"] if item.get("status") == "done"),
         }
         task.extensions = _merge_execution(task.extensions, {"internal_status": final_state})
         self.revoke_permission_grant(task.id, "task_terminal", model=task)
@@ -1317,14 +1239,6 @@ class TaskService(ApprovalLifecycleMixin):
         self._cleanup_empty_managed_artifacts(task_id)
         return True
 
-
-
-
-
-
-
-
-
     def clear_execution_run_references(
         self,
         task_id: str,
@@ -1341,13 +1255,9 @@ class TaskService(ApprovalLifecycleMixin):
         current = self.get_task(task_id)
         extensions = dict(current.extensions or {})
         execution = dict(extensions.get("agentbc.execution") or {})
-        if expected_worker_run_id and str(execution.get("worker_run_id") or "") != str(
-            expected_worker_run_id
-        ):
+        if expected_worker_run_id and str(execution.get("worker_run_id") or "") != str(expected_worker_run_id):
             return []
-        if expected_executor_run_id and str(
-            execution.get("executor_run_id") or ""
-        ) != str(expected_executor_run_id):
+        if expected_executor_run_id and str(execution.get("executor_run_id") or "") != str(expected_executor_run_id):
             return []
         keys = (
             "worker_run_id",
@@ -1395,9 +1305,9 @@ class TaskService(ApprovalLifecycleMixin):
         execution = dict(extensions.get("agentbc.execution") or {})
         run_lease = load_lease(current.id, self.board_root)
         run_id = str(run_lease.run_id if run_lease is not None else "")
-        already_ready = (
-            run_lease is None or run_lease.state == RunLeaseState.CLOSED
-        ) and str((extensions.get("run_lease") or {}).get("recovery_status") or "") == "ready_for_retry"
+        already_ready = (run_lease is None or run_lease.state == RunLeaseState.CLOSED) and str(
+            (extensions.get("run_lease") or {}).get("recovery_status") or ""
+        ) == "ready_for_retry"
         active_keys = (
             "worker_run_id",
             "worker_pid",
@@ -1423,9 +1333,7 @@ class TaskService(ApprovalLifecycleMixin):
                 "state": RunLeaseState.CLOSED,
                 "recovery_status": "ready_for_retry",
                 "last_heartbeat_at": run_lease.last_heartbeat_at,
-                "recommendation": (
-                    f"Run agentbc task retry {current.id} or handoff this chain head."
-                ),
+                "recommendation": (f"Run agentbc task retry {current.id} or handoff this chain head."),
             }
         current.extensions = extensions
         current.updated_at = _utc_now()
@@ -1445,11 +1353,6 @@ class TaskService(ApprovalLifecycleMixin):
         self._refresh_task_index()
         self._sync_terminal_report(current.id)
         return True
-
-
-
-
-
 
     def _suspend_task_for_input(
         self,
@@ -1472,17 +1375,11 @@ class TaskService(ApprovalLifecycleMixin):
             history.append(previous)
 
         blocked_results = [
-            item
-            for item in callback.get("step_results") or []
-            if isinstance(item, dict) and item.get("status") == "blocked"
+            item for item in callback.get("step_results") or [] if isinstance(item, dict) and item.get("status") == "blocked"
         ]
         blocked_step_id = _safe_blocked_step_id(blocked_results)
         validated_input_details = callback.get("input")
-        input_details = (
-            validated_input_details
-            if isinstance(validated_input_details, dict)
-            else {}
-        )
+        input_details = validated_input_details if isinstance(validated_input_details, dict) else {}
         input_type = str(input_details.get("type") or "message").strip().lower() or "message"
         input_choices = (
             [dict(option) for option in input_details.get("options", []) if isinstance(option, dict)]
@@ -1490,15 +1387,9 @@ class TaskService(ApprovalLifecycleMixin):
             else []
         )
         input_reason = str(input_details.get("reason") or "").strip()
-        requested_permission = (
-            str(input_details.get("requested_permission") or "").strip()
-            if input_type == "permission"
-            else ""
-        )
+        requested_permission = str(input_details.get("requested_permission") or "").strip() if input_type == "permission" else ""
         created_at = str(callback.get("finished_at") or _utc_now())
-        deadline_at = (
-            _parse_timestamp(created_at) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)
-        ).isoformat().replace("+00:00", "Z")
+        deadline_at = (_parse_timestamp(created_at) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)).isoformat().replace("+00:00", "Z")
         executor_run_id = str(callback.get("executor_run_id") or "")
         if input_type == "permission":
             failure = self._permission_wait_contract_failure(
@@ -1522,8 +1413,7 @@ class TaskService(ApprovalLifecycleMixin):
         self.revoke_permission_grant(task.id, "input_superseded", model=task)
         extensions = dict(task.extensions or {})
         is_full_fallback_permission = input_type == "permission" and not (
-            input_details.get("scope") == APPROVAL_SCOPE
-            and bool(str(input_details.get("request_id") or "").strip())
+            input_details.get("scope") == APPROVAL_SCOPE and bool(str(input_details.get("request_id") or "").strip())
         )
         fallback_reason_summary = ""
         fallback_summary_truncated = False
@@ -1536,15 +1426,11 @@ class TaskService(ApprovalLifecycleMixin):
             # structured callback, never from input history, logs or executor
             # session storage.  Sanitization is fail-closed for private paths,
             # argv, raw output and credential-bearing material.
-            raw_reason = str(
-                (raw_input_details or {}).get("reason") or input_reason
-            ).strip()
+            raw_reason = str((raw_input_details or {}).get("reason") or input_reason).strip()
             raw_detail_marker = (raw_input_details or {}).get("reason_detail")
             if raw_detail_marker is not None:
                 fallback_reason_detail = sanitize_reason_detail(raw_detail_marker)
-            elif raw_reason and not (
-                len(raw_reason) == 240 and raw_reason.endswith("…")
-            ):
+            elif raw_reason and not (len(raw_reason) == 240 and raw_reason.endswith("…")):
                 fallback_reason_detail = sanitize_reason_detail(raw_reason)
 
             summary_source = input_reason or raw_reason
@@ -1572,11 +1458,7 @@ class TaskService(ApprovalLifecycleMixin):
             "executor_run_id": executor_run_id,
             "blocked_step_id": blocked_step_id,
             "type": input_type,
-            "summary": (
-                fallback_reason_summary
-                if is_full_fallback_permission
-                else str(redact_secrets(summary))
-            ),
+            "summary": (fallback_reason_summary if is_full_fallback_permission else str(redact_secrets(summary))),
             "created_at": created_at,
             "deadline_at": deadline_at,
             "status": "waiting",
@@ -1584,25 +1466,15 @@ class TaskService(ApprovalLifecycleMixin):
         if requested_permission:
             request["requested_permission"] = str(redact_secrets(requested_permission))
         if input_reason:
-            request["reason"] = (
-                fallback_reason_summary
-                if is_full_fallback_permission
-                else str(redact_secrets(input_reason))
-            )
+            request["reason"] = fallback_reason_summary if is_full_fallback_permission else str(redact_secrets(input_reason))
         if is_full_fallback_permission:
             request["reason_summary"] = fallback_reason_summary
             request["summary_truncated"] = fallback_summary_truncated
             if fallback_reason_detail:
                 request["reason_detail"] = fallback_reason_detail
         if input_choices:
-            request["options"] = [
-                str(redact_secrets(str(option.get("label") or "").strip()))
-                for option in input_choices
-            ]
-            request["option_descriptions"] = [
-                str(redact_secrets(str(option.get("description") or "").strip()))
-                for option in input_choices
-            ]
+            request["options"] = [str(redact_secrets(str(option.get("label") or "").strip())) for option in input_choices]
+            request["option_descriptions"] = [str(redact_secrets(str(option.get("description") or "").strip())) for option in input_choices]
         input_kind = str(input_details.get("kind") or "").strip()
         if input_kind:
             request["kind"] = str(redact_secrets(input_kind))
@@ -1742,9 +1614,7 @@ class TaskService(ApprovalLifecycleMixin):
         extensions = dict(task.extensions or {})
         resources = dict(extensions[RESOURCE_EXTENSION_KEY])
         now = _utc_now()
-        deadline_at = (
-            _parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)
-        ).isoformat().replace("+00:00", "Z")
+        deadline_at = (_parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)).isoformat().replace("+00:00", "Z")
         used = resource_exhaustion.get("used")
         observed_limit = resource_exhaustion.get("limit")
         limit = observed_limit if isinstance(observed_limit, (int, float)) else current_limit
@@ -1785,10 +1655,7 @@ class TaskService(ApprovalLifecycleMixin):
 
         task.status = "input_required"
         task.updated_at = now
-        task.steps = [
-            _resource_block_step(step, blocked_step_id)
-            for step in task.steps
-        ]
+        task.steps = [_resource_block_step(step, blocked_step_id) for step in task.steps]
         resources["exhaustion_count"] = int(resources.get("exhaustion_count") or 0) + 1
         extensions[RESOURCE_EXTENSION_KEY] = resources
         extensions = self._record_run_interval(task_id, extensions)
@@ -1812,11 +1679,7 @@ class TaskService(ApprovalLifecycleMixin):
             self.board_root,
             executor_run_id=normalized_run_id,
             executor_id=task.assignee,
-            work_dir=str(
-                (task.workspace or {}).get("project_root")
-                or (task.workspace or {}).get("root")
-                or self.board_root
-            ),
+            work_dir=str((task.workspace or {}).get("project_root") or (task.workspace or {}).get("root") or self.board_root),
         )
         clear_task_progress(task)
         self.store.append_event(
@@ -1845,17 +1708,6 @@ class TaskService(ApprovalLifecycleMixin):
             "next_limit": next_limit,
             "exhaustion_count": resources["exhaustion_count"],
         }
-
-
-
-
-
-
-
-
-
-
-
 
     def cutover_preflight(self) -> dict[str, Any]:
         """Return the strict cutover gate for a supported update/preflight.
@@ -1990,11 +1842,7 @@ class TaskService(ApprovalLifecycleMixin):
                 "invalid_input_response",
                 f"Unsupported response type: {response_type}",
             )
-        clean_message = (
-            str(redact_secrets(message)).strip()
-            if response_type == "message"
-            else response_type
-        )
+        clean_message = str(redact_secrets(message)).strip() if response_type == "message" else response_type
         if response_type == "message" and not clean_message:
             raise ABCError("invalid_input_response", "--message requires non-empty text")
 
@@ -2013,10 +1861,7 @@ class TaskService(ApprovalLifecycleMixin):
         updated_resources: dict[str, Any] | None = None
         if is_resource_decision:
             blocked_step_id = request.get("blocked_step_id")
-            if not any(
-                step.get("id") == blocked_step_id and step.get("status") == "blocked"
-                for step in task.steps
-            ):
+            if not any(step.get("id") == blocked_step_id and step.get("status") == "blocked" for step in task.steps):
                 raise ABCError(
                     "resource_decision_invalid",
                     "Resource input does not identify the current blocked step",
@@ -2050,9 +1895,7 @@ class TaskService(ApprovalLifecycleMixin):
                     "resource_decision_invalid",
                     f"Resource decisions are unsupported for executor: {task.assignee}",
                 )
-            failure_message = (
-                "User terminated the task after the executor resource limit was exhausted"
-            )
+            failure_message = "User terminated the task after the executor resource limit was exhausted"
             task.extensions = extensions
             task.updated_at = now
             self._mark_task_failed_model(
@@ -2100,9 +1943,7 @@ class TaskService(ApprovalLifecycleMixin):
         if is_resource_decision:
             blocked_step_id = request.get("blocked_step_id")
             task.steps = [
-                {**step, "status": "pending"}
-                if step.get("id") == blocked_step_id and step.get("status") == "blocked"
-                else dict(step)
+                {**step, "status": "pending"} if step.get("id") == blocked_step_id and step.get("status") == "blocked" else dict(step)
                 for step in task.steps
             ]
             session = extensions.get(SESSION_EXTENSION_KEY)
@@ -2121,12 +1962,7 @@ class TaskService(ApprovalLifecycleMixin):
                     )
                 extensions[SESSION_EXTENSION_KEY] = updated_session
         else:
-            task.steps = [
-                {**step, "status": "pending"}
-                if step.get("status") == "blocked"
-                else dict(step)
-                for step in task.steps
-            ]
+            task.steps = [{**step, "status": "pending"} if step.get("status") == "blocked" else dict(step) for step in task.steps]
         task.status = "running"
         task.updated_at = now
         task.extensions = _merge_execution(
@@ -2308,13 +2144,11 @@ class TaskService(ApprovalLifecycleMixin):
             build_terminal_delivery_receipt,
         )
 
-        task.extensions[TERMINAL_DELIVERY_EXTENSION_KEY] = (
-            build_terminal_delivery_receipt(
-                task_id,
-                terminal_state="failed",
-                terminal_event="task.failed",
-                committed_at=now,
-            )
+        task.extensions[TERMINAL_DELIVERY_EXTENSION_KEY] = build_terminal_delivery_receipt(
+            task_id,
+            terminal_state="failed",
+            terminal_event="task.failed",
+            committed_at=now,
         )
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)
@@ -2401,9 +2235,7 @@ class TaskService(ApprovalLifecycleMixin):
         # recovery callers retain the legacy behavior so they never signal
         # their own process group while persisting diagnostics.
         task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
-        if run_lease is not None and (
-            close_run_lease or run_lease.state == RunLeaseState.SUSPENDED
-        ):
+        if run_lease is not None and (close_run_lease or run_lease.state == RunLeaseState.SUSPENDED):
             close_lease(run_lease, self.board_root)
             execution_updates["lease_state"] = RunLeaseState.CLOSED
             if close_run_lease:
@@ -2413,9 +2245,7 @@ class TaskService(ApprovalLifecycleMixin):
                     "state": RunLeaseState.CLOSED,
                     "recovery_status": "ready_for_retry",
                     "last_heartbeat_at": run_lease.last_heartbeat_at,
-                    "recommendation": (
-                        f"Run agentbc task retry {task_id} or handoff this chain head."
-                    ),
+                    "recommendation": (f"Run agentbc task retry {task_id} or handoff this chain head."),
                 }
         task.extensions = _merge_execution(task.extensions, execution_updates)
         if close_run_lease:
@@ -2453,13 +2283,11 @@ class TaskService(ApprovalLifecycleMixin):
         except ABCError:
             existing_delivery = {}
         if existing_delivery.get("terminal_state") != "needs_recovery":
-            task.extensions[TERMINAL_DELIVERY_EXTENSION_KEY] = (
-                build_terminal_delivery_receipt(
-                    task_id,
-                    terminal_state="needs_recovery",
-                    terminal_event="task.recovery_required",
-                    committed_at=now,
-                )
+            task.extensions[TERMINAL_DELIVERY_EXTENSION_KEY] = build_terminal_delivery_receipt(
+                task_id,
+                terminal_state="needs_recovery",
+                terminal_event="task.recovery_required",
+                committed_at=now,
             )
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)
@@ -2472,11 +2300,7 @@ class TaskService(ApprovalLifecycleMixin):
                 "error": {"code": code, "message": compact_message},
             },
         )
-        if (
-            close_run_lease
-            and run_lease is not None
-            and run_lease.state == RunLeaseState.CLOSED
-        ):
+        if close_run_lease and run_lease is not None and run_lease.state == RunLeaseState.CLOSED:
             self.store.append_event(
                 task_id,
                 {
@@ -2629,13 +2453,11 @@ class TaskService(ApprovalLifecycleMixin):
         self._release_lease(task_id)
         from .terminal_delivery import build_terminal_delivery_receipt
 
-        task.extensions[TERMINAL_DELIVERY_EXTENSION_KEY] = (
-            build_terminal_delivery_receipt(
-                task_id,
-                terminal_state="cancelled",
-                terminal_event="task.cancelled",
-                committed_at=task.updated_at,
-            )
+        task.extensions[TERMINAL_DELIVERY_EXTENSION_KEY] = build_terminal_delivery_receipt(
+            task_id,
+            terminal_state="cancelled",
+            terminal_event="task.cancelled",
+            committed_at=task.updated_at,
         )
         self.store.write_task(task_id, _without_none(task.to_dict()))
         cleanup_cancelled_task_files(task)
@@ -2983,11 +2805,7 @@ class TaskService(ApprovalLifecycleMixin):
 
         def _report() -> Any:
             report, _markdown = write_report_markdown(task_id, board_root)
-            target = str(
-                report_file
-                or (report.get("workspace") or {}).get("report_file")
-                or ""
-            )
+            target = str(report_file or (report.get("workspace") or {}).get("report_file") or "")
             if target and not Path(target).expanduser().is_file():
                 return StageOutcome(False, error_code="report_missing")
             return StageOutcome(True)
@@ -3059,9 +2877,7 @@ class TaskService(ApprovalLifecycleMixin):
                 continue
             if entry["state"] != "in_progress":
                 try:
-                    receipt = transition_terminal_delivery_stage(
-                        receipt, stage, "in_progress"
-                    )
+                    receipt = transition_terminal_delivery_stage(receipt, stage, "in_progress")
                 except ABCError:
                     # Attempt limit reached for this stage.
                     continue
@@ -3077,19 +2893,11 @@ class TaskService(ApprovalLifecycleMixin):
             if outcome is None or isinstance(outcome, dict):
                 outcome = StageOutcome(False, error_code=f"{stage}_failed")
             if outcome.ok:
-                receipt = transition_terminal_delivery_stage(
-                    receipt, stage, "succeeded"
-                )
-                results.append(
-                    {"stage": stage, "status": "succeeded", "error_code": ""}
-                )
+                receipt = transition_terminal_delivery_stage(receipt, stage, "succeeded")
+                results.append({"stage": stage, "status": "succeeded", "error_code": ""})
             elif outcome.not_applicable:
-                receipt = transition_terminal_delivery_stage(
-                    receipt, stage, "not_applicable", not_applicable=True
-                )
-                results.append(
-                    {"stage": stage, "status": "not_applicable", "error_code": ""}
-                )
+                receipt = transition_terminal_delivery_stage(receipt, stage, "not_applicable", not_applicable=True)
+                results.append({"stage": stage, "status": "not_applicable", "error_code": ""})
             else:
                 code = outcome.error_code or f"{stage}_failed"
                 receipt = transition_terminal_delivery_stage(
@@ -3137,15 +2945,6 @@ class TaskService(ApprovalLifecycleMixin):
             delivery_event_payload(receipt, results, occurred_at=_utc_now()),
         )
 
-    def _terminal_delivery_result(
-        self, results: list[dict[str, Any]], task_id: str
-    ) -> bool:
-        """Return the historical ``finalized`` flag without mutating state."""
-        return True
-
-    def task_id_or(self, board_root: Any) -> str:  # pragma: no cover - unused helper
-        raise NotImplementedError
-
     def _cleanup_empty_managed_artifacts(self, task_id: str) -> None:
         try:
             from .task_health import cleanup_empty_managed_task_artifacts
@@ -3165,7 +2964,9 @@ class TaskService(ApprovalLifecycleMixin):
         task.intervention["latest_correction_id"] = correction_id
         task.updated_at = now
         self.store.write_task(task_id, _without_none(task.to_dict()))
-        self._append_intervention(task_id, "correct", now, intervention_type="correction", step_id=step_id, message=message, correction_id=correction_id)
+        self._append_intervention(
+            task_id, "correct", now, intervention_type="correction", step_id=step_id, message=message, correction_id=correction_id
+        )
 
     def retry_step(self, task_id: str, step_id: int) -> None:
         task = self.get_task(task_id)
@@ -3176,7 +2977,9 @@ class TaskService(ApprovalLifecycleMixin):
         task.updated_at = _utc_now()
         self.revoke_permission_grant(task.id, "task_retry", model=task)
         self.store.write_task(task_id, _without_none(task.to_dict()))
-        self.store.append_event(task_id, {"event_type": "step_retry", "task_id": task_id, "step_id": step_id, "created_at": task.updated_at})
+        self.store.append_event(
+            task_id, {"event_type": "step_retry", "task_id": task_id, "step_id": step_id, "created_at": task.updated_at}
+        )
         self._append_intervention(task_id, "retry", task.updated_at, step_id=step_id)
 
     def retry_failed_task(self, task_id: str) -> TaskModel:
@@ -3281,10 +3084,7 @@ class TaskService(ApprovalLifecycleMixin):
         if normalized_source_status not in HANDOFF_SOURCE_STATUSES:
             raise ABCError(
                 "handoff_source_not_ready",
-                (
-                    f"Task {source.id} is {normalized_source_status}; handoff requires "
-                    f"one of {sorted(HANDOFF_SOURCE_STATUSES)}."
-                ),
+                (f"Task {source.id} is {normalized_source_status}; handoff requires one of {sorted(HANDOFF_SOURCE_STATUSES)}."),
                 {
                     "source_task_id": source.id,
                     "status": normalized_source_status,
@@ -3303,37 +3103,7 @@ class TaskService(ApprovalLifecycleMixin):
                 session_id=session_id,
                 permission_mode=permission_mode,
             )
-        chain = self.resolve_chain(source.id)
-        if chain.anomalies:
-            raise ABCError(
-                "invalid_lineage",
-                f"Task chain for {source.id} has inconsistent lineage; resolve it before handoff.",
-                chain.to_dict(),
-            )
-        if not branch:
-            if len(chain.head_task_ids) > 1:
-                raise ABCError(
-                    "ambiguous_chain_head",
-                    (
-                        f"Task {source.id} belongs to a chain with multiple heads; "
-                        "pass an explicit head task id, or use --branch intentionally."
-                    ),
-                    chain.to_dict(),
-                )
-            if not chain.requested_is_head:
-                suggested = (
-                    f"agentbc task handoff {chain.current_head_task_id} --to {target_assignee}"
-                    if chain.current_head_task_id
-                    else ""
-                )
-                raise ABCError(
-                    "stale_handoff_source",
-                    (
-                        f"Task {source.id} is not the current chain head. "
-                        f"Use {chain.current_head_task_id} instead."
-                    ),
-                    {**chain.to_dict(), "suggested_command": suggested},
-                )
+        self._validate_handoff_chain(source, target_assignee, branch=branch)
         workspace = source.workspace or {}
         source_permission = permission_record_from_extensions(source.extensions)
         validate_path_plan_workspace(workspace)
@@ -3343,17 +3113,11 @@ class TaskService(ApprovalLifecycleMixin):
         report_record_path = Path(str(report_file)).expanduser()
         if report_record_path.exists():
             if task_record_path != report_record_path and task_record_path.exists():
-                source_context = (
-                    f"Read the previous AgentBC task record at {task_file} "
-                    f"and report record at {report_file}."
-                )
+                source_context = f"Read the previous AgentBC task record at {task_file} and report record at {report_file}."
             else:
                 source_context = f"Read the previous AgentBC task/report record at {report_file}."
         else:
-            source_context = (
-                f"The compact record was cleaned; restore the preserved task state with "
-                f"`agentbc task report {source.id}`."
-            )
+            source_context = f"The compact record was cleaned; restore the preserved task state with `agentbc task report {source.id}`."
         description = (
             f"Continue from AgentBC task {source.id} in task code {workspace.get('task_code')}. "
             f"{source_context} Then perform this handoff request: "
@@ -3438,52 +3202,20 @@ class TaskService(ApprovalLifecycleMixin):
                 },
             )
         session_snapshot = (source.extensions or {}).get(SESSION_EXTENSION_KEY)
-        cleanup = (
-            session_snapshot.get("cleanup")
-            if isinstance(session_snapshot, dict)
-            else None
-        )
+        cleanup = session_snapshot.get("cleanup") if isinstance(session_snapshot, dict) else None
         if isinstance(cleanup, dict) and cleanup.get("state") == "pending":
             raise ABCError(
                 "handoff_source_cleanup_pending",
-                (
-                    f"Task {source.id} has a session cleanup pass in progress; "
-                    "retry the handoff after it settles."
-                ),
+                (f"Task {source.id} has a session cleanup pass in progress; retry the handoff after it settles."),
                 {"source_task_id": source.id},
             )
 
-        chain = self.resolve_chain(source.id)
-        if chain.anomalies:
-            raise revival_error(
-                "lineage_invalid",
-                f"Task chain for {source.id} has inconsistent lineage; resolve it before handoff.",
-                chain.to_dict(),
-            )
-        if not branch:
-            if len(chain.head_task_ids) > 1:
-                raise ABCError(
-                    "ambiguous_chain_head",
-                    (
-                        f"Task {source.id} belongs to a chain with multiple heads; "
-                        "pass an explicit head task id, or use --branch intentionally."
-                    ),
-                    chain.to_dict(),
-                )
-            if not chain.requested_is_head:
-                suggested = (
-                    f"agentbc task handoff {chain.current_head_task_id} --to {target_assignee}"
-                    if chain.current_head_task_id
-                    else ""
-                )
-                raise ABCError(
-                    "stale_handoff_source",
-                    (
-                        f"Task {source.id} is not the current chain head. "
-                        f"Use {chain.current_head_task_id} instead."
-                    ),
-                    {**chain.to_dict(), "suggested_command": suggested},
-                )
+        chain = self._validate_handoff_chain(
+            source,
+            target_assignee,
+            branch=branch,
+            recovery=True,
+        )
 
         workspace = source.workspace or {}
         try:
@@ -3519,32 +3251,17 @@ class TaskService(ApprovalLifecycleMixin):
         dispatch_state = str(execution.get("dispatch_status") or "").lower()
         facts = revival_facts_from_task(
             source.to_dict(),
-            is_chain_head=(
-                not chain.anomalies
-                and len(chain.head_task_ids) == 1
-                and chain.requested_is_head
-            ),
+            is_chain_head=(not chain.anomalies and len(chain.head_task_ids) == 1 and chain.requested_is_head),
             lease_state=lease_state,
             worker_active=self.store.is_leased(source.id),
-            dispatch_active=(
-                dispatch_state in {"dispatching", "starting", "running"}
-                and lease_state != RunLeaseState.CLOSED
-            ),
+            dispatch_active=(dispatch_state in {"dispatching", "starting", "running"} and lease_state != RunLeaseState.CLOSED),
             requirements_readable=True,
             lineage_valid=not chain.anomalies,
             path_plan_valid=True,
             report_state=("readable" if report_bytes else "absent"),
-            warnings=(
-                [SOURCE_REPORT_STEP_MISMATCH]
-                if snapshot.step_mismatches
-                else []
-            ),
+            warnings=([SOURCE_REPORT_STEP_MISMATCH] if snapshot.step_mismatches else []),
         )
-        raw_cleanup_state = (
-            str(cleanup.get("state") or "").strip().lower()
-            if isinstance(cleanup, dict)
-            else ""
-        )
+        raw_cleanup_state = str(cleanup.get("state") or "").strip().lower() if isinstance(cleanup, dict) else ""
         if raw_cleanup_state in {"retained", "succeeded", "unsupported"}:
             facts["session_cleanup_state"] = raw_cleanup_state
         revival_preflight = evaluate_revival_preflight(
@@ -3582,9 +3299,7 @@ class TaskService(ApprovalLifecycleMixin):
                 source_task_id=source.id,
                 source_attempt_id=str(facts.get("source_attempt_id") or ""),
                 steps=source.steps,
-                source_report_digest=(
-                    revival_digest(report_bytes) if report_bytes else ""
-                ),
+                source_report_digest=(revival_digest(report_bytes) if report_bytes else ""),
                 source_requirements_digest=revival_digest(brief_bytes),
                 path_plan_digest=revival_path_plan_digest(source.workspace or {}),
                 policy_digest=revival_policy_digest(source.extensions or {}),
@@ -3611,9 +3326,7 @@ class TaskService(ApprovalLifecycleMixin):
                     images=(images or []) if replace_inputs else inherited_images,
                     files=(files or []) if replace_inputs else inherited_files,
                     permission_mode=permission_mode,
-                    inherited_permission=(
-                        None if permission_override else source_permission
-                    ),
+                    inherited_permission=(None if permission_override else source_permission),
                 )
                 snapshot_paths = write_source_snapshots(
                     snapshot,
@@ -3644,12 +3357,7 @@ class TaskService(ApprovalLifecycleMixin):
                 committed_revival = commit_revival_reservation(
                     reservation,
                     target_task_id=task.id,
-                    target_attempt_id=str(
-                        ((task.extensions or {}).get("agentbc.execution") or {}).get(
-                            "worker_run_id"
-                        )
-                        or ""
-                    ),
+                    target_attempt_id=str(((task.extensions or {}).get("agentbc.execution") or {}).get("worker_run_id") or ""),
                     now=now,
                 )
                 extensions[REVIVAL_EXTENSION_KEY] = committed_revival
@@ -3688,13 +3396,44 @@ class TaskService(ApprovalLifecycleMixin):
                     "target_assignee": target_assignee,
                     "source_task_brief_sha256": snapshot.task_brief_sha256,
                     "source_report_sha256": snapshot.report_sha256,
-                    "source_report_step_mismatch": [
-                        dict(item) for item in snapshot.step_mismatches
-                    ],
+                    "source_report_step_mismatch": [dict(item) for item in snapshot.step_mismatches],
                 },
             )
             self._refresh_task_index()
             return task
+
+    def _validate_handoff_chain(
+        self,
+        source: TaskModel,
+        target_assignee: str,
+        *,
+        branch: bool,
+        recovery: bool = False,
+    ) -> ChainResolution:
+        chain = self.resolve_chain(source.id)
+        if chain.anomalies:
+            error = revival_error if recovery else ABCError
+            raise error(
+                "lineage_invalid" if recovery else "invalid_lineage",
+                f"Task chain for {source.id} has inconsistent lineage; resolve it before handoff.",
+                chain.to_dict(),
+            )
+        if branch:
+            return chain
+        if len(chain.head_task_ids) > 1:
+            raise ABCError(
+                "ambiguous_chain_head",
+                f"Task {source.id} belongs to a chain with multiple heads; pass an explicit head task id, or use --branch intentionally.",
+                chain.to_dict(),
+            )
+        if not chain.requested_is_head:
+            suggested = f"agentbc task handoff {chain.current_head_task_id} --to {target_assignee}" if chain.current_head_task_id else ""
+            raise ABCError(
+                "stale_handoff_source",
+                f"Task {source.id} is not the current chain head. Use {chain.current_head_task_id} instead.",
+                {**chain.to_dict(), "suggested_command": suggested},
+            )
+        return chain
 
     def preflight(self, task_id: str) -> PreflightResult:
         try:
@@ -3737,12 +3476,6 @@ class TaskService(ApprovalLifecycleMixin):
             errors=errors,
             execution_policy=execution_policy_view(task.extensions),
         )
-
-    def _supports_immediate_pause(self, assignee: str) -> bool:
-        try:
-            return get_executor(assignee).capabilities().level >= 3
-        except (TypeError, ValueError):
-            return False
 
     def _refresh_active_tasks(self, tasks: list[TaskModel]) -> list[TaskModel]:
         from .run_lease import reconcile_task
@@ -3820,9 +3553,7 @@ class TaskService(ApprovalLifecycleMixin):
         session["official_receipt_bound"] = True
         if validated.get("archive_acknowledged") is True:
             session["archive_acknowledged"] = True
-            session["archive_checked_at"] = str(
-                validated.get("archive_checked_at") or _utc_now()
-            )
+            session["archive_checked_at"] = str(validated.get("archive_checked_at") or _utc_now())
         session["session_state"] = session_state
         errors = validate_session_snapshot(session, executor=task.assignee)
         if errors:
@@ -3935,17 +3666,12 @@ class TaskService(ApprovalLifecycleMixin):
             "status": task.status,
             "generated_at": _utc_now(),
             "steps_total": len(task.steps),
-            "steps_done": sum(
-                1
-                for step in task.steps
-                if step.get("status") in {"done", "completed", "inherited_done"}
-            ),
+            "steps_done": sum(1 for step in task.steps if step.get("status") in {"done", "completed", "inherited_done"}),
             "events": len(self.store.read_events(task_id)),
             "interventions": len(self.store.read_interventions(task_id)),
             "revival": (
                 failed_revival_projection(task, self.retry_preflight(task.id))
-                if task.status in {"failed", "needs_recovery"}
-                or "agentbc.revival" in (task.extensions or {})
+                if task.status in {"failed", "needs_recovery"} or "agentbc.revival" in (task.extensions or {})
                 else None
             ),
         }
@@ -4102,11 +3828,7 @@ class TaskService(ApprovalLifecycleMixin):
             "summary": "request invalidated by fail-closed recovery",
             "source": "fail_closed_recovery",
         }
-        history = [
-            item
-            for item in list(extensions.get("agentbc.input_history") or [])
-            if isinstance(item, dict)
-        ]
+        history = [item for item in list(extensions.get("agentbc.input_history") or []) if isinstance(item, dict)]
         history.append(invalidated)
         extensions["agentbc.input_history"] = history[-16:]
         extensions.pop("agentbc.input", None)
@@ -4322,9 +4044,7 @@ def task_to_status(
     approval_value = extensions.get(APPROVAL_EXTENSION_KEY)
     if approval_value is not None:
         try:
-            extensions[APPROVAL_EXTENSION_KEY] = approval_public_projection_v2(
-                approval_value
-            )
+            extensions[APPROVAL_EXTENSION_KEY] = approval_public_projection_v2(approval_value)
         except ABCError:
             extensions.pop(APPROVAL_EXTENSION_KEY, None)
     elevation_value = extensions.get(PERMISSION_ELEVATION_EXTENSION_KEY)
@@ -4332,17 +4052,13 @@ def task_to_status(
         try:
             from .permission_elevation import permission_elevation_public_projection
 
-            extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = (
-                permission_elevation_public_projection(elevation_value)
-            )
+            extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = permission_elevation_public_projection(elevation_value)
         except ABCError:
             extensions.pop(PERMISSION_ELEVATION_EXTENSION_KEY, None)
     claude_elevation_value = extensions.get(CLAUDE_ELEVATION_EXTENSION_KEY)
     if claude_elevation_value is not None:
         try:
-            extensions[CLAUDE_ELEVATION_EXTENSION_KEY] = (
-                claude_elevation_public_projection(claude_elevation_value)
-            )
+            extensions[CLAUDE_ELEVATION_EXTENSION_KEY] = claude_elevation_public_projection(claude_elevation_value)
         except ABCError:
             extensions.pop(CLAUDE_ELEVATION_EXTENSION_KEY, None)
     # PERM-104-002 1.04A: the session tool rule surface is retired; historical
@@ -4395,9 +4111,7 @@ def _normalize_step(step: dict[str, Any], index: int) -> dict[str, Any]:
     # executed.  The mismatch now fails BEFORE dispatch with a stable
     # ``task_create_error``; legacy tasks keep their stored ids (dual-read).
     declared_id = normalized.get("id")
-    if declared_id is not None and (
-        isinstance(declared_id, bool) or not isinstance(declared_id, int)
-    ):
+    if declared_id is not None and (isinstance(declared_id, bool) or not isinstance(declared_id, int)):
         raise ABCError(
             "task_create_error",
             f"step {index} id must be an integer (got {type(declared_id).__name__}); "
@@ -4448,9 +4162,7 @@ def _validate_resource_block_receipt(
     if source not in allowed_sources.get(executor, set()):
         return "resource_block_invalid_receipt"
     limit = resource_exhaustion.get("limit")
-    if limit is not None and (
-        isinstance(limit, bool) or not isinstance(limit, (int, float))
-    ):
+    if limit is not None and (isinstance(limit, bool) or not isinstance(limit, (int, float))):
         return "resource_block_invalid_receipt"
     if resource_exhaustion.get("limit_matches_snapshot") is False:
         return "resource_block_snapshot_invalid"
@@ -4470,12 +4182,6 @@ def _validate_resource_block_receipt(
         if existing_id and received_id and received_id != existing_id:
             return "resource_block_receipt_invalid"
     return None
-
-
-
-
-
-
 
 
 def _resource_block_reason(executor: str, used: Any, limit: Any) -> str:
@@ -4506,11 +4212,6 @@ def _retry_step(step: dict[str, Any], step_id: int) -> dict[str, Any]:
 def _require_step(task: TaskModel, step_id: int) -> None:
     if not any(step.get("id") == step_id for step in task.steps):
         raise ABCError("step_not_found", f"Step not found: {step_id}", {"task_id": task.id, "step_id": step_id})
-
-
-def _validate_path(*states: str) -> None:
-    for from_state, to_state in zip(states, states[1:]):  # noqa: RUF007 - preserve supported runtime path
-        validate_transition(from_state, to_state)
 
 
 def _load_steps_text(text: str) -> list[dict[str, Any]]:
@@ -4709,11 +4410,7 @@ def _handoff_recovery_brief_lines(task: TaskModel, recovery: dict[str, Any]) -> 
     optional additive handoff goal.  Content is derived only from the recovery
     record so a re-read of the brief is byte-stable for one task state.
     """
-    steps_by_id = {
-        step.get("id"): step
-        for step in task.steps
-        if isinstance(step, dict)
-    }
+    steps_by_id = {step.get("id"): step for step in task.steps if isinstance(step, dict)}
     brief = recovery.get("source_task_brief") or {}
     report = recovery.get("source_report") or {}
     mismatches = recovery.get(SOURCE_REPORT_STEP_MISMATCH) or []
@@ -4745,17 +4442,10 @@ def _handoff_recovery_brief_lines(task: TaskModel, recovery: dict[str, Any]) -> 
     else:
         lines.append("- Source report step mismatch: `none`")
     lines.append(
-        f"- Locked inherited steps (already done, never re-execute): "
-        f"`{', '.join(str(item) for item in locked) if locked else 'none'}`"
+        f"- Locked inherited steps (already done, never re-execute): `{', '.join(str(item) for item in locked) if locked else 'none'}`"
     )
-    lines.append(
-        f"- Executable remaining steps: "
-        f"`{', '.join(str(item) for item in remaining) if remaining else 'none'}`"
-    )
-    lines.append(
-        f"- Terminal-verification closeout step: "
-        f"`{closeout if isinstance(closeout, int) else 'none'}`"
-    )
+    lines.append(f"- Executable remaining steps: `{', '.join(str(item) for item in remaining) if remaining else 'none'}`")
+    lines.append(f"- Terminal-verification closeout step: `{closeout if isinstance(closeout, int) else 'none'}`")
     message = str(recovery.get("additive_message") or "")
     lines.append(f"- Additive handoff goal: {message if message else '`none`'}")
     lines.extend(
@@ -4766,9 +4456,7 @@ def _handoff_recovery_brief_lines(task: TaskModel, recovery: dict[str, Any]) -> 
     )
     for step_id in sorted(id_ for id_ in steps_by_id if isinstance(id_, int)):
         step = steps_by_id[step_id]
-        lines.append(
-            f"{step_id}. {task_step_text(step)} [inherited status: {step.get('status', 'pending')}]"
-        )
+        lines.append(f"{step_id}. {task_step_text(step)} [inherited status: {step.get('status', 'pending')}]")
     lines.extend(
         [
             "",
@@ -4781,23 +4469,6 @@ def _handoff_recovery_brief_lines(task: TaskModel, recovery: dict[str, Any]) -> 
         ]
     )
     return lines
-
-
-def _validate_failure_path(status: str) -> None:
-    if _normalize_status(status) not in {"pending", "running", "input_required", "needs_recovery"}:
-        raise ABCError("invalid_transition", f"Cannot enter recovery from state: {status}")
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _task_sort_key(task: TaskModel) -> tuple[int, float, str]:
@@ -4855,9 +4526,7 @@ def _task_chain_delete_ownership(
             record_root,
             f"record for {task.id}",
         )
-        delete_objects.append(
-            {"kind": "record", "task_id": task.id, "path": str(expected_record), "exists": expected_record.exists()}
-        )
+        delete_objects.append({"kind": "record", "task_id": task.id, "path": str(expected_record), "exists": expected_record.exists()})
 
         agentbc_root = Path(str(workspace.get("agentbc_root") or "")).expanduser().resolve()
         task_date = str(workspace.get("task_date") or "")
@@ -4874,18 +4543,14 @@ def _task_chain_delete_ownership(
         _require_exact_path(workspace.get("task_file"), expected_task_file, f"task brief for {task.id}")
         _require_exact_path(workspace.get("report_file"), expected_report_file, f"report for {task.id}")
         for kind, path in (("task_brief", expected_task_file), ("report", expected_report_file)):
-            delete_objects.append(
-                {"kind": kind, "task_id": task.id, "path": str(path), "exists": path.exists()}
-            )
+            delete_objects.append({"kind": kind, "task_id": task.id, "path": str(path), "exists": path.exists()})
         if report_root.exists():
             targets_by_path.setdefault(
                 str(report_root),
                 {"kind": "reports", "path": str(report_root), "allowed_root": str(report_base.resolve())},
             )
 
-        delete_objects.append(
-            {"kind": "index_entry", "task_id": task.id, "path": f"task_index:{task.id}", "exists": True}
-        )
+        delete_objects.append({"kind": "index_entry", "task_id": task.id, "path": f"task_index:{task.id}", "exists": True})
         input_root_text = str(workspace.get("input_root") or "").strip()
         if input_root_text:
             input_base = agentbc_root / "tasks" / "inputs"
@@ -4896,9 +4561,7 @@ def _task_chain_delete_ownership(
                 input_base,
                 f"input root for {task.id}",
             )
-            delete_objects.append(
-                {"kind": "inputs", "task_id": task.id, "path": str(input_root), "exists": input_root.exists()}
-            )
+            delete_objects.append({"kind": "inputs", "task_id": task.id, "path": str(input_root), "exists": input_root.exists()})
             if input_root.exists():
                 targets_by_path.setdefault(
                     str(input_root),
@@ -4908,9 +4571,7 @@ def _task_chain_delete_ownership(
             customer_path = str(Path(str(workspace.get("project_root") or "")).expanduser().resolve())
             if customer_path and customer_path not in customer_paths:
                 customer_paths.add(customer_path)
-                preserve_objects.append(
-                    {"kind": "customer_project", "path": customer_path, "reason": "customer-owned"}
-                )
+                preserve_objects.append({"kind": "customer_project", "path": customer_path, "reason": "customer-owned"})
             continue
 
         artifact_base = agentbc_root / "tasks" / "artifacts"
@@ -4930,9 +4591,7 @@ def _task_chain_delete_ownership(
                 {"kind": "artifacts", "path": str(artifact_root), "allowed_root": str(artifact_base.resolve())},
             )
 
-    delete_objects.append(
-        {"kind": "task_code_claim", "task_code": task_code, "path": str(record_chain), "exists": record_chain.exists()}
-    )
+    delete_objects.append({"kind": "task_code_claim", "task_code": task_code, "path": str(record_chain), "exists": record_chain.exists()})
     targets_by_path[str(record_chain)] = {
         "kind": "records",
         "path": str(record_chain),
@@ -5098,9 +4757,13 @@ def _lineage_for(task: TaskModel) -> dict[str, Any]:
         "branch_mode": lineage.get("branch_mode", "linear"),
         "chain_id": lineage.get("chain_id") or (task.workspace or {}).get("chain_id"),
         "chain_token": lineage.get("chain_token") or (task.workspace or {}).get("chain_token"),
-        "chain_dir": lineage.get("chain_dir") or (task.workspace or {}).get("chain_dir") or Path((task.workspace or {}).get("output_dir", "")).name,
+        "chain_dir": lineage.get("chain_dir")
+        or (task.workspace or {}).get("chain_dir")
+        or Path((task.workspace or {}).get("output_dir", "")).name,
         "chain_task_id": lineage.get("chain_task_id") or (task.workspace or {}).get("chain_task_id"),
-        "chain_output_dir": lineage.get("chain_output_dir") or (task.workspace or {}).get("chain_output_dir") or (task.workspace or {}).get("output_dir"),
+        "chain_output_dir": lineage.get("chain_output_dir")
+        or (task.workspace or {}).get("chain_output_dir")
+        or (task.workspace or {}).get("output_dir"),
     }
 
 
@@ -5166,8 +4829,6 @@ def _next_lineage(source: TaskModel, workspace: dict[str, Any], branch: bool = F
     }
 
 
-
-
 def _has_close_intent(task: TaskModel) -> bool:
     return isinstance((task.extensions or {}).get("agentbc.close_intent"), dict)
 
@@ -5191,8 +4852,6 @@ def _supersede_final_callback(task: TaskModel, state: str, reason: str) -> None:
             "superseded_at": _utc_now(),
         }
     task.extensions = extensions
-
-
 
 
 def _execution_ledger(extensions: dict[str, Any]) -> list[dict[str, Any]]:
@@ -5244,12 +4903,8 @@ def _finalize_steps(
             "executor_result": result,
         }
         existing_result = step.get("result")
-        if isinstance(existing_result, dict) and isinstance(
-            existing_result.get("progress_receipt"), dict
-        ):
-            merged_result["progress_receipt"] = dict(
-                existing_result["progress_receipt"]
-            )
+        if isinstance(existing_result, dict) and isinstance(existing_result.get("progress_receipt"), dict):
+            merged_result["progress_receipt"] = dict(existing_result["progress_receipt"])
         finalized.append(
             _update_step(
                 step,

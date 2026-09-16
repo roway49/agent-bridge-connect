@@ -60,6 +60,7 @@ from .session import (
     utc_now,
 )
 
+
 class _ControlFileLock:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -85,6 +86,7 @@ class _ControlFileLock:
         except (ImportError, OSError):
             pass
         self.handle.close()
+
 
 class ApprovalControlPlane:
     """Task-scoped approval state shared by an adapter and Runner."""
@@ -174,26 +176,18 @@ class ApprovalControlPlane:
         with self._locked():
             raw = receipt if isinstance(receipt, dict) else {}
             expected_task = str(expected_task_id or self.task_id).strip()
-            expected_run = str(
-                expected_executor_run_id or self.executor_run_id
-            ).strip()
+            expected_run = str(expected_executor_run_id or self.executor_run_id).strip()
             raw_task = str(raw.get("task_id") or "").strip()
-            raw_run = str(
-                raw.get("executor_run_id") or raw.get("run_id") or ""
-            ).strip()
+            raw_run = str(raw.get("executor_run_id") or raw.get("run_id") or "").strip()
             identity_errors: list[str] = []
             if raw_task and raw_task != expected_task:
                 identity_errors.append("task_id does not match the control plane")
             if raw_run and raw_run != expected_run:
-                identity_errors.append(
-                    "executor_run_id does not match the control plane"
-                )
+                identity_errors.append("executor_run_id does not match the control plane")
             if expected_session_id is not None:
                 actual_session = str(raw.get("session_id") or "").strip()
                 if actual_session != str(expected_session_id).strip():
-                    identity_errors.append(
-                        "session_id does not match the expected execution session"
-                    )
+                    identity_errors.append("session_id does not match the expected execution session")
             if expected_resumed is not None and raw.get("resumed") is not expected_resumed:
                 identity_errors.append("resumed does not match task session history")
             if expected_source is not None and str(raw.get("source") or "") != str(expected_source):
@@ -272,11 +266,7 @@ class ApprovalControlPlane:
                 # binding before creating a pending request; a callback,
                 # stderr, exit code, or requested_permission value cannot
                 # substitute for any of these fields.
-                identity = (
-                    message.get("_agentbc")
-                    if isinstance(message.get("_agentbc"), dict)
-                    else {}
-                )
+                identity = message.get("_agentbc") if isinstance(message.get("_agentbc"), dict) else {}
                 expected_identity = {
                     "task_id": self.task_id,
                     "executor_run_id": self.executor_run_id,
@@ -288,41 +278,21 @@ class ApprovalControlPlane:
                 }
                 actual_identity = {
                     "task_id": str(identity.get("task_id") or "").strip(),
-                    "executor_run_id": str(
-                        identity.get("executor_run_id") or ""
-                    ).strip(),
+                    "executor_run_id": str(identity.get("executor_run_id") or "").strip(),
                     "session_id": request.thread_id,
                     "request_id": str(identity.get("request_id") or "").strip(),
                     "tool_use_id": str(identity.get("tool_use_id") or "").strip(),
                     "tool_name": str(identity.get("tool_name") or "").strip(),
-                    "control_path": str(
-                        identity.get("control_path") or ""
-                    ).strip(),
+                    "control_path": str(identity.get("control_path") or "").strip(),
                 }
-                binding_errors = [
-                    key
-                    for key, expected_value in expected_identity.items()
-                    if actual_identity.get(key) != expected_value
-                ]
-                request_fingerprint = str(
-                    identity.get("request_fingerprint") or ""
-                ).strip()
-                input_fingerprint = str(
-                    identity.get("input_fingerprint") or ""
-                ).strip()
-                action_fingerprint_value = str(
-                    identity.get("action_fingerprint") or ""
-                ).strip()
+                binding_errors = [key for key, expected_value in expected_identity.items() if actual_identity.get(key) != expected_value]
+                request_fingerprint = str(identity.get("request_fingerprint") or "").strip()
+                input_fingerprint = str(identity.get("input_fingerprint") or "").strip()
+                action_fingerprint_value = str(identity.get("action_fingerprint") or "").strip()
                 domain = str(identity.get("escalation_domain") or "").strip().lower()
-                profile_digest = str(
-                    identity.get("host_profile_digest") or ""
-                ).strip()
-                top_level_domain = str(
-                    message.get("escalation_domain") or ""
-                ).strip().lower()
-                top_level_profile = str(
-                    message.get("host_profile_digest") or ""
-                ).strip()
+                profile_digest = str(identity.get("host_profile_digest") or "").strip()
+                top_level_domain = str(message.get("escalation_domain") or "").strip().lower()
+                top_level_profile = str(message.get("host_profile_digest") or "").strip()
                 if request_fingerprint != request.request_fingerprint:
                     binding_errors.append("request_fingerprint")
                 if not request_fingerprint.startswith("fp-"):
@@ -330,8 +300,7 @@ class ApprovalControlPlane:
                 if not action_fingerprint_value.startswith("fp-"):
                     binding_errors.append("action_fingerprint")
                 if request.approval_version == 3 and not (
-                    _SHA256_DIGEST_RE.fullmatch(input_fingerprint)
-                    and input_fingerprint == request.input_fingerprint
+                    _SHA256_DIGEST_RE.fullmatch(input_fingerprint) and input_fingerprint == request.input_fingerprint
                 ):
                     binding_errors.append("input_fingerprint")
                 if not actual_identity["tool_name"]:
@@ -379,7 +348,9 @@ class ApprovalControlPlane:
             if request.thread_id != exact_session:
                 evidence = {"request_id": request.request_id, "expected_session_id": exact_session, "actual_session_id": request.thread_id}
                 self._recovery("approval_session_mismatch", "Approval request thread does not match the official session.", evidence)
-                raise ControlPlaneError("approval_session_mismatch", "Approval request thread does not match the official session.", evidence)
+                raise ControlPlaneError(
+                    "approval_session_mismatch", "Approval request thread does not match the official session.", evidence
+                )
             state_identity = {
                 "task_id": str(state.get("task_id") or ""),
                 "executor_run_id": str(state.get("executor_run_id") or ""),
@@ -431,14 +402,11 @@ class ApprovalControlPlane:
                         for field in native_identity_fields
                         if request.to_dict().get(field)
                         and pending.get(field)
-                        and str(request.to_dict().get(field))
-                        != str(pending.get(field))
+                        and str(request.to_dict().get(field)) != str(pending.get(field))
                     ]
                     if native_mismatches:
                         code = PERMISSION_BLOCK_EVIDENCE_UNAVAILABLE
-                        message_text = (
-                            "The repeated native approval changed its bound identity or input."
-                        )
+                        message_text = "The repeated native approval changed its bound identity or input."
                         evidence = {
                             "request_id": request.request_id,
                             "binding_errors": native_mismatches,
@@ -467,14 +435,8 @@ class ApprovalControlPlane:
                 # block-domain ledgers cannot gate or record this path.
                 domain = ""
             profile_digest = str(message.get("host_profile_digest") or "").strip()
-            agentbc_identity = (
-                message.get("_agentbc")
-                if isinstance(message.get("_agentbc"), dict)
-                else {}
-            )
-            structured_action_fingerprint = str(
-                agentbc_identity.get("action_fingerprint") or ""
-            ).strip()
+            agentbc_identity = message.get("_agentbc") if isinstance(message.get("_agentbc"), dict) else {}
+            structured_action_fingerprint = str(agentbc_identity.get("action_fingerprint") or "").strip()
             if not structured_action_fingerprint.startswith("fp-"):
                 structured_action_fingerprint = action_fingerprint(
                     executor=self.executor,
@@ -608,7 +570,9 @@ class ApprovalControlPlane:
                     "request_id": str(request_id),
                 }
                 self._recovery("approval_identity_mismatch", "Approval identity does not match the active control plane.", evidence)
-                raise ControlPlaneError("approval_identity_mismatch", "Approval identity does not match the active control plane.", evidence)
+                raise ControlPlaneError(
+                    "approval_identity_mismatch", "Approval identity does not match the active control plane.", evidence
+                )
             try:
                 official_session = self.gate.store.load_for_run(session_id=self.session_id)["session_id"]
             except SessionRecoveryRequired as exc:
@@ -626,11 +590,15 @@ class ApprovalControlPlane:
                 "session_id": str(state.get("session_id") or ""),
             }
             pending = state.get("pending_request")
-            pending_identity = {
-                "task_id": str(pending.get("task_id") or ""),
-                "executor_run_id": str(pending.get("executor_run_id") or ""),
-                "session_id": str(pending.get("session_id") or ""),
-            } if isinstance(pending, dict) else {}
+            pending_identity = (
+                {
+                    "task_id": str(pending.get("task_id") or ""),
+                    "executor_run_id": str(pending.get("executor_run_id") or ""),
+                    "session_id": str(pending.get("session_id") or ""),
+                }
+                if isinstance(pending, dict)
+                else {}
+            )
             if persisted_identity != expected_identity or pending_identity != expected_identity:
                 evidence = {
                     "expected": expected_identity,
@@ -667,28 +635,19 @@ class ApprovalControlPlane:
             if pending_version == 2 and session_rule is not None:
                 raise ControlPlaneError(
                     "session_rule_response_invalid",
-                    "Session tool rules were retired; a v2 permission response "
-                    "must select one native choice handle.",
+                    "Session tool rules were retired; a v2 permission response must select one native choice handle.",
                 )
             if pending_version == 2 and not choice_handle:
                 raise ControlPlaneError(
                     APPROVAL_V2_ERROR_CHOICE_REQUIRED,
-                    "A v2 native permission request requires an explicit "
-                    "choice handle (--permission-option).",
+                    "A v2 native permission request requires an explicit choice handle (--permission-option).",
                     {"request_id": str(request_id)},
                 )
-            offered_choices = (
-                tuple(pending.get("offered_choices") or [])
-                if isinstance(pending.get("offered_choices"), list)
-                else ()
-            )
+            offered_choices = tuple(pending.get("offered_choices") or []) if isinstance(pending.get("offered_choices"), list) else ()
             selected_choice: dict[str, Any] | None = None
             if pending_version == 2:
                 for choice in offered_choices:
-                    if (
-                        isinstance(choice, dict)
-                        and str(choice.get("handle") or "") == choice_handle
-                    ):
+                    if isinstance(choice, dict) and str(choice.get("handle") or "") == choice_handle:
                         selected_choice = dict(choice)
                         break
                 if selected_choice is None:
@@ -796,8 +755,7 @@ class ApprovalControlPlane:
                 if rollback_errors:
                     raise ControlPlaneError(
                         "approval_decision_transaction_incomplete",
-                        "Approval decision persistence failed and its rollback "
-                        "was incomplete; explicit recovery is required.",
+                        "Approval decision persistence failed and its rollback was incomplete; explicit recovery is required.",
                         {
                             "request_id": str(request_id),
                             "rollback_errors": rollback_errors,
@@ -833,7 +791,9 @@ class ApprovalControlPlane:
                 state["status"] = "needs_recovery"
                 state["updated_at"] = utc_now()
                 self._save_state(state)
-                self._recovery("approval_request_expired", "Approval request timed out without a decision.", {"request_id": str(request_id)})
+                self._recovery(
+                    "approval_request_expired", "Approval request timed out without a decision.", {"request_id": str(request_id)}
+                )
         raise ControlPlaneError("approval_request_expired", "Approval request timed out without a decision.")
 
     def invalidate_request(self, request_id: str, reason: str, *, evidence: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -907,11 +867,7 @@ class ApprovalControlPlane:
         state = self._state()
         pending = state.get("pending_request")
         if isinstance(pending, dict):
-            state["pending_request"] = {
-                key: value
-                for key, value in pending.items()
-                if key not in {"rpc_id"}
-            }
+            state["pending_request"] = {key: value for key, value in pending.items() if key not in {"rpc_id"}}
         return state
 
     def events(self) -> list[dict[str, Any]]:
@@ -929,7 +885,9 @@ class ApprovalControlPlane:
                 values.append(value)
         return values
 
+
 RunnerControlPlane = ApprovalControlPlane
+
 
 def respond_approval(
     task_id: str,
@@ -959,6 +917,7 @@ def respond_approval(
         decision,
         choice_handle=choice_handle,
     )
+
 
 __all__ = [
     "APPROVAL_DECISIONS",

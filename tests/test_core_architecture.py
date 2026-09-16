@@ -24,6 +24,23 @@ CORE_FILES = [
     "agent_bridge_connect.config",
 ]
 
+SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src" / "agent_bridge_connect"
+ARCH104_LOC_BUDGETS = {
+    "approval": (
+        9202,
+        (
+            "service.py",
+            "control.py",
+            "approval_lifecycle.py",
+            "approval_protocol.py",
+            "control_runtime.py",
+            "control_transport.py",
+        ),
+    ),
+    "runner": (4481, ("runner.py", "runner_contract.py", "runner_ipc.py")),
+    "doctor": (2129, ("doctor.py", "doctor_collectors.py")),
+}
+
 # Files that must NOT import platform-specific modules
 PLATFORM_FORBIDDEN_IN_CORE = [
     "codex", "claude", "gemini", "cursor",  # executor-specific
@@ -39,6 +56,14 @@ class ArchitectureFreezeGateTests(unittest.TestCase):
         for mod_name in CORE_FILES:
             mod = importlib.import_module(mod_name)
             self.assertIsNotNone(mod, f"Module {mod_name} not importable")
+
+    def test_arch104_production_loc_reduction_is_preserved(self):
+        """Each refactored domain remains at least 5% below its T0 LOC."""
+        measured = {}
+        for domain, (budget, files) in ARCH104_LOC_BUDGETS.items():
+            measured[domain] = sum(len((SOURCE_ROOT / name).read_text().splitlines()) for name in files)
+            self.assertLessEqual(measured[domain], budget, f"{domain} LOC budget exceeded")
+        self.assertLessEqual(sum(measured.values()), 15813, "combined ARCH-104 LOC budget exceeded")
 
     def test_no_platform_imports_in_core(self):
         """Core modules must not import executor/notifier specific modules."""

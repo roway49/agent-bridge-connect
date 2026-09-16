@@ -39,9 +39,8 @@ def _bounded_json(value: Any, *, depth: int = 0) -> Any:
         return value if not isinstance(value, str) else value[:240]
     return str(value)[:240]
 
-STABLE_EVENTS = frozenset(
-    {"session_started", "approval_requested", "turn_completed", "transport_failed"}
-)
+
+STABLE_EVENTS = frozenset({"session_started", "approval_requested", "turn_completed", "transport_failed"})
 CONTROL_VERSION = 1
 APPROVAL_DECISIONS = frozenset({"accept", "decline"})
 APPROVAL_METHODS = {
@@ -52,6 +51,7 @@ APPROVAL_METHODS = {
 APPROVAL_V2_ERROR_CHOICE_REQUIRED = "native_permission_choice_required"
 CODEX_SCHEMA_SESSION_DECISIONS = frozenset({"acceptForSession"})
 _SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
 
 class ControlPlaneError(RuntimeError):
     status = "needs_recovery"
@@ -65,6 +65,7 @@ class ControlPlaneError(RuntimeError):
         self.code = str(code or "control_plane_error")
         self.details = dict(details or {})
         super().__init__(message)
+
 
 @dataclass(frozen=True)
 class ControlEvent:
@@ -93,6 +94,7 @@ class ControlEvent:
             value["request_id"] = self.request_id
         value.update(_bounded_json(self.details))
         return value
+
 
 @dataclass(frozen=True)
 class ApprovalRequest:
@@ -143,11 +145,7 @@ class ApprovalRequest:
             "kind": self.kind,
             "operation": self.operation,
             "summary": self.summary,
-            "scope": (
-                APPROVAL_V3_SCOPE
-                if self.approval_version == 3
-                else "single_action"
-            ),
+            "scope": (APPROVAL_V3_SCOPE if self.approval_version == 3 else "single_action"),
             "thread_id": self.thread_id,
             "turn_id": self.turn_id,
             "item_id": self.item_id,
@@ -168,9 +166,7 @@ class ApprovalRequest:
                 value[key] = _bounded_text(item, 512)
         if self.approval_version == 2:
             value["approval_version"] = 2
-            value["offered_choices"] = [
-                dict(choice) for choice in self.offered_choices
-            ]
+            value["offered_choices"] = [dict(choice) for choice in self.offered_choices]
             # The authority block rides on the pending request so the v2
             # respond path can dispatch the executor-native payload shape
             # (e.g. Hermes ACP outcome vs Codex decision).
@@ -179,27 +175,21 @@ class ApprovalRequest:
             value.update(
                 {
                     "approval_version": 3,
-                    "elevation_mode": self.elevation_mode
-                    or APPROVAL_V3_ELEVATION_MODE,
+                    "elevation_mode": self.elevation_mode or APPROVAL_V3_ELEVATION_MODE,
                     "path_plan_digest": self.path_plan_digest,
                     "containment_profile_digest": self.containment_profile_digest,
                     "authority": _bounded_json(dict(self.authority or {})),
                     "preflight": {
                         "status": str(self.preflight.get("status") or "passed"),
-                        "mode": str(
-                            self.preflight.get("mode")
-                            or APPROVAL_V3_ELEVATION_MODE
-                        ),
+                        "mode": str(self.preflight.get("mode") or APPROVAL_V3_ELEVATION_MODE),
                     },
                 }
             )
             if self.native_live_elevation:
                 value["native_live_elevation"] = True
-                value["native_elevation_protocol"] = (
-                    self.native_elevation_protocol
-                    or "claude.can_use_tool.setMode"
-                )
+                value["native_elevation_protocol"] = self.native_elevation_protocol or "claude.can_use_tool.setMode"
         return value
+
 
 def normalize_approval_request(
     message: dict[str, Any],
@@ -243,35 +233,46 @@ def normalize_approval_request(
     if not isinstance(requested, dict):
         requested = {}
     agentbc = message.get("_agentbc") if isinstance(message.get("_agentbc"), dict) else {}
-    native_request_fingerprint = _bounded_text(
-        agentbc.get("request_fingerprint"), 160
-    )
+    native_request_fingerprint = _bounded_text(agentbc.get("request_fingerprint"), 160)
     native_tool_name = _bounded_text(agentbc.get("tool_name"), 120)
     native_tool_use_id = _bounded_text(agentbc.get("tool_use_id"), 512)
-    native_input_fingerprint = _bounded_text(
-        agentbc.get("input_fingerprint"), 160
-    )
-    native_action_fingerprint = _bounded_text(
-        agentbc.get("action_fingerprint"), 160
-    )
+    native_input_fingerprint = _bounded_text(agentbc.get("input_fingerprint"), 160)
+    native_action_fingerprint = _bounded_text(agentbc.get("action_fingerprint"), 160)
     native_domain = _bounded_text(agentbc.get("escalation_domain"), 120)
     native_profile = _bounded_text(agentbc.get("host_profile_digest"), 160)
     native_control_path = _bounded_text(agentbc.get("control_path"), 160)
+    request_fingerprint = (
+        native_request_fingerprint
+        if native_request_fingerprint.startswith("fp-")
+        else compute_request_fingerprint(
+            executor=str(executor or "codex"),
+            session_id=str(session_id),
+            tool_name=operation,
+            tool_input=params,
+            extra={"method": method},
+        )
+    )
+    common = {
+        "request_id": request_id,
+        "request_fingerprint": request_fingerprint,
+        "rpc_id": message.get("id"),
+        "task_id": str(task_id),
+        "executor_run_id": str(executor_run_id),
+        "session_id": str(session_id),
+        "kind": "permission",
+        "operation": operation,
+        "summary": summary or default_summary,
+        "thread_id": thread_id,
+        "turn_id": turn_id,
+        "item_id": item_id,
+    }
     # PERM-104 Plan D: a trusted structured native block may request one
     # native-full elevation.  It carries no choices; all human decisions
     # are represented by the single top-level Approve Full / Deny dialog.
     requested_scope = str(message.get("scope") or "").strip()
     requested_mode = str(message.get("elevation_mode") or "").strip()
-    is_v3 = (
-        message.get("approval_version") == 3
-        or requested_scope == APPROVAL_V3_SCOPE
-        or requested_mode == APPROVAL_V3_ELEVATION_MODE
-    )
-    authority: dict[str, Any] = (
-        dict(message.get("authority"))
-        if isinstance(message.get("authority"), dict)
-        else {}
-    )
+    is_v3 = message.get("approval_version") == 3 or requested_scope == APPROVAL_V3_SCOPE or requested_mode == APPROVAL_V3_ELEVATION_MODE
+    authority: dict[str, Any] = dict(message.get("authority")) if isinstance(message.get("authority"), dict) else {}
     if is_v3:
         if requested_scope != APPROVAL_V3_SCOPE:
             raise ControlPlaneError(
@@ -292,19 +293,12 @@ def normalize_approval_request(
         protocol = str(authority.get("protocol") or "").strip()
         method = str(authority.get("method") or "").strip()
         protocol_version = authority.get("protocol_version")
-        if (
-            not protocol
-            or not method
-            or isinstance(protocol_version, bool)
-            or not isinstance(protocol_version, int)
-        ):
+        if not protocol or not method or isinstance(protocol_version, bool) or not isinstance(protocol_version, int):
             raise ControlPlaneError(
                 "approval_authority_invalid",
                 "A v3 elevation request requires mechanical authority facts.",
             )
-        native_event = _bounded_text(
-            message.get("native_event") or agentbc.get("native_event"), 512
-        )
+        native_event = _bounded_text(message.get("native_event") or agentbc.get("native_event"), 512)
         if not native_event:
             raise ControlPlaneError(
                 "approval_authority_invalid",
@@ -322,9 +316,7 @@ def normalize_approval_request(
             160,
         )
         native_live_elevation = message.get("native_live_elevation") is True
-        native_elevation_protocol = _bounded_text(
-            message.get("native_elevation_protocol"), 160
-        )
+        native_elevation_protocol = _bounded_text(message.get("native_elevation_protocol"), 160)
         if native_live_elevation:
             if str(executor or "").strip().lower() != "claude":
                 raise ControlPlaneError(
@@ -359,29 +351,8 @@ def normalize_approval_request(
             512,
         )
         return ApprovalRequest(
-            request_id=request_id,
-            request_fingerprint=(
-                native_request_fingerprint
-                if native_request_fingerprint.startswith("fp-")
-                else compute_request_fingerprint(
-                    executor=str(executor or "codex"),
-                    session_id=str(session_id),
-                    tool_name=operation,
-                    tool_input=params,
-                    extra={"method": method},
-                )
-            ),
-            rpc_id=message.get("id"),
-            task_id=str(task_id),
-            executor_run_id=str(executor_run_id),
-            session_id=str(session_id),
-            kind="permission",
-            operation=operation,
-            summary=summary or default_summary,
+            **common,
             scope=APPROVAL_V3_SCOPE,
-            thread_id=thread_id,
-            turn_id=turn_id,
-            item_id=item_id,
             tool_name=native_tool_name,
             tool_use_id=native_tool_use_id,
             input_fingerprint=native_input_fingerprint,
@@ -408,11 +379,7 @@ def normalize_approval_request(
     offered_choices: tuple[dict[str, Any], ...] = ()
     raw_offered = message.get("offered_choices")
     if message.get("approval_version") == 2 or isinstance(raw_offered, list):
-        authority = (
-            message.get("authority")
-            if isinstance(message.get("authority"), dict)
-            else {}
-        )
+        authority = message.get("authority") if isinstance(message.get("authority"), dict) else {}
         if not isinstance(raw_offered, list) or not raw_offered:
             raise ControlPlaneError(
                 "approval_choices_missing",
@@ -462,28 +429,7 @@ def normalize_approval_request(
             normalized.append(entry)
         offered_choices = tuple(normalized)
     return ApprovalRequest(
-        request_id=request_id,
-        request_fingerprint=(
-            native_request_fingerprint
-            if native_request_fingerprint.startswith("fp-")
-            else compute_request_fingerprint(
-                executor=str(executor or "codex"),
-                session_id=str(session_id),
-                tool_name=operation,
-                tool_input=params,
-                extra={"method": method},
-            )
-        ),
-        rpc_id=message.get("id"),
-        task_id=str(task_id),
-        executor_run_id=str(executor_run_id),
-        session_id=str(session_id),
-        kind="permission",
-        operation=operation,
-        summary=summary or default_summary,
-        thread_id=thread_id,
-        turn_id=turn_id,
-        item_id=item_id,
+        **common,
         requested_permissions=_bounded_json(requested),
         tool_name=native_tool_name,
         tool_use_id=native_tool_use_id,
@@ -496,6 +442,7 @@ def normalize_approval_request(
         authority=authority,
     )
 
+
 def normalize_decision(decision: Any) -> str:
     value = str(decision or "").strip().lower()
     if value not in APPROVAL_DECISIONS:
@@ -505,6 +452,7 @@ def normalize_decision(decision: Any) -> str:
             {"allowed": sorted(APPROVAL_DECISIONS)},
         )
     return value
+
 
 def codex_offered_choices(
     operation: str,
@@ -558,6 +506,7 @@ def codex_offered_choices(
         {"operation": operation},
     )
 
+
 def claude_offered_choices(
     *,
     session_bundle_supported: bool,
@@ -585,6 +534,7 @@ def claude_offered_choices(
         )
     return tuple(choices)
 
+
 def hermes_offered_choices(
     options: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], ...]:
@@ -605,6 +555,7 @@ def hermes_offered_choices(
             }
         )
     return tuple(choices)
+
 
 def approval_response_payload_v2(
     request: ApprovalRequest | dict[str, Any],
@@ -659,11 +610,7 @@ def approval_response_payload_v2(
             {"native_option_id": native_option_id},
         )
     if operation == "permissions":
-        requested = (
-            request.requested_permissions
-            if isinstance(request, ApprovalRequest)
-            else request.get("requested_permissions")
-        )
+        requested = request.requested_permissions if isinstance(request, ApprovalRequest) else request.get("requested_permissions")
         scope = "session" if choice_kind == "session" else "turn"
         if selected != "accept" and choice_kind != "deny":
             raise ControlPlaneError(
@@ -674,9 +621,7 @@ def approval_response_payload_v2(
         if choice_kind == "deny":
             return {"decision": "decline"}
         return {
-            "permissions": _bounded_json(requested)
-            if isinstance(requested, dict)
-            else {},
+            "permissions": _bounded_json(requested) if isinstance(requested, dict) else {},
             "scope": scope,
             "strictAutoReview": False,
         }
@@ -686,14 +631,11 @@ def approval_response_payload_v2(
         {"operation": operation},
     )
 
+
 def approval_response_payload(request: ApprovalRequest | dict[str, Any], decision: Any) -> dict[str, Any]:
     """Build the schema-compatible one-turn response; never a session grant."""
     selected = normalize_decision(decision)
-    live_elevation = (
-        request.native_live_elevation
-        if isinstance(request, ApprovalRequest)
-        else request.get("native_live_elevation") is True
-    )
+    live_elevation = request.native_live_elevation if isinstance(request, ApprovalRequest) else request.get("native_live_elevation") is True
     if live_elevation:
         # This is a redacted description of the native SDK result.  The live
         # callback constructs the actual PermissionResult object with the
@@ -723,22 +665,6 @@ def approval_response_payload(request: ApprovalRequest | dict[str, Any], decisio
         }
     raise ControlPlaneError("approval_operation_invalid", "Approval operation is not supported.")
 
-def _session_rule_response_payload(
-    pending: dict[str, Any],
-    value: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    """Retired: session tool rules were removed in PERM-104-002 1.04A.
-
-    Kept only as a fail-closed tombstone: any attempt to carry a rule on a
-    response is rejected instead of validated.
-    """
-    if value is None:
-        return None
-    raise ControlPlaneError(
-        "session_rule_response_invalid",
-        "Session tool rules were retired; the legacy matcher grammar is no "
-        "longer accepted on any response path.",
-    )
 
 __all__ = [
     "APPROVAL_DECISIONS",

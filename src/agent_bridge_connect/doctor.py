@@ -17,61 +17,43 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-
-
-
+from . import doctor_collectors as _collectors
 from .doctor_collectors import (
     BUILD_INFO_SCHEMA_VERSION,
-    _BLOCKER_TASK_STATUSES as _BLOCKER_TASK_STATUSES,
     _EXECUTOR_PLATFORMS,
-    _apply_storage_severity as _apply_storage_severity,
-    _auxiliary_cleanup_diagnostics as _auxiliary_cleanup_diagnostics,
-    _claude_sdk_capability_projection as _claude_sdk_capability_projection,
     _cli_executable_path,
     _collect_blockers,
-    _collect_claude_sdk_capability as _collect_claude_sdk_capability,
     _collect_config,
-    _collect_executor_entry as _collect_executor_entry,
     _collect_executors,
     _collect_package,
     _collect_permission_runtime,
     _collect_runner,
-    _collect_skill_entry as _collect_skill_entry,
     _collect_skills,
     _collect_storage,
-    _default_auth as _default_auth,
     _default_candidate_marker_paths,
-    _default_capability as _default_capability,
-    _default_executor_probe as _default_executor_probe,
     _default_runner_spool,
-    _default_skill_current_files as _default_skill_current_files,
-    _default_skill_roots as _default_skill_roots,
     _doctor_board_root,
     _find_source_checkout,
     _git_commit_sha,
     _installed_distribution,
-    _one_auxiliary_diagnostic as _one_auxiliary_diagnostic,
     _package_module_path,
-    _parse_timestamp as _parse_timestamp,
-    _path_permissions as _path_permissions,
-    _pending_is_stale as _pending_is_stale,
-    _public_executor_probe as _public_executor_probe,
-    _public_identity_path as _public_identity_path,
     _read_build_info,
-    _read_direct_url as _read_direct_url,
-    _read_task_records as _read_task_records,
     _resolved_path,
-    _runner_storage_permissions as _runner_storage_permissions,
-    _safe_label as _safe_label,
     _source_tree_sha256,
-    _spool_status as _spool_status,
-    _token_file_metadata as _token_file_metadata,
-    _unverified_storage_permissions as _unverified_storage_permissions,
-    _write_capable as _write_capable,
     build_session_cleanup_diagnostics,
     collect_session_cleanup_diagnostics,
     detect_install_source,
 )
+
+_COMPATIBILITY_ALIASES = """_BLOCKER_TASK_STATUSES
+_apply_storage_severity _auxiliary_cleanup_diagnostics _claude_sdk_capability_projection
+_collect_claude_sdk_capability _collect_executor_entry _collect_skill_entry _default_auth
+_default_capability _default_executor_probe _default_skill_current_files _default_skill_roots
+_one_auxiliary_diagnostic _parse_timestamp _path_permissions _pending_is_stale
+_public_executor_probe _public_identity_path _read_direct_url _read_task_records _runner_storage_permissions
+_safe_label _source_tree_sha256 _spool_status _token_file_metadata _unverified_storage_permissions
+_write_capable""".split()
+globals().update({name: getattr(_collectors, name) for name in _COMPATIBILITY_ALIASES})
 
 
 __all__ = [
@@ -84,7 +66,6 @@ __all__ = [
     "detect_install_source",
     "render_doctor_text",
 ]
-
 
 
 # Public doctor contract v2.  Status is frozen to healthy|warning|unavailable and
@@ -137,11 +118,7 @@ def build_doctor_report(
     current_executable = _resolved_path(executable_path or _cli_executable_path())
     current_python = _resolved_path(python_executable or sys.executable)
     checkout_root = _find_source_checkout(current_module)
-    installed_distribution = (
-        _installed_distribution()
-        if distribution is _DISTRIBUTION_UNSET
-        else distribution
-    )
+    installed_distribution = _installed_distribution() if distribution is _DISTRIBUTION_UNSET else distribution
     marker_paths = (
         [Path(path).expanduser() for path in candidate_marker_paths]
         if candidate_marker_paths is not None
@@ -154,11 +131,7 @@ def build_doctor_report(
         source_checkout=checkout_root,
     )
 
-    identity_path = (
-        Path(build_info_path).expanduser()
-        if build_info_path is not None
-        else current_module.with_name("_build_info.json")
-    )
+    identity_path = Path(build_info_path).expanduser() if build_info_path is not None else current_module.with_name("_build_info.json")
     build_info, build_info_state = _read_build_info(identity_path)
     commit_sha = None
     source_tree_sha256 = None
@@ -197,11 +170,7 @@ def build_doctor_report(
             token_path=runner_token_path,
         ),
     )
-    authoritative_storage = (
-        runner_storage
-        if runner.get("status") == "ready" and runner.get("identity") == "match"
-        else None
-    )
+    authoritative_storage = runner_storage if runner.get("status") == "ready" and runner.get("identity") == "match" else None
     cleanup = (
         build_session_cleanup_diagnostics(cleanup_tasks, now=now)
         if cleanup_tasks is not None
@@ -278,37 +247,24 @@ def render_doctor_text(report: dict[str, Any]) -> str:
         lines.append(f"schema_version: {report['schema_version']}")
     if "exit_code" in report:
         lines.append(f"exit_code: {report['exit_code']}")
-    package = report.get("package")
-    if isinstance(package, dict):
-        lines.extend(_render_package(package))
-    config = report.get("config")
-    if isinstance(config, dict):
-        lines.extend(_render_config(config))
-    runner = report.get("runner")
-    if isinstance(runner, dict):
-        lines.extend(_render_runner(runner))
-    storage = report.get("storage")
-    if isinstance(storage, dict):
-        lines.extend(_render_storage(storage))
-    skills = report.get("skills")
-    if isinstance(skills, dict):
-        lines.extend(_render_skills(skills))
-    executors = report.get("executors")
-    if isinstance(executors, dict):
-        lines.extend(_render_executors(executors))
-    cleanup = report.get("session_cleanup")
-    if isinstance(cleanup, dict):
-        lines.extend(_render_cleanup(cleanup))
-    blockers = report.get("blockers")
-    if isinstance(blockers, dict):
-        lines.extend(_render_blockers(blockers))
+    for key, renderer in (
+        ("package", _render_package),
+        ("config", _render_config),
+        ("runner", _render_runner),
+        ("storage", _render_storage),
+        ("skills", _render_skills),
+        ("executors", _render_executors),
+        ("session_cleanup", _render_cleanup),
+        ("blockers", _render_blockers),
+    ):
+        value = report.get(key)
+        if isinstance(value, dict):
+            lines.extend(renderer(value))
     checks = report.get("checks")
     if isinstance(checks, list):
         lines.append("Checks:")
         for check in checks:
-            lines.append(
-                f"  [{str(check['status']).upper()}] {check['id']}: {check['message']}"
-            )
+            lines.append(f"  [{str(check['status']).upper()}] {check['id']}: {check['message']}")
     return "\n".join(lines)
 
 
@@ -324,12 +280,7 @@ def _render_package(package: dict[str, Any]) -> list[str]:
         "install_source",
     ):
         lines.append(f"  {field}: {_text_value(package.get(field))}")
-    if "status" in package:
-        lines.append(f"  status: {_text_value(package.get('status'))}")
-    if "reason" in package:
-        lines.append(f"  reason: {_text_value(package.get('reason'))}")
-    if "remediation" in package:
-        lines.append(f"  remediation: {_text_value(package.get('remediation'))}")
+    _append_fields(lines, package, ("status", "reason", "remediation"))
     return lines
 
 
@@ -341,9 +292,7 @@ def _render_config(config: dict[str, Any]) -> list[str]:
         value = config[field]
         rendered = _bool_text(value) if isinstance(value, bool) else _text_value(value)
         lines.append(f"  {field}: {rendered}")
-    for field in ("status", "reason", "remediation"):
-        if field in config:
-            lines.append(f"  {field}: {_text_value(config.get(field))}")
+    _append_fields(lines, config, ("status", "reason", "remediation"))
     return lines
 
 
@@ -361,11 +310,7 @@ def _render_runner(runner: dict[str, Any]) -> list[str]:
         for field in ("path", "exists", "is_file", "readable", "bytes"):
             if field in token_file:
                 value = token_file[field]
-                rendered = (
-                    _bool_text(value)
-                    if isinstance(value, bool)
-                    else _text_value(value)
-                )
+                rendered = _bool_text(value) if isinstance(value, bool) else _text_value(value)
                 lines.append(f"    {field}: {rendered}")
     spool = runner.get("spool")
     if isinstance(spool, dict):
@@ -381,15 +326,9 @@ def _render_runner(runner: dict[str, Any]) -> list[str]:
         ):
             if field in spool:
                 value = spool[field]
-                rendered = (
-                    _bool_text(value)
-                    if isinstance(value, bool)
-                    else _text_value(value)
-                )
+                rendered = _bool_text(value) if isinstance(value, bool) else _text_value(value)
                 lines.append(f"    {field}: {rendered}")
-    for field in ("reason", "remediation"):
-        if field in runner:
-            lines.append(f"  {field}: {_text_value(runner.get(field))}")
+    _append_fields(lines, runner, ("reason", "remediation"))
     return lines
 
 
@@ -399,23 +338,11 @@ def _render_storage(storage: dict[str, Any]) -> list[str]:
         info = storage.get(name)
         if not isinstance(info, dict):
             continue
-        flags = " ".join(
-            f"{key}={_bool_text(info.get(key))}"
-            for key in ("exists", "is_dir", "readable", "writable")
-        )
-        lines.append(
-            f"  {name}: {_text_value(info.get('path'))} {flags} "
-            f"[{str(info.get('status') or 'unknown').upper()}]"
-        )
-        if info.get("reason"):
-            lines.append(f"    reason: {info['reason']}")
-        if info.get("remediation"):
-            lines.append(f"    remediation: {info['remediation']}")
+        flags = " ".join(f"{key}={_bool_text(info.get(key))}" for key in ("exists", "is_dir", "readable", "writable"))
+        lines.append(f"  {name}: {_text_value(info.get('path'))} {flags} [{str(info.get('status') or 'unknown').upper()}]")
+        _append_fields(lines, info, ("reason", "remediation"), indent="    ", truthy=True)
     lines.append(f"  status: {_text_value(storage.get('status'))}")
-    if storage.get("reason"):
-        lines.append(f"  reason: {storage['reason']}")
-    if storage.get("remediation"):
-        lines.append(f"  remediation: {storage['remediation']}")
+    _append_fields(lines, storage, ("reason", "remediation"), truthy=True)
     return lines
 
 
@@ -433,10 +360,7 @@ def _render_skills(skills: dict[str, Any]) -> list[str]:
             f"hash={_text_value(entry.get('template_sha256'))}) "
             f"[{str(entry.get('status') or 'unknown').upper()}]"
         )
-        if entry.get("reason"):
-            lines.append(f"    reason: {entry['reason']}")
-        if entry.get("remediation"):
-            lines.append(f"    remediation: {entry['remediation']}")
+        _append_fields(lines, entry, ("reason", "remediation"), indent="    ", truthy=True)
     lines.append(f"  status: {_text_value(skills.get('status'))}")
     lines.append(f"  warnings: {_text_value(skills.get('warnings'))}")
     return lines
@@ -460,10 +384,7 @@ def _render_executors(executors: dict[str, Any]) -> list[str]:
             f"capability=level{_text_value(capability.get('level'))} "
             f"[{str(entry.get('status') or 'unknown').upper()}]"
         )
-        if entry.get("reason"):
-            lines.append(f"    reason: {entry['reason']}")
-        if entry.get("remediation"):
-            lines.append(f"    remediation: {entry['remediation']}")
+        _append_fields(lines, entry, ("reason", "remediation"), indent="    ", truthy=True)
     lines.append(f"  status: {_text_value(executors.get('status'))}")
     lines.append(f"  warnings: {_text_value(executors.get('warnings'))}")
     return lines
@@ -480,28 +401,14 @@ def _render_cleanup(cleanup: dict[str, Any]) -> list[str]:
         detail = ""
         if strategy:
             detail += f" strategy={_text_value(strategy)}"
-        if isinstance(verification, dict):
-            cli = verification.get("cli") if isinstance(verification.get("cli"), dict) else {}
-            desktop_backend = verification.get("desktop_backend") if isinstance(verification.get("desktop_backend"), dict) else {}
-            desktop_live = verification.get("desktop_live") if isinstance(verification.get("desktop_live"), dict) else {}
-            desktop = verification.get("desktop") if isinstance(verification.get("desktop"), dict) else {}
-            detail += (
-                f" cli={_text_value(cli.get('status'))}"
-                f" desktop_backend={_text_value(desktop_backend.get('status'))}"
-                f" desktop_live={_text_value(desktop_live.get('status'))}"
-                f" desktop={_text_value(desktop.get('status'))}"
-            )
-        if isinstance(commands, dict) and commands:
-            archive = commands.get("archive") if isinstance(commands.get("archive"), dict) else {}
-            desktop_archive = commands.get("desktop_archive") if isinstance(commands.get("desktop_archive"), dict) else {}
-            app_server_archive = commands.get("app_server_archive") if isinstance(commands.get("app_server_archive"), dict) else {}
-            delete = commands.get("delete") if isinstance(commands.get("delete"), dict) else {}
-            detail += (
-                f" archive={_text_value(archive.get('status'))}"
-                f" desktop_archive={_text_value(desktop_archive.get('status'))}"
-                f" app_server_archive={_text_value(app_server_archive.get('status'))}"
-                f" delete={_text_value(delete.get('status'))}"
-            )
+        detail += _nested_statuses(
+            verification,
+            ("cli", "desktop_backend", "desktop_live", "desktop"),
+        )
+        detail += _nested_statuses(
+            commands,
+            ("archive", "desktop_archive", "app_server_archive", "delete"),
+        )
         lines.append(
             "  "
             f"[{str(diagnostic.get('status', '')).upper()}] "
@@ -558,10 +465,7 @@ def _build_checks(
             {
                 "id": "session.cleanup",
                 "status": "warning",
-                "message": (
-                    f"{cleanup['warnings']} executor session cleanup warning(s) "
-                    "require attention."
-                ),
+                "message": (f"{cleanup['warnings']} executor session cleanup warning(s) require attention."),
             }
         )
     else:
@@ -587,18 +491,14 @@ def _safe_collect(
         return (
             {
                 "status": "warning",
-                "reason": (
-                    f"The {name} collector failed to complete; the failure was contained."
-                ),
+                "reason": (f"The {name} collector failed to complete; the failure was contained."),
                 "remediation": "Re-run doctor and check AgentBC logs for the failure.",
             },
             [
                 {
                     "id": f"{name}.collector",
                     "status": "warning",
-                    "message": (
-                        f"The {name} collector failed without emitting a stable diagnostic."
-                    ),
+                    "message": (f"The {name} collector failed without emitting a stable diagnostic."),
                 }
             ],
         )
@@ -615,6 +515,25 @@ def _overall_status(checks: list[dict[str, str]]) -> str:
 
 def _text_value(value: Any) -> str:
     return "-" if value is None or value == "" else str(value)
+
+
+def _append_fields(
+    lines: list[str],
+    data: dict[str, Any],
+    fields: tuple[str, ...],
+    *,
+    indent: str = "  ",
+    truthy: bool = False,
+) -> None:
+    for field in fields:
+        if data.get(field) if truthy else field in data:
+            lines.append(f"{indent}{field}: {_text_value(data.get(field))}")
+
+
+def _nested_statuses(value: Any, names: tuple[str, ...]) -> str:
+    if not isinstance(value, dict):
+        return ""
+    return "".join(f" {name}={_text_value((item if isinstance(item := value.get(name), dict) else {}).get('status'))}" for name in names)
 
 
 def _bool_text(value: Any) -> str:

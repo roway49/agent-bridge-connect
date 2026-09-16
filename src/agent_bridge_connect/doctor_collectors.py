@@ -38,7 +38,6 @@ from .task_health import ACTIVE_STATUSES
 _EXECUTOR_PLATFORMS = ("codex", "claude", "hermes")
 
 
-
 BUILD_INFO_SCHEMA_VERSION = 1
 
 
@@ -146,31 +145,17 @@ def build_session_cleanup_diagnostics(
         if not isinstance(task, dict):
             continue
         extensions = task.get("extensions")
-        session = (
-            extensions.get(SESSION_EXTENSION_KEY)
-            if isinstance(extensions, dict)
-            else None
-        )
+        session = extensions.get(SESSION_EXTENSION_KEY) if isinstance(extensions, dict) else None
         if not isinstance(session, dict) or "cleanup" not in session:
             continue
         try:
-            delivery = read_terminal_delivery_receipt(
-                extensions.get(TERMINAL_DELIVERY_EXTENSION_KEY)
-            )
+            delivery = read_terminal_delivery_receipt(extensions.get(TERMINAL_DELIVERY_EXTENSION_KEY))
         except Exception:  # noqa: BLE001 - diagnostics never alter task state
             delivery = {}
         stages = delivery.get("stages") if isinstance(delivery, dict) else {}
         ui = stages.get("ui_notification") if isinstance(stages, dict) else {}
-        if (
-            delivery.get("terminal_event") in TERMINAL_DELIVERY_EVENTS
-            and isinstance(ui, dict)
-            and ui.get("state") == "succeeded"
-        ):
-            diagnostics.extend(
-                _auxiliary_cleanup_diagnostics(
-                    extensions, _safe_label(task.get("id"), "unknown"), current
-                )
-            )
+        if delivery.get("terminal_event") in TERMINAL_DELIVERY_EVENTS and isinstance(ui, dict) and ui.get("state") == "succeeded":
+            diagnostics.extend(_auxiliary_cleanup_diagnostics(extensions, _safe_label(task.get("id"), "unknown"), current))
         cleanup = session_cleanup_view(session.get("cleanup"))
         state = cleanup["state"]
         status = "healthy"
@@ -195,20 +180,16 @@ def build_session_cleanup_diagnostics(
             if session.get("version") == 1:
                 status = "warning"
                 message = (
-                    "Historical v1 cleanup reported success without the v2 CLI and "
-                    "Desktop absence proof; AgentBC will not re-delete it."
+                    "Historical v1 cleanup reported success without the v2 CLI and Desktop absence proof; AgentBC will not re-delete it."
                 )
             else:
                 message = "Historical cleanup metadata is unverified."
         elif state == "pending" and cleanup.get("phase") == "waiting_for_desktop":
             status = "warning"
             message = (
-                "Cleanup is waiting for the current Codex Desktop archive route; "
-                "reopen Desktop or run agentbc task status to compensate."
+                "Cleanup is waiting for the current Codex Desktop archive route; reopen Desktop or run agentbc task status to compensate."
             )
-        elif state == "pending" and _pending_is_stale(
-            session.get("cleanup"), current
-        ):
+        elif state == "pending" and _pending_is_stale(session.get("cleanup"), current):
             status = "warning"
             message = (
                 "Cleanup has remained pending for more than five minutes; check "
@@ -276,17 +257,12 @@ def _auxiliary_cleanup_diagnostics(
                 "error_code": "",
                 "retryable": False,
                 "status": "warning",
-                "message": (
-                    "The auxiliary session ledger is invalid; terminal cleanup "
-                    "cannot be proven for derived executor sessions."
-                ),
+                "message": ("The auxiliary session ledger is invalid; terminal cleanup cannot be proven for derived executor sessions."),
             }
         ]
     diagnostics: list[dict[str, Any]] = []
     for entry in validated.get("sessions") or []:
-        diagnostics.append(
-            _one_auxiliary_diagnostic(entry, task_id, now)
-        )
+        diagnostics.append(_one_auxiliary_diagnostic(entry, task_id, now))
     return diagnostics
 
 
@@ -345,10 +321,7 @@ def _one_auxiliary_diagnostic(entry: Any, task_id: str, now: datetime) -> dict[s
         return {
             **base,
             "status": "warning",
-            "message": (
-                "A retain=false auxiliary reservation has no official session "
-                "receipt; cleanup cannot be proven."
-            ),
+            "message": ("A retain=false auxiliary reservation has no official session receipt; cleanup cannot be proven."),
         }
     if state == "unsupported":
         return {
@@ -420,25 +393,17 @@ def _collect_package(
             identity_remediation = ""
         else:
             identity_status = "unavailable"
-            identity_reason = (
-                "Packaged build identity version does not match the runtime package."
-            )
+            identity_reason = "Packaged build identity version does not match the runtime package."
             identity_remediation = "Reinstall the matching AgentBC package version."
     else:
         identity_status = "warning"
-        identity_reason = (
-            "Packaged build identity is unavailable; safe runtime fallbacks are in use."
-        )
-        identity_remediation = (
-            "Install a packaged AgentBC release so provenance is complete."
-        )
+        identity_reason = "Packaged build identity is unavailable; safe runtime fallbacks are in use."
+        identity_remediation = "Install a packaged AgentBC release so provenance is complete."
 
     if install_source == "unknown":
         source_status = "warning"
         source_reason = "Install source could not be determined."
-        source_remediation = (
-            "Install AgentBC through pip, an editable install, or a candidate build."
-        )
+        source_remediation = "Install AgentBC through pip, an editable install, or a candidate build."
     else:
         source_status = "healthy"
         source_reason = f"Install source classified as {install_source}."
@@ -550,11 +515,7 @@ def _collect_runner(
         health = None
     token_file = _token_file_metadata(token)
     spool_status = _spool_status(spool)
-    if (
-        not isinstance(health, dict)
-        or not health.get("ok")
-        or health.get("status") != "ready"
-    ):
+    if not isinstance(health, dict) or not health.get("ok") or health.get("status") != "ready":
         return (
             {
                 "status": "unavailable",
@@ -584,11 +545,7 @@ def _collect_runner(
     pid = health.get("pid")
     raw_executors = health.get("executors")
     executors = (
-        sorted(
-            value
-            for value in raw_executors
-            if isinstance(value, str) and _SAFE_NAME.fullmatch(value)
-        )
+        sorted(value for value in raw_executors if isinstance(value, str) and _SAFE_NAME.fullmatch(value))
         if isinstance(raw_executors, list)
         else []
     )
@@ -612,10 +569,7 @@ def _collect_runner(
         if drift:
             identity = "drift"
             reason = f"CLI/Runner drift detected for {' and '.join(drift)}."
-            remediation = (
-                "Reinstall or restart AgentBC so the CLI and Runner run the same "
-                "Python interpreter and module."
-            )
+            remediation = "Reinstall or restart AgentBC so the CLI and Runner run the same Python interpreter and module."
             identity_check = {
                 "id": "runner.identity",
                 "status": "unavailable",
@@ -665,20 +619,14 @@ def _collect_storage(
     record_root = _resolved_path(board_root)
     report_root = workspace_root / "tasks" / "report"
     paths = [workspace_root, report_root, record_root]
-    verified = (
-        _runner_storage_permissions(paths, runner_storage)
-        if runner_storage is not None
-        else None
-    )
+    verified = _runner_storage_permissions(paths, runner_storage) if runner_storage is not None else None
     if verified is not None:
         workspace, report, record = verified
         _apply_storage_severity(workspace, required_write=True, required_read=False)
         _apply_storage_severity(report, required_write=True, required_read=False)
         _apply_storage_severity(record, required_write=True, required_read=True)
     elif runner_storage_required:
-        workspace, report, record = [
-            _unverified_storage_permissions(path) for path in paths
-        ]
+        workspace, report, record = [_unverified_storage_permissions(path) for path in paths]
     else:
         workspace = _path_permissions(workspace_root)
         report = _path_permissions(report_root)
@@ -737,26 +685,13 @@ def _collect_skills(
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     roots = skill_roots or _default_skill_roots()
     current_files = skill_current_files or _default_skill_current_files()
-    entries: dict[str, Any] = {}
-    checks: list[dict[str, str]] = []
-    warnings = 0
-    for platform in _EXECUTOR_PLATFORMS:
-        entry, check = _collect_skill_entry(
+    return _collect_platform_entries(
+        lambda platform: _collect_skill_entry(
             platform,
             roots,
             current_files,
             package_version,
         )
-        entries[platform] = entry
-        warnings += 1 if entry["status"] == "warning" else 0
-        checks.append(check)
-    return (
-        {
-            **entries,
-            "status": "warning" if warnings else "healthy",
-            "warnings": warnings,
-        },
-        checks,
     )
 
 
@@ -793,9 +728,7 @@ def _collect_skill_entry(
                 "template_sha256": "",
                 "status": "warning",
                 "reason": f"The {platform} Skill package could not be classified.",
-                "remediation": (
-                    f"Run agentbc setup --update to refresh the {platform} Skill package."
-                ),
+                "remediation": (f"Run agentbc setup --update to refresh the {platform} Skill package."),
             },
             {
                 "id": f"skills.{platform}",
@@ -819,18 +752,11 @@ def _collect_skill_entry(
             f"older AgentBC version ({manifest.get('package_version') or 'unknown'}); "
             "AgentBC-managed files were not modified."
         )
-        remediation = (
-            f"Run agentbc setup --update to upgrade the {platform} Skill package."
-        )
+        remediation = f"Run agentbc setup --update to upgrade the {platform} Skill package."
     else:
         status = "warning"
-        reason = (
-            f"The {platform} Skill package is {classification}; "
-            "AgentBC-managed files were not modified."
-        )
-        remediation = (
-            f"Run agentbc setup --update to refresh the {platform} Skill package."
-        )
+        reason = f"The {platform} Skill package is {classification}; AgentBC-managed files were not modified."
+        remediation = f"Run agentbc setup --update to refresh the {platform} Skill package."
     completion_version = manifest.get("completion_version")
     return (
         {
@@ -841,11 +767,7 @@ def _collect_skill_entry(
             "up_to_date": bool(state.get("up_to_date")),
             "package_version": str(manifest.get("package_version") or package_version),
             "protocol_version": str(manifest.get("protocol_version") or ""),
-            "completion_version": (
-                completion_version
-                if isinstance(completion_version, int)
-                else None
-            ),
+            "completion_version": (completion_version if isinstance(completion_version, int) else None),
             "template_sha256": str(manifest.get("template_sha256") or ""),
             "status": status,
             "reason": reason,
@@ -864,11 +786,17 @@ def _collect_executors(
     *,
     probe_fn: Callable[[str], dict[str, Any]] | None,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    return _collect_platform_entries(lambda platform: _collect_executor_entry(platform, config, probe_fn))
+
+
+def _collect_platform_entries(
+    collect: Callable[[str], tuple[dict[str, Any], dict[str, str]]],
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
     entries: dict[str, Any] = {}
     checks: list[dict[str, str]] = []
     warnings = 0
     for platform in _EXECUTOR_PLATFORMS:
-        entry, check = _collect_executor_entry(platform, config, probe_fn)
+        entry, check = collect(platform)
         entries[platform] = entry
         warnings += 1 if entry["status"] == "warning" else 0
         checks.append(check)
@@ -889,22 +817,14 @@ def _collect_executor_entry(
 ) -> tuple[dict[str, Any], dict[str, str]]:
     executors_table = config.get("executors") if isinstance(config, dict) else None
     configured = isinstance(executors_table, dict) and platform in executors_table
-    raw_config = (
-        executors_table.get(platform) if configured else None
-    )
+    raw_config = executors_table.get(platform) if configured else None
     executor_config = dict(raw_config) if isinstance(raw_config, dict) else {}
     command = executor_config.get("command")
     command = command if isinstance(command, str) and command.strip() else None
-    if probe_fn is not None:
-        try:
-            probe = probe_fn(platform)
-        except Exception:  # noqa: BLE001 - a probe failure must never crash doctor.
-            probe = None
-    else:
-        try:
-            probe = _default_executor_probe(platform, executor_config)
-        except Exception:  # noqa: BLE001 - a probe failure must never crash doctor.
-            probe = None
+    try:
+        probe = probe_fn(platform) if probe_fn is not None else _default_executor_probe(platform, executor_config)
+    except Exception:  # noqa: BLE001 - a probe failure must never crash doctor.
+        probe = None
     public_probe = _public_executor_probe(probe, platform, executor_config)
     resolved = public_probe["resolved"]
     source = public_probe["source"]
@@ -919,10 +839,7 @@ def _collect_executor_entry(
     elif not resolved:
         status = "warning"
         reason = f"The {platform} executor is configured but its command could not be resolved."
-        remediation = (
-            f"Install the {platform} CLI or set AGENTBC_{platform.upper()}_BIN, "
-            "then run agentbc setup."
-        )
+        remediation = f"Install the {platform} CLI or set AGENTBC_{platform.upper()}_BIN, then run agentbc setup."
     elif probe_state in ("failed", "unavailable"):
         status = "warning"
         reason = f"The {platform} executor is resolved but its probe failed."
@@ -1008,9 +925,7 @@ def _collect_blockers(
                         "task_id": task_id,
                         "type": "input",
                         "executor": executor,
-                        "kind": _safe_label(
-                            request.get("kind") or request.get("type"), "input"
-                        ),
+                        "kind": _safe_label(request.get("kind") or request.get("type"), "input"),
                         "state": _safe_label(request.get("status"), "waiting"),
                     }
                 )
@@ -1053,11 +968,7 @@ def _collect_blockers(
             {
                 "id": "blockers.active",
                 "status": "warning" if count else "healthy",
-                "message": (
-                    f"{count} active blocker(s) require attention."
-                    if count
-                    else "No active blockers were found."
-                ),
+                "message": (f"{count} active blocker(s) require attention." if count else "No active blockers were found."),
             }
         ],
     )
@@ -1106,55 +1017,30 @@ def _collect_permission_runtime(
 
 def _collect_claude_sdk_capability(config: dict[str, Any] | None) -> dict[str, str]:
     """Check the executor-native SDK protocol, independent of versions."""
-    from .permission_transport import (
-        assert_claude_sdk_environment,
-    )
-    from .protocol import ABCError
-
-    executors = (config or {}).get("executors")
-    claude_config = (
-        executors.get("claude")
-        if isinstance(executors, dict) and isinstance(executors.get("claude"), dict)
-        else {}
-    )
-    configured_command = str(claude_config.get("command") or "").strip()
-    if not configured_command:
+    state, _facts = _probe_claude_sdk(config)
+    if state == "not_configured":
         # Claude is not configured: nothing to gate, and a Codex/Hermes-only
         # install must keep the doctor healthy baseline.
         return {
             "id": "permission.claude_sdk",
             "status": "healthy",
-            "message": (
-                "The Claude executor is not configured; the optional SDK "
-                "permission protocol is not applicable."
-            ),
+            "message": ("The Claude executor is not configured; the optional SDK permission protocol is not applicable."),
         }
-    try:
-        assert_claude_sdk_environment(configured_command)
-    except ABCError as exc:
+    if state != "healthy":
+        generic_failure = state == "permission_protocol_handshake_failed"
         return {
             "id": "permission.claude_sdk",
             "status": "warning",
             "message": (
-                f"Claude SDK transport unsupported ({exc.code}); the "
-                "native permission protocol handshake failed."
-            ),
-        }
-    except Exception:  # noqa: BLE001 - a probe failure must never crash doctor.
-        return {
-            "id": "permission.claude_sdk",
-            "status": "warning",
-            "message": (
-                "The Claude SDK environment probe failed; the permission "
-                "protocol handshake failed."
+                "The Claude SDK environment probe failed; the permission protocol handshake failed."
+                if generic_failure
+                else f"Claude SDK transport unsupported ({state}); the native permission protocol handshake failed."
             ),
         }
     return {
         "id": "permission.claude_sdk",
         "status": "healthy",
-        "message": (
-            "The Claude SDK exposes the required native permission protocol."
-        ),
+        "message": "The Claude SDK exposes the required native permission protocol.",
     }
 
 
@@ -1162,36 +1048,39 @@ def _claude_sdk_capability_projection(
     config: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Redacted public projection of the Claude SDK transport capability."""
-    from .permission_transport import assert_claude_sdk_environment
-    from .protocol import ABCError
-
+    state, facts = _probe_claude_sdk(config)
     projection: dict[str, Any] = {
         "selection": "protocol_capability",
         "supported": False,
         "status": "permission_protocol_unavailable",
     }
-    executors = (config or {}).get("executors")
-    claude_config = (
-        executors.get("claude")
-        if isinstance(executors, dict) and isinstance(executors.get("claude"), dict)
-        else {}
-    )
-    configured_command = str(claude_config.get("command") or "").strip()
-    if not configured_command:
+    if state == "not_configured":
         return projection
-    try:
-        facts = assert_claude_sdk_environment(configured_command)
-    except ABCError as exc:
-        projection["status"] = exc.code
-        return projection
-    except Exception:  # noqa: BLE001 - fail closed, redacted.
-        projection["status"] = "permission_protocol_handshake_failed"
+    if state != "healthy" or facts is None:
+        projection["status"] = state
         return projection
     projection["supported"] = True
     projection["status"] = "healthy"
     projection["protocol"] = facts.get("protocol", "sdk.can_use_tool")
     projection["sdk_version"] = facts.get("sdk_version", "unknown")
     return projection
+
+
+def _probe_claude_sdk(config: dict[str, Any] | None) -> tuple[str, dict[str, Any] | None]:
+    from .permission_transport import assert_claude_sdk_environment
+    from .protocol import ABCError
+
+    executors = (config or {}).get("executors")
+    claude_config = executors.get("claude") if isinstance(executors, dict) else None
+    command = str(claude_config.get("command") or "").strip() if isinstance(claude_config, dict) else ""
+    if not command:
+        return "not_configured", None
+    try:
+        return "healthy", assert_claude_sdk_environment(command)
+    except ABCError as exc:
+        return exc.code, None
+    except Exception:  # noqa: BLE001 - probes are read-only and fail closed.
+        return "permission_protocol_handshake_failed", None
 
 
 def _apply_storage_severity(
@@ -1204,15 +1093,11 @@ def _apply_storage_severity(
         if required_write and not info["writable"]:
             info["status"] = "unavailable"
             info["reason"] = f"{info['path']} is missing and cannot be created."
-            info["remediation"] = (
-                "Restore write permission on its parent directory and re-run doctor."
-            )
+            info["remediation"] = "Restore write permission on its parent directory and re-run doctor."
         else:
             info["status"] = "warning"
             info["reason"] = f"{info['path']} does not exist yet."
-            info["remediation"] = (
-                "Run agentbc setup or agentbc init to create the required path."
-            )
+            info["remediation"] = "Run agentbc setup or agentbc init to create the required path."
         return
     if not info["is_dir"]:
         info["status"] = "unavailable"
@@ -1287,10 +1172,7 @@ def _runner_storage_permissions(
         path = row.get("path")
         if not isinstance(path, str) or path not in requested or path in by_path:
             return None
-        if any(
-            not isinstance(row.get(field), bool)
-            for field in ("exists", "is_dir", "readable", "writable")
-        ):
+        if any(not isinstance(row.get(field), bool) for field in ("exists", "is_dir", "readable", "writable")):
             return None
         by_path[path] = dict(row)
     if set(by_path) != set(requested):
@@ -1375,11 +1257,7 @@ def _default_executor_probe(
     from .path_provider import find_binary
 
     configured_command = executor_config.get("command")
-    extra = (
-        [configured_command]
-        if isinstance(configured_command, str) and configured_command.strip()
-        else None
-    )
+    extra = [configured_command] if isinstance(configured_command, str) and configured_command.strip() else None
     try:
         discovery = find_binary(platform, extra_paths=extra)
     except Exception:  # noqa: BLE001 - discovery failure is reported, not raised.
@@ -1462,11 +1340,7 @@ def _public_executor_probe(
     source = probe.get("source")
     source = source if type(source) is str and source in _EXECUTOR_SOURCES else "unavailable"
     probe_state = probe.get("probe")
-    probe_state = (
-        probe_state
-        if type(probe_state) is str and probe_state in _EXECUTOR_PROBE_STATES
-        else "unavailable"
-    )
+    probe_state = probe_state if type(probe_state) is str and probe_state in _EXECUTOR_PROBE_STATES else "unavailable"
     raw_version = probe.get("version")
     version = None
     if type(raw_version) is str:
@@ -1514,11 +1388,7 @@ def _default_auth(platform: str, executor_config: dict[str, Any]) -> dict[str, A
     configured_env = (executor_config or {}).get("api_key_env")
     if type(configured_env) is not str or not _SAFE_ENV_NAME.fullmatch(configured_env):
         configured_env = None
-    key_env = (
-        configured_env
-        if configured_env
-        else _DEFAULT_AUTH_ENV.get(platform, "")
-    )
+    key_env = configured_env if configured_env else _DEFAULT_AUTH_ENV.get(platform, "")
     present = bool(os.environ.get(key_env)) if key_env else False
     return {
         "key_env": key_env,
@@ -1594,13 +1464,9 @@ def _read_build_info(path: Path) -> tuple[dict[str, Any] | None, str]:
         return None, "invalid"
     if not isinstance(value.get("package_version"), str):
         return None, "invalid"
-    if not isinstance(value.get("commit_sha"), str) or not _COMMIT_SHA.fullmatch(
-        value["commit_sha"]
-    ):
+    if not isinstance(value.get("commit_sha"), str) or not _COMMIT_SHA.fullmatch(value["commit_sha"]):
         return None, "invalid"
-    if not isinstance(value.get("source_tree_sha256"), str) or not _SHA256.fullmatch(
-        value["source_tree_sha256"]
-    ):
+    if not isinstance(value.get("source_tree_sha256"), str) or not _SHA256.fullmatch(value["source_tree_sha256"]):
         return None, "invalid"
     build_source = value.get("build_source")
     if not isinstance(build_source, str) or not _SAFE_NAME.fullmatch(build_source):
@@ -1628,9 +1494,7 @@ def _installed_distribution() -> Any | None:
         return None
 
 
-def _default_candidate_marker_paths(
-    module_path: Path, executable_path: Path
-) -> list[Path]:
+def _default_candidate_marker_paths(module_path: Path, executable_path: Path) -> list[Path]:
     paths = [
         Path(sys.prefix) / ".agentbc-candidate",
         Path(sys.prefix) / "agentbc-candidate.json",
@@ -1665,11 +1529,7 @@ def _git_commit_sha(checkout_root: Path) -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     value = result.stdout.strip()
-    return (
-        value.lower()
-        if result.returncode == 0 and _COMMIT_SHA.fullmatch(value)
-        else None
-    )
+    return value.lower() if result.returncode == 0 and _COMMIT_SHA.fullmatch(value) else None
 
 
 def _source_tree_sha256(checkout_root: Path) -> str | None:
@@ -1692,11 +1552,7 @@ def _source_tree_sha256(checkout_root: Path) -> str | None:
         for raw_path in entries:
             relative = raw_path.decode("utf-8", errors="surrogateescape")
             path = checkout_root / relative
-            content = (
-                os.readlink(path).encode("utf-8", errors="surrogateescape")
-                if path.is_symlink()
-                else path.read_bytes()
-            )
+            content = os.readlink(path).encode("utf-8", errors="surrogateescape") if path.is_symlink() else path.read_bytes()
             digest.update(raw_path)
             digest.update(b"\0")
             digest.update(content)

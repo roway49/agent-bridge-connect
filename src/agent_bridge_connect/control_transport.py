@@ -13,8 +13,10 @@ import threading
 from pathlib import Path
 from typing import Any
 
+
 class TransportClosed(RuntimeError):
     """The official stdio transport ended before the turn completed."""
+
 
 class StdioJsonRpcTransport:
     """Minimal JSON-RPC stdio transport for Codex App Server."""
@@ -115,6 +117,7 @@ class StdioJsonRpcTransport:
                     stream.close()
                 except OSError:
                     pass
+
 
 CodexAppServerTransport = StdioJsonRpcTransport
 

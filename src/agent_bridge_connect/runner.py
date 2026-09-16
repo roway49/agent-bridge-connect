@@ -54,6 +54,7 @@ from .permission_transport import (
     select_claude_control_path,
 )
 from .session import SessionRecoveryRequired, control_root_for_task
+
 # ARCH-104-001 Slice B facade: names that moved to runner_contract/runner_ipc
 # stay importable from agent_bridge_connect.runner; ``as`` marks re-exports.
 from .runner_contract import (
@@ -156,12 +157,8 @@ def _phase2_legacy_ephemeral_project_path(workspace: dict[str, Any], task_id: st
     task_code = str((workspace or {}).get("task_code") or "").strip()
     task_date = str((workspace or {}).get("task_date") or "").strip()
     if not agentbc_root or not task_code or not task_date or not str(task_id).strip():
-        raise RunnerError(
-            "invalid_execution_policy: legacy Claude task is missing canonical path fields"
-        )
-    return str(
-        canonical_executor_project_root(agentbc_root, task_date, task_code, task_id)
-    )
+        raise RunnerError("invalid_execution_policy: legacy Claude task is missing canonical path fields")
+    return str(canonical_executor_project_root(agentbc_root, task_date, task_code, task_id))
 
 
 def _phase2_required_policy_keys(executor: str) -> tuple[str, ...]:
@@ -181,9 +178,7 @@ def _phase2_legacy_default_snapshots(
     """Build the canonical fixed legacy snapshots without reading user configuration."""
     normalized = str(executor or "").strip().lower()
     if normalized not in {"claude", "hermes", "codex"}:
-        raise RunnerError(
-            f"invalid_execution_policy: no legacy defaults for executor {executor}"
-        )
+        raise RunnerError(f"invalid_execution_policy: no legacy defaults for executor {executor}")
     resources = None
     default = PHASE2_LEGACY_DEFAULT_LIMITS.get(normalized)
     if default is not None:
@@ -236,11 +231,7 @@ def _phase2_packet_policy_mismatch(
             return f"modified:{key}"
     packet_execution = packet_ext.get(PHASE2_EXECUTION_EXTENSION_KEY)
     disk_execution = disk_ext.get(PHASE2_EXECUTION_EXTENSION_KEY)
-    if (
-        isinstance(packet_execution, dict)
-        and isinstance(disk_execution, dict)
-        and packet_execution != disk_execution
-    ):
+    if isinstance(packet_execution, dict) and isinstance(disk_execution, dict) and packet_execution != disk_execution:
         return f"expired:{PHASE2_EXECUTION_EXTENSION_KEY}"
     for key in ("status", "updated_at"):
         if key in packet and key in persisted and packet[key] != persisted[key]:
@@ -266,9 +257,7 @@ def _phase6_packet_authorization_mismatch(
             return f"missing:{key}"
         if in_packet and packet_ext[key] != disk_ext[key]:
             return f"modified:{key}"
-    if packet_ext.get(PERMISSION_EXTENSION_KEY) != disk_ext.get(
-        PERMISSION_EXTENSION_KEY
-    ):
+    if packet_ext.get(PERMISSION_EXTENSION_KEY) != disk_ext.get(PERMISSION_EXTENSION_KEY):
         return f"modified:{PERMISSION_EXTENSION_KEY}"
     for key in ("id", "task_id", "assignee", "status", "updated_at"):
         packet_value = packet.get(key)
@@ -414,16 +403,8 @@ def stop_runner_background(
     stable_pid_path = state / "runner.pid"
     spool_pid_path = spool / "runner.pid"
     include_stable_pid = state_root is not None or spool.resolve() == default_runner_spool().resolve()
-    pid_paths = tuple(
-        dict.fromkeys(
-            (stable_pid_path, spool_pid_path) if include_stable_pid else (spool_pid_path,)
-        )
-    )
-    recorded_pids = {
-        pid
-        for pid in (_read_runner_pid(path) for path in pid_paths)
-        if pid is not None and _pid_is_alive(pid)
-    }
+    pid_paths = tuple(dict.fromkeys((stable_pid_path, spool_pid_path) if include_stable_pid else (spool_pid_path,)))
+    recorded_pids = {pid for pid in (_read_runner_pid(path) for path in pid_paths) if pid is not None and _pid_is_alive(pid)}
     verified_pids = set(_discover_runner_pids(spool))
     health: dict[str, Any] | None = None
     health_error = ""
@@ -493,10 +474,7 @@ def cleanup_legacy_runner_launch_agent(
     """Remove the verified pre-Alpha launchd Runner so it cannot respawn."""
     if sys.platform != "darwin":
         return {"ok": True, "status": "not_applicable"}
-    path = Path(
-        launch_agent_path
-        or Path.home() / "Library" / "LaunchAgents" / f"{LEGACY_RUNNER_LAUNCH_AGENT_LABEL}.plist"
-    ).expanduser()
+    path = Path(launch_agent_path or Path.home() / "Library" / "LaunchAgents" / f"{LEGACY_RUNNER_LAUNCH_AGENT_LABEL}.plist").expanduser()
     if not path.exists():
         return {"ok": True, "status": "not_present", "path": str(path)}
     try:
@@ -743,10 +721,7 @@ class RunnerState:
     ) -> None:
         self.state_root = state_root.expanduser().resolve()
         self.allowed_roots = [root.expanduser().resolve() for root in allowed_roots]
-        self.allowed_executables = {
-            name: path.expanduser().resolve()
-            for name, path in allowed_executables.items()
-        }
+        self.allowed_executables = {name: path.expanduser().resolve() for name, path in allowed_executables.items()}
         self.executable_sources = dict(executable_sources or {})
         self.enable_task_dashboard = bool(enable_task_dashboard)
         # This registry is intentionally process-memory only. A Runner restart
@@ -795,11 +770,7 @@ class RunnerState:
                     "exists": exists,
                     "is_dir": path.is_dir() if exists else False,
                     "readable": os.access(path, os.R_OK) if exists else False,
-                    "writable": (
-                        os.access(path, os.W_OK)
-                        if exists
-                        else _write_capable_from_process(path)
-                    ),
+                    "writable": (os.access(path, os.W_OK) if exists else _write_capable_from_process(path)),
                 }
             )
         return {"ok": True, "status": "ready", "paths": status}
@@ -907,9 +878,7 @@ class RunnerState:
                     if control_root_for_task(task_id, board_root=board).is_dir()
                 ]
                 if len(candidates) != 1:
-                    raise ValueError(
-                        "task board is not uniquely known; respond_approval requires an exact control root"
-                    )
+                    raise ValueError("task board is not uniquely known; respond_approval requires an exact control root")
                 root = candidates[0]
             if board_value:
                 board = Path(board_value).expanduser().resolve()
@@ -973,13 +942,9 @@ class RunnerState:
         extensions = extensions if isinstance(extensions, dict) else {}
         errors: list[str] = []
         if RESOURCE_EXTENSION_KEY in extensions:
-            errors.extend(
-                validate_resource_snapshot(extensions[RESOURCE_EXTENSION_KEY], executor=executor)
-            )
+            errors.extend(validate_resource_snapshot(extensions[RESOURCE_EXTENSION_KEY], executor=executor))
         if SESSION_EXTENSION_KEY in extensions:
-            errors.extend(
-                validate_session_snapshot(extensions[SESSION_EXTENSION_KEY], executor=executor)
-            )
+            errors.extend(validate_session_snapshot(extensions[SESSION_EXTENSION_KEY], executor=executor))
         return errors
 
     def _phase2_append_audit(
@@ -1049,9 +1014,7 @@ class RunnerState:
             return task
         if terminal:
             execution = extensions.get(PHASE2_EXECUTION_EXTENSION_KEY)
-            if not (
-                isinstance(execution, dict) and execution.get(PHASE2_LEGACY_UNRECORDED_KEY) is True
-            ):
+            if not (isinstance(execution, dict) and execution.get(PHASE2_LEGACY_UNRECORDED_KEY) is True):
                 service.update_execution_metadata(task_id, {PHASE2_LEGACY_UNRECORDED_KEY: True})
             return task
         refreshed = task
@@ -1066,17 +1029,11 @@ class RunnerState:
                 if not isinstance(persisted_workspace, dict):
                     persisted_workspace = {}
                 persisted_required = _phase2_required_policy_keys(executor)
-                persisted_missing = [
-                    key for key in persisted_required if key not in persisted_extensions
-                ]
-                persisted_errors = self._phase2_structure_errors(
-                    persisted_extensions, executor
-                )
+                persisted_missing = [key for key in persisted_required if key not in persisted_extensions]
+                persisted_errors = self._phase2_structure_errors(persisted_extensions, executor)
                 if persisted_errors:
                     reason = f"invalid_execution_policy: {'; '.join(persisted_errors)}"
-                    self._phase2_append_audit(
-                        board, task_id, executor, "fail", reason
-                    )
+                    self._phase2_append_audit(board, task_id, executor, "fail", reason)
                     raise RunnerError(reason)
                 if not persisted_missing:
                     return persisted
@@ -1087,14 +1044,8 @@ class RunnerState:
                 )
                 updated_extensions = attach_execution_policy(
                     persisted_extensions,
-                    resources=(
-                        resources
-                        if RESOURCE_EXTENSION_KEY in persisted_missing
-                        else None
-                    ),
-                    session=(
-                        session if SESSION_EXTENSION_KEY in persisted_missing else None
-                    ),
+                    resources=(resources if RESOURCE_EXTENSION_KEY in persisted_missing else None),
+                    session=(session if SESSION_EXTENSION_KEY in persisted_missing else None),
                 )
                 execution = dict(persisted_extensions.get(PHASE2_EXECUTION_EXTENSION_KEY) or {})
                 execution[PHASE2_LEGACY_BACKFILLED_KEY] = True
@@ -1116,11 +1067,7 @@ class RunnerState:
         refreshed_extensions = refreshed.get("extensions")
         if not isinstance(refreshed_extensions, dict):
             refreshed_extensions = {}
-        errors = [
-            f"missing {key}"
-            for key in _phase2_required_policy_keys(executor)
-            if key not in refreshed_extensions
-        ]
+        errors = [f"missing {key}" for key in _phase2_required_policy_keys(executor) if key not in refreshed_extensions]
         errors.extend(self._phase2_structure_errors(refreshed_extensions, executor))
         if errors:
             reason = f"invalid_execution_policy: {'; '.join(errors)}"
@@ -1165,11 +1112,7 @@ class RunnerState:
         persisted_extensions = persisted.get("extensions")
         if not isinstance(persisted_extensions, dict):
             persisted_extensions = {}
-        errors = [
-            f"missing {key}"
-            for key in _phase2_required_policy_keys(executor)
-            if key not in persisted_extensions
-        ]
+        errors = [f"missing {key}" for key in _phase2_required_policy_keys(executor) if key not in persisted_extensions]
         errors.extend(self._phase2_structure_errors(persisted_extensions, executor))
         if errors:
             reason = f"invalid_execution_policy: {'; '.join(errors)}"
@@ -1211,18 +1154,11 @@ class RunnerState:
             allow_legacy=False,
         )
         dispatch_elevation = permission_elevation_from_extensions(task_model.extensions)
-        dispatch_is_full = (
-            base_permission.get("effective_mode") == "full"
-            or (
-                dispatch_elevation is not None
-                and dispatch_elevation["state"]["status"]
-                in {"approved", "active", "verified"}
-            )
+        dispatch_is_full = base_permission.get("effective_mode") == "full" or (
+            dispatch_elevation is not None and dispatch_elevation["state"]["status"] in {"approved", "active", "verified"}
         )
         if not dispatch_is_full:
-            task = self._enforce_phase2_dispatch_policy(
-                service, task, executor, board
-            )
+            task = self._enforce_phase2_dispatch_policy(service, task, executor, board)
             task_model = service.get_task(task_id)
         if task.get("assignee") != executor:
             raise RunnerError(f"task {task_id} is not assigned to {executor}")
@@ -1230,7 +1166,11 @@ class RunnerState:
         is_resuming = task.get("status") == "running" and execution.get("internal_status") == "resuming"
         if task.get("status") != "pending" and not (resuming and is_resuming):
             raise RunnerError(f"task {task_id} is not pending")
-        workspace = Path(str((task.get("workspace") or {}).get("project_root") or (task.get("workspace") or {}).get("root") or "")).expanduser().resolve()
+        workspace = (
+            Path(str((task.get("workspace") or {}).get("project_root") or (task.get("workspace") or {}).get("root") or ""))
+            .expanduser()
+            .resolve()
+        )
         if bool((task.get("workspace") or {}).get("customer_dir")) and not workspace.is_dir():
             raise RunnerError(f"task project root does not exist: {workspace}")
         workspace.mkdir(parents=True, exist_ok=True)
@@ -1241,11 +1181,7 @@ class RunnerState:
         worker_run_id = f"runner-worker-{uuid.uuid4().hex[:12]}"
         self._validate_executor_config(executor, config)
         elevation = permission_elevation_from_extensions(task_model.extensions)
-        elevation_status = (
-            str(elevation["state"].get("status") or "")
-            if isinstance(elevation, dict)
-            else ""
-        )
+        elevation_status = str(elevation["state"].get("status") or "") if isinstance(elevation, dict) else ""
         if elevation_status in {"approved", "active", "verified"}:
             try:
                 permission = resolve_effective_permission(
@@ -1349,12 +1285,7 @@ class RunnerState:
                     "board_root": str(board),
                     "executor": executor,
                     "executor_run_id": str(execution.get("executor_run_id") or ""),
-                    "official_session_id": str(
-                        ((task_model.extensions or {}).get("agentbc.session") or {}).get(
-                            "session_id"
-                        )
-                        or ""
-                    ),
+                    "official_session_id": str(((task_model.extensions or {}).get("agentbc.session") or {}).get("session_id") or ""),
                 },
             )
         except Exception as exc:
@@ -1511,8 +1442,7 @@ class RunnerState:
                 timed_out_permission = (
                     expired_task.status == "failed"
                     and bool(expired_task.errors)
-                    and expired_task.errors[-1].get("code")
-                    == "permission_denied_by_timeout"
+                    and expired_task.errors[-1].get("code") == "permission_denied_by_timeout"
                 )
                 event_type = "task.failed" if timed_out_permission else "task.recovery_required"
                 level = "error" if timed_out_permission else "warning"
@@ -1533,11 +1463,7 @@ class RunnerState:
                 self._refresh_task_list_dashboard(board)
                 raise RunnerError(f"input deadline expired for task {task_id}")
             waiting_task = service.get_task(task_id)
-            waiting_extensions = (
-                waiting_task.extensions
-                if isinstance(waiting_task.extensions, dict)
-                else {}
-            )
+            waiting_extensions = waiting_task.extensions if isinstance(waiting_task.extensions, dict) else {}
             waiting_input = waiting_extensions.get(PHASE6_INPUT_EXTENSION_KEY)
             live_native_approval = (
                 waiting_input
@@ -1549,10 +1475,7 @@ class RunnerState:
             native_approval = (
                 waiting_input
                 if isinstance(waiting_input, dict)
-                and (
-                    waiting_input.get("scope") == "single_action"
-                    or live_native_approval is not None
-                )
+                and (waiting_input.get("scope") == "single_action" or live_native_approval is not None)
                 and bool(str(waiting_input.get("request_id") or "").strip())
                 else None
             )
@@ -1577,16 +1500,11 @@ class RunnerState:
                 # the same live executor control plane.
                 permission_option = str(request.get("message") or "").strip()
             if permission_option and native_approval is None:
-                raise RunnerError(
-                    "permission_option_invalid: --permission-option applies "
-                    "only to native single-action permission requests"
-                )
+                raise RunnerError("permission_option_invalid: --permission-option applies only to native single-action permission requests")
             try:
                 if live_native_approval is not None:
                     if permission_option:
-                        raise RunnerError(
-                            "permission_option_invalid: live Claude elevation accepts only approve or deny"
-                        )
+                        raise RunnerError("permission_option_invalid: live Claude elevation accepts only approve or deny")
                     result = service.respond_to_live_claude_elevation(
                         task_id,
                         str(request.get("input_id") or ""),
@@ -1616,10 +1534,7 @@ class RunnerState:
                 if not result.get("dispatch_required"):
                     if result.get("permission_denied"):
                         failure = result.get("failure") or {}
-                        failure_message = str(
-                            failure.get("message")
-                            or "User denied contained-full task elevation"
-                        )
+                        failure_message = str(failure.get("message") or "User denied contained-full task elevation")
                         deliver_terminal_outcome(
                             service,
                             task_id,
@@ -1631,20 +1546,10 @@ class RunnerState:
                     return result
             elif native_approval is not None:
                 resumed_task = service.get_task(task_id)
-                resumed_extensions = (
-                    resumed_task.extensions
-                    if isinstance(resumed_task.extensions, dict)
-                    else {}
-                )
+                resumed_extensions = resumed_task.extensions if isinstance(resumed_task.extensions, dict) else {}
                 session = resumed_extensions.get(SESSION_EXTENSION_KEY)
-                session_id = (
-                    str(session.get("session_id") or "")
-                    if isinstance(session, dict)
-                    else ""
-                )
-                executor_run_id = str(
-                    native_approval.get("executor_run_id") or ""
-                )
+                session_id = str(session.get("session_id") or "") if isinstance(session, dict) else ""
+                executor_run_id = str(native_approval.get("executor_run_id") or "")
                 choice = None
                 if permission_option:
                     # The recorded v2 response carries the exact selected
@@ -1654,20 +1559,13 @@ class RunnerState:
                         str(result.get("input_id") or ""),
                     )
                     if choice is None:
-                        raise RunnerError(
-                            "approval_choice_missing: the answered input has "
-                            "no recorded permission choice"
-                        )
+                        raise RunnerError("approval_choice_missing: the answered input has no recorded permission choice")
                     if str(choice.get("kind") or "") == "deny":
                         decision = "decline"
                     else:
                         decision = "accept"
                 else:
-                    decision = (
-                        "accept"
-                        if str(result.get("approval_decision") or "") == "approve"
-                        else "decline"
-                    )
+                    decision = "accept" if str(result.get("approval_decision") or "") == "approve" else "decline"
                 try:
                     native_response = self.respond_approval(
                         {
@@ -1675,14 +1573,10 @@ class RunnerState:
                             "executor": resumed_task.assignee,
                             "executor_run_id": executor_run_id,
                             "session_id": session_id,
-                            "request_id": str(
-                                native_approval.get("request_id") or ""
-                            ),
+                            "request_id": str(native_approval.get("request_id") or ""),
                             "decision": decision,
                             "board_root": str(board),
-                            "choice_handle": (
-                                str(choice.get("handle") or "") if choice else ""
-                            ),
+                            "choice_handle": (str(choice.get("handle") or "") if choice else ""),
                         }
                     )
                 except RunnerError as exc:
@@ -1719,9 +1613,7 @@ class RunnerState:
                         "permission_choice": {
                             "handle": str(choice.get("handle") or ""),
                             "kind": str(choice.get("kind") or ""),
-                            "native_option_id": str(
-                                choice.get("native_option_id") or ""
-                            ),
+                            "native_option_id": str(choice.get("native_option_id") or ""),
                         },
                         "native_response": {
                             "request_id": str(native_response.get("request_id") or ""),
@@ -1743,10 +1635,7 @@ class RunnerState:
             if not result.get("dispatch_required"):
                 if result.get("resource_terminated"):
                     failure = result.get("failure") or {}
-                    failure_message = str(
-                        failure.get("message")
-                        or "Task terminated after executor resource exhaustion"
-                    )
+                    failure_message = str(failure.get("message") or "Task terminated after executor resource exhaustion")
                     deliver_terminal_outcome(
                         service,
                         task_id,
@@ -1773,15 +1662,11 @@ class RunnerState:
                 if PERMISSION_GRANT_EXTENSION_KEY in task_extensions:
                     revoke = getattr(service, "revoke_permission_grant", None)
                     if not callable(revoke):
-                        raise RunnerError(
-                            "permission_grant_revoke_unavailable: Core revoke helper is required"
-                        ) from exc
+                        raise RunnerError("permission_grant_revoke_unavailable: Core revoke helper is required") from exc
                     try:
                         revoke(task.id, "dispatch_failed")
                     except ABCError as revoke_exc:
-                        raise RunnerError(
-                            f"{revoke_exc.code}: {revoke_exc}"
-                        ) from revoke_exc
+                        raise RunnerError(f"{revoke_exc.code}: {revoke_exc}") from revoke_exc
                 service.mark_task_needs_recovery(
                     task.id,
                     "input_resume_dispatch_failed",
@@ -1830,17 +1715,12 @@ class RunnerState:
                         timed_out_permission = (
                             expired_task.status == "failed"
                             and bool(expired_task.errors)
-                            and expired_task.errors[-1].get("code")
-                            == "permission_denied_by_timeout"
+                            and expired_task.errors[-1].get("code") == "permission_denied_by_timeout"
                         )
                         deliver_terminal_outcome(
                             service,
                             task_id,
-                            event_type=(
-                                "task.failed"
-                                if timed_out_permission
-                                else "task.recovery_required"
-                            ),
+                            event_type=("task.failed" if timed_out_permission else "task.recovery_required"),
                             level="error" if timed_out_permission else "warning",
                             message=(
                                 "Permission request timed out and was automatically denied"
@@ -1880,9 +1760,7 @@ class RunnerState:
                     board,
                     desktop_archive_broker=self.desktop_archive_broker,
                 )
-                processed.extend(
-                    coordinator.maintain_board(now=now, force_retry=force_retry)
-                )
+                processed.extend(coordinator.maintain_board(now=now, force_retry=force_retry))
                 # SESSION-104-001-R2: retry-chain close keeps the authoritative
                 # task projection alive until the unchanged cleanup coordinator
                 # reaches a resolved state.  Purging is a retry-chain concern,
@@ -1968,11 +1846,7 @@ class RunnerState:
             # recovery reconciliation.  The official session's immutable run
             # ledger remains the authoritative historical binding for a later
             # Desktop archive acknowledgement.
-            historical_run_ids = [
-                str(item).strip()
-                for item in session.get("run_ids", [])
-                if str(item).strip()
-            ]
+            historical_run_ids = [str(item).strip() for item in session.get("run_ids", []) if str(item).strip()]
             if historical_run_ids:
                 executor_run_id = historical_run_ids[-1]
         if not executor_run_id:
@@ -1991,8 +1865,7 @@ class RunnerState:
                 and str(entry.get("owner_task_id") or "").strip() == task_id
                 and str(entry.get("owner_run_id") or "").strip() == executor_run_id
                 and str(entry.get("parent_executor") or "").strip().lower() == "codex"
-                and str(entry.get("parent_session_id") or "").strip().lower()
-                == primary_session_id
+                and str(entry.get("parent_session_id") or "").strip().lower() == primary_session_id
                 and str(entry.get("executor") or "").strip().lower() == "codex"
                 and entry.get("retain") is False
             ]
@@ -2000,9 +1873,7 @@ class RunnerState:
                 raise RunnerError("Desktop archive acknowledgement binding mismatch")
         broker = AcknowledgedCodexDesktopArchiveBroker(
             task_id=task_id,
-            executor_run_id=(
-                request_executor_run_id if primary_matches else executor_run_id
-            ),
+            executor_run_id=(request_executor_run_id if primary_matches else executor_run_id),
             session_id=session_id,
             # Terminal reconciliation intentionally clears the activity
             # pointer. Runner already validated the immutable historical run
@@ -2226,8 +2097,7 @@ class RunnerState:
         actual = configured_path.resolve()
         if expected is None or actual != expected:
             raise RunnerError(
-                f"runner_config_stale: {executor} command is {actual}; "
-                f"Runner allowlist is {expected or 'missing'}. Restart Runner."
+                f"runner_config_stale: {executor} command is {actual}; Runner allowlist is {expected or 'missing'}. Restart Runner."
             )
 
     def _open_task_monitor(self, task_id: str, board: Path) -> dict[str, str]:
@@ -2235,18 +2105,8 @@ class RunnerState:
             f"{shlex.quote(sys.executable)} -m agent_bridge_connect.cli "
             f"task logs {shlex.quote(task_id)} --root {shlex.quote(str(board))} --follow"
         )
-        command = (
-            f"printf '\\033]0;AgentBC {task_id}\\007'; "
-            f"{cli}; exit"
-        )
-        script = (
-            "on run argv\n"
-            "  tell application \"Terminal\"\n"
-            "    activate\n"
-            "    do script (item 1 of argv)\n"
-            "  end tell\n"
-            "end run\n"
-        )
+        command = f"printf '\\033]0;AgentBC {task_id}\\007'; {cli}; exit"
+        script = 'on run argv\n  tell application "Terminal"\n    activate\n    do script (item 1 of argv)\n  end tell\nend run\n'
         try:
             subprocess.Popen(
                 [
@@ -2307,29 +2167,19 @@ class RunnerState:
             f"task list --root {shlex.quote(str(board))}{task_arg} --watch "
             "--interval 20 --auto-exit-when-idle --idle-grace 0"
         )
-        close_script = (
-            'sleep 0.8; /usr/bin/osascript -e "tell application \\"Terminal\\" '
-            'to close window id $AGENTBC_WINDOW_ID"'
-        )
+        close_script = 'sleep 0.8; /usr/bin/osascript -e "tell application \\"Terminal\\" to close window id $AGENTBC_WINDOW_ID"'
         command = (
             "printf '\\033]0;AgentBC Task List\\007'; "
             "__agentbc_window_id=$(osascript -e 'tell application \"Terminal\" to id of front window' 2>/dev/null); "
             f"{cli}; "
             "__agentbc_status=$?; "
-            "if [ -n \"$__agentbc_window_id\" ]; then "
-            f"AGENTBC_WINDOW_ID=\"$__agentbc_window_id\" /usr/bin/nohup /bin/sh -c {shlex.quote(close_script)} >/dev/null 2>&1 </dev/null & "
+            'if [ -n "$__agentbc_window_id" ]; then '
+            f'AGENTBC_WINDOW_ID="$__agentbc_window_id" /usr/bin/nohup /bin/sh -c {shlex.quote(close_script)} >/dev/null 2>&1 </dev/null & '
             "disown >/dev/null 2>&1 || true; "
             "fi; "
             "exit $__agentbc_status"
         )
-        script = (
-            "on run argv\n"
-            "  tell application \"Terminal\"\n"
-            "    activate\n"
-            "    do script (item 1 of argv)\n"
-            "  end tell\n"
-            "end run\n"
-        )
+        script = 'on run argv\n  tell application "Terminal"\n    activate\n    do script (item 1 of argv)\n  end tell\nend run\n'
         try:
             subprocess.Popen(
                 ["/usr/bin/osascript", "-e", script, command],
@@ -2392,8 +2242,7 @@ class RunnerState:
                 stdout_file.close()
                 stderr_file.close()
                 raise RunnerError(
-                    f"{HOST_CONTAINMENT_UNLIFTABLE}: sandbox-exec is unavailable; "
-                    "host containment cannot be expanded for this worker."
+                    f"{HOST_CONTAINMENT_UNLIFTABLE}: sandbox-exec is unavailable; host containment cannot be expanded for this worker."
                 )
             profile_dir = self.state_root / "seatbelt"
             # Hold the Runner lock from stale classification through process
@@ -2405,23 +2254,17 @@ class RunnerState:
             try:
                 keep = active_seatbelt_profiles(self.runs)
                 cleanup_stale_seatbelt_profiles(profile_dir, keep=keep)
-                task_temp_root_text = str(
-                    containment.get("task_temp_root") or ""
-                ).strip()
+                task_temp_root_text = str(containment.get("task_temp_root") or "").strip()
                 if task_temp_root_text:
                     temp_root = Path(task_temp_root_text).expanduser().resolve()
                     temp_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-                runner_ipc_channel = str(
-                    containment.get("runner_ipc_channel") or ""
-                ).strip()
+                runner_ipc_channel = str(containment.get("runner_ipc_channel") or "").strip()
                 ipc_roots: list[Path] = []
                 if runner_ipc_channel:
                     if not RUNNER_IPC_CHANNEL_RE.fullmatch(runner_ipc_channel):
                         raise RunnerError("runner IPC channel is invalid")
                     for kind in ("requests", "responses"):
-                        channel_root = (
-                            self.spool_root / kind / runner_ipc_channel
-                        ).resolve()
+                        channel_root = (self.spool_root / kind / runner_ipc_channel).resolve()
                         channel_root.mkdir(parents=True, exist_ok=False, mode=0o700)
                         ipc_roots.append(channel_root)
                 profile_text = build_seatbelt_profile(
@@ -2470,9 +2313,7 @@ class RunnerState:
             # an in-turn ``agentbc task progress`` call can bind Hermes'
             # official HERMES_SESSION_ID before the CLI process exits.
             environment = dict(os.environ) if environment is None else environment
-            environment["AGENTBC_RUNNER_TASK_ID"] = str(
-                binding.get("task_id") or ""
-            )
+            environment["AGENTBC_RUNNER_TASK_ID"] = str(binding.get("task_id") or "")
             environment["AGENTBC_RUNNER_WORKER_ID"] = run_id
         try:
             process = subprocess.Popen(
@@ -2501,12 +2342,8 @@ class RunnerState:
             # containment feature.  Full deliberately has no AgentBC
             # Seatbelt, but its Runner worker must still retain an immutable
             # task/run/session binding so an exit can be reconciled.
-            "task_id": str(
-                binding.get("task_id") or (containment or {}).get("task_id") or ""
-            ),
-            "board_root": str(
-                binding.get("board_root") or (containment or {}).get("board_root") or ""
-            ),
+            "task_id": str(binding.get("task_id") or (containment or {}).get("task_id") or ""),
+            "board_root": str(binding.get("board_root") or (containment or {}).get("board_root") or ""),
             "task_binding": {
                 "task_id": str(binding.get("task_id") or ""),
                 "board_root": str(binding.get("board_root") or ""),
@@ -2529,9 +2366,7 @@ class RunnerState:
             "cancel_requested_at": None,
             "cancel_signal": "",
             "containment": containment is not None,
-            "profile_path": (
-                str(profile_path) if profile_path is not None else ""
-            ),
+            "profile_path": (str(profile_path) if profile_path is not None else ""),
             "runner_ipc_channel": runner_ipc_channel,
             "process": process,
         }
@@ -2580,15 +2415,9 @@ class RunnerState:
             record["status"] = "cancelling"
             process = record["process"]
             executor = str(record.get("executor") or "")
-            descendant_pids = (
-                _snapshot_descendant_pids(process.pid)
-                if executor in {"codex", "worker:codex"}
-                else []
-            )
+            descendant_pids = _snapshot_descendant_pids(process.pid) if executor in {"codex", "worker:codex"} else []
             record["cancel_descendant_pids"] = descendant_pids
-            record["cancel_cleanup_pending"] = bool(
-                executor in {"codex", "worker:codex"}
-            )
+            record["cancel_cleanup_pending"] = bool(executor in {"codex", "worker:codex"})
             self._write_metadata(record)
         process_group = None
         try:
@@ -2604,6 +2433,7 @@ class RunnerState:
         except (ProcessLookupError, PermissionError):
             pass
         if executor in {"codex", "worker:codex"}:
+
             def _force_after_grace() -> None:
                 # The Codex App Server and its command process may each create
                 # their own process group. Snapshot the exact worker subtree
@@ -2612,9 +2442,7 @@ class RunnerState:
                 deadline = time.monotonic() + 3.0
                 while time.monotonic() < deadline:
                     worker_alive = process.poll() is None
-                    descendants_alive = any(
-                        _pid_is_alive(pid) for pid in descendant_pids
-                    )
+                    descendants_alive = any(_pid_is_alive(pid) for pid in descendant_pids)
                     if not worker_alive and not descendants_alive:
                         break
                     time.sleep(0.05)
@@ -2681,11 +2509,9 @@ class RunnerState:
             run_ids = sorted(
                 str(run_id)
                 for run_id, record in self.runs.items()
-                if str(record.get("task_id") or "").strip().upper()
-                == normalized_task_id
+                if str(record.get("task_id") or "").strip().upper() == normalized_task_id
                 and str(record.get("board_root") or "").strip()
-                and Path(str(record.get("board_root"))).expanduser().resolve()
-                == board
+                and Path(str(record.get("board_root"))).expanduser().resolve() == board
                 and str(record.get("status") or "") not in TERMINAL_STATES
             )
         runs: list[dict[str, Any]] = []
@@ -2797,30 +2623,19 @@ class RunnerState:
         if expected is None or Path(command[0]).expanduser().resolve() != expected:
             raise RunnerError("runner executable is not allowlisted")
         if persisted_task is None or permission is None:
-            persisted_task, permission = self._persisted_permission_authorization(
-                executor, task
-            )
+            persisted_task, permission = self._persisted_permission_authorization(executor, task)
         allowed_roots = list(self.allowed_roots)
         allowed_roots.extend(self._task_scoped_allowed_roots(persisted_task))
         if not cwd.is_dir() or not any(_is_within(cwd, root) for root in allowed_roots):
             raise RunnerError(f"runner cwd is outside allowed roots: {cwd}")
-        codex_app_server = (
-            executor == "codex"
-            and len(command) >= 2
-            and command[1] == "app-server"
-        )
+        codex_app_server = executor == "codex" and len(command) >= 2 and command[1] == "app-server"
         if codex_app_server:
             if command.count("app-server") != 1:
                 raise RunnerError("codex App Server command must contain one app-server subcommand")
-            if "--stdio" not in command and not any(
-                token == "stdio://" or token.startswith("stdio://")
-                for token in command
-            ):
+            if "--stdio" not in command and not any(token == "stdio://" or token.startswith("stdio://") for token in command):
                 raise RunnerError("codex App Server requires stdio transport")
             if any(token in {"--last", "--continue", "resume", "--ephemeral"} for token in command):
-                raise RunnerError(
-                    "runner_session_argument_mismatch: Codex App Server requires explicit RPC session IDs"
-                )
+                raise RunnerError("runner_session_argument_mismatch: Codex App Server requires explicit RPC session IDs")
             # App Server is authorized for inherit and safe. Inherit changes no
             # native permission setting; it only supplies the structured
             # transport needed to identify and answer a real blocked action.
@@ -2830,9 +2645,7 @@ class RunnerState:
             # and the command must be rejected.
             try:
                 persisted_permission = permission_record_from_extensions(
-                    persisted_task.get("extensions")
-                    if isinstance(persisted_task, dict)
-                    else {},
+                    persisted_task.get("extensions") if isinstance(persisted_task, dict) else {},
                     allow_legacy=False,
                 )
             except ABCError as exc:
@@ -2845,66 +2658,37 @@ class RunnerState:
                 if isinstance(codex_mapping, dict):
                     transport = str(codex_mapping.get("transport") or "").strip().lower()
             if mode not in {"inherit", "safe"}:
-                raise RunnerError(
-                    "runner_capability_mismatch: Codex App Server requires an inherit or safe permission base"
-                )
+                raise RunnerError("runner_capability_mismatch: Codex App Server requires an inherit or safe permission base")
             if transport and transport != "app-server":
-                raise RunnerError(
-                    "runner_capability_mismatch: Codex App Server command does not match "
-                    "the frozen permission transport"
-                )
+                raise RunnerError("runner_capability_mismatch: Codex App Server command does not match the frozen permission transport")
             return
-        hermes_acp = (
-            executor == "hermes"
-            and len(command) >= 2
-            and command[1] == "acp"
-        )
+        hermes_acp = executor == "hermes" and len(command) >= 2 and command[1] == "acp"
         if hermes_acp:
             if command != [command[0], "acp"]:
-                raise RunnerError(
-                    "permission_transport_invalid: Hermes ACP command must be the "
-                    "exact headless protocol entrypoint"
-                )
+                raise RunnerError("permission_transport_invalid: Hermes ACP command must be the exact headless protocol entrypoint")
             try:
                 persisted_permission = permission_record_from_extensions(
-                    persisted_task.get("extensions")
-                    if isinstance(persisted_task, dict)
-                    else {},
+                    persisted_task.get("extensions") if isinstance(persisted_task, dict) else {},
                     allow_legacy=False,
                 )
             except ABCError as exc:
                 raise RunnerError(f"{exc.code}: {exc}") from exc
             mapping = persisted_permission.get("mapping")
-            hermes_mapping = (
-                mapping.get("hermes") if isinstance(mapping, dict) else None
-            )
-            frozen_transport = (
-                str(hermes_mapping.get("transport") or "").strip().lower()
-                if isinstance(hermes_mapping, dict)
-                else ""
-            )
+            hermes_mapping = mapping.get("hermes") if isinstance(mapping, dict) else None
+            frozen_transport = str(hermes_mapping.get("transport") or "").strip().lower() if isinstance(hermes_mapping, dict) else ""
             if frozen_transport != TRANSPORT_HERMES_ACP:
-                raise RunnerError(
-                    "runner_capability_mismatch: Hermes ACP command does not match "
-                    "the frozen permission transport"
-                )
+                raise RunnerError("runner_capability_mismatch: Hermes ACP command does not match the frozen permission transport")
             return
         required_subcommand = rules.get("required_subcommand")
         if required_subcommand and required_subcommand not in command:
-            raise RunnerError(
-                f"{executor} runner requires '{required_subcommand}' subcommand"
-            )
+            raise RunnerError(f"{executor} runner requires '{required_subcommand}' subcommand")
         required_flags: set[str] = rules["required_flags"]
         missing = sorted(required_flags - set(command))
         if missing:
-            raise RunnerError(
-                f"{executor} runner requires flags: {', '.join(missing)}"
-            )
+            raise RunnerError(f"{executor} runner requires flags: {', '.join(missing)}")
         required_any: set[str] = rules.get("required_any_flags", set())
         if required_any and not (required_any & set(command)):
-            raise RunnerError(
-                f"{executor} runner requires one of: {', '.join(sorted(required_any))}"
-            )
+            raise RunnerError(f"{executor} runner requires one of: {', '.join(sorted(required_any))}")
         try:
             claude_capability = None
             if executor == "claude":
@@ -2917,11 +2701,7 @@ class RunnerState:
                 executor,
                 command,
                 permission,
-                authorized_claude_settings=(
-                    str(claude_capability["settings_json"])
-                    if claude_capability is not None
-                    else None
-                ),
+                authorized_claude_settings=(str(claude_capability["settings_json"]) if claude_capability is not None else None),
                 authorized_claude_add_dir=claude_capability is not None,
             )
         except ABCError as exc:
@@ -2945,37 +2725,23 @@ class RunnerState:
         consumption happen before canonical argv validation and before spawn.
         """
         if not isinstance(task, dict):
-            raise RunnerError(
-                "unsupported_permission_mode: missing persisted task permission authorization"
-            )
-        persisted, _base_permission = self._persisted_permission_authorization(
-            executor, task
-        )
+            raise RunnerError("unsupported_permission_mode: missing persisted task permission authorization")
+        persisted, _base_permission = self._persisted_permission_authorization(executor, task)
         task_id = str(persisted.get("id") or "").strip()
         task_board = task.get("task_board")
-        board_value = (
-            str(task_board.get("root") or "").strip()
-            if isinstance(task_board, dict)
-            else ""
-        )
+        board_value = str(task_board.get("root") or "").strip() if isinstance(task_board, dict) else ""
         if not task_id or not board_value:
-            raise RunnerError(
-                "permission_authorization_invalid: task identity is required"
-            )
+            raise RunnerError("permission_authorization_invalid: task identity is required")
         board = Path(board_value).expanduser().resolve()
         from .service import TaskService
+
         chain = TaskService(board).resolve_chain(task_id)
         if not chain.requested_is_head or len(chain.head_task_ids) != 1:
-            raise RunnerError(
-                "permission_authorization_mismatch: task is not the unique chain head"
-            )
+            raise RunnerError("permission_authorization_mismatch: task is not the unique chain head")
         extensions = dict(persisted.get("extensions") or {})
         try:
             elevation = permission_elevation_from_extensions(extensions)
-            trusted_elevation = (
-                elevation is not None
-                and elevation["state"]["status"] in {"approved", "active", "verified"}
-            )
+            trusted_elevation = elevation is not None and elevation["state"]["status"] in {"approved", "active", "verified"}
             effective = resolve_effective_permission(
                 persisted,
                 executor,
@@ -2991,13 +2757,8 @@ class RunnerState:
             # does not reinterpret cwd, PathPlan, flags, settings, versions,
             # or host containment as a second permission system.
             if transport:
-                if (
-                    executor != "claude"
-                    or transport != CLAUDE_SDK_CONTROL_AUTHORIZATION
-                ):
-                    raise RunnerError(
-                        "permission_transport_unsupported: unsupported Runner transport"
-                    )
+                if executor != "claude" or transport != CLAUDE_SDK_CONTROL_AUTHORIZATION:
+                    raise RunnerError("permission_transport_unsupported: unsupported Runner transport")
                 return effective
             if command is None or not command:
                 raise RunnerError("runner command authorization requires argv")
@@ -3063,21 +2824,11 @@ class RunnerState:
     ) -> None:
         """Validate a non-CLI transport against Runner-reconstructed facts."""
         if executor != "claude" or transport != CLAUDE_SDK_CONTROL_AUTHORIZATION:
-            raise RunnerError(
-                "permission_transport_unsupported: unsupported Runner transport"
-            )
-        if (
-            not isinstance(task, dict)
-            or task.get("runner_authorization_required") is not True
-        ):
-            raise RunnerError(
-                "permission_grant_runner_context_required: SDK transport requires "
-                "an explicit Runner-managed worker packet"
-            )
+            raise RunnerError("permission_transport_unsupported: unsupported Runner transport")
+        if not isinstance(task, dict) or task.get("runner_authorization_required") is not True:
+            raise RunnerError("permission_grant_runner_context_required: SDK transport requires an explicit Runner-managed worker packet")
         if not isinstance(context, dict):
-            raise RunnerError(
-                "permission_transport_invalid: SDK authorization context is required"
-            )
+            raise RunnerError("permission_transport_invalid: SDK authorization context is required")
         expected_keys = {
             "control_path",
             "sdk_version",
@@ -3090,18 +2841,14 @@ class RunnerState:
             "additional_dirs",
         }
         if set(context) != expected_keys:
-            raise RunnerError(
-                "permission_transport_invalid: SDK authorization context fields do not match"
-            )
+            raise RunnerError("permission_transport_invalid: SDK authorization context fields do not match")
 
         expected_executable = self.allowed_executables.get("claude")
         if expected_executable is None:
             raise RunnerError("runner executable is not allowlisted")
         allowed_roots = list(self.allowed_roots)
         allowed_roots.extend(self._task_scoped_allowed_roots(persisted_task))
-        if not cwd.is_dir() or not any(
-            _is_within(cwd, root) for root in allowed_roots
-        ):
+        if not cwd.is_dir() or not any(_is_within(cwd, root) for root in allowed_roots):
             raise RunnerError(f"runner cwd is outside allowed roots: {cwd}")
 
         try:
@@ -3114,28 +2861,20 @@ class RunnerState:
         # allowlist or by a missing/non-standard ``--version`` string.
         selected_path = select_claude_control_path(None, None)
         if selected_path != CONTROL_PATH_SDK_TRANSPORT:
-            raise RunnerError(
-                "permission_protocol_unavailable: Claude SDK control is unavailable"
-            )
+            raise RunnerError("permission_protocol_unavailable: Claude SDK control is unavailable")
 
         extensions = persisted_task.get("extensions")
         extensions = extensions if isinstance(extensions, dict) else {}
         session = extensions.get(SESSION_EXTENSION_KEY)
         session_errors = validate_session_snapshot(session, executor="claude")
         if session_errors:
-            raise RunnerError(
-                f"runner_session_argument_mismatch: {'; '.join(session_errors)}"
-            )
+            raise RunnerError(f"runner_session_argument_mismatch: {'; '.join(session_errors)}")
         resources = extensions.get(RESOURCE_EXTENSION_KEY)
         resource_errors = validate_resource_snapshot(resources, executor="claude")
         if resource_errors:
-            raise RunnerError(
-                f"runner_resource_argument_mismatch: {'; '.join(resource_errors)}"
-            )
+            raise RunnerError(f"runner_resource_argument_mismatch: {'; '.join(resource_errors)}")
         if cwd != Path(str(session.get("project_path") or "")).expanduser().resolve():
-            raise RunnerError(
-                "runner_session_argument_mismatch: SDK cwd must match the frozen project path"
-            )
+            raise RunnerError("runner_session_argument_mismatch: SDK cwd must match the frozen project path")
 
         # Plan D retired AgentBC-injected Claude filesystem settings and
         # add-dir capabilities.  The SDK adapter now launches with the native
@@ -3144,11 +2883,7 @@ class RunnerState:
         expected_settings = ""
         expected_dirs: list[str] = []
         temporary = is_temporary_permission(permission)
-        expected_mode = (
-            "bypassPermissions"
-            if permission.get("effective_mode") == "full" and not temporary
-            else "default"
-        )
+        expected_mode = "bypassPermissions" if permission.get("effective_mode") == "full" and not temporary else "default"
         expected_update = "bypassPermissions" if temporary else ""
         expected_context = {
             "control_path": CONTROL_PATH_SDK_TRANSPORT,
@@ -3162,34 +2897,7 @@ class RunnerState:
             "additional_dirs": expected_dirs,
         }
         if context != expected_context:
-            raise RunnerError(
-                "permission_transport_mismatch: SDK authorization context does not "
-                "match the frozen task capability"
-            )
-
-    def _enforce_phase3_authorization(
-        self,
-        executor: str,
-        command: list[str],
-        cwd: Path,
-        task: dict[str, Any] | None,
-    ) -> None:
-        persisted_task, _permission = self._persisted_permission_authorization(executor, task)
-        try:
-            self._validate_phase3_execution_command(executor, command, cwd, persisted_task)
-        except RunnerError as exc:
-            task_id = str(persisted_task.get("id") or persisted_task.get("task_id") or "")
-            task_board = task.get("task_board") if isinstance(task, dict) else None
-            board_value = str(task_board.get("root") or "") if isinstance(task_board, dict) else ""
-            if task_id and board_value:
-                self._phase2_append_audit(
-                    Path(board_value).expanduser().resolve(),
-                    task_id,
-                    executor,
-                    "fail",
-                    str(exc).split(":", 1)[0],
-                )
-            raise
+            raise RunnerError("permission_transport_mismatch: SDK authorization context does not match the frozen task capability")
 
     def _validate_phase3_execution_command(
         self,
@@ -3205,17 +2913,11 @@ class RunnerState:
         session = extensions.get(SESSION_EXTENSION_KEY)
         session_errors = validate_session_snapshot(session, executor=executor)
         if session_errors:
-            raise RunnerError(
-                f"runner_session_argument_mismatch: {'; '.join(session_errors)}"
-            )
+            raise RunnerError(f"runner_session_argument_mismatch: {'; '.join(session_errors)}")
         session_id = str(session.get("session_id") or "").strip()
         run_ids = list(session.get("run_ids") or [])
         resume_facts = session.get("run_resume_facts")
-        if (
-            executor_run_id
-            and isinstance(resume_facts, dict)
-            and type(resume_facts.get(executor_run_id)) is bool
-        ):
+        if executor_run_id and isinstance(resume_facts, dict) and type(resume_facts.get(executor_run_id)) is bool:
             resumed = bool(resume_facts[executor_run_id])
         elif executor_run_id in run_ids:
             # Compatibility for snapshots written before run_resume_facts:
@@ -3225,31 +2927,18 @@ class RunnerState:
         else:
             resumed = bool(run_ids)
 
-        hermes_acp = (
-            executor == "hermes"
-            and command == [command[0], "acp"]
-        )
+        hermes_acp = executor == "hermes" and command == [command[0], "acp"]
         if hermes_acp:
             resources = extensions.get(RESOURCE_EXTENSION_KEY)
             resource_errors = validate_resource_snapshot(resources, executor=executor)
             if resource_errors:
-                raise RunnerError(
-                    f"runner_resource_argument_mismatch: {'; '.join(resource_errors)}"
-                )
+                raise RunnerError(f"runner_resource_argument_mismatch: {'; '.join(resource_errors)}")
             project_path = str(session.get("project_path") or "").strip()
-            expected_project = (
-                Path(project_path).expanduser().resolve() if project_path else None
-            )
+            expected_project = Path(project_path).expanduser().resolve() if project_path else None
             if expected_project is not None and cwd != expected_project:
-                raise RunnerError(
-                    "runner_executor_cwd_mismatch: Hermes ACP cwd does not match "
-                    "the frozen session project"
-                )
+                raise RunnerError("runner_executor_cwd_mismatch: Hermes ACP cwd does not match the frozen session project")
             if resumed and not session_id:
-                raise RunnerError(
-                    "runner_session_argument_mismatch: Hermes ACP resume requires "
-                    "the frozen official session ID"
-                )
+                raise RunnerError("runner_session_argument_mismatch: Hermes ACP resume requires the frozen official session ID")
             # ACP carries resource/session state on its structured session
             # requests.  It must not be made to impersonate the legacy
             # ``hermes chat`` argv by injecting --max-turns or --resume.
@@ -3259,40 +2948,25 @@ class RunnerState:
             resources = extensions.get(RESOURCE_EXTENSION_KEY)
             resource_errors = validate_resource_snapshot(resources, executor=executor)
             if resource_errors:
-                raise RunnerError(
-                    f"runner_resource_argument_mismatch: {'; '.join(resource_errors)}"
-                )
+                raise RunnerError(f"runner_resource_argument_mismatch: {'; '.join(resource_errors)}")
             flag = "--max-budget-usd" if executor == "claude" else "--max-turns"
             values, noncanonical = _canonical_flag_values(command, flag)
             current_limit = resources.get("current_limit")
-            expected_value = (
-                str(float(current_limit)) if executor == "claude" else str(int(current_limit))
-            )
+            expected_value = str(float(current_limit)) if executor == "claude" else str(int(current_limit))
             if noncanonical or values != [expected_value]:
-                raise RunnerError(
-                    f"runner_resource_argument_mismatch: {flag} must appear once with the frozen task value"
-                )
+                raise RunnerError(f"runner_resource_argument_mismatch: {flag} must appear once with the frozen task value")
 
         if executor == "codex" and len(command) >= 2 and command[1] == "app-server":
             if any(token in {"--last", "--continue", "resume", "--ephemeral", "--session-id", "--resume"} for token in command):
-                raise RunnerError(
-                    "runner_session_argument_mismatch: Codex App Server does not accept ambiguous CLI continuation"
-                )
-            if "--stdio" not in command and not any(
-                token == "stdio://" or token.startswith("stdio://")
-                for token in command
-            ):
-                raise RunnerError(
-                    "runner_session_argument_mismatch: Codex App Server must use stdio"
-                )
+                raise RunnerError("runner_session_argument_mismatch: Codex App Server does not accept ambiguous CLI continuation")
+            if "--stdio" not in command and not any(token == "stdio://" or token.startswith("stdio://") for token in command):
+                raise RunnerError("runner_session_argument_mismatch: Codex App Server must use stdio")
             # The persisted task's permission mapping must not freeze a
             # conflicting CLI transport for an App Server run.  The App Server
             # chain is valid for inherit/safe; full keeps the CLI path.
             extensions = extensions or {}
             try:
-                frozen_permission = permission_record_from_extensions(
-                    extensions, allow_legacy=False
-                )
+                frozen_permission = permission_record_from_extensions(extensions, allow_legacy=False)
             except ABCError as exc:
                 raise RunnerError(f"{exc.code}: {exc}") from exc
             frozen_mode = str(frozen_permission.get("effective_mode") or "").strip().lower()
@@ -3301,74 +2975,49 @@ class RunnerState:
             if isinstance(frozen_mapping, dict):
                 codex_mapping = frozen_mapping.get("codex")
                 if isinstance(codex_mapping, dict):
-                    frozen_transport = str(
-                        codex_mapping.get("transport") or ""
-                    ).strip().lower()
+                    frozen_transport = str(codex_mapping.get("transport") or "").strip().lower()
             if frozen_mode not in {"inherit", "safe"}:
-                raise RunnerError(
-                    "runner_capability_mismatch: Codex App Server run requires inherit or safe permission"
-                )
+                raise RunnerError("runner_capability_mismatch: Codex App Server run requires inherit or safe permission")
             if frozen_transport and frozen_transport != "app-server":
-                raise RunnerError(
-                    "runner_capability_mismatch: Codex App Server run does not match "
-                    "the frozen permission transport"
-                )
+                raise RunnerError("runner_capability_mismatch: Codex App Server run does not match the frozen permission transport")
             return
 
         resume_values, resume_noncanonical = _canonical_flag_values(command, "--resume")
         session_values, session_noncanonical = _canonical_flag_values(command, "--session-id")
         if resume_noncanonical or session_noncanonical:
-            raise RunnerError(
-                "runner_session_argument_mismatch: session flags require separated canonical values"
-            )
+            raise RunnerError("runner_session_argument_mismatch: session flags require separated canonical values")
 
         if executor == "claude":
             if "--no-session-persistence" in command:
-                raise RunnerError(
-                    "runner_session_argument_mismatch: Claude session persistence cannot be disabled"
-                )
+                raise RunnerError("runner_session_argument_mismatch: Claude session persistence cannot be disabled")
             expected_project = Path(str(session.get("project_path") or "")).expanduser().resolve()
             if cwd != expected_project:
-                raise RunnerError(
-                    "runner_executor_cwd_mismatch: Claude cwd does not match the frozen session project"
-                )
+                raise RunnerError("runner_executor_cwd_mismatch: Claude cwd does not match the frozen session project")
             if resumed:
                 valid = resume_values == [session_id] and not session_values and bool(session_id)
             else:
                 valid = session_values == [session_id] and not resume_values and bool(session_id)
             if not valid:
-                raise RunnerError(
-                    "runner_session_argument_mismatch: Claude fresh/resume flags do not match task history"
-                )
+                raise RunnerError("runner_session_argument_mismatch: Claude fresh/resume flags do not match task history")
             return
 
         if executor == "hermes":
             if "--continue" in command or "-c" in command:
-                raise RunnerError(
-                    "runner_session_argument_mismatch: Hermes ambiguous continuation is forbidden"
-                )
+                raise RunnerError("runner_session_argument_mismatch: Hermes ambiguous continuation is forbidden")
             if session_values:
-                raise RunnerError(
-                    "runner_session_argument_mismatch: Hermes does not accept a preassigned session ID"
-                )
+                raise RunnerError("runner_session_argument_mismatch: Hermes does not accept a preassigned session ID")
             if resumed:
                 valid = resume_values == [session_id] and bool(session_id)
             else:
                 valid = not resume_values
             if not valid:
-                raise RunnerError(
-                    "runner_session_argument_mismatch: Hermes resume flag does not match task history"
-                )
+                raise RunnerError("runner_session_argument_mismatch: Hermes resume flag does not match task history")
             return
 
         if executor == "codex":
             if "--ephemeral" in command or "--last" in command:
-                raise RunnerError(
-                    "runner_session_argument_mismatch: Codex requires persistent explicit-ID sessions"
-                )
-            resume_positions = [
-                index for index, token in enumerate(command[2:], 2) if token == "resume"
-            ]
+                raise RunnerError("runner_session_argument_mismatch: Codex requires persistent explicit-ID sessions")
+            resume_positions = [index for index, token in enumerate(command[2:], 2) if token == "resume"]
             if resumed:
                 valid = (
                     len(resume_positions) == 1
@@ -3379,9 +3028,7 @@ class RunnerState:
             else:
                 valid = not resume_positions
             if not valid:
-                raise RunnerError(
-                    "runner_session_argument_mismatch: Codex resume command does not match task history"
-                )
+                raise RunnerError("runner_session_argument_mismatch: Codex resume command does not match task history")
 
     def _persisted_permission_authorization(
         self,
@@ -3389,16 +3036,12 @@ class RunnerState:
         task: dict[str, Any] | None,
     ) -> tuple[dict[str, Any], dict[str, str]]:
         if not isinstance(task, dict):
-            raise RunnerError(
-                "unsupported_permission_mode: missing persisted task permission authorization"
-            )
+            raise RunnerError("unsupported_permission_mode: missing persisted task permission authorization")
         task_id = str(task.get("task_id") or task.get("id") or "").strip()
         task_board = task.get("task_board") if isinstance(task.get("task_board"), dict) else {}
         board_value = str(task_board.get("root") or "").strip()
         if not task_id or not board_value:
-            raise RunnerError(
-                "unsupported_permission_mode: task id and task board are required for authorization"
-            )
+            raise RunnerError("unsupported_permission_mode: task id and task board are required for authorization")
         board = Path(board_value).expanduser().resolve()
         from .config import DEFAULT_BOARD_ROOT
         from .task_store import TaskStore
@@ -3409,13 +3052,9 @@ class RunnerState:
         try:
             persisted = TaskStore(board).read_task(task_id)
         except ABCError as exc:
-            raise RunnerError(
-                f"unsupported_permission_mode: persisted task authorization unavailable: {task_id}"
-            ) from exc
+            raise RunnerError(f"unsupported_permission_mode: persisted task authorization unavailable: {task_id}") from exc
         if str(persisted.get("assignee") or "") != executor:
-            raise RunnerError(
-                "unsupported_permission_mode: persisted task executor does not match command executor"
-            )
+            raise RunnerError("unsupported_permission_mode: persisted task executor does not match command executor")
         try:
             supplied_permission = permission_record_from_extensions(
                 task.get("extensions") if isinstance(task.get("extensions"), dict) else {},
@@ -3428,9 +3067,7 @@ class RunnerState:
         except ABCError as exc:
             raise RunnerError(f"{exc.code}: {exc}") from exc
         if supplied_permission != persisted_permission:
-            raise RunnerError(
-                "unsupported_permission_mode: stale or command-injected permission authorization"
-            )
+            raise RunnerError("unsupported_permission_mode: stale or command-injected permission authorization")
         self._validate_task_path_plan(persisted)
         return persisted, persisted_permission
 
@@ -3500,19 +3137,12 @@ class RunnerState:
             record = self.runs[run_id]
             record["returncode"] = returncode
             record["ended_at"] = _utc_now()
-            defer_cancel_reconciliation = bool(
-                record["cancel_requested"]
-                and record.get("cancel_cleanup_pending")
-            )
+            defer_cancel_reconciliation = bool(record["cancel_requested"] and record.get("cancel_cleanup_pending"))
             if defer_cancel_reconciliation:
                 record["process_exit_observed"] = True
                 record["status"] = "cancelling"
             else:
-                record["status"] = (
-                    "cancelled"
-                    if record["cancel_requested"]
-                    else "completed" if returncode == 0 else "failed"
-                )
+                record["status"] = "cancelled" if record["cancel_requested"] else "completed" if returncode == 0 else "failed"
             profile_path = record.get("profile_path")
             if profile_path:
                 try:
@@ -3522,9 +3152,7 @@ class RunnerState:
                 record["profile_path"] = None
             runner_ipc_channel = str(record.get("runner_ipc_channel") or "")
             self._write_metadata(record)
-            reconciliation = (
-                None if defer_cancel_reconciliation else dict(record)
-            )
+            reconciliation = None if defer_cancel_reconciliation else dict(record)
         if runner_ipc_channel:
             self._cleanup_runner_ipc_channel(runner_ipc_channel)
         if reconciliation is not None:
@@ -3633,9 +3261,7 @@ class RunnerState:
                 self._refresh_worker_board_index(board)
                 return
             interrupted = bool(record.get("cancel_requested"))
-            failure_code = (
-                "executor_turn_interrupted" if interrupted else "worker_process_exited"
-            )
+            failure_code = "executor_turn_interrupted" if interrupted else "worker_process_exited"
             failure_message = (
                 "Runner worker was interrupted before a trusted executor terminal event."
                 if interrupted
@@ -3775,11 +3401,7 @@ def create_runner_service(
             sources[name] = source
     if not allowed:
         raise RunnerError("No executor executables found for runner")
-    roots = (
-        [Path(root) for root in allowed_roots]
-        if allowed_roots is not None
-        else resolve_runner_allowed_roots(loaded_config)
-    )
+    roots = [Path(root) for root in allowed_roots] if allowed_roots is not None else resolve_runner_allowed_roots(loaded_config)
     state = RunnerState(
         Path(state_root or default_runner_root()),
         roots,

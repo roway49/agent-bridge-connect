@@ -10,39 +10,55 @@ exclusively agent_bridge_connect.approval.
 from __future__ import annotations
 
 import functools
-import importlib
 import re
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .approval import (
-    APPROVAL_EXTENSION_KEY, APPROVAL_SCOPE, APPROVAL_V3_SCOPE,
-    build_approval_receipt, build_approval_receipt_v2,
-    build_approval_receipt_v3, normalize_reason_summary,
+    APPROVAL_EXTENSION_KEY,
+    APPROVAL_SCOPE,
+    APPROVAL_V3_SCOPE,
+    build_approval_receipt,
+    build_approval_receipt_v2,
+    build_approval_receipt_v3,
+    normalize_reason_summary,
     record_approval_decision,
-    record_approval_full_continuation, record_approval_notification,
-    sanitize_reason_detail, validate_approval_receipt,
+    record_approval_full_continuation,
+    record_approval_notification,
+    sanitize_reason_detail,
+    validate_approval_receipt,
 )
 from .permission_elevation import (
-    PERMISSION_ELEVATION_EXTENSION_KEY, PERMISSION_ELEVATION_MODE,
-    activate_permission_elevation, block_permission_elevation,
-    build_permission_elevation, permission_elevation_from_extensions,
-    record_permission_elevation_decision, record_permission_elevation_notification,
+    PERMISSION_ELEVATION_EXTENSION_KEY,
+    PERMISSION_ELEVATION_MODE,
+    activate_permission_elevation,
+    block_permission_elevation,
+    build_permission_elevation,
+    permission_elevation_from_extensions,
+    record_permission_elevation_decision,
+    record_permission_elevation_notification,
     verify_permission_elevation,
 )
 from .permission_failures import (
     PERMISSION_BLOCKED_STEP_CARDINALITY_INVALID,
-    PERMISSION_CHAIN_HEAD_AMBIGUOUS, PERMISSION_CHAIN_HEAD_STALE,
+    PERMISSION_CHAIN_HEAD_AMBIGUOUS,
+    PERMISSION_CHAIN_HEAD_STALE,
     PERMISSION_EXECUTOR_SESSION_MISMATCH,
-    PERMISSION_EXECUTOR_SESSION_RUN_MISMATCH, PERMISSION_INPUT_INVALID,
-    PERMISSION_MODE_UNSUPPORTED, PERMISSION_REQUESTED_SCOPE_INVALID,
-    PERMISSION_RESUME_SESSION_MISSING, PERMISSION_RUN_LEASE_INVALID,
-    PERMISSION_RUN_LEASE_RUN_MISMATCH, PERMISSION_SESSION_RECEIPT_INVALID,
-    PERMISSION_SESSION_STATE_STALE, PERMISSION_SESSION_SNAPSHOT_INVALID,
-    PERMISSION_WAIT_COMPATIBILITY_CODE, PermissionWaitFailure,
+    PERMISSION_EXECUTOR_SESSION_RUN_MISMATCH,
+    PERMISSION_INPUT_INVALID,
+    PERMISSION_MODE_UNSUPPORTED,
+    PERMISSION_REQUESTED_SCOPE_INVALID,
+    PERMISSION_RESUME_SESSION_MISSING,
+    PERMISSION_RUN_LEASE_INVALID,
+    PERMISSION_RUN_LEASE_RUN_MISMATCH,
+    PERMISSION_SESSION_RECEIPT_INVALID,
+    PERMISSION_SESSION_STATE_STALE,
+    PERMISSION_SESSION_SNAPSHOT_INVALID,
+    PERMISSION_WAIT_COMPATIBILITY_CODE,
+    PermissionWaitFailure,
     permission_wait_failure,
 )
 from .permission_grants import (
@@ -51,47 +67,47 @@ from .permission_grants import (
     revoke_permission_grant as revoke_grant_contract,
 )
 from .permission_modes import (
-    PERMISSION_EXTENSION_KEY, permission_record_from_extensions,
+    PERMISSION_EXTENSION_KEY,
+    permission_record_from_extensions,
     permission_runtime_policy,
 )
 from .execution_policy import SESSION_EXTENSION_KEY, validate_session_snapshot
 from .migration import assert_maintenance_command_allowed
 from .protocol import ABCError, TaskModel
 from .terminal_states import TASK_TERMINAL_STATES
-
-_claude_elevation_contract = importlib.import_module(
-    "." + "claude_" + "elevation", __package__
-)
-CLAUDE_ELEVATION_ACTIVE = _claude_elevation_contract.CLAUDE_ELEVATION_ACTIVE
-CLAUDE_ELEVATION_DENIED = _claude_elevation_contract.CLAUDE_ELEVATION_DENIED
-CLAUDE_ELEVATION_EXTENSION_KEY = (
-    _claude_elevation_contract.CLAUDE_ELEVATION_EXTENSION_KEY
-)
-CLAUDE_ELEVATION_PENDING = _claude_elevation_contract.CLAUDE_ELEVATION_PENDING
-build_claude_elevation_receipt = (
-    _claude_elevation_contract.build_claude_elevation_receipt
-)
-claude_elevation_from_extensions = (
-    _claude_elevation_contract.claude_elevation_from_extensions
-)
-claude_elevation_public_projection = (
-    _claude_elevation_contract.claude_elevation_public_projection
-)
-record_claude_elevation_dialog = _claude_elevation_contract.record_claude_elevation_dialog
-stable_claude_input_digest = _claude_elevation_contract.stable_input_digest
-transition_claude_elevation = _claude_elevation_contract.transition_claude_elevation
-validate_claude_elevation_receipt = (
-    _claude_elevation_contract.validate_claude_elevation_receipt
+from .claude_elevation import (
+    CLAUDE_ELEVATION_ACTIVE,  # noqa: F401 -- compatibility export
+    CLAUDE_ELEVATION_DENIED,  # noqa: F401 -- compatibility export
+    CLAUDE_ELEVATION_EXTENSION_KEY,
+    CLAUDE_ELEVATION_PENDING,
+    build_claude_elevation_receipt,  # noqa: F401 -- service compatibility export
+    claude_elevation_from_extensions,
+    claude_elevation_public_projection,
+    record_claude_elevation_dialog,
+    stable_input_digest as stable_claude_input_digest,  # noqa: F401 -- compatibility export
+    transition_claude_elevation,  # noqa: F401 -- service compatibility export
+    validate_claude_elevation_receipt,
 )
 
 RUNNING_TASK_STATUSES = {
-    "running", "input_required", "assigned", "working",
-    "pause_pending", "paused", "in_progress",
+    "running",
+    "input_required",
+    "assigned",
+    "working",
+    "pause_pending",
+    "paused",
+    "in_progress",
 }
 REPORTABLE_TASK_STATUSES = set(TASK_TERMINAL_STATES)
 PUBLIC_TASK_STATUSES = {
-    "pending", "running", "input_required", "completed",
-    "failed", "cancelled", "rejected", "needs_recovery",
+    "pending",
+    "running",
+    "input_required",
+    "completed",
+    "failed",
+    "cancelled",
+    "rejected",
+    "needs_recovery",
 }
 DEFAULT_INPUT_WAIT_SECONDS = 24 * 60 * 60
 PERMISSION_DIALOG_TIMEOUT_RESPONSE = "agentbc_permission_dialog_timeout"
@@ -99,13 +115,17 @@ PERMISSION_DIALOG_CLOSED_RESPONSE = "agentbc_permission_dialog_closed"
 
 _TASK_ELEVATION_WRITE_LOCK = threading.RLock()
 
+
 def _serialize_task_elevation_write(function: Any) -> Any:
     """Serialize in-process approval writes across TaskService instances."""
+
     @functools.wraps(function)
     def wrapped(*args: Any, **kwargs: Any) -> Any:
         with _TASK_ELEVATION_WRITE_LOCK:
             return function(*args, **kwargs)
+
     return wrapped
+
 
 def _first_incomplete_step_id(steps: list[dict[str, Any]]) -> int | None:
     for step in steps:
@@ -115,6 +135,7 @@ def _first_incomplete_step_id(steps: list[dict[str, Any]]) -> int | None:
                 return step_id
     return None
 
+
 def _safe_blocked_step_id(blocked_results: list[dict[str, Any]]) -> int | None:
     if len(blocked_results) != 1:
         return None
@@ -122,6 +143,7 @@ def _safe_blocked_step_id(blocked_results: list[dict[str, Any]]) -> int | None:
     if isinstance(step_id, bool) or not isinstance(step_id, int):
         return None
     return step_id
+
 
 def _resource_block_step(
     step: dict[str, Any],
@@ -137,11 +159,14 @@ def _resource_block_step(
         updated["status"] = str(updated.get("status") or "pending")
     return updated
 
+
 def _without_none(data: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in data.items() if value is not None}
 
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
 
 def _parse_timestamp(value: Any) -> datetime:
     if isinstance(value, str) and value:
@@ -154,6 +179,7 @@ def _parse_timestamp(value: Any) -> datetime:
         return parsed
     return datetime.min.replace(tzinfo=timezone.utc)
 
+
 def _stable_revocation_code(code: str) -> str:
     """Sanitize a lifecycle reason into a stable non-sensitive revocation code."""
     cleaned = re.sub(r"[^a-z0-9_]", "_", str(code or "").strip().lower())
@@ -164,11 +190,14 @@ def _stable_revocation_code(code: str) -> str:
         cleaned = f"r_{cleaned}"
     return cleaned[:64]
 
+
 def _is_running_status(status: str) -> bool:
     return _normalize_status(status) == "running" or status in RUNNING_TASK_STATUSES
 
+
 def _is_reportable_status(status: str) -> bool:
     return _normalize_status(status) in REPORTABLE_TASK_STATUSES
+
 
 def _normalize_status(status: str) -> str:
     mapping = {
@@ -183,6 +212,7 @@ def _normalize_status(status: str) -> str:
     }
     return mapping.get(status, status if status in PUBLIC_TASK_STATUSES else "needs_recovery")
 
+
 def _merge_execution(extensions: dict[str, Any] | None, updates: dict[str, Any]) -> dict[str, Any]:
     merged = dict(extensions or {})
     execution = dict(merged.get("agentbc.execution") or {})
@@ -190,21 +220,21 @@ def _merge_execution(extensions: dict[str, Any] | None, updates: dict[str, Any])
     merged["agentbc.execution"] = execution
     return merged
 
+
 class ApprovalLifecycleHost(Protocol):
-    """Host surface required by ApprovalLifecycleMixin."""
+    """Structural host requirements for the lifecycle mixin."""
 
     board_root: Path
     store: Any
-
-    def get_task(self, task_id: str) -> TaskModel: ...
-    def resolve_chain(self, task_id: str) -> Any: ...
-    def mark_task_needs_recovery(self, *args: Any, **kwargs: Any) -> bool: ...
-    def _mark_task_failed_model(self, *args: Any, **kwargs: Any) -> bool: ...
-    def _record_run_interval(self, *args: Any, **kwargs: Any) -> dict[str, Any]: ...
-    def _release_lease(self, task_id: str) -> None: ...
-    def _refresh_task_index(self) -> None: ...
-    def _sync_terminal_report(self, task_id: str) -> None: ...
-    def _apply_executor_session_result(self, *args: Any, **kwargs: Any) -> None: ...
+    get_task: Callable[..., TaskModel]
+    resolve_chain: Callable[..., Any]
+    mark_task_needs_recovery: Callable[..., bool]
+    _mark_task_failed_model: Callable[..., bool]
+    _record_run_interval: Callable[..., dict[str, Any]]
+    _release_lease: Callable[..., None]
+    _refresh_task_index: Callable[..., None]
+    _sync_terminal_report: Callable[..., None]
+    _apply_executor_session_result: Callable[..., None]
 
 
 class ApprovalLifecycleMixin:
@@ -278,23 +308,16 @@ class ApprovalLifecycleMixin:
             if expected_id and str(persisted.get("grant_id") or "") != expected_id:
                 return None
             expected_binding = (expected_grant or {}).get("binding")
-            expected_binding_map = (
-                expected_binding if isinstance(expected_binding, dict) else {}
-            )
+            expected_binding_map = expected_binding if isinstance(expected_binding, dict) else {}
             expected_target = str(expected_binding_map.get("target_run_id") or "").strip()
             persisted_binding = persisted.get("binding")
-            persisted_binding_map = (
-                persisted_binding if isinstance(persisted_binding, dict) else {}
-            )
+            persisted_binding_map = persisted_binding if isinstance(persisted_binding, dict) else {}
             persisted_target = str(persisted_binding_map.get("target_run_id") or "").strip()
             if expected_target and persisted_target != expected_target:
                 return None
         binding = persisted.get("binding")
         binding_map = binding if isinstance(binding, dict) else {}
-        if (
-            str(binding_map.get("target_run_id") or "").strip()
-            != str(target_run_id or "").strip()
-        ):
+        if str(binding_map.get("target_run_id") or "").strip() != str(target_run_id or "").strip():
             return None
         try:
             revoked = revoke_grant_contract(
@@ -358,11 +381,7 @@ class ApprovalLifecycleMixin:
             candidates.append(current_input)
         candidates.extend(item for item in history if isinstance(item, dict))
         answered = next(
-            (
-                item
-                for item in candidates
-                if str(item.get("input_id") or "") == str(input_id)
-            ),
+            (item for item in candidates if str(item.get("input_id") or "") == str(input_id)),
             None,
         )
         if answered is None:
@@ -389,8 +408,7 @@ class ApprovalLifecycleMixin:
         """
         raise ABCError(
             "legacy_session_tool_rule_removed",
-            "Session tool rules were removed; respond with "
-            "--permission-option <handle> instead",
+            "Session tool rules were removed; respond with --permission-option <handle> instead",
         )
 
     def mark_session_tool_rule_applied(
@@ -474,9 +492,7 @@ class ApprovalLifecycleMixin:
                 "permission_input_invalid",
                 "Approval input is missing the persisted agentbc.approval receipt",
             )
-        session_id = str(
-            (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
-        )
+        session_id = str((extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or "")
         if not session_id:
             raise ABCError(
                 "permission_input_invalid",
@@ -533,11 +549,7 @@ class ApprovalLifecycleMixin:
         """Map adapter/session validation errors without persisting their raw text."""
         error_details = error.details if isinstance(error.details, dict) else {}
         raw_errors = error_details.get("errors")
-        validation_errors = (
-            [str(item) for item in raw_errors if isinstance(item, str)]
-            if isinstance(raw_errors, list)
-            else []
-        )
+        validation_errors = [str(item) for item in raw_errors if isinstance(item, str)] if isinstance(raw_errors, list) else []
         if any("executor does not match" in item for item in validation_errors):
             return permission_wait_failure(
                 PERMISSION_EXECUTOR_SESSION_MISMATCH,
@@ -608,23 +620,12 @@ class ApprovalLifecycleMixin:
                     raw_version = raw_permission.get("version")
                     requested = str(raw_permission.get("requested_mode") or "").strip().lower()
                     effective = str(raw_permission.get("effective_mode") or "").strip().lower()
-                    if (
-                        raw_version is not None
-                        and raw_version != 2
-                    ) or (
-                        requested
-                        and effective
-                        and requested != effective
-                    ):
+                    if (raw_version is not None and raw_version != 2) or (requested and effective and requested != effective):
                         return permission_wait_failure(
                             PERMISSION_INPUT_INVALID,
                             field="permission",
                         )
-                effective = (
-                    str(raw_permission.get("effective_mode") or "").strip().lower()
-                    if isinstance(raw_permission, dict)
-                    else ""
-                )
+                effective = str(raw_permission.get("effective_mode") or "").strip().lower() if isinstance(raw_permission, dict) else ""
                 return permission_wait_failure(
                     PERMISSION_MODE_UNSUPPORTED,
                     effective_mode=effective,
@@ -647,18 +648,12 @@ class ApprovalLifecycleMixin:
         if str(raw_input.get("type") or "").strip().lower() != "permission":
             return permission_wait_failure(PERMISSION_INPUT_INVALID, field="input_type")
         requested_permission = raw_input.get("requested_permission")
-        if (
-            not isinstance(requested_permission, str)
-            or requested_permission.strip().lower() != "full"
-        ):
+        if not isinstance(requested_permission, str) or requested_permission.strip().lower() != "full":
             return permission_wait_failure(PERMISSION_REQUESTED_SCOPE_INVALID)
         reason = raw_input.get("reason")
         if not isinstance(reason, str) or not reason.strip():
             return permission_wait_failure(PERMISSION_INPUT_INVALID, field="reason")
-        if any(
-            field in raw_input
-            for field in ("argv", "command", "executor_flags", "flags", "native_executor_flags")
-        ):
+        if any(field in raw_input for field in ("argv", "command", "executor_flags", "flags", "native_executor_flags")):
             return permission_wait_failure(PERMISSION_INPUT_INVALID, field="native_flags")
         if len(blocked_results) != 1 or _safe_blocked_step_id(blocked_results) is None:
             return permission_wait_failure(
@@ -688,11 +683,7 @@ class ApprovalLifecycleMixin:
         normalized_run_id = str(executor_run_id or "").strip()
         try:
             lease = load_lease(task.id, self.board_root)
-            lease_state = (
-                str(getattr(lease, "state", "") or "").strip().lower()
-                if lease is not None
-                else ""
-            )
+            lease_state = str(getattr(lease, "state", "") or "").strip().lower() if lease is not None else ""
         except (AttributeError, KeyError, OSError, TypeError, ValueError):
             return permission_wait_failure(
                 PERMISSION_RUN_LEASE_INVALID,
@@ -708,8 +699,7 @@ class ApprovalLifecycleMixin:
             )
         if (
             str(getattr(lease, "task_id", "") or "") != task.id
-            or str(getattr(lease, "executor_id", "") or "").strip().lower()
-            != str(task.assignee or "").strip().lower()
+            or str(getattr(lease, "executor_id", "") or "").strip().lower() != str(task.assignee or "").strip().lower()
         ):
             return permission_wait_failure(
                 PERMISSION_RUN_LEASE_INVALID,
@@ -768,10 +758,7 @@ class ApprovalLifecycleMixin:
         if _normalize_status(current.status) == "needs_recovery":
             latest_error = (current.errors or [])[-1] if current.errors else {}
             latest_details = (
-                latest_error.get("details")
-                if isinstance(latest_error, dict)
-                and isinstance(latest_error.get("details"), dict)
-                else {}
+                latest_error.get("details") if isinstance(latest_error, dict) and isinstance(latest_error.get("details"), dict) else {}
             )
             if (
                 isinstance(latest_error, dict)
@@ -786,10 +773,7 @@ class ApprovalLifecycleMixin:
         return self.mark_task_needs_recovery(
             task.id,
             PERMISSION_WAIT_COMPATIBILITY_CODE,
-            (
-                "Permission wait cannot be created safely; task requires recovery "
-                f"(reason: {failure.reason_code})"
-            ),
+            (f"Permission wait cannot be created safely; task requires recovery (reason: {failure.reason_code})"),
             merged_details,
             executor_run_id=executor_run_id,
         )
@@ -925,11 +909,10 @@ class ApprovalLifecycleMixin:
         # old branches below remain callable only for historical record and
         # protocol-fixture compatibility; they are not selected by a current
         # Codex, Claude, or Hermes task.
-        is_task_elevation = (
-            approval_version == 3
-            or str(elevation_mode or "").strip().lower()
-            in {PERMISSION_ELEVATION_MODE, "contained_full"}
-        )
+        is_task_elevation = approval_version == 3 or str(elevation_mode or "").strip().lower() in {
+            PERMISSION_ELEVATION_MODE,
+            "contained_full",
+        }
         if is_task_elevation:
             return self._block_task_for_elevation(
                 task,
@@ -972,9 +955,7 @@ class ApprovalLifecycleMixin:
                 reason_summary=clean_reason_summary,
                 reason_detail=clean_reason_detail,
                 authority_protocol=str(native_authority.get("protocol") or ""),
-                authority_protocol_version=int(
-                    native_authority.get("protocol_version") or 0
-                ),
+                authority_protocol_version=int(native_authority.get("protocol_version") or 0),
                 authority_method=str(native_authority.get("method") or ""),
                 broker_request_id=clean_request_id,
                 native_item_id=str(tool_use_id or "").strip(),
@@ -1004,9 +985,7 @@ class ApprovalLifecycleMixin:
             )
 
         now = _utc_now()
-        deadline_at = (
-            _parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)
-        ).isoformat().replace("+00:00", "Z")
+        deadline_at = (_parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)).isoformat().replace("+00:00", "Z")
         request: dict[str, Any] = {
             "input_id": f"input-{uuid.uuid4().hex}",
             "executor_run_id": normalized_run_id,
@@ -1068,10 +1047,7 @@ class ApprovalLifecycleMixin:
         )
         task.status = "input_required"
         task.updated_at = now
-        task.steps = [
-            _resource_block_step(step, step_id)
-            for step in task.steps
-        ]
+        task.steps = [_resource_block_step(step, step_id) for step in task.steps]
         self._release_lease(task_id)
         self.store.write_task(task_id, _without_none(task.to_dict()))
         suspend_lease(
@@ -1079,11 +1055,7 @@ class ApprovalLifecycleMixin:
             self.board_root,
             executor_run_id=normalized_run_id,
             executor_id=task.assignee,
-            work_dir=str(
-                (task.workspace or {}).get("project_root")
-                or (task.workspace or {}).get("root")
-                or self.board_root
-            ),
+            work_dir=str((task.workspace or {}).get("project_root") or (task.workspace or {}).get("root") or self.board_root),
         )
         clear_task_progress(task)
         self.store.append_event(
@@ -1222,226 +1194,6 @@ class ApprovalLifecycleMixin:
             )
         return claude_elevation_public_projection(updated)
 
-    def _block_claude_live_elevation(
-        self,
-        task: TaskModel,
-        *,
-        executor_run_id: str,
-        session_id: str,
-        request_id: str,
-        request_fingerprint: str,
-        executor: str,
-        operation: str,
-        summary: str,
-        reason_summary: str,
-        reason_detail: str,
-        blocked_step_id: int | None,
-        tool_name: str,
-        tool_use_id: str,
-        input_fingerprint: str,
-        action_fingerprint: str,
-        escalation_domain: str,
-        profile_digest: str,
-        control_path: str,
-        native_event: str,
-        authority: dict[str, Any] | None,
-        path_plan_digest_value: str,
-        containment_profile_digest_value: str,
-        full_preflight: dict[str, Any] | None,
-        native_live_elevation: bool = False,
-    ) -> dict[str, Any]:
-        """Expose one live callback wait without suspending its RunLease."""
-        from .permission_runtime import host_profile_digest, path_plan_digest
-
-        extensions = dict(task.extensions or {})
-        step_id = blocked_step_id or _first_incomplete_step_id(task.steps)
-        if step_id is None:
-            raise ABCError(
-                "approval_no_step",
-                "Claude live elevation cannot be displayed without an incomplete step",
-            )
-        clean_plan = str(path_plan_digest_value or path_plan_digest(task.workspace or {}))
-        clean_profile = str(
-            containment_profile_digest_value or profile_digest or host_profile_digest()
-        )
-        native_authority = dict(authority or {})
-        receipt_value = build_approval_receipt_v3(
-            task_id=task.id,
-            executor_run_id=executor_run_id,
-            executor=executor,
-            session_id=session_id,
-            request_id=request_id,
-            request_fingerprint=request_fingerprint,
-            operation=operation,
-            path_plan_digest=clean_plan,
-            containment_profile_digest=clean_profile,
-            summary=summary,
-            reason_summary=reason_summary,
-            reason_detail=reason_detail,
-            authority=native_authority,
-            native_event=native_event or "claude_sdk_can_use_tool",
-            tool_call_id=tool_use_id or request_id,
-            action_fingerprint=action_fingerprint,
-        )
-        existing_receipt = claude_elevation_from_extensions(extensions)
-        if existing_receipt is None:
-            existing_receipt = build_claude_elevation_receipt(
-                task_id=task.id,
-                executor_run_id=executor_run_id,
-                session_id=session_id,
-                request_id=request_id,
-                tool_use_id=tool_use_id or request_id,
-                request_fingerprint=request_fingerprint,
-                input_fingerprint=stable_claude_input_digest(
-                    {"request_fingerprint": request_fingerprint}
-                ),
-                action_fingerprint=action_fingerprint or request_fingerprint,
-                operation=operation,
-                path_plan_digest=clean_plan,
-                containment_profile_digest=clean_profile,
-                native_event=native_event or "claude_sdk_can_use_tool",
-            )
-            existing_receipt = transition_claude_elevation(
-                existing_receipt,
-                CLAUDE_ELEVATION_PENDING,
-            )
-        else:
-            existing_binding = existing_receipt["binding"]
-            expected_binding = {
-                "task_id": task.id,
-                "executor_run_id": executor_run_id,
-                "session_id": session_id,
-                "request_id": request_id,
-                "tool_use_id": tool_use_id or request_id,
-                "request_fingerprint": request_fingerprint,
-                "action_fingerprint": action_fingerprint or request_fingerprint,
-                "operation": operation,
-            }
-            same_request = all(
-                existing_binding.get(field) == expected
-                for field, expected in expected_binding.items()
-            )
-            if not same_request:
-                raise ABCError(
-                    "claude_elevation_binding_mismatch",
-                    "A Claude live elevation request changed its native identity or input",
-                )
-            if existing_receipt["state"]["status"] == CLAUDE_ELEVATION_PENDING:
-                previous_input = extensions.get("agentbc.input")
-                if isinstance(previous_input, dict) and previous_input.get("native_live_elevation") is True:
-                    return {
-                        "ok": True,
-                        "task_id": task.id,
-                        "status": str(task.status or "input_required"),
-                        "input_id": str(previous_input.get("input_id") or ""),
-                        "request_id": request_id,
-                        "request_fingerprint": request_fingerprint,
-                        "scope": APPROVAL_V3_SCOPE,
-                        "approval_version": 3,
-                        "elevation_mode": PERMISSION_ELEVATION_MODE,
-                        "native_live_elevation": True,
-                        "blocked_step_id": previous_input.get("blocked_step_id"),
-                        "same_session": True,
-                        "dispatch_required": False,
-                        "idempotent": True,
-                    }
-                raise ABCError(
-                    "claude_elevation_input_missing",
-                    "The pending Claude elevation receipt has no reusable input request",
-                )
-            elif existing_receipt["state"]["status"] != CLAUDE_ELEVATION_PENDING:
-                # A duplicate/replayed native event is never a reason to show
-                # a second dialog.  The live callback/control plane owns the
-                # terminal decision; Core only exposes the already-bound wait.
-                raise ABCError(
-                    "claude_elevation_replay",
-                    "A Claude live elevation request already reached a terminal state",
-                )
-        extensions[APPROVAL_EXTENSION_KEY] = receipt_value
-        extensions[CLAUDE_ELEVATION_EXTENSION_KEY] = existing_receipt
-        now = _utc_now()
-        deadline_at = (
-            _parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)
-        ).isoformat().replace("+00:00", "Z")
-        request: dict[str, Any] = {
-            "input_id": f"input-{uuid.uuid4().hex}",
-            "executor_run_id": executor_run_id,
-            "session_id": session_id,
-            "blocked_step_id": step_id,
-            "type": "permission",
-            "scope": APPROVAL_V3_SCOPE,
-            "approval_version": 3,
-            "elevation_mode": PERMISSION_ELEVATION_MODE,
-            "native_live_elevation": True,
-            "native_elevation_protocol": "claude.can_use_tool.setMode",
-            "requested_permission": "full",
-            "request_id": request_id,
-            "request_fingerprint": request_fingerprint,
-            "input_fingerprint": existing_receipt["binding"]["input_fingerprint"],
-            "operation": operation,
-            "summary": receipt_value["summary"],
-            "reason_summary": reason_summary,
-            "summary_truncated": bool(receipt_value.get("summary_truncated", False)),
-            "path_plan_digest": clean_plan,
-            "containment_profile_digest": clean_profile,
-            "authority": native_authority,
-            "native_event": native_event or "claude_sdk_can_use_tool",
-            "tool_name": str(tool_name or "").strip()[:512],
-            "tool_use_id": str(tool_use_id or "").strip()[:512],
-            "action_fingerprint": str(action_fingerprint or "").strip()[:512],
-            "escalation_domain": str(escalation_domain or "").strip().lower()[:120],
-            "control_path": str(control_path or "").strip()[:512],
-            "preflight": dict(full_preflight or {"ok": True, "status": "passed", "mode": "contained_full"}),
-            "created_at": now,
-            "deadline_at": deadline_at,
-            "status": "waiting",
-        }
-        if native_live_elevation:
-            request["native_live_elevation"] = True
-        # The task is visibly waiting, but its active RunLease and official SDK
-        # session are intentionally left untouched.
-        task.status = "input_required"
-        task.updated_at = now
-        extensions["agentbc.input"] = request
-        task.extensions = _merge_execution(
-            extensions,
-            {
-                "internal_status": "elevation_pending",
-                "lease_state": "active",
-                "waiting_since": now,
-                "claude_elevation_state": CLAUDE_ELEVATION_PENDING,
-            },
-        )
-        self.store.write_task(task.id, _without_none(task.to_dict()))
-        self.store.append_event(
-            task.id,
-            {
-                "event_type": "task.claude_elevation_pending",
-                "task_id": task.id,
-                "executor_run_id": executor_run_id,
-                "session_id": session_id,
-                "request_id": request_id,
-                "input_id": request["input_id"],
-                "created_at": now,
-            },
-        )
-        self._refresh_task_index()
-        return {
-            "ok": True,
-            "task_id": task.id,
-            "status": "input_required",
-            "input_id": request["input_id"],
-            "request_id": request_id,
-            "request_fingerprint": request_fingerprint,
-            "scope": APPROVAL_V3_SCOPE,
-            "approval_version": 3,
-            "elevation_mode": PERMISSION_ELEVATION_MODE,
-            "native_live_elevation": True,
-            "blocked_step_id": step_id,
-            "same_session": True,
-            "dispatch_required": False,
-        }
-
     def respond_to_live_claude_elevation(
         self,
         task_id: str,
@@ -1462,9 +1214,7 @@ class ApprovalLifecycleMixin:
             raise ABCError("stale_input", f"Input {input_id} is not current for task {task.id}")
         if request.get("status") != "waiting":
             if request.get("status") == "answered":
-                answered_decision = str(
-                    request.get("approval_decision") or ""
-                ).strip().lower()
+                answered_decision = str(request.get("approval_decision") or "").strip().lower()
                 return {
                     "ok": True,
                     "task_id": task.id,
@@ -1472,11 +1222,7 @@ class ApprovalLifecycleMixin:
                     "status": "already_answered",
                     "dispatch_required": False,
                     "same_session": True,
-                    "approval_decision": (
-                        answered_decision
-                        if answered_decision in {"approve", "deny"}
-                        else ""
-                    ),
+                    "approval_decision": (answered_decision if answered_decision in {"approve", "deny"} else ""),
                 }
             raise ABCError("input_not_pending", f"Input {input_id} is not waiting")
         response_value = str(response_type or "").strip().lower()
@@ -1533,19 +1279,17 @@ class ApprovalLifecycleMixin:
                 executor_run_id=expected_run,
                 request_fingerprint=str(request.get("request_fingerprint") or ""),
             )
-        extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = (
-            record_permission_elevation_decision(
-                elevation,
-                "approve_full" if response_value == "approve" else "deny",
-                source="user",
-                decided_at=now,
-                task_id=task.id,
-                executor=task.assignee,
-                executor_run_id=expected_run,
-                session_id=session_id,
-                request_id=str(request.get("request_id") or ""),
-                request_fingerprint=str(request.get("request_fingerprint") or ""),
-            )
+        extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = record_permission_elevation_decision(
+            elevation,
+            "approve_full" if response_value == "approve" else "deny",
+            source="user",
+            decided_at=now,
+            task_id=task.id,
+            executor=task.assignee,
+            executor_run_id=expected_run,
+            session_id=session_id,
+            request_id=str(request.get("request_id") or ""),
+            request_fingerprint=str(request.get("request_fingerprint") or ""),
         )
         answered = dict(request)
         answered.update(
@@ -1564,9 +1308,7 @@ class ApprovalLifecycleMixin:
             {
                 "internal_status": "running",
                 "lease_state": "active",
-                "permission_elevation_state": (
-                    "approved" if response_value == "approve" else "denied"
-                ),
+                "permission_elevation_state": ("approved" if response_value == "approve" else "denied"),
             },
         )
         self.store.write_task(task.id, _without_none(task.to_dict()))
@@ -1636,12 +1378,7 @@ class ApprovalLifecycleMixin:
         authority_executor = str(authority_value.get("executor") or "").strip().lower()
         authority_protocol = str(authority_value.get("protocol") or "").strip()
         authority_method = str(authority_value.get("method") or "").strip()
-        if (
-            authority_executor != executor
-            or not authority_protocol
-            or not authority_method
-            or not str(native_event or "").strip()
-        ):
+        if authority_executor != executor or not authority_protocol or not authority_method or not str(native_event or "").strip():
             raise ABCError(
                 "permission_block_evidence_unavailable",
                 "Task elevation requires the trusted structured native authority event",
@@ -1655,10 +1392,7 @@ class ApprovalLifecycleMixin:
 
         previous_input = extensions.get("agentbc.input")
         if isinstance(previous_input, dict) and previous_input.get("status") == "waiting":
-            if (
-                int(previous_input.get("approval_version") or 1) == 3
-                and str(previous_input.get("request_id") or "") == request_id
-            ):
+            if int(previous_input.get("approval_version") or 1) == 3 and str(previous_input.get("request_id") or "") == request_id:
                 identity_fields = (
                     ("request_fingerprint", request_fingerprint),
                     ("input_fingerprint", input_fingerprint),
@@ -1668,13 +1402,7 @@ class ApprovalLifecycleMixin:
                     ("control_path", control_path),
                     ("native_event", native_event),
                 )
-                mismatched = [
-                    key
-                    for key, incoming in identity_fields
-                    if incoming
-                    and str(previous_input.get(key) or "")
-                    != str(incoming)
-                ]
+                mismatched = [key for key, incoming in identity_fields if incoming and str(previous_input.get(key) or "") != str(incoming)]
                 if mismatched:
                     raise ABCError(
                         "permission_elevation_binding_mismatch",
@@ -1741,10 +1469,7 @@ class ApprovalLifecycleMixin:
                 "permission_preflight_failed",
                 "Task elevation cannot be created because no incomplete step exists",
             )
-        if not any(
-            step.get("id") == step_id and step.get("status") not in {"done", "completed"}
-            for step in task.steps
-        ):
+        if not any(step.get("id") == step_id and step.get("status") not in {"done", "completed"} for step in task.steps):
             raise ABCError(
                 "permission_input_invalid",
                 "Task elevation does not identify an incomplete step",
@@ -1784,9 +1509,7 @@ class ApprovalLifecycleMixin:
             authority=authority_value,
         )
         now = _utc_now()
-        deadline_at = (
-            _parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)
-        ).isoformat().replace("+00:00", "Z")
+        deadline_at = (_parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)).isoformat().replace("+00:00", "Z")
         request: dict[str, Any] = {
             "input_id": f"input-{uuid.uuid4().hex}",
             "executor_run_id": executor_run_id,
@@ -1857,11 +1580,7 @@ class ApprovalLifecycleMixin:
                 self.board_root,
                 executor_run_id=executor_run_id,
                 executor_id=task.assignee,
-                work_dir=str(
-                    (task.workspace or {}).get("project_root")
-                    or (task.workspace or {}).get("root")
-                    or self.board_root
-                ),
+                work_dir=str((task.workspace or {}).get("project_root") or (task.workspace or {}).get("root") or self.board_root),
             )
         clear_task_progress(task)
         self.store.append_event(
@@ -2095,27 +1814,20 @@ class ApprovalLifecycleMixin:
             and request.get("elevation_mode") == PERMISSION_ELEVATION_MODE
         )
         is_v2_permission = (
-            int(request.get("approval_version") or 1) == 2
-            and isinstance(request.get("choices"), list)
-            and bool(request.get("choices"))
+            int(request.get("approval_version") or 1) == 2 and isinstance(request.get("choices"), list) and bool(request.get("choices"))
         )
         if response_type == "permission_option":
             if not is_v2_permission:
                 raise ABCError(
                     "native_permission_choice_required",
-                    "Only a v2 native permission request accepts an explicit "
-                    "choice handle",
+                    "Only a v2 native permission request accepts an explicit choice handle",
                 )
             if not str(message or "").strip():
                 raise ABCError(
                     "invalid_input_response",
                     "--permission-option requires the exact offered handle",
                 )
-        elif response_type not in (
-            {"approve_full", "deny"}
-            if is_task_elevation_request
-            else {"approve", "deny"}
-        ):
+        elif response_type not in ({"approve_full", "deny"} if is_task_elevation_request else {"approve", "deny"}):
             raise ABCError(
                 "invalid_input_response",
                 "Task elevation requests only accept approve_full or deny"
@@ -2125,23 +1837,14 @@ class ApprovalLifecycleMixin:
         if is_v2_permission and response_type in {"approve", "deny", "approve_full"}:
             raise ABCError(
                 "native_permission_choice_required",
-                "A v2 native permission request requires an explicit choice "
-                "handle (--permission-option), not a flattened approve/deny",
+                "A v2 native permission request requires an explicit choice handle (--permission-option), not a flattened approve/deny",
             )
 
         selected_choice: dict[str, Any] | None = None
         if response_type == "permission_option":
             handle = str(message or "").strip()
-            offered_choices = [
-                choice
-                for choice in request.get("choices", [])
-                if isinstance(choice, dict)
-            ]
-            matched = [
-                choice
-                for choice in offered_choices
-                if str(choice.get("handle") or "") == handle
-            ]
+            offered_choices = [choice for choice in request.get("choices", []) if isinstance(choice, dict)]
+            matched = [choice for choice in offered_choices if str(choice.get("handle") or "") == handle]
             if not matched:
                 raise ABCError(
                     "approval_handle_mismatch",
@@ -2168,11 +1871,7 @@ class ApprovalLifecycleMixin:
         response_payload: dict[str, Any] = {
             "type": response_type,
             "summary": clean_message,
-            **(
-                {"source": permission_denial_source}
-                if response_type == "deny"
-                else {}
-            ),
+            **({"source": permission_denial_source} if response_type == "deny" else {}),
         }
         if response_type == "permission_option" and selected_choice is not None:
             response_payload["permission_choice"] = {
@@ -2191,9 +1890,7 @@ class ApprovalLifecycleMixin:
                 path_plan_digest=str(request.get("path_plan_digest") or ""),
                 executor=task.assignee,
                 executor_run_id=str(request.get("executor_run_id") or ""),
-                session_id=str(
-                    (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
-                ),
+                session_id=str((extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""),
                 request_id=str(request.get("request_id") or ""),
                 request_fingerprint=str(request.get("request_fingerprint") or ""),
             )
@@ -2202,15 +1899,9 @@ class ApprovalLifecycleMixin:
                     "permission_elevation_binding_mismatch",
                     "Task elevation input is missing its durable elevation receipt",
                 )
-            session_value = str(
-                (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
-            )
-            approval_receipt = self._approval_receipt_for_response(
-                task, extensions, request, input_id
-            )
-            elevation_source = (
-                permission_denial_source if response_type == "deny" else "user"
-            )
+            session_value = str((extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or "")
+            approval_receipt = self._approval_receipt_for_response(task, extensions, request, input_id)
+            elevation_source = permission_denial_source if response_type == "deny" else "user"
             extensions[APPROVAL_EXTENSION_KEY] = record_approval_decision(
                 approval_receipt,
                 response_type,
@@ -2223,32 +1914,24 @@ class ApprovalLifecycleMixin:
                 executor_run_id=str(request.get("executor_run_id") or ""),
                 request_fingerprint=str(request.get("request_fingerprint") or ""),
             )
-            extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = (
-                record_permission_elevation_decision(
-                    elevation,
-                    response_type,
-                    source=elevation_source,
-                    decided_at=now,
-                    task_id=task.id,
-                    path_plan_digest=str(request.get("path_plan_digest") or ""),
-                    executor=task.assignee,
-                    executor_run_id=str(request.get("executor_run_id") or ""),
-                    session_id=session_value,
-                    request_id=str(request.get("request_id") or ""),
-                    request_fingerprint=str(request.get("request_fingerprint") or ""),
-                )
+            extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = record_permission_elevation_decision(
+                elevation,
+                response_type,
+                source=elevation_source,
+                decided_at=now,
+                task_id=task.id,
+                path_plan_digest=str(request.get("path_plan_digest") or ""),
+                executor=task.assignee,
+                executor_run_id=str(request.get("executor_run_id") or ""),
+                session_id=session_value,
+                request_id=str(request.get("request_id") or ""),
+                request_fingerprint=str(request.get("request_fingerprint") or ""),
             )
             if response_type == "deny":
                 timed_out = permission_denial_source == "timeout"
-                failure_code = (
-                    "permission_denied_by_timeout"
-                    if timed_out
-                    else "permission_denied_by_user"
-                )
+                failure_code = "permission_denied_by_timeout" if timed_out else "permission_denied_by_user"
                 failure_message = (
-                    "Task elevation timed out and was automatically denied"
-                    if timed_out
-                    else "User denied full task elevation"
+                    "Task elevation timed out and was automatically denied" if timed_out else "User denied full task elevation"
                 )
                 task.extensions = extensions
                 task.updated_at = now
@@ -2294,18 +1977,13 @@ class ApprovalLifecycleMixin:
                 }
 
             blocked_step_id = request.get("blocked_step_id")
-            if not any(
-                step.get("id") == blocked_step_id and step.get("status") == "blocked"
-                for step in task.steps
-            ):
+            if not any(step.get("id") == blocked_step_id and step.get("status") == "blocked" for step in task.steps):
                 raise ABCError(
                     "permission_input_invalid",
                     "Task elevation input does not identify the current blocked step",
                 )
             task.steps = [
-                {**step, "status": "pending"}
-                if step.get("id") == blocked_step_id and step.get("status") == "blocked"
-                else dict(step)
+                {**step, "status": "pending"} if step.get("id") == blocked_step_id and step.get("status") == "blocked" else dict(step)
                 for step in task.steps
             ]
             task.status = "running"
@@ -2353,26 +2031,16 @@ class ApprovalLifecycleMixin:
                 "elevation_state": "approved",
             }
 
-        is_approval_request = (
-            request.get("scope") == APPROVAL_SCOPE
-            and bool(str(request.get("request_id") or "").strip())
-        )
+        is_approval_request = request.get("scope") == APPROVAL_SCOPE and bool(str(request.get("request_id") or "").strip())
         if is_approval_request:
-            receipt = self._approval_receipt_for_response(
-                task, extensions, request, input_id
-            )
+            receipt = self._approval_receipt_for_response(task, extensions, request, input_id)
             if response_type == "permission_option" and selected_choice is not None:
                 approval_source = (
                     permission_denial_source
-                    if str(selected_choice.get("kind") or "") == "deny"
-                    and permission_denial_source != "user"
+                    if str(selected_choice.get("kind") or "") == "deny" and permission_denial_source != "user"
                     else "user"
                 )
-                decided_type = (
-                    "deny"
-                    if str(selected_choice.get("kind") or "") == "deny"
-                    else "approve"
-                )
+                decided_type = "deny" if str(selected_choice.get("kind") or "") == "deny" else "approve"
                 from .approval import record_approval_selection
 
                 updated_receipt = record_approval_selection(
@@ -2382,9 +2050,7 @@ class ApprovalLifecycleMixin:
                     decided_type=decided_type,
                 )
             else:
-                approval_source = (
-                    permission_denial_source if response_type == "deny" else "user"
-                )
+                approval_source = permission_denial_source if response_type == "deny" else "user"
                 updated_receipt = record_approval_decision(
                     receipt,
                     response_type,
@@ -2392,25 +2058,18 @@ class ApprovalLifecycleMixin:
                     decided_at=now,
                     executor=task.assignee,
                     task_id=task.id,
-                    session_id=str(
-                        (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
-                    ),
+                    session_id=str((extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""),
                     request_id=str(request.get("request_id") or ""),
                 )
             extensions[APPROVAL_EXTENSION_KEY] = updated_receipt
             blocked_step_id = request.get("blocked_step_id")
-            if not any(
-                step.get("id") == blocked_step_id and step.get("status") == "blocked"
-                for step in task.steps
-            ):
+            if not any(step.get("id") == blocked_step_id and step.get("status") == "blocked" for step in task.steps):
                 raise ABCError(
                     "permission_input_invalid",
                     "Approval input does not identify the current blocked step",
                 )
             task.steps = [
-                {**step, "status": "pending"}
-                if step.get("id") == blocked_step_id and step.get("status") == "blocked"
-                else dict(step)
+                {**step, "status": "pending"} if step.get("id") == blocked_step_id and step.get("status") == "blocked" else dict(step)
                 for step in task.steps
             ]
             task.status = "running"
@@ -2470,15 +2129,9 @@ class ApprovalLifecycleMixin:
         if response_type == "deny":
             timed_out = permission_denial_source == "timeout"
             failure_message = (
-                "Permission request timed out and was automatically denied"
-                if timed_out
-                else "User denied the requested full permission"
+                "Permission request timed out and was automatically denied" if timed_out else "User denied the requested full permission"
             )
-            failure_code = (
-                "permission_denied_by_timeout"
-                if timed_out
-                else "permission_denied_by_user"
-            )
+            failure_code = "permission_denied_by_timeout" if timed_out else "permission_denied_by_user"
             task.extensions = extensions
             task.updated_at = now
             self._mark_task_failed_model(
@@ -2524,26 +2177,17 @@ class ApprovalLifecycleMixin:
             }
 
         blocked_step_id = request.get("blocked_step_id")
-        if not any(
-            step.get("id") == blocked_step_id and step.get("status") == "blocked"
-            for step in task.steps
-        ):
+        if not any(step.get("id") == blocked_step_id and step.get("status") == "blocked" for step in task.steps):
             raise ABCError(
                 "permission_input_invalid",
                 "Permission input does not identify the current blocked step",
             )
         task.steps = [
-            {**step, "status": "pending"}
-            if step.get("id") == blocked_step_id and step.get("status") == "blocked"
-            else dict(step)
+            {**step, "status": "pending"} if step.get("id") == blocked_step_id and step.get("status") == "blocked" else dict(step)
             for step in task.steps
         ]
         session = extensions.get(SESSION_EXTENSION_KEY)
-        session_id = (
-            str(session.get("session_id") or "").strip()
-            if isinstance(session, dict)
-            else ""
-        )
+        session_id = str(session.get("session_id") or "").strip() if isinstance(session, dict) else ""
         if not session_id:
             raise ABCError(
                 "permission_input_invalid",
@@ -2619,10 +2263,7 @@ class ApprovalLifecycleMixin:
         task.extensions = dict(task.extensions or {})
         task.extensions["agentbc.input"] = answered_request
         task.updated_at = expired_at
-        is_approval_request = (
-            request.get("scope") == APPROVAL_SCOPE
-            and bool(str(request.get("request_id") or "").strip())
-        )
+        is_approval_request = request.get("scope") == APPROVAL_SCOPE and bool(str(request.get("request_id") or "").strip())
         is_task_elevation_request = (
             request.get("scope") == APPROVAL_V3_SCOPE
             and int(request.get("approval_version") or 1) == 3
@@ -2631,9 +2272,7 @@ class ApprovalLifecycleMixin:
         if is_task_elevation_request:
             extensions = dict(task.extensions or {})
             try:
-                session_value = str(
-                    (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
-                )
+                session_value = str((extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or "")
                 receipt = self._approval_receipt_for_response(
                     task,
                     extensions,
@@ -2667,20 +2306,18 @@ class ApprovalLifecycleMixin:
                     executor_run_id=str(request.get("executor_run_id") or ""),
                     request_fingerprint=str(request.get("request_fingerprint") or ""),
                 )
-                extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = (
-                    record_permission_elevation_decision(
-                        elevation,
-                        "deny",
-                        source="timeout",
-                        decided_at=expired_at,
-                        task_id=task.id,
-                        path_plan_digest=str(request.get("path_plan_digest") or ""),
-                        executor=task.assignee,
-                        executor_run_id=str(request.get("executor_run_id") or ""),
-                        session_id=session_value,
-                        request_id=str(request.get("request_id") or ""),
-                        request_fingerprint=str(request.get("request_fingerprint") or ""),
-                    )
+                extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = record_permission_elevation_decision(
+                    elevation,
+                    "deny",
+                    source="timeout",
+                    decided_at=expired_at,
+                    task_id=task.id,
+                    path_plan_digest=str(request.get("path_plan_digest") or ""),
+                    executor=task.assignee,
+                    executor_run_id=str(request.get("executor_run_id") or ""),
+                    session_id=session_value,
+                    request_id=str(request.get("request_id") or ""),
+                    request_fingerprint=str(request.get("request_fingerprint") or ""),
                 )
                 task.extensions = extensions
                 self.store.write_task(task.id, _without_none(task.to_dict()))
@@ -2739,9 +2376,7 @@ class ApprovalLifecycleMixin:
                     decided_at=expired_at,
                     executor=task.assignee,
                     task_id=task.id,
-                    session_id=str(
-                        (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
-                    ),
+                    session_id=str((extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""),
                     request_id=str(request.get("request_id") or ""),
                 )
                 task.extensions = extensions
@@ -2791,5 +2426,6 @@ class ApprovalLifecycleMixin:
             },
         )
         return True
+
 
 __all__ = ["ApprovalLifecycleHost", "ApprovalLifecycleMixin"]
