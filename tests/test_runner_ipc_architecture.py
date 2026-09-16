@@ -27,6 +27,7 @@ Contracts under test:
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import re
@@ -46,9 +47,9 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from agent_bridge_connect import runner as runner_module
-from agent_bridge_connect import runner_contract, runner_ipc
-from agent_bridge_connect.runner import (
+from agent_bridge_connect import runner as runner_module  # noqa: E402
+from agent_bridge_connect import runner_contract, runner_ipc  # noqa: E402
+from agent_bridge_connect.runner import (  # noqa: E402
     MAX_OUTPUT_BYTES,
     MAX_REQUEST_BYTES,
     RunnerClient,
@@ -226,7 +227,6 @@ class RunnerIpcHarness(unittest.TestCase):
         exercise a handler rather than the authentication gate; pass ``False`` to
         hand-craft the credential envelope (foreign token, missing token).
         """
-        requests_dir = self.spool / "requests" / channel if channel else self.spool / "requests"
         responses_dir = self.spool / "responses" / channel if channel else self.spool / "responses"
         request_id = self._queue_request(
             payload, channel=channel, authenticate=authenticate
@@ -269,18 +269,30 @@ class RunnerIpcPublicSurfaceTests(unittest.TestCase):
         self.assertIs(RunnerClient, runner_ipc.RunnerClient)
         self.assertIs(RunnerService, runner_ipc.RunnerService)
         self.assertIs(_dispatch_request, runner_ipc._dispatch_request)
-        # A forwarding wrapper would necessarily be a function or class defined
-        # in runner.py, so ``__module__`` is the discriminator that matters.
-        for name, expected in [
-            *((name, "agent_bridge_connect.runner_ipc") for name in MOVED_FROM_IPC),
-            *((name, "agent_bridge_connect.runner_contract") for name in MOVED_FROM_CONTRACT),
+        for name, owner in [
+            *((name, runner_ipc) for name in MOVED_FROM_IPC),
+            *((name, runner_contract) for name in MOVED_FROM_CONTRACT),
         ]:
             with self.subTest(name=name):
                 value = getattr(runner_module, name)
+                # Object identity is the discriminator: a runner.py forwarding
+                # stand-in would be a distinct object.
+                self.assertIs(
+                    value,
+                    getattr(owner, name),
+                    f"{name} must be the object {owner.__name__} defines",
+                )
+                # ``__module__`` names a defining module only for objects Python
+                # attributes to one, so scope that extra check to the shapes a
+                # forwarding wrapper could actually take.  Constants are
+                # attributed to their type's module instead -- a compiled pattern
+                # reports ``re``, an int reports ``builtins``.
+                if not (inspect.isclass(value) or inspect.isfunction(value)):
+                    continue
                 self.assertEqual(
-                    getattr(value, "__module__", expected),
-                    expected,
-                    f"{name} must be the original object, not a runner.py wrapper",
+                    value.__module__,
+                    owner.__name__,
+                    f"{name} must be defined in {owner.__name__}, not runner.py",
                 )
 
     def test_default_path_contracts_are_unchanged(self) -> None:
