@@ -422,6 +422,23 @@ SESSION canary 补入独立 `desktop_visibility=thread/list` capability，并保
 - 每个 slice 都要证明生产代码净复杂度下降或责任边界收敛，不能只增加 wrapper；
 - update、permission、notification、progress 的重构不得共享一个“大爆炸”提交。
 
+2026-09-16 集成收尾：
+
+- Slice A approval/control 生命周期拆分由 `2ZDJ-001/002` 完成，integration 提交为
+  `7671557`、`51eb0ff`；Slice B Runner IPC 拆分由 `ZG3N-001/002` 完成，integration 提交为
+  `44344f9`、`4711315`；Slice C Doctor collectors 拆分由 `HFTW-001` 完成，integration 提交为
+  `d6f090d`。三个 slice 均保留原公共 import/签名和单一权威实现，没有夹带 schema、权限、
+  session cleanup 或 CLI 语义变化。
+- integration 联合验收：ARCH 定向与 architecture 测试 `89/89` 通过；完整 unittest
+  `2106` 项通过、`17` 项跳过；Ruff、compileall、package build、`git diff --check` 全部通过，
+  工作树干净。
+- 责任边界指标达到预期：`service.py 7864→5260`、`control.py 1823→111`、
+  `runner.py 4717→3902`、`doctor.py 2242→621`；Runner 保持一个 IPC router/每 op 一个 handler，
+  Doctor collectors 保持只读，approval receipt/schema authority 仍唯一。
+- 总生产代码量精简目标未达，必须保留为后续优化依据而不能改写为通过：approval/control/service
+  域 `9687→10032`（`+3.56%`），Runner 三模块 `4717→4873`（`+3.31%`），Doctor 两模块
+  `2242→2353`（`+4.95%`）。本次只确认机械拆分和零行为回归，不为追求 LOC 指标继续扩大改动。
+
 ### 4.3 `PERM-104-001`：审批机械判定
 
 Core 只依据受支持 Adapter 的可信结构化 permission-block event 创建审批：
