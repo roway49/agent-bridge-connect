@@ -358,11 +358,12 @@ class ApprovalLifecycleRefactorTests(unittest.TestCase):
         timeout_id, _ = self._started_task("approval-timeout")
         timeout_task = self.service.get_task(timeout_id)
         timeout_request = timeout_task.extensions["agentbc.input"]
-        timeout_request["deadline_at"] = "2000-01-01T00:00:00Z"
+        timeout_at = timeout_task.extensions[APPROVAL_EXTENSION_KEY]["created_at"]
+        timeout_request["deadline_at"] = timeout_at
         timeout_task.extensions["agentbc.input"] = timeout_request
         self.service.store.write_task(timeout_id, timeout_task.to_dict())
         self.assertEqual(
-            [item["task_id"] for item in self.service.expire_waiting_inputs(now="2026-09-16T00:00:00Z")],
+            [item["task_id"] for item in self.service.expire_waiting_inputs(now=timeout_at)],
             [timeout_id],
         )
         timed_out = self.service.get_task(timeout_id)
