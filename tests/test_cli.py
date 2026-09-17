@@ -3,6 +3,7 @@ from pathlib import Path
 import contextlib
 import tempfile
 import unittest
+from unittest import mock
 
 from agent_bridge_connect.cli import _expand_shorthand, build_parser, main
 
@@ -49,7 +50,7 @@ class CliTests(unittest.TestCase):
             self.assertIn("initialized:", out.getvalue())
 
     def test_uninstall_command_routes_explicit_data_choices(self) -> None:
-        with unittest.mock.patch("agent_bridge_connect.setup.run_uninstall") as uninstall:
+        with mock.patch("agent_bridge_connect.setup.run_uninstall") as uninstall:
             uninstall.return_value = {"ok": True, "mode": "uninstall"}
             code = main(["uninstall", "--remove-records", "--keep-artifacts"])
 
@@ -67,8 +68,8 @@ class CliTests(unittest.TestCase):
             "config_path": "/tmp/agentbc-config.toml",
         }
         runner_result = {"ok": True, "status": "started", "pid": 123}
-        with unittest.mock.patch("agent_bridge_connect.setup.run_setup", return_value=setup_result), \
-             unittest.mock.patch(
+        with mock.patch("agent_bridge_connect.setup.run_setup", return_value=setup_result), \
+             mock.patch(
                  "agent_bridge_connect.runner.start_runner_background",
                  return_value=runner_result,
              ) as start:
@@ -79,6 +80,54 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         start.assert_called_once_with(config_path="/tmp/agentbc-config.toml")
         self.assertIn('"status": "started"', out.getvalue())
+
+    def test_desktop_archive_ack_accepts_runner_status_success(self) -> None:
+        result = {
+            "ok": True,
+            "task_id": "T2AH-001",
+            "session_id": "01a081be-3e15-7f93-9b1c-2fb032b6c279",
+            "status": "succeeded",
+        }
+        with mock.patch(
+            "agent_bridge_connect.runner.RunnerClient.acknowledge_desktop_archive",
+            return_value=result,
+        ):
+            with contextlib.redirect_stdout(StringIO()):
+                code = main(
+                    [
+                        "session",
+                        "acknowledge-desktop-archive",
+                        "T2AH-001",
+                        "--session-id",
+                        "01a081be-3e15-7f93-9b1c-2fb032b6c279",
+                    ]
+                )
+
+        self.assertEqual(code, 0)
+
+    def test_desktop_archive_ack_rejects_nonterminal_status(self) -> None:
+        result = {
+            "ok": True,
+            "task_id": "T2AH-001",
+            "session_id": "01a081be-3e15-7f93-9b1c-2fb032b6c279",
+            "status": "waiting_for_desktop",
+        }
+        with mock.patch(
+            "agent_bridge_connect.runner.RunnerClient.acknowledge_desktop_archive",
+            return_value=result,
+        ):
+            with contextlib.redirect_stdout(StringIO()):
+                code = main(
+                    [
+                        "session",
+                        "acknowledge-desktop-archive",
+                        "T2AH-001",
+                        "--session-id",
+                        "01a081be-3e15-7f93-9b1c-2fb032b6c279",
+                    ]
+                )
+
+        self.assertEqual(code, 1)
 
 
 if __name__ == "__main__":

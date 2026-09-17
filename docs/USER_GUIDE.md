@@ -2,8 +2,8 @@
 
 [中文](USER_GUIDE_ZH.md) | English
 
-Applies to the AgentBC **1.0.3A** release (tag `v1.0.3A2`, Python package
-`1.0.3a2`).
+Applies to the AgentBC **1.0.4A** release (tag `v1.0.4A`, Python package
+`1.0.4a1`).
 
 ## Command Surface
 
@@ -278,6 +278,13 @@ agentbc task logs 4XMC
 - `completed`: a valid final marker declared every task step `done`; quality is not asserted.
 - `needs_recovery`: an explicit retryable transport or infrastructure failure stopped execution.
 - `failed`: the final marker or another non-retryable execution contract was missing or invalid.
+
+Both `failed` and `needs_recovery` current chain heads support the same explicit
+revival commands. `agentbc task retry <TASK_ID>` restarts the same Task ID from
+Step 1 under the retry cleanup boundary; `agentbc task handoff <TASK_ID> --to
+<executor>` preserves the existing report and artifacts and creates the next
+mechanically imported iteration. Both interactive forms ask for confirmation
+before dispatch.
 
 Every successful Codex, Claude, or Hermes run must end its final response with
 exactly one version-1 marker on a single line:

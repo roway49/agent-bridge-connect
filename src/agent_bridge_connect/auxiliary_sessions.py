@@ -32,24 +32,32 @@ from typing import Any
 
 from .execution_policy import (
     CLEANUP_STATES,
+    CLEANUP_VERIFICATION_SIDES,
     MAX_SESSION_CLEANUP_ATTEMPTS,
     PROJECT_MODES,
     RESOLVED_CLEANUP_STATES,
     SESSION_EXTENSION_KEY,
-    TERMINAL_SESSION_CLEANUP_STATUSES,
+    SESSION_RECEIPT_SOURCES,
     build_session_cleanup_receipt,
+    _empty_cleanup_commands,
+    _empty_cleanup_verification,
+    normalize_cleanup_commands,
+    normalize_cleanup_verification,
     read_session_cleanup_receipt,
     session_cleanup_view,
+    upgrade_session_cleanup_receipt,
     validate_execution_session_receipt,
     validate_session_cleanup_receipt,
 )
 from .protocol import ABCError
 
-
 AUXILIARY_LEDGER_VERSION = 1
 AUXILIARY_EXTENSION_KEY = "agentbc.auxiliary_sessions"
 AUXILIARY_SESSION_LIMIT = 16
 AUXILIARY_ENTRY_VERSION = 1
+CODEX_AUXILIARY_RECEIPT_MISSING_CODE = "codex_auxiliary_receipt_missing"
+CODEX_AUXILIARY_SESSION_UNREGISTERED_CODE = "codex_auxiliary_session_unregistered"
+CODEX_COLLABORATION_SPAWN_PURPOSE = "collaboration_spawn"
 
 AUXILIARY_SESSION_STATES = frozenset(
     {"reserved", "active", "input_required", "needs_recovery", "terminal"}
@@ -75,6 +83,14 @@ AUXILIARY_ENTRY_FIELDS = frozenset(
         "bound_at",
         "created_at",
         "updated_at",
+    }
+)
+_AUXILIARY_OPTIONAL_ENTRY_FIELDS = frozenset(
+    {
+        "collaboration_item_id",
+        "parent_turn_id",
+        "archive_acknowledged",
+        "archive_checked_at",
     }
 )
 _AUX_ID_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -150,7 +166,7 @@ def validate_auxiliary_entry(value: Any) -> list[str]:
         return [f"{prefix} must be an object"]
     fields = set(value)
     missing = sorted(AUXILIARY_ENTRY_FIELDS - fields)
-    unknown = sorted(fields - AUXILIARY_ENTRY_FIELDS)
+    unknown = sorted(fields - AUXILIARY_ENTRY_FIELDS - _AUXILIARY_OPTIONAL_ENTRY_FIELDS)
     errors: list[str] = []
     if missing:
         errors.append(f"missing fields: {', '.join(missing)}")
@@ -158,6 +174,17 @@ def validate_auxiliary_entry(value: Any) -> list[str]:
         errors.append(f"contains unsupported fields: {', '.join(unknown)}")
     if missing or unknown:
         return errors
+    for field in _AUXILIARY_OPTIONAL_ENTRY_FIELDS:
+        if field == "archive_acknowledged":
+            if field in value and type(value[field]) is not bool:
+                errors.append(f"{field} must be a boolean")
+            continue
+        if field in value and not isinstance(value[field], str):
+            errors.append(f"{field} must be a string")
+    if value.get("archive_acknowledged") is True and not str(
+        value.get("archive_checked_at") or ""
+    ).strip():
+        errors.append("archive_checked_at is required after archive acknowledgement")
     if value.get("version") != AUXILIARY_ENTRY_VERSION:
         errors.append(f"version must be {AUXILIARY_ENTRY_VERSION}")
     aux_id = value.get("aux_id")
@@ -228,6 +255,8 @@ def reserve_auxiliary_session(
     retain: bool,
     project_mode: str = "none",
     project_path: str = "",
+    collaboration_item_id: str = "",
+    parent_turn_id: str = "",
     created_at: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Phase one: durably reserve an auxiliary session before creation.
@@ -248,6 +277,8 @@ def reserve_auxiliary_session(
     child_executor = str(executor or "").strip().lower()
     purpose_label = str(purpose or "").strip().lower()
     parent_executor = str(parent_executor or "").strip().lower()
+    collaboration_item_id = str(collaboration_item_id or "").strip()
+    parent_turn_id = str(parent_turn_id or "").strip()
     if not owner_task_id or not owner_run_id:
         raise ABCError(
             "auxiliary_reservation_invalid",
@@ -274,19 +305,23 @@ def reserve_auxiliary_session(
             "purpose must be a stable lowercase label",
         )
     primary = extensions.get(SESSION_EXTENSION_KEY)
-    if isinstance(primary, dict) and type(primary.get("retain")) is bool:
-        if retain is not primary.get("retain"):
-            raise ABCError(
-                "auxiliary_reservation_conflict",
-                "auxiliary retain must be copied from the primary session snapshot",
-                {"primary_retain": primary.get("retain"), "requested_retain": retain},
-            )
+    if (
+        isinstance(primary, dict)
+        and type(primary.get("retain")) is bool
+        and retain is not primary.get("retain")
+    ):
+        raise ABCError(
+            "auxiliary_reservation_conflict",
+            "auxiliary retain must be copied from the primary session snapshot",
+            {"primary_retain": primary.get("retain"), "requested_retain": retain},
+        )
     entry = _match_existing_reservation(
         ledger,
         owner_run_id=owner_run_id,
         parent_session_id=parent_session_id,
         executor=child_executor,
         purpose=purpose_label,
+        collaboration_item_id=collaboration_item_id,
     )
     if entry is not None:
         _assert_frozen_match(
@@ -296,6 +331,8 @@ def reserve_auxiliary_session(
             retain=retain,
             project_mode=project_mode,
             project_path=project_path,
+            collaboration_item_id=collaboration_item_id,
+            parent_turn_id=parent_turn_id,
         )
         return extensions, copy.deepcopy(entry)
     if len(ledger["sessions"]) >= AUXILIARY_SESSION_LIMIT:
@@ -324,6 +361,10 @@ def reserve_auxiliary_session(
         "created_at": now,
         "updated_at": now,
     }
+    if collaboration_item_id:
+        entry["collaboration_item_id"] = collaboration_item_id
+    if parent_turn_id:
+        entry["parent_turn_id"] = parent_turn_id
     entry_errors = validate_auxiliary_entry(entry)
     if entry_errors:
         _raise_ledger_error("auxiliary_ledger_invalid", "; ".join(entry_errors), entry_errors)
@@ -465,32 +506,354 @@ def mark_auxiliary_terminal(
     return extensions, copy.deepcopy(entry)
 
 
+def reserve_codex_collaboration_session(
+    extensions: Any,
+    *,
+    owner_task_id: str,
+    owner_run_id: str,
+    parent_session_id: str,
+    item_id: str,
+    parent_turn_id: str = "",
+    created_at: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Reserve one Codex collaboration child before any child thread exists."""
+    item_id = str(item_id or "").strip()
+    if not item_id:
+        raise ABCError(
+            CODEX_AUXILIARY_RECEIPT_MISSING_CODE,
+            "Codex collaboration item did not contain an official item ID.",
+        )
+    primary = (extensions or {}).get(SESSION_EXTENSION_KEY) if isinstance(extensions, dict) else None
+    if not isinstance(primary, dict) or str(primary.get("executor") or "").strip().lower() != "codex":
+        raise ABCError(
+            CODEX_AUXILIARY_RECEIPT_MISSING_CODE,
+            "Codex collaboration child has no authoritative parent session.",
+        )
+    primary_session_id = str(primary.get("session_id") or "").strip()
+    if not primary_session_id or primary_session_id != str(parent_session_id or "").strip():
+        raise ABCError(
+            CODEX_AUXILIARY_SESSION_UNREGISTERED_CODE,
+            "Codex collaboration child parent session does not match the task receipt.",
+        )
+    if primary.get("official_receipt_bound") is not True:
+        raise ABCError(
+            CODEX_AUXILIARY_RECEIPT_MISSING_CODE,
+            "Codex collaboration child has no official parent receipt binding.",
+        )
+    if str(primary.get("receipt_source") or "").strip() != SESSION_RECEIPT_SOURCES["codex"]:
+        raise ABCError(
+            CODEX_AUXILIARY_RECEIPT_MISSING_CODE,
+            "Codex collaboration child parent receipt is not an official thread receipt.",
+        )
+    run_ids = primary.get("run_ids")
+    if (
+        not isinstance(run_ids, list)
+        or str(owner_run_id or "").strip() not in run_ids
+    ):
+        raise ABCError(
+            CODEX_AUXILIARY_SESSION_UNREGISTERED_CODE,
+            "Codex collaboration child is not bound to the current parent run.",
+        )
+    if str(primary.get("session_state") or "").strip().lower() not in {
+        "active",
+        "input_required",
+        "needs_recovery",
+    }:
+        raise ABCError(
+            CODEX_AUXILIARY_SESSION_UNREGISTERED_CODE,
+            "Codex collaboration child parent session is not active.",
+        )
+    return reserve_auxiliary_session(
+        extensions,
+        owner_task_id=owner_task_id,
+        owner_run_id=owner_run_id,
+        parent_executor="codex",
+        parent_session_id=primary_session_id,
+        executor="codex",
+        purpose=CODEX_COLLABORATION_SPAWN_PURPOSE,
+        retain=bool(primary.get("retain")),
+        collaboration_item_id=item_id,
+        parent_turn_id=str(parent_turn_id or "").strip(),
+        created_at=created_at,
+    )
+
+
+def _codex_collaboration_entry(
+    extensions: Any,
+    *,
+    owner_task_id: str,
+    owner_run_id: str,
+    parent_session_id: str,
+    item_id: str,
+) -> dict[str, Any]:
+    ledger = read_auxiliary_ledger(extensions)
+    for entry in ledger["sessions"]:
+        if (
+            str(entry.get("owner_task_id") or "") == str(owner_task_id or "")
+            and str(entry.get("owner_run_id") or "") == str(owner_run_id or "")
+            and str(entry.get("parent_session_id") or "") == str(parent_session_id or "")
+            and str(entry.get("executor") or "").strip().lower() == "codex"
+            and str(entry.get("purpose") or "") == CODEX_COLLABORATION_SPAWN_PURPOSE
+            and str(entry.get("collaboration_item_id") or "") == str(item_id or "")
+        ):
+            return copy.deepcopy(entry)
+    raise ABCError(
+        CODEX_AUXILIARY_RECEIPT_MISSING_CODE,
+        "Codex collaboration completion has no matching reservation.",
+    )
+
+
+def bind_codex_collaboration_receipt(
+    extensions: Any,
+    *,
+    aux_id: str,
+    receiver_thread_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Bind only the official receiverThreadId to a reserved child."""
+    receiver_thread_id = str(receiver_thread_id or "").strip()
+    if not receiver_thread_id:
+        raise ABCError(
+            CODEX_AUXILIARY_RECEIPT_MISSING_CODE,
+            "Codex collaboration completion did not contain receiverThreadId.",
+        )
+    ledger = read_auxiliary_ledger(extensions)
+    entry = next(
+        (item for item in ledger["sessions"] if str(item.get("aux_id") or "") == str(aux_id or "")),
+        None,
+    )
+    if entry is None or (
+        str(entry.get("executor") or "").strip().lower() != "codex"
+        or str(entry.get("purpose") or "") != CODEX_COLLABORATION_SPAWN_PURPOSE
+    ):
+        raise ABCError(
+            CODEX_AUXILIARY_RECEIPT_MISSING_CODE,
+            "Cannot bind an official receiver to an unknown Codex reservation.",
+        )
+    existing_id = str(entry.get("session_id") or "").strip()
+    if existing_id and existing_id != receiver_thread_id:
+        raise ABCError(
+            CODEX_AUXILIARY_SESSION_UNREGISTERED_CODE,
+            "Codex collaboration receiverThreadId conflicts with the bound receipt.",
+        )
+    receipt = {
+        "version": 1,
+        "executor": "codex",
+        "session_id": receiver_thread_id,
+        "resumed": False,
+        "persistence": "persistent",
+        "source": SESSION_RECEIPT_SOURCES["codex"],
+    }
+    try:
+        return bind_auxiliary_receipt(
+            extensions,
+            aux_id=aux_id,
+            receipt=receipt,
+            expected_session_id=receiver_thread_id,
+        )
+    except ABCError as exc:
+        if exc.code in {
+            "auxiliary_receipt_session_mismatch",
+            "auxiliary_receipt_conflict",
+            "auxiliary_receipt_invalid",
+        }:
+            raise ABCError(
+                CODEX_AUXILIARY_SESSION_UNREGISTERED_CODE,
+                "Codex collaboration receiverThreadId could not be bound.",
+            ) from exc
+        raise
+
+
+def mark_codex_collaboration_terminal(
+    extensions: Any,
+    *,
+    aux_id: str,
+    occurred_at: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Write the child terminal state only after its official receipt is bound."""
+    try:
+        return mark_auxiliary_terminal(
+            extensions,
+            aux_id=aux_id,
+            occurred_at=occurred_at,
+        )
+    except ABCError as exc:
+        if exc.code in {"auxiliary_receipt_missing", "auxiliary_session_not_bound"}:
+            raise ABCError(
+                CODEX_AUXILIARY_RECEIPT_MISSING_CODE,
+                "Codex collaboration child is not bound to an official receipt.",
+            ) from exc
+        raise
+
+
+def _collaboration_item_id(item: Any) -> str:
+    return str(item.get("id") or "").strip() if isinstance(item, dict) else ""
+
+
+def _collaboration_receiver_thread_id(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+    singular = str(item.get("receiverThreadId") or "").strip()
+    plural = item.get("receiverThreadIds")
+    if singular:
+        return singular if not plural or plural == [singular] else ""
+    if isinstance(plural, list) and len(plural) == 1 and isinstance(plural[0], str):
+        return plural[0].strip()
+    return ""
+
+
+def handle_codex_collaboration_item_started(
+    extensions: Any,
+    *,
+    owner_task_id: str,
+    owner_run_id: str,
+    parent_session_id: str,
+    parent_turn_id: str = "",
+    item: Any,
+    occurred_at: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Handle item/started for spawnAgent without trusting model text."""
+    if not isinstance(item, dict) or str(item.get("type") or "") != "collabAgentToolCall":
+        raise ABCError(
+            CODEX_AUXILIARY_SESSION_UNREGISTERED_CODE,
+            "Codex collaboration item type is not an official collabAgentToolCall.",
+        )
+    if str(item.get("tool") or "") != "spawnAgent":
+        raise ABCError(
+            CODEX_AUXILIARY_SESSION_UNREGISTERED_CODE,
+            "Codex collaboration item is not an official spawnAgent call.",
+        )
+    item_id = _collaboration_item_id(item)
+    return reserve_codex_collaboration_session(
+        extensions,
+        owner_task_id=owner_task_id,
+        owner_run_id=owner_run_id,
+        parent_session_id=parent_session_id,
+        item_id=item_id,
+        parent_turn_id=parent_turn_id,
+        created_at=occurred_at,
+    )
+
+
+def handle_codex_collaboration_item_completed(
+    extensions: Any,
+    *,
+    owner_task_id: str,
+    owner_run_id: str,
+    parent_session_id: str,
+    item: Any,
+    occurred_at: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Bind receiverThreadId and then write the child terminal ledger state."""
+    if not isinstance(item, dict) or str(item.get("type") or "") != "collabAgentToolCall":
+        raise ABCError(
+            CODEX_AUXILIARY_SESSION_UNREGISTERED_CODE,
+            "Codex collaboration item type is not an official collabAgentToolCall.",
+        )
+    if str(item.get("tool") or "") != "spawnAgent":
+        raise ABCError(
+            CODEX_AUXILIARY_SESSION_UNREGISTERED_CODE,
+            "Codex collaboration item is not an official spawnAgent call.",
+        )
+    item_id = _collaboration_item_id(item)
+    if not item_id:
+        raise ABCError(
+            CODEX_AUXILIARY_RECEIPT_MISSING_CODE,
+            "Codex collaboration completion did not contain an official item ID.",
+        )
+    receiver_thread_id = _collaboration_receiver_thread_id(item)
+    if not receiver_thread_id:
+        raise ABCError(
+            CODEX_AUXILIARY_RECEIPT_MISSING_CODE,
+            "Codex collaboration completion did not contain one official receiverThreadId.",
+        )
+    entry = _codex_collaboration_entry(
+        extensions,
+        owner_task_id=owner_task_id,
+        owner_run_id=owner_run_id,
+        parent_session_id=parent_session_id,
+        item_id=item_id,
+    )
+    updated, bound = bind_codex_collaboration_receipt(
+        extensions,
+        aux_id=str(entry["aux_id"]),
+        receiver_thread_id=receiver_thread_id,
+    )
+    return mark_codex_collaboration_terminal(
+        updated,
+        aux_id=str(bound["aux_id"]),
+        occurred_at=occurred_at,
+    )
+
+
+def reconcile_codex_descendants(
+    extensions: Any,
+    *,
+    owner_task_id: str,
+    owner_run_id: str,
+    parent_session_id: str,
+    threads: Any,
+) -> list[str]:
+    """Reconcile only official ancestorThreadId descendants; never delete here."""
+    registered = {
+        str(entry.get("session_id") or "").strip()
+        for entry in read_auxiliary_ledger(extensions)["sessions"]
+        if str(entry.get("owner_task_id") or "") == str(owner_task_id or "")
+        and str(entry.get("owner_run_id") or "") == str(owner_run_id or "")
+        and str(entry.get("parent_session_id") or "") == str(parent_session_id or "")
+        and str(entry.get("executor") or "").strip().lower() == "codex"
+        and str(entry.get("purpose") or "") == CODEX_COLLABORATION_SPAWN_PURPOSE
+        and str(entry.get("session_id") or "").strip()
+    }
+    descendants: set[str] = set()
+    if isinstance(threads, list):
+        for thread in threads:
+            if not isinstance(thread, dict):
+                continue
+            if str(thread.get("ancestorThreadId") or "").strip() != str(parent_session_id or "").strip():
+                continue
+            thread_id = str(thread.get("id") or thread.get("threadId") or "").strip()
+            if thread_id:
+                descendants.add(thread_id)
+    unknown = descendants - registered
+    if unknown:
+        raise ABCError(
+            CODEX_AUXILIARY_SESSION_UNREGISTERED_CODE,
+            "Official Codex descendant is not registered in the current task/run ledger.",
+            {"unknown_count": len(unknown)},
+        )
+    return sorted(descendants)
+
+
 def auxiliary_cleanup_blockers(
     entry: Any,
     *,
     task_status: str,
     lease_state: str,
-    report_written: bool,
-    notification_recorded: bool,
+    task_end_dialog_delivered: bool,
 ) -> list[str]:
-    """Return the ordered reasons one auxiliary session must not be cleaned."""
+    """Return the ordered reasons one auxiliary session must not be cleaned.
+
+    FLOW-104-002 removed ``report_written`` and ``notification_recorded`` as
+    auxiliary cleanup gates: those are independent ``agentbc.terminal_delivery``
+    stages and must never block an auxiliary session cleanup.
+    """
     blockers: list[str] = []
-    if str(task_status or "").strip().lower() not in TERMINAL_SESSION_CLEANUP_STATUSES:
-        blockers.append("task_not_terminal")
+    del task_status
+    if task_end_dialog_delivered is not True:
+        blockers.append("task_end_dialog_not_delivered")
     if str(lease_state or "").strip().lower() != "closed":
         blockers.append("run_lease_not_closed")
-    if report_written is not True:
-        blockers.append("report_not_written")
-    if notification_recorded is not True:
-        blockers.append("notification_not_recorded")
     entry_errors = validate_auxiliary_entry(entry)
     if entry_errors:
         blockers.append("auxiliary_ledger_invalid")
         return blockers
+    if (
+        str(entry.get("executor") or "").strip().lower() == "codex"
+        and str(entry.get("source") or "") != SESSION_RECEIPT_SOURCES["codex"]
+    ):
+        blockers.append("auxiliary_session_receipt_unbound")
     if entry.get("retain") is True:
         blockers.append("retention_enabled")
-    if str(entry.get("session_state") or "") != "terminal":
-        blockers.append("auxiliary_session_not_terminal")
     if not str(entry.get("session_id") or "").strip():
         blockers.append("auxiliary_session_pending_reservation")
     cleanup = read_session_cleanup_receipt(entry.get("cleanup"))
@@ -505,14 +868,16 @@ def transition_auxiliary_cleanup(
     *,
     task_status: str,
     lease_state: str,
-    report_written: bool,
-    notification_recorded: bool,
+    task_end_dialog_delivered: bool,
     capability: str | None = None,
     strategy: str | None = None,
     error_code: str = "",
     retryable: bool = False,
     next_attempt_at: str = "",
+    verification: Any | None = None,
+    commands: Any | None = None,
     occurred_at: str | None = None,
+    authoritative_archive_ack: bool = False,
 ) -> dict[str, Any]:
     """Apply one pure, fail-closed auxiliary cleanup receipt transition.
 
@@ -529,6 +894,7 @@ def transition_auxiliary_cleanup(
     current_state = receipt["state"]
     if current_state in RESOLVED_CLEANUP_STATES or current_state == target_state:
         return receipt
+    receipt = upgrade_session_cleanup_receipt(receipt)
 
     now = occurred_at or _utc_now()
     if not _valid_utc_timestamp(now):
@@ -538,8 +904,7 @@ def transition_auxiliary_cleanup(
         entry,
         task_status=task_status,
         lease_state=lease_state,
-        report_written=report_written,
-        notification_recorded=notification_recorded,
+        task_end_dialog_delivered=task_end_dialog_delivered,
     )
     if target_state == "retained":
         if current_state != "not_requested" or entry.get("retain") is not True:
@@ -557,6 +922,7 @@ def transition_auxiliary_cleanup(
                 "error_code": "",
                 "retryable": False,
                 "next_attempt_at": "",
+                "verification": _empty_cleanup_verification(),
             }
         )
         return _validated_cleanup_transition(updated)
@@ -567,13 +933,19 @@ def transition_auxiliary_cleanup(
         if blockers:
             _raise_cleanup_transition("cleanup request is blocked", blockers)
         if current_state == "failed":
-            if receipt["retryable"] is not True:
-                _raise_cleanup_transition("failed cleanup is not retryable")
-            if receipt["attempts"] >= MAX_SESSION_CLEANUP_ATTEMPTS:
-                _raise_cleanup_transition("cleanup attempt limit reached")
-            due_at = receipt["next_attempt_at"]
-            if not due_at or _parse_utc_timestamp(now) < _parse_utc_timestamp(due_at):
-                _raise_cleanup_transition("cleanup retry backoff has not elapsed")
+            if authoritative_archive_ack:
+                if str(entry.get("executor") or "").strip().lower() != "codex":
+                    _raise_cleanup_transition(
+                        "authoritative archive acknowledgement requires Codex"
+                    )
+            else:
+                if receipt["retryable"] is not True:
+                    _raise_cleanup_transition("failed cleanup is not retryable")
+                if receipt["attempts"] >= MAX_SESSION_CLEANUP_ATTEMPTS:
+                    _raise_cleanup_transition("cleanup attempt limit reached")
+                due_at = receipt["next_attempt_at"]
+                if not due_at or _parse_utc_timestamp(now) < _parse_utc_timestamp(due_at):
+                    _raise_cleanup_transition("cleanup retry backoff has not elapsed")
         updated = dict(receipt)
         updated.update(
             {
@@ -587,6 +959,8 @@ def transition_auxiliary_cleanup(
                 "completed_at": "",
                 "error_code": "",
                 "retryable": False,
+                "verification": _empty_cleanup_verification(),
+                "commands": _empty_cleanup_commands(),
             }
         )
         return _validated_cleanup_transition(updated)
@@ -602,7 +976,72 @@ def transition_auxiliary_cleanup(
 
     updated = dict(receipt)
     updated["last_attempt_at"] = now
+    # SESSION-104-001 v5 gate: the current Desktop archive acknowledgement and
+    # the unchanged delete acknowledgement are required for auxiliary Codex
+    # sessions; legacy App Server archive evidence is diagnostic only.
+    executor_is_codex = str(entry.get("executor") or "").strip().lower() == "codex"
+    is_archive_strategy = (
+        (strategy or receipt["strategy"]) == "official_session_archive_then_delete"
+    )
+    normalized_commands = (
+        normalize_cleanup_commands(commands) if commands is not None else receipt.get("commands")
+    )
     if target_state == "succeeded":
+        normalized_verification = (
+            normalize_cleanup_verification(verification)
+            if verification is not None
+            else (
+                _empty_cleanup_verification("not_applicable")
+                if not executor_is_codex
+                else receipt["verification"]
+            )
+        )
+        if not executor_is_codex:
+            # Non-Codex executors have no official archive/delete commands.
+            normalized_commands = _empty_cleanup_commands("not_applicable", checked_at=now)
+        elif not normalized_commands or all(
+            (normalized_commands or {}).get(command, {}).get("status") == "not_requested"
+            for command in ("desktop_archive", "app_server_archive", "delete")
+        ):
+            # A Codex adapter supplied no command evidence: fail closed to
+            # not_applicable rather than leaving invalid not_requested proof.
+            normalized_commands = _empty_cleanup_commands("not_applicable", checked_at=now)
+            if is_archive_strategy:
+                _raise_cleanup_transition(
+                    "Codex auxiliary cleanup succeeded without Desktop archive and "
+                    "delete command acknowledgements"
+                )
+        if executor_is_codex and is_archive_strategy:
+            desktop_archive_status = str(
+                (normalized_commands or {}).get("desktop_archive", {}).get("status") or ""
+            )
+            delete_status = str(
+                (normalized_commands or {}).get("delete", {}).get("status") or ""
+            )
+            if desktop_archive_status not in {"acknowledged", "confirmed"} or delete_status not in {
+                "acknowledged",
+                "confirmed",
+            }:
+                _raise_cleanup_transition(
+                    "Codex auxiliary cleanup succeeded without Desktop archive and "
+                    "delete command acknowledgements"
+                )
+            normalized_verification = dict(normalized_verification)
+            normalized_verification["desktop_live"] = {
+                "status": "not_applicable",
+                "checked_at": now,
+            }
+        elif (
+            executor_is_codex
+            and {
+                normalized_verification[side]["status"]
+                for side in CLEANUP_VERIFICATION_SIDES
+            }
+            != {"absent"}
+        ):
+            _raise_cleanup_transition(
+                "Codex cleanup succeeded without all CLI, Desktop backend, and Desktop live absence verification"
+            )
         updated.update(
             {
                 "capability": capability or receipt["capability"],
@@ -612,6 +1051,8 @@ def transition_auxiliary_cleanup(
                 "error_code": "",
                 "retryable": False,
                 "next_attempt_at": "",
+                "verification": normalized_verification,
+                "commands": normalized_commands,
             }
         )
     elif target_state == "unsupported":
@@ -624,6 +1065,10 @@ def transition_auxiliary_cleanup(
                 "error_code": error_code or "session_cleanup_unsupported",
                 "retryable": False,
                 "next_attempt_at": "",
+                "verification": normalize_cleanup_verification(verification)
+                if verification is not None
+                else receipt["verification"],
+                "commands": normalized_commands,
             }
         )
     else:
@@ -636,19 +1081,31 @@ def transition_auxiliary_cleanup(
                 "error_code": error_code,
                 "retryable": retryable,
                 "next_attempt_at": next_attempt_at,
+                "verification": normalize_cleanup_verification(verification)
+                if verification is not None
+                else receipt["verification"],
+                "commands": normalized_commands,
             }
         )
     return _validated_cleanup_transition(updated)
 
 
 def auxiliary_cleanup_strategy(entry: Any) -> str:
-    """Return the exact-session delete strategy for one auxiliary entry."""
+    """Return the official Codex archive-then-delete strategy for one entry.
+
+    Codex cleanup is always the acknowledged archive gate followed by delete;
+    Claude keeps its project purge; everything else uses the exact-session
+    delete strategy.  Primary-first and deepest/newest auxiliary ordering are
+    preserved by the coordinator.
+    """
     if entry.get("retain") is True:
         return "retain"
     executor = str(entry.get("executor") or "").strip().lower()
     project_mode = str(entry.get("project_mode") or "").strip().lower()
     if executor == "claude" and project_mode == "ephemeral":
         return "claude_project_purge"
+    if executor == "codex":
+        return "official_session_archive_then_delete"
     return "official_session_delete"
 
 
@@ -691,13 +1148,6 @@ def auxiliary_aggregate_view(ledger: Any) -> dict[str, Any]:
     unresolved = 0
     for entry in entries:
         try:
-            blockers = auxiliary_cleanup_blockers(
-                entry,
-                task_status="completed",
-                lease_state="closed",
-                report_written=True,
-                notification_recorded=True,
-            )
             cleanup = read_session_cleanup_receipt(entry.get("cleanup"))
         except ABCError:
             unresolved += 1
@@ -708,9 +1158,6 @@ def auxiliary_aggregate_view(ledger: Any) -> dict[str, Any]:
             unresolved += 1
             continue
         if cleanup["state"] in RESOLVED_CLEANUP_STATES:
-            continue
-        if blockers and "auxiliary_session_not_terminal" in blockers:
-            # Still in use; not an acceptance failure while the task is active.
             continue
         unresolved += 1
     return {
@@ -728,6 +1175,7 @@ def _match_existing_reservation(
     parent_session_id: str,
     executor: str,
     purpose: str,
+    collaboration_item_id: str = "",
 ) -> dict[str, Any] | None:
     for entry in ledger.get("sessions") or []:
         if (
@@ -735,6 +1183,10 @@ def _match_existing_reservation(
             and str(entry.get("parent_session_id") or "") == parent_session_id
             and str(entry.get("executor") or "").strip().lower() == executor
             and str(entry.get("purpose") or "") == purpose
+            and (
+                str(entry.get("collaboration_item_id") or "")
+                == str(collaboration_item_id or "")
+            )
         ):
             return entry
     return None
@@ -748,6 +1200,8 @@ def _assert_frozen_match(
     retain: bool,
     project_mode: str,
     project_path: str,
+    collaboration_item_id: str = "",
+    parent_turn_id: str = "",
 ) -> None:
     conflicts: list[str] = []
     if str(entry.get("owner_task_id") or "").strip() != str(owner_task_id or "").strip():
@@ -760,6 +1214,10 @@ def _assert_frozen_match(
         conflicts.append("project_mode")
     if str(entry.get("project_path") or "").strip() != str(project_path or "").strip():
         conflicts.append("project_path")
+    if str(entry.get("collaboration_item_id") or "") != str(collaboration_item_id or ""):
+        conflicts.append("collaboration_item_id")
+    if str(entry.get("parent_turn_id") or "") != str(parent_turn_id or ""):
+        conflicts.append("parent_turn_id")
     if conflicts:
         raise ABCError(
             "auxiliary_reservation_conflict",
@@ -809,16 +1267,25 @@ __all__ = [
     "AUXILIARY_LEDGER_VERSION",
     "AUXILIARY_SESSION_LIMIT",
     "AUXILIARY_SESSION_STATES",
+    "CODEX_AUXILIARY_RECEIPT_MISSING_CODE",
+    "CODEX_AUXILIARY_SESSION_UNREGISTERED_CODE",
+    "CODEX_COLLABORATION_SPAWN_PURPOSE",
     "auxiliary_aggregate_view",
     "auxiliary_cleanup_blockers",
     "auxiliary_cleanup_strategy",
     "auxiliary_ledger_view",
     "bind_auxiliary_receipt",
+    "bind_codex_collaboration_receipt",
     "build_auxiliary_ledger",
     "mark_auxiliary_terminal",
+    "mark_codex_collaboration_terminal",
     "read_auxiliary_ledger",
     "redact_session_ref",
     "reserve_auxiliary_session",
+    "reserve_codex_collaboration_session",
+    "handle_codex_collaboration_item_completed",
+    "handle_codex_collaboration_item_started",
+    "reconcile_codex_descendants",
     "transition_auxiliary_cleanup",
     "validate_auxiliary_entry",
     "validate_auxiliary_ledger",

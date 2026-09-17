@@ -72,22 +72,32 @@ class Perm103007ClaudePathCapabilityTests(unittest.TestCase):
             record,
         )
 
-    def test_all_permission_modes_receive_the_same_orthogonal_path_boundary(self) -> None:
+    def test_only_non_full_modes_receive_the_legacy_path_boundary(self) -> None:
         expected_settings = None
         for mode in ("inherit", "safe", "full"):
             with self.subTest(mode=mode):
                 command = self._command(mode)
+                if mode == "full":
+                    self.assertNotIn("--settings", command)
+                    self.assertNotIn("--add-dir", command)
+                    self.assertNotIn("--disallowedTools", command)
+                    continue
                 self.assertEqual(command.count("--settings"), 1)
                 self.assertEqual(command.count("--add-dir"), 1)
                 settings_text = command[command.index("--settings") + 1]
                 settings = json.loads(settings_text)
+                # PERM-104-002 (T2A6-003): allowWrite is the frozen task root
+                # plus the ephemeral project root (plus controlled Git
+                # metadata for a linked worktree); denyWrite stays empty and
+                # must never repeat an allowWrite path - the previous
+                # allow+deny of the same path was contradictory.
                 self.assertEqual(
                     settings["sandbox"]["filesystem"]["allowWrite"],
-                    [str(self.plan.artifact_root)],
+                    [str(self.plan.artifact_root), str(self.plan.executor_project_root)],
                 )
                 self.assertEqual(
                     settings["sandbox"]["filesystem"]["denyWrite"],
-                    [str(self.plan.executor_project_root)],
+                    [],
                 )
                 self.assertFalse(settings["sandbox"]["autoAllowBashIfSandboxed"])
                 self.assertFalse(settings["sandbox"]["allowUnsandboxedCommands"])

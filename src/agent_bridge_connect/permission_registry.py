@@ -9,9 +9,9 @@ This narrow module is the single source of truth for:
   legacy top-level ``permission_mode`` dual-read,
 * the executor capability mapping (Codex / Claude / Hermes x inherit / safe
   / full) and the capability probes, and
-* the frozen Hermes ACP capability (``transport=hermes-acp`` with the
-  session/request_permission capability bound by the Task 6 narrow ACP
-  transport; only the exact ``allow_once`` / ``deny`` outcomes are exposed).
+* the frozen Hermes transport split: ``inherit`` / ``safe`` use
+  ``transport=hermes-acp`` for native permission interaction, while ``full``
+  uses the documented headless CLI ``chat --yolo`` path.
 
 Setup, CLI, executors and tests route every permission decision through this
 module and :mod:`permission_modes`; no other module keeps its own permission
@@ -78,17 +78,12 @@ CODEX_TRANSPORT_VALUES = frozenset({TRANSPORT_CLI, TRANSPORT_CODEX_APP_SERVER})
 HERMES_ACP_CHECK_CAPABILITY_ID = "hermes.acp.check"
 HERMES_ACP_SESSION_CAPABILITY_ID = "hermes.acp.session"
 HERMES_ACP_REQUEST_PERMISSION_CAPABILITY_ID = "hermes.acp.session.request_permission"
-HERMES_ACP_FULL_YOLO_ENV_CAPABILITY_ID = "hermes.acp.full.yolo_env"
+HERMES_CLI_FULL_YOLO_CAPABILITY_ID = "hermes.cli.full.yolo"
 
 # The only native permission outcomes AgentBC may expose on the Hermes ACP
 # transport.  ``allow_once`` authorizes exactly one action; ``deny`` is the
 # cancelled outcome.  allow_session/allow_always/deny_always are never issued.
 HERMES_ACP_ALLOWED_DECISIONS = ("allow_once", "deny")
-
-# Subprocess-scoped Hermes full-mode override.  May only be applied to the
-# spawned Hermes ACP subprocess environment, never to the user's global
-# environment.
-HERMES_YOLO_ENV = {"HERMES_YOLO_MODE": "1"}
 
 # Canonical capability mapping.  ``args`` are permission-only arguments for
 # the declared transport (never the full argv); ``env`` is subprocess-scoped;
@@ -168,10 +163,15 @@ _EXECUTOR_CAPABILITY_MAPPING: dict[str, dict[str, dict[str, Any]]] = {
             "overrides_native": False,
         },
         "full": {
-            "transport": TRANSPORT_HERMES_ACP,
-            "capability_id": HERMES_ACP_FULL_YOLO_ENV_CAPABILITY_ID,
-            "args": [],
-            "env": dict(HERMES_YOLO_ENV),
+            # Full is deliberately a different runtime mode.  The ACP server
+            # keeps its native request_permission path for inherit/safe, but
+            # its edit-approval subsystem is independent from Hermes' YOLO
+            # command policy.  The documented non-interactive CLI flag is the
+            # only exact zero-prompt full capability.
+            "transport": "direct",
+            "capability_id": HERMES_CLI_FULL_YOLO_CAPABILITY_ID,
+            "args": ["--yolo"],
+            "env": {},
             "decisions": None,
             "overrides_native": True,
         },
@@ -345,6 +345,19 @@ def probe_executor_capability(
     """
     entry = executor_permission_mapping(executor, mode, transport=transport)
     selected = entry["mode"]
+    if selected == "full":
+        # Plan D full is a frozen native flag mapping.  It must not be gated
+        # by executable help output, version strings, runtime receipts, or a
+        # second capability probe; compatible releases and forks are valid.
+        return {
+            "executor": executor,
+            "mode": selected,
+            "transport": entry["transport"],
+            "supported": True,
+            "capability_id": entry["capability_id"],
+            "evidence": ["native_flag_mapping"],
+            "details": {"permission_args": list(entry["args"])},
+        }
     if selected == "inherit" and executor not in {"codex", "claude"}:
         # Non-Codex inherit transports add no AgentBC override and require no
         # permission capability probe.

@@ -17,6 +17,7 @@ from agent_bridge_connect.execution_policy import (
     build_session_cleanup_receipt,
     build_session_snapshot,
     is_session_cleanup_resolved,
+    normalize_cleanup_commands,
     read_session_cleanup_receipt,
     session_cleanup_blockers,
     transition_session_cleanup,
@@ -49,7 +50,13 @@ class CleanupReceiptContractTests(unittest.TestCase):
         )
         self.assertEqual(
             CLEANUP_STRATEGIES,
-            {"none", "retain", "claude_project_purge", "official_session_delete"},
+            {
+                "none",
+                "retain",
+                "claude_project_purge",
+                "official_session_delete",
+                "official_session_archive_then_delete",
+            },
         )
         self.assertEqual(
             CLEANUP_STATES,
@@ -149,8 +156,7 @@ class CleanupTransitionTests(unittest.TestCase):
         defaults = {
             "task_status": "completed",
             "lease_state": "closed",
-            "report_written": True,
-            "notification_recorded": True,
+            "task_end_dialog_delivered": True,
             "occurred_at": T1,
         }
         defaults.update(kwargs)
@@ -254,6 +260,46 @@ class CleanupTransitionTests(unittest.TestCase):
         with self.assertRaisesRegex(ABCError, "attempt limit"):
             self._transition(session, "pending", occurred_at="2026-08-11T00:00:07Z")
 
+    def test_exact_codex_desktop_ack_can_replace_exhausted_transport_failure(self) -> None:
+        session = build_session_snapshot(
+            "codex",
+            retain=False,
+            session_id="01a081be-3e15-7f93-9b1c-2fb032b6c279",
+            session_state="terminal",
+            created_at=T0,
+        )
+        session["receipt_source"] = "jsonl_thread_started"
+        session["official_receipt_bound"] = True
+        receipt = build_session_cleanup_receipt()
+        receipt.update(
+            {
+                "capability": "supported",
+                "strategy": "official_session_archive_then_delete",
+                "state": "failed",
+                "attempts": 3,
+                "requested_at": T0,
+                "last_attempt_at": T1,
+                "error_code": "codex_desktop_archive_transport_lost",
+                "retryable": False,
+                "commands": normalize_cleanup_commands("not_requested"),
+            }
+        )
+        receipt["commands"]["desktop_archive"]["status"] = "unavailable"
+        receipt["commands"]["desktop_archive"]["checked_at"] = T1
+        session["cleanup"] = receipt
+
+        with self.assertRaisesRegex(ABCError, "not retryable"):
+            self._transition(session, "pending", occurred_at=T2)
+        pending = self._transition(
+            session,
+            "pending",
+            occurred_at=T2,
+            authoritative_archive_ack=True,
+        )
+
+        self.assertEqual(pending["state"], "pending")
+        self.assertEqual(pending["attempts"], 4)
+
     def test_all_direct_illegal_transitions_fail_closed(self) -> None:
         for target in ("succeeded", "unsupported", "failed"):
             with self.subTest(source="not_requested", target=target):
@@ -281,13 +327,9 @@ class CleanupTransitionTests(unittest.TestCase):
 
     def test_all_fail_closed_blockers_prevent_request(self) -> None:
         cases = (
-            ({"task_status": "input_required"}, "task_not_terminal"),
-            ({"task_status": "needs_recovery"}, "task_not_terminal"),
-            ({"task_status": "running"}, "task_not_terminal"),
+            ({"task_end_dialog_delivered": False}, "task_end_dialog_not_delivered"),
             ({"lease_state": "active"}, "run_lease_not_closed"),
             ({"lease_state": "stale"}, "run_lease_not_closed"),
-            ({"report_written": False}, "report_not_written"),
-            ({"notification_recorded": False}, "notification_not_recorded"),
         )
         for override, expected in cases:
             with self.subTest(override=override):
@@ -295,9 +337,10 @@ class CleanupTransitionTests(unittest.TestCase):
                 blockers = session_cleanup_blockers(
                     task_status=str(override.get("task_status", "completed")),
                     lease_state=str(override.get("lease_state", "closed")),
-                    report_written=bool(override.get("report_written", True)),
-                    notification_recorded=bool(override.get("notification_recorded", True)),
                     session=session,
+                    task_end_dialog_delivered=bool(
+                        override.get("task_end_dialog_delivered", True)
+                    ),
                 )
                 self.assertIn(expected, blockers)
                 with self.assertRaises(ABCError):
@@ -307,8 +350,8 @@ class CleanupTransitionTests(unittest.TestCase):
             with self.subTest(session_state=session_state):
                 session = self._session()
                 session["session_state"] = session_state
-                with self.assertRaises(ABCError):
-                    self._transition(session, "pending")
+                receipt = self._transition(session, "pending")
+                self.assertEqual(receipt["state"], "pending")
 
     def test_invalid_result_metadata_cannot_store_raw_or_private_data(self) -> None:
         session = self._session()

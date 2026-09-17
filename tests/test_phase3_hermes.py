@@ -106,7 +106,8 @@ class Phase3HermesTests(unittest.TestCase):
         executor = HermesExecutor(command=sys.executable, transport="direct")
         fresh = executor._build_command("prompt", task_packet=self._packet(limit=12))
         self.assertEqual(fresh.count("--max-turns"), 1)
-        self.assertEqual(fresh.count("-Q"), 1)
+        self.assertEqual(fresh.count("--oneshot"), 1)
+        self.assertNotIn("-Q", fresh)
         self.assertNotIn("--resume", fresh)
         self.assertNotIn("--continue", fresh)
 
@@ -119,7 +120,8 @@ class Phase3HermesTests(unittest.TestCase):
             ),
         )
         self.assertEqual(resumed.count("--max-turns"), 1)
-        self.assertEqual(resumed.count("-Q"), 1)
+        self.assertEqual(resumed.count("--oneshot"), 1)
+        self.assertNotIn("-Q", resumed)
         self.assertEqual(resumed.count("--resume"), 1)
         self.assertEqual(
             resumed[resumed.index("--resume") + 1],

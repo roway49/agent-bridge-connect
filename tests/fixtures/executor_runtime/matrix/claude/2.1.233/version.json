@@ -1,0 +1,8 @@
+{
+  "captured_live": false,
+  "note": "Declared current baseline for PROTO-104-001. No binary at exactly this version was available for an official probe, so every surface here is a characterized expectation and nothing widens a production gate.",
+  "output_format": "2.1.233 (Claude Code)",
+  "parsed": "2.1.233",
+  "status": "pending_capture",
+  "surface": "version_probe"
+}

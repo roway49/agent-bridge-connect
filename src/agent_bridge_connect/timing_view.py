@@ -65,11 +65,32 @@ def build_timing_view(
 
     reference = _end_reference(data, extensions, now)
     wall_duration_s = _wall_duration(data, reference)
+    execution = extensions.get(_EXECUTION_EXTENSION_KEY)
+    if not isinstance(execution, dict):
+        execution = {}
+    attempt_index = _attempt_index(execution)
+    attempt_started_at = str(execution.get("attempt_started_at") or "")
 
-    intervals = _collected_intervals(task_id, extensions, root, now)
+    intervals = _collected_intervals(
+        task_id,
+        extensions,
+        root,
+        now,
+        current_attempt_index=attempt_index,
+    )
     excluded = _excluded_periods(data, extensions, root, reference, now)
     execution_duration_s, adjusted_intervals = _execution_duration(intervals, excluded)
     last_run_duration_s = _last_run_duration(adjusted_intervals)
+    attempt_intervals = _current_attempt_intervals(
+        intervals,
+        attempt_index=attempt_index,
+        attempt_started_at=attempt_started_at,
+    )
+    attempt_execution_duration_s, adjusted_attempt_intervals = _execution_duration(
+        attempt_intervals,
+        excluded,
+    )
+    attempt_wall_duration_s = _duration_between(attempt_started_at, reference)
     waiting_duration_s = _waiting_duration(extensions, reference)
     evidence_quality = _evidence_quality(intervals)
     lease = load_lease(task_id, root) if task_id else None
@@ -79,6 +100,12 @@ def build_timing_view(
         "wall_duration_s": wall_duration_s,
         "execution_duration_s": execution_duration_s,
         "last_run_duration_s": last_run_duration_s,
+        "attempt_index": attempt_index,
+        "attempt_started_at": attempt_started_at,
+        "attempt_wall_duration_s": attempt_wall_duration_s,
+        "attempt_execution_duration_s": attempt_execution_duration_s,
+        "attempt_run_count": len(attempt_intervals),
+        "attempt_run_intervals": adjusted_attempt_intervals,
         "waiting_duration_s": waiting_duration_s,
         "evidence_quality": evidence_quality,
         "execution_duration_known": execution_duration_s is not None,
@@ -101,16 +128,35 @@ def _collected_intervals(
     extensions: dict[str, Any],
     root: Path,
     now: str | None,
+    *,
+    current_attempt_index: int,
 ) -> list[dict[str, Any]]:
     """Ledger intervals plus the current on-disk lease, deduplicated by run id."""
     intervals = _ledger_intervals(extensions)
     lease = load_lease(task_id, root) if task_id else None
-    if lease is not None and not any(
-        str(item.get("run_id") or "") == lease.run_id for item in intervals
-    ):
-        current = _interval_from_lease(lease, now)
+    if lease is not None:
+        current = _interval_from_lease(
+            lease,
+            now,
+            attempt_index=current_attempt_index,
+        )
         if current is not None:
-            intervals.append(current)
+            matching = next(
+                (
+                    index
+                    for index, item in enumerate(intervals)
+                    if str(item.get("run_id") or "") == lease.run_id
+                ),
+                None,
+            )
+            if matching is None:
+                intervals.append(current)
+            else:
+                # The on-disk RunLease is authoritative.  A lifecycle snapshot
+                # may have recorded this same run while it was active; once the
+                # lease closes, status/report/list must not keep projecting that
+                # stale active interval.
+                intervals[matching] = current
     intervals.sort(key=lambda item: str(item.get("started_at") or ""))
     return intervals
 
@@ -135,21 +181,27 @@ def _ledger_intervals(extensions: dict[str, Any]) -> list[dict[str, Any]]:
             duration = round(float(duration), 3)
         except (TypeError, ValueError):
             duration = round(max((ended - started).total_seconds(), 0.0), 3)
-        intervals.append(
-            {
-                "run_id": str(item.get("run_id") or ""),
-                "executor_id": str(item.get("executor_id") or ""),
-                "started_at": str(item.get("started_at") or ""),
-                "ended_at": str(item.get("ended_at") or ""),
-                "duration_s": duration,
-                "state": str(item.get("state") or RunLeaseState.CLOSED),
-                "source": "recorded",
-            }
-        )
+        normalized = {
+            "run_id": str(item.get("run_id") or ""),
+            "executor_id": str(item.get("executor_id") or ""),
+            "started_at": str(item.get("started_at") or ""),
+            "ended_at": str(item.get("ended_at") or ""),
+            "duration_s": duration,
+            "state": str(item.get("state") or RunLeaseState.CLOSED),
+            "source": "recorded",
+        }
+        if "attempt_index" in item:
+            normalized["attempt_index"] = _interval_attempt_index(item)
+        intervals.append(normalized)
     return intervals
 
 
-def _interval_from_lease(lease: Any, now: str | None) -> dict[str, Any] | None:
+def _interval_from_lease(
+    lease: Any,
+    now: str | None,
+    *,
+    attempt_index: int,
+) -> dict[str, Any] | None:
     started = _parse_timestamp(lease.started_at)
     if started is None:
         return None
@@ -166,6 +218,7 @@ def _interval_from_lease(lease: Any, now: str | None) -> dict[str, Any] | None:
     return {
         "run_id": lease.run_id,
         "executor_id": lease.executor_id,
+        "attempt_index": attempt_index,
         "started_at": lease.started_at,
         "ended_at": end_raw,
         "duration_s": round(max((ended - started).total_seconds(), 0.0), 3),
@@ -263,6 +316,50 @@ def _last_run_duration(adjusted: list[dict[str, Any]]) -> float | None:
         key=lambda item: str(item.get("started_at") or ""),
     )
     return latest.get("execution_duration_s")
+
+
+def _current_attempt_intervals(
+    intervals: list[dict[str, Any]],
+    *,
+    attempt_index: int,
+    attempt_started_at: str,
+) -> list[dict[str, Any]]:
+    if attempt_index <= 0:
+        return list(intervals)
+    boundary = _parse_timestamp(attempt_started_at)
+    selected: list[dict[str, Any]] = []
+    for interval in intervals:
+        raw_attempt = interval.get("attempt_index")
+        if raw_attempt is not None and _interval_attempt_index(interval) == attempt_index:
+            selected.append(interval)
+            continue
+        if raw_attempt is None and boundary is not None:
+            started = _parse_timestamp(str(interval.get("started_at") or ""))
+            if started is not None and started >= boundary:
+                selected.append(interval)
+    return selected
+
+
+def _attempt_index(execution: dict[str, Any]) -> int:
+    try:
+        return max(int(execution.get("attempt_index") or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _interval_attempt_index(interval: dict[str, Any]) -> int:
+    try:
+        return max(int(interval.get("attempt_index") or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _duration_between(start_raw: str, end_raw: str | None) -> float | None:
+    start = _parse_timestamp(start_raw)
+    end = _parse_timestamp(str(end_raw or ""))
+    if start is None or end is None:
+        return None
+    return round(max((end - start).total_seconds(), 0.0), 3)
 
 
 def _waiting_duration(extensions: dict[str, Any], reference: str | None) -> float:

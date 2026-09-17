@@ -64,11 +64,23 @@ class SessionCleanupRequest:
     executor: str
     session_id: str
     task_id: str = ""
+    # The Runner's durable execution binding participates in Desktop-route
+    # deduplication but is never persisted in cleanup receipts.
+    executor_run_id: str = field(default="", repr=False)
     retain: bool = False
     project_mode: str = "none"
     strategy: str = "none"
     project_path: str = field(default="", repr=False)
     workspace: dict[str, Any] = field(default_factory=dict, repr=False)
+    # These fields are the coordinator's binding proof.  They are transient
+    # request metadata and are deliberately excluded from repr/log surfaces.
+    receipt_source: str = field(default="", repr=False)
+    official_receipt_bound: bool = field(default=False, repr=False)
+    # Legacy transient compatibility fields.  The production Codex cleanup
+    # gate is the current Desktop App Tools acknowledgement; these fields can
+    # only help the unchanged App Server delete path after that gate passes.
+    archive_acknowledged: bool = field(default=False, repr=False)
+    archive_checked_at: str = field(default="", repr=False)
 
 
 @dataclass(frozen=True)
@@ -86,6 +98,12 @@ class SessionCleanupResult:
     error_code: str = ""
     retryable: bool = False
     next_attempt_at: str = ""
+    # Only bounded verification statuses/timestamps may cross the adapter
+    # boundary.  Raw RPC, CLI output, prompts, tokens and paths are forbidden.
+    verification: dict[str, dict[str, str]] = field(default_factory=dict, repr=False)
+    # SESSION-104-001 bounded per-command evidence.  Same
+    # boundary rules as verification; empty means the adapter supplies none.
+    commands: dict[str, dict[str, str]] = field(default_factory=dict, repr=False)
 
 
 @dataclass

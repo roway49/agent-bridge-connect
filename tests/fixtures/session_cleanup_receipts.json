@@ -1,6 +1,6 @@
 {
   "default": {
-    "version": 1,
+    "version": 5,
     "capability": "unknown",
     "strategy": "none",
     "state": "not_requested",
@@ -10,11 +10,98 @@
     "next_attempt_at": "",
     "completed_at": "",
     "error_code": "",
-    "retryable": false
+    "retryable": false,
+    "verification": {
+      "cli": {
+        "status": "unknown",
+        "checked_at": ""
+      },
+      "desktop_backend": {
+        "status": "unknown",
+        "checked_at": ""
+      },
+      "desktop_live": {
+        "status": "unknown",
+        "checked_at": ""
+      }
+    },
+    "commands": {
+      "desktop_archive": {
+        "status": "not_requested",
+        "checked_at": "",
+        "request_digest": "",
+        "route_digest": "",
+        "app_instance_digest": ""
+      },
+      "app_server_archive": {
+        "status": "not_requested",
+        "checked_at": "",
+        "request_digest": "",
+        "route_digest": "",
+        "app_instance_digest": ""
+      },
+      "delete": {
+        "status": "not_requested",
+        "checked_at": "",
+        "request_digest": "",
+        "route_digest": "",
+        "app_instance_digest": ""
+      }
+    }
   },
   "legacy_minimal": {
     "state": "not_requested",
     "attempts": 0
+  },
+  "legacy_v2": {
+    "version": 2,
+    "capability": "unknown",
+    "strategy": "none",
+    "state": "not_requested",
+    "attempts": 0,
+    "requested_at": "",
+    "last_attempt_at": "",
+    "next_attempt_at": "",
+    "completed_at": "",
+    "error_code": "",
+    "retryable": false,
+    "verification": {
+      "cli": {
+        "status": "unknown",
+        "checked_at": ""
+      },
+      "desktop": {
+        "status": "unknown",
+        "checked_at": ""
+      }
+    }
+  },
+  "legacy_v3": {
+    "version": 3,
+    "capability": "supported",
+    "strategy": "official_session_delete",
+    "state": "failed",
+    "attempts": 1,
+    "requested_at": "2026-08-28T00:00:00Z",
+    "last_attempt_at": "2026-08-28T00:00:01Z",
+    "next_attempt_at": "2026-08-28T00:01:01Z",
+    "completed_at": "",
+    "error_code": "codex_desktop_verification_unavailable",
+    "retryable": true,
+    "verification": {
+      "cli": {
+        "status": "absent",
+        "checked_at": "2026-08-28T00:00:01Z"
+      },
+      "desktop_backend": {
+        "status": "absent",
+        "checked_at": "2026-08-28T00:00:01Z"
+      },
+      "desktop_live": {
+        "status": "unavailable",
+        "checked_at": "2026-08-28T00:00:01Z"
+      }
+    }
   },
   "unsupported": {
     "version": 1,

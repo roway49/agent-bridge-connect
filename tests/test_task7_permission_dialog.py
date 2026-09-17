@@ -504,8 +504,10 @@ class PermissionDialogTests(unittest.TestCase):
                     "input_type": "permission",
                 }
             )
-        self.assertIn('buttons {"Deny", "Approve"}', run.call_args.kwargs["input"])
-        self.assertNotIn("View Details", run.call_args.kwargs["input"])
+        self.assertIn(
+            'buttons {"View Details", "Deny", "Approve"}',
+            run.call_args.kwargs["input"],
+        )
 
     def test_input_action_maps_view_details_as_non_decision(self) -> None:
         self.assertEqual(

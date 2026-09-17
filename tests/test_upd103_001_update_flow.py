@@ -40,8 +40,8 @@ def _available() -> dict:
 
 
 class UpdateResolutionTests(unittest.TestCase):
-    def _responses(self, *, tag: str = "v1.0.4A", tamper_manifest: bool = False):
-        package = "1.0.4a1" if tag == "v1.0.4A" else "1.0.3a1"
+    def _responses(self, *, tag: str = "v1.0.5A", tamper_manifest: bool = False):
+        package = "1.0.5a1" if tag == "v1.0.5A" else "1.0.4a1"
         wheel_name = f"agentbc-{package}-py3-none-any.whl"
         wheel_sha = "b" * 64
         manifest = {
@@ -84,10 +84,10 @@ class UpdateResolutionTests(unittest.TestCase):
             fetch_bytes=self._responses(),
         )
         self.assertTrue(available["update_available"])
-        self.assertEqual(available["latest"], "1.0.4a1")
+        self.assertEqual(available["latest"], "1.0.5a1")
         current = check_for_update(
             releases_url="https://example.test/releases",
-            fetch_bytes=self._responses(tag="v1.0.3A"),
+            fetch_bytes=self._responses(tag="v1.0.4A"),
         )
         self.assertFalse(current["update_available"])
         self.assertEqual(current["state"], "current")

@@ -1,0 +1,8 @@
+{
+  "identical_to": "codex/0.146.0",
+  "observable": "item.completed events arrive incrementally on stdout JSONL",
+  "partial_success_forbidden": true,
+  "policy": "progress without a thread.started receipt is never accepted as success",
+  "status": "candidate",
+  "surface": "partial_progress"
+}

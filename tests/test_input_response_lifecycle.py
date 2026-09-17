@@ -461,6 +461,94 @@ class InputResponseLifecycleTests(unittest.TestCase):
         self.assertEqual(current.extensions["agentbc.input"]["status"], "expired")
         self.assertEqual(current.errors[-1]["code"], "input_deadline_expired")
         self.assertEqual(load_lease(self.task.id, self.board).state, RunLeaseState.CLOSED)
+    def test_expiry_maintenance_keeps_delivery_receipt_ownership_isolated(self) -> None:
+        """T2AM-002: maintenance never duplicates or misroutes a notification.
+
+        A deadline expiry that stays ``needs_recovery`` is still a task-end
+        outcome, so its dialog is owned by the same durable receipt and is
+        delivered exactly once.
+        """
+        from agent_bridge_connect.terminal_delivery import (
+            TERMINAL_DELIVERY_EXTENSION_KEY,
+            pending_terminal_delivery_stages,
+        )
+
+        request = self._input()
+        after_deadline = (
+            datetime.fromisoformat(request["deadline_at"].replace("Z", "+00:00"))
+            + timedelta(seconds=1)
+        ).isoformat().replace("+00:00", "Z")
+
+        dialogs: list[dict] = []
+
+        def _dialog(payload):
+            dialogs.append(payload)
+            return DeliveryResult(True, "shown")
+
+        state = self._runner_state()
+        with mock.patch(
+            "agent_bridge_connect.notifications.DialogNotifier.send", side_effect=_dialog
+        ), mock.patch("agent_bridge_connect.notifications.time.sleep"):
+            state.maintain_waiting_inputs(now=after_deadline)
+
+        current = self.service.get_task(self.task.id)
+        self.assertEqual(current.status, "needs_recovery")
+        self.assertEqual(current.errors[-1]["code"], "input_deadline_expired")
+        receipt = current.extensions[TERMINAL_DELIVERY_EXTENSION_KEY]
+        self.assertEqual(receipt["terminal_state"], "needs_recovery")
+        self.assertEqual(receipt["stages"]["ui_notification"]["state"], "succeeded")
+        self.assertEqual(len(dialogs), 1)
+        with mock.patch(
+            "agent_bridge_connect.notifications.DialogNotifier.send", side_effect=_dialog
+        ):
+            self.assertEqual(
+                self._runner_state().maintain_terminal_delivery(now=after_deadline),
+                [],
+                "the terminal coordinator repeated a confirmed recovery dialog",
+            )
+        self.assertEqual(len(dialogs), 1)
+
+        # A task with a receipt is delivered through it, exactly once.
+        receipt_task = self.service.create_task(
+            "receipt owned terminal",
+            "shell",
+            [{"id": 1, "description": "work"}],
+            customer_path=self.project,
+        )
+        self.service.finalize_task_from_agent(
+            receipt_task.id,
+            {
+                "version": 1,
+                "task_id": receipt_task.id,
+                "final_state": "completed",
+                "summary": "receipt owned",
+                "step_results": [{"id": 1, "status": "done"}],
+            },
+        )
+        stored = self.service.store.read_task(receipt_task.id)
+        self.assertEqual(
+            pending_terminal_delivery_stages(
+                stored["extensions"][TERMINAL_DELIVERY_EXTENSION_KEY]
+            ),
+            ["file_notification", "ui_notification"],
+        )
+        with mock.patch(
+            "agent_bridge_connect.notifications.DialogNotifier.send", side_effect=_dialog
+        ), mock.patch("agent_bridge_connect.notifications.time.sleep"):
+            self._runner_state().maintain_terminal_delivery(now=after_deadline)
+        delivered = self.service.store.read_task(receipt_task.id)
+        self.assertEqual(
+            pending_terminal_delivery_stages(
+                delivered["extensions"][TERMINAL_DELIVERY_EXTENSION_KEY]
+            ),
+            [],
+        )
+        self.assertEqual(len(dialogs), 2)
+        with mock.patch(
+            "agent_bridge_connect.notifications.DialogNotifier.send", side_effect=_dialog
+        ):
+            self._runner_state().maintain_terminal_delivery(now=after_deadline)
+        self.assertEqual(len(dialogs), 2, "maintenance repeated a confirmed dialog")
 
     def test_waiting_time_is_excluded_from_execution_duration(self) -> None:
         task = self.service.get_task(self.task.id)

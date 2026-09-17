@@ -1,0 +1,48 @@
+{
+  "absent_session_detection": "'session not found' style output maps to already-absent",
+  "argv": [
+    "sessions",
+    "delete",
+    "{session_id}",
+    "--yes"
+  ],
+  "entries_that_never_qualify": [
+    "--continue",
+    "picker",
+    "prune",
+    "purge",
+    "<fuzzy id-or-name selector>"
+  ],
+  "error_codes": {
+    "failed": "hermes_session_delete_failed",
+    "invalid_session_id": "hermes_session_delete_invalid_session_id",
+    "missing_session_id": "hermes_session_delete_missing_session_id",
+    "unsupported": "hermes_session_delete_unavailable"
+  },
+  "help_entry_captured": true,
+  "help_excerpt_ref": "help.txt",
+  "session_id_contract": {
+    "rule": "single safe positional argv token; the exact officially bound receipt identifier",
+    "shapes": {
+      "acp_session": {
+        "origin": "hermes acp session/new + session/load (acp_adapter/session.py str(uuid.uuid4()))",
+        "example": "18a3e156-6aae-4286-b504-4276f90fc5b2",
+        "note": "the shape bound by the Hermes ACP stderr receipt"
+      },
+      "cli_session": {
+        "origin": "hermes CLI chat session token",
+        "example": "20260904_151900_1a2b3c",
+        "note": "the shape the pre-PERM-104-001 regex accepted exclusively"
+      }
+    },
+    "validation_regex": "^[0-9A-Za-z][0-9A-Za-z._:@+-]{5,127}$",
+    "rejects": [
+      "empty identifier",
+      "leading dash (option injection)",
+      "whitespace or path separators",
+      "identifier above 128 characters"
+    ]
+  },
+  "strategy": "official_session_delete",
+  "surface": "session_delete"
+}

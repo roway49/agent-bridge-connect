@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import copy
 import hashlib
-import re
 import shutil
 import uuid
 from dataclasses import dataclass
@@ -9,18 +9,34 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .approval import (
-    APPROVAL_EXTENSION_KEY,
-    APPROVAL_SCOPE,
-    approval_public_projection,
-    build_approval_receipt,
-    normalize_reason_summary,
-    record_approval_decision,
-    sanitize_reason_detail,
-    validate_approval_receipt,
+from . import approval as _approval
+from .approval import APPROVAL_EXTENSION_KEY, APPROVAL_SCOPE, approval_public_projection_v2, sanitize_reason_detail
+from . import approval_lifecycle as _approval_lifecycle
+from .approval_lifecycle import (
+    ApprovalLifecycleMixin,
+    CLAUDE_ELEVATION_EXTENSION_KEY,
+    DEFAULT_INPUT_WAIT_SECONDS,
+    REPORTABLE_TASK_STATUSES,
+    RUNNING_TASK_STATUSES,
+    claude_elevation_public_projection,
+    _first_incomplete_step_id,
+    _is_reportable_status,
+    _is_running_status,
+    _merge_execution,
+    _normalize_status,
+    _parse_timestamp,
+    _resource_block_step,
+    _safe_blocked_step_id,
+    _serialize_task_elevation_write,
+    _utc_now,
+    _without_none,
 )
 from .config import DEFAULT_BOARD_ROOT, get_executor_config, init_board
 from .execution_contract import validate_callback_payload
+from .session_tool_rules import (
+    SESSION_RULE_RECEIPT_EXTENSION_KEY,
+    session_rule_public_projection,
+)
 from .execution_policy import (
     RESOURCE_EXTENSION_KEY,
     RESOURCE_KIND_BY_EXECUTOR,
@@ -32,86 +48,103 @@ from .execution_policy import (
     is_resource_decision_request,
     next_resource_limit,
     public_task_view,
-    validate_execution_session_receipt,
     validate_execution_policy_extensions,
+    validate_execution_session_receipt,
     validate_resource_snapshot,
     validate_session_snapshot,
 )
+from .executor_registry import get_executor
+from .handoff_recovery import (
+    HANDOFF_RECOVERY_EXTENSION_KEY,
+    HANDOFF_RECOVERY_SOURCE_STATUSES,
+    SOURCE_REPORT_STEP_MISMATCH,
+    HandoffRecoveryLock,
+    build_recovery_record,
+    has_recovery_child,
+    handoff_lock_path,
+    inherit_frozen_resources,
+    is_handoff_recovery_source,
+    is_locked_inherited_step,
+    plan_recovery_steps,
+    read_recovery_source,
+    read_source_bytes,
+    revival_error,
+    rollback_created_iteration,
+    write_source_snapshots,
+)
+from .input_manifest import (
+    cleanup_task_input_root,
+    prepare_task_inputs,
+    task_input_paths,
+    task_input_sources,
+)
+from .media import task_image_paths
 from .migration import (
     assert_legacy_cutover_clear,
     assert_maintenance_command_allowed,
     legacy_permission_cutover_blocked,
     maintenance_mode_view,
 )
-from .executor_registry import get_executor
-from .media import media_extension, normalize_image_inputs, task_image_paths
 from .path_model import build_path_plan, validate_path_plan_workspace
-from .permission_grants import (
-    PERMISSION_GRANT_EXTENSION_KEY,
-    build_permission_grant,
-    revoke_permission_grant as revoke_grant_contract,
+from .revival import (
+    REVIVAL_EXTENSION_KEY,
+    REVIVAL_OPERATION_HANDOFF,
+    build_revival_reservation,
+    commit_revival_reservation,
+    evaluate_revival_preflight,
+    release_revival_reservation,
+    revival_digest,
+    revival_facts_from_task,
+    revival_path_plan_digest,
+    revival_policy_digest,
 )
-from .permission_failures import (
-    PERMISSION_BLOCKED_STEP_CARDINALITY_INVALID,
-    PERMISSION_CHAIN_HEAD_AMBIGUOUS,
-    PERMISSION_CHAIN_HEAD_STALE,
-    PERMISSION_EXECUTOR_SESSION_MISMATCH,
-    PERMISSION_EXECUTOR_SESSION_RUN_MISMATCH,
-    PERMISSION_INPUT_INVALID,
-    PERMISSION_MODE_UNSUPPORTED,
-    PERMISSION_REQUESTED_SCOPE_INVALID,
-    PERMISSION_RESUME_SESSION_MISSING,
-    PERMISSION_RUN_LEASE_INVALID,
-    PERMISSION_RUN_LEASE_RUN_MISMATCH,
-    PERMISSION_SESSION_RECEIPT_INVALID,
-    PERMISSION_SESSION_RECEIPT_MISSING,
-    PERMISSION_SESSION_SNAPSHOT_INVALID,
-    PERMISSION_SESSION_STATE_STALE,
-    PERMISSION_WAIT_COMPATIBILITY_CODE,
-    PermissionWaitFailure,
-    permission_wait_failure,
+from . import permission_failures as _permission_failures
+from . import permission_grants as _permission_grants
+from .permission_failures import PERMISSION_SESSION_RECEIPT_MISSING, permission_wait_failure
+from . import permission_elevation as _permission_elevation
+from .permission_elevation import (
+    PERMISSION_ELEVATION_EXTENSION_KEY,
+    PERMISSION_ELEVATION_MODE,
+    PERMISSION_PROTOCOL_EXTENSION_KEY,
+    PERMISSION_PROTOCOL_SCOPE,
+    PERMISSION_PROTOCOL_VERSION,
 )
+from . import permission_modes as _permission_modes
 from .permission_modes import (
     PERMISSION_EXTENSION_KEY,
     assert_executor_permission_supported,
     build_permission_record,
     permission_record_from_extensions,
-    permission_runtime_policy,
 )
 from .protocol import ABCError, PreflightResult, TaskModel, task_step_text
+from .progress_receipts import (
+    PROGRESS_EXTENSION_KEY,
+    PROGRESS_RECEIPT_VERSION,
+    progress_public_projection,
+    validate_progress_record,
+)
 from .schema import validate_task
 from .state_machine import validate_transition
 from .task_id import format_task_id, is_task_like, split_task_ref, task_iteration
 from .task_index import refresh_task_index
 from .task_store import TaskStore
+from .terminal_delivery import TERMINAL_DELIVERY_EXTENSION_KEY
 from .terminal_states import TASK_TERMINAL_STATES
 
+_COMPATIBILITY_EXPORTS = {
+    _approval: "APPROVAL_V3_SCOPE build_approval_receipt build_approval_receipt_v2 build_approval_receipt_v3 normalize_reason_summary record_approval_decision record_approval_full_continuation record_approval_notification validate_approval_receipt",
+    _approval_lifecycle: "CLAUDE_ELEVATION_ACTIVE CLAUDE_ELEVATION_DENIED CLAUDE_ELEVATION_PENDING PERMISSION_DIALOG_CLOSED_RESPONSE PERMISSION_DIALOG_TIMEOUT_RESPONSE PUBLIC_TASK_STATUSES build_claude_elevation_receipt claude_elevation_from_extensions record_claude_elevation_dialog stable_claude_input_digest transition_claude_elevation validate_claude_elevation_receipt",
+    _permission_failures: "PERMISSION_BLOCKED_STEP_CARDINALITY_INVALID PERMISSION_CHAIN_HEAD_AMBIGUOUS PERMISSION_CHAIN_HEAD_STALE PERMISSION_EXECUTOR_SESSION_MISMATCH PERMISSION_EXECUTOR_SESSION_RUN_MISMATCH PERMISSION_INPUT_INVALID PERMISSION_MODE_UNSUPPORTED PERMISSION_REQUESTED_SCOPE_INVALID PERMISSION_RESUME_SESSION_MISSING PERMISSION_RUN_LEASE_INVALID PERMISSION_RUN_LEASE_RUN_MISMATCH PERMISSION_SESSION_RECEIPT_INVALID PERMISSION_SESSION_SNAPSHOT_INVALID PERMISSION_SESSION_STATE_STALE PERMISSION_WAIT_COMPATIBILITY_CODE PermissionWaitFailure",
+    _permission_grants: "PERMISSION_GRANT_EXTENSION_KEY build_permission_grant",
+    _permission_elevation: "activate_permission_elevation block_permission_elevation build_permission_elevation permission_elevation_from_extensions record_permission_elevation_decision record_permission_elevation_notification verify_permission_elevation",
+}
+for _module, _names in _COMPATIBILITY_EXPORTS.items():
+    globals().update({name: getattr(_module, name) for name in _names.split()})
+revoke_grant_contract = _permission_grants.revoke_permission_grant
+permission_runtime_policy = _permission_modes.permission_runtime_policy
 
-RUNNING_TASK_STATUSES = {
-    "running",
-    "input_required",
-    "assigned",
-    "working",
-    "pause_pending",
-    "paused",
-    "in_progress",
-}
-REPORTABLE_TASK_STATUSES = set(TASK_TERMINAL_STATES)
-PUBLIC_TASK_STATUSES = {
-    "pending",
-    "running",
-    "input_required",
-    "completed",
-    "failed",
-    "cancelled",
-    "rejected",
-    "needs_recovery",
-}
-HANDOFF_SOURCE_STATUSES = {"completed"}
+HANDOFF_SOURCE_STATUSES = {"completed", *HANDOFF_RECOVERY_SOURCE_STATUSES}
 DELETE_ELIGIBLE_STATUSES = {"completed", "failed", "cancelled", "rejected"}
-DEFAULT_INPUT_WAIT_SECONDS = 24 * 60 * 60
-PERMISSION_DIALOG_TIMEOUT_RESPONSE = "agentbc_permission_dialog_timeout"
-PERMISSION_DIALOG_CLOSED_RESPONSE = "agentbc_permission_dialog_closed"
 
 
 @dataclass(frozen=True)
@@ -136,11 +169,24 @@ class ChainResolution:
         }
 
 
-class TaskService:
+class TaskService(ApprovalLifecycleMixin):
     def __init__(self, board_root: str | Path = DEFAULT_BOARD_ROOT, config: dict[str, Any] | None = None):
         self.board_root = Path(board_root).expanduser().resolve()
-        self.config = config or {}
-        init_board(self.board_root)
+        self.config = dict(config or {})
+        # A Runner-launched worker is already inside the frozen task-scoped
+        # Seatbelt profile.  It may read and update its task-owned files, but
+        # it must never initialise or refresh board-global metadata.  Requiring
+        # the board to exist also prevents this mode from widening containment
+        # by creating an arbitrary sibling/root on first use.
+        self._runner_worker = self.config.get("_runner_worker") is True
+        if self._runner_worker:
+            if not self.board_root.is_dir():
+                raise ABCError(
+                    "contained_board_missing",
+                    f"Contained worker board does not exist: {self.board_root}",
+                )
+        else:
+            init_board(self.board_root)
         self.store = TaskStore(self.board_root)
 
     def create_task(
@@ -157,8 +203,10 @@ class TaskService:
         artifacts_dir: str | Path | None = None,
         lineage: dict[str, Any] | None = None,
         images: list[str | Path] | None = None,
+        files: list[str | Path] | None = None,
         permission_mode: str | None = None,
         inherited_permission: dict[str, Any] | None = None,
+        collaboration_spawn: bool = False,
     ) -> TaskModel:
         assert_maintenance_command_allowed(self, "create")
         title = title.strip()
@@ -193,7 +241,9 @@ class TaskService:
             iteration_index += 1
         if lineage is not None:
             lineage_data["iteration_index"] = iteration_index
-        task_date = str(lineage_data.get("task_date") or datetime.now().strftime("%Y-%m-%d"))
+        task_date = str(
+            lineage_data.get("task_date") or datetime.now().strftime("%Y-%m-%d")  # noqa: DTZ005 - local board time compatibility
+        )
         path_config = self.config
         if lineage_data.get("agentbc_root"):
             path_config = {**self.config, "workspace_root": lineage_data["agentbc_root"]}
@@ -209,10 +259,13 @@ class TaskService:
         task_id = path_plan.task_id
         workspace = path_plan.to_workspace()
         workspace["internal_task_dir"] = str(self.store.tasks_dir / workspace["task_code"] / workspace["iteration"])
-        normalized_images = normalize_image_inputs(
-            images,
-            allowed_roots=(workspace.get("agentbc_root"), workspace.get("project_root")),
+        input_extension, committed_input_root = prepare_task_inputs(
+            images=images,
+            files=files,
+            workspace=workspace,
         )
+        if committed_input_root is not None:
+            workspace["input_root"] = str(committed_input_root)
         task_lineage = _build_lineage(task_id, workspace, lineage_data if lineage is not None else None)
         permission = build_permission_record(
             explicit_mode=permission_mode,
@@ -234,11 +287,30 @@ class TaskService:
                 "agentbc.lineage": task_lineage,
                 "agentbc.execution": {"internal_status": "pending"},
                 PERMISSION_EXTENSION_KEY: permission,
-                **media_extension(normalized_images),
+                # Normal TaskService-created tasks enter the v3 cutover. The
+                # marker contains only protocol facts; no executor/version
+                # allowlist or path material is persisted here.
+                PERMISSION_PROTOCOL_EXTENSION_KEY: {
+                    "version": PERMISSION_PROTOCOL_VERSION,
+                    "scope": PERMISSION_PROTOCOL_SCOPE,
+                    "mode": PERMISSION_ELEVATION_MODE,
+                    "decisions": ["approve_full", "deny"],
+                },
+                **input_extension,
             },
             resources=resources,
             session=executor_session,
         )
+        if collaboration_spawn:
+            if assignee != "codex":
+                raise ABCError(
+                    "task_create_error",
+                    "collaboration_spawn is supported only for Codex tasks",
+                )
+            extensions["agentbc.codex.collaboration_spawn"] = {
+                "version": 1,
+                "enabled": True,
+            }
         task = TaskModel(
             id=task_id,
             title=title,
@@ -253,12 +325,14 @@ class TaskService:
             extensions=extensions,
         )
         task_dir = self.store.tasks_dir / workspace["task_code"] / workspace["iteration"]
-        (task_dir / "steps").mkdir(parents=True, exist_ok=False)
         try:
+            (task_dir / "steps").mkdir(parents=True, exist_ok=False)
             if not workspace.get("customer_dir"):
                 Path(workspace["artifacts_dir"]).mkdir(parents=True, exist_ok=True)
             Path(workspace["task_file"]).parent.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
+            shutil.rmtree(task_dir, ignore_errors=True)
+            cleanup_task_input_root(committed_input_root)
             raise ABCError(
                 "task_create_error",
                 f"workspace root is not writable: {workspace['root']}",
@@ -270,6 +344,8 @@ class TaskService:
         try:
             _write_task_requirements(task, Path(workspace["task_file"]))
         except OSError as exc:
+            shutil.rmtree(task_dir, ignore_errors=True)
+            cleanup_task_input_root(committed_input_root)
             raise ABCError(
                 "task_create_error",
                 f"workspace root is not writable: {workspace['root']}",
@@ -282,6 +358,7 @@ class TaskService:
             assert_task_record_budget(task_dir)
         except ABCError:
             shutil.rmtree(task_dir, ignore_errors=True)
+            cleanup_task_input_root(committed_input_root)
             if not workspace.get("customer_dir"):
                 try:
                     Path(workspace["artifacts_dir"]).rmdir()
@@ -348,10 +425,7 @@ class TaskService:
         except ABCError:
             source_id = owner.id
         platform_flag = f" --source-platform {source_platform}" if source_platform else ""
-        suggested = (
-            f"agentbc task handoff {source_id} --to {target_assignee}"
-            f"{platform_flag} --dispatch"
-        )
+        suggested = f"agentbc task handoff {source_id} --to {target_assignee}{platform_flag} --dispatch"
         raise ABCError(
             "handoff_required",
             (
@@ -367,10 +441,7 @@ class TaskService:
         )
 
     def list_tasks(self, status: str | None = None, assignee: str | None = None) -> list[TaskModel]:
-        tasks = [
-            TaskModel.from_dict(data)
-            for data in self.store.list_tasks(status=status, assignee=assignee)
-        ]
+        tasks = [TaskModel.from_dict(data) for data in self.store.list_tasks(status=status, assignee=assignee)]
         refreshed = self._refresh_active_tasks(tasks)
         return sorted(refreshed, key=_task_sort_key)
 
@@ -397,11 +468,7 @@ class TaskService:
         requested_lineage = _lineage_for(requested)
         task_code = _task_code_for(requested)
         chain_root_task_id = str(requested_lineage.get("chain_root_task_id") or format_task_id(task_code, 1))
-        tasks = [
-            task
-            for task in self.list_tasks()
-            if _task_code_for(task) == task_code
-        ]
+        tasks = [task for task in self.list_tasks() if _task_code_for(task) == task_code]
         task_ids = {task.id for task in tasks}
         child_ids = {
             str(parent_id)
@@ -518,17 +585,10 @@ class TaskService:
         task = self.get_task(task_id)
         validate_path_plan_workspace(task.workspace or {})
         execution = dict((task.extensions or {}).get("agentbc.execution") or {})
-        is_resuming = (
-            _normalize_status(task.status) == "running"
-            and execution.get("internal_status") == "resuming"
-        )
+        is_resuming = _normalize_status(task.status) == "running" and execution.get("internal_status") == "resuming"
         if _normalize_status(task.status) not in {"pending", "needs_recovery"} and not is_resuming:
             raise ABCError("invalid_transition", f"Cannot start task in state: {task.status}")
-        source_status = (
-            "running"
-            if is_resuming
-            else "pending" if _normalize_status(task.status) == "pending" else "needs_recovery"
-        )
+        source_status = "running" if is_resuming else "pending" if _normalize_status(task.status) == "pending" else "needs_recovery"
         validate_transition(source_status, "running")
         lease = self.store.acquire_lease(task_id, executor_id)
         if lease is None:
@@ -554,6 +614,7 @@ class TaskService:
         self._refresh_task_index()
         return lease
 
+    @_serialize_task_elevation_write
     def record_executor_run_started(self, task_id: str, run_id: str) -> dict[str, Any]:
         """Append one executor run and freeze whether it is a session resume."""
         task = self.get_task(task_id)
@@ -567,10 +628,22 @@ class TaskService:
         if not normalized_run_id:
             raise ABCError("executor_run_id_invalid", "Executor run ID is required")
         run_ids = list(session.get("run_ids") or [])
+        raw_resume_facts = session.get("run_resume_facts")
+        resume_facts = dict(raw_resume_facts) if isinstance(raw_resume_facts, dict) else {}
+        # Backfill the stable per-run fact for pre-field snapshots.  The
+        # first recorded run is fresh; only later runs are resumptions.
+        for index, existing_run_id in enumerate(run_ids):
+            resume_facts.setdefault(existing_run_id, index > 0)
         if normalized_run_id in run_ids:
+            if session.get("run_resume_facts") != resume_facts:
+                session["run_resume_facts"] = resume_facts
+                extensions[SESSION_EXTENSION_KEY] = session
+                task.extensions = extensions
+                task.updated_at = _utc_now()
+                self.store.write_task(task.id, _without_none(task.to_dict()))
             return {
                 "run_id": normalized_run_id,
-                "resumed": len(run_ids) > 1,
+                "resumed": bool(resume_facts[normalized_run_id]),
                 "session_state": session.get("session_state"),
             }
         resumed = bool(run_ids)
@@ -581,6 +654,8 @@ class TaskService:
             )
         run_ids.append(normalized_run_id)
         session["run_ids"] = run_ids
+        resume_facts[normalized_run_id] = resumed
+        session["run_resume_facts"] = resume_facts
         if resumed:
             session["resume_count"] = int(session.get("resume_count") or 0) + 1
         if str(session.get("session_id") or "").strip():
@@ -609,6 +684,52 @@ class TaskService:
             "session_state": session.get("session_state"),
         }
 
+    @_serialize_task_elevation_write
+    def record_executor_session_started(
+        self,
+        task_id: str,
+        run_id: str,
+        receipt: Any,
+    ) -> dict[str, Any]:
+        """Persist an official executor session before its first turn.
+
+        Session-first adapters must bind the protocol-issued session ID to the
+        already-recorded executor run before a native permission event can be
+        converted into a task input.  This is deliberately separate from
+        ``record_executor_run_started``: the run ID is known before ACP
+        session creation, while the official session receipt only exists after
+        ``session/new`` or ``session/load`` succeeds.
+        """
+        task = self.get_task(task_id)
+        validated = self._validated_executor_session(task, run_id, receipt)
+        existing = (task.extensions or {}).get(SESSION_EXTENSION_KEY)
+        if isinstance(existing, dict) and (
+            str(existing.get("session_id") or "").strip() == str(validated.get("session_id") or "").strip()
+            and existing.get("official_receipt_bound") is True
+            and str(existing.get("receipt_source") or "") == str(validated.get("source") or "")
+        ):
+            # A worker restart may replay the same official binding. Keep it
+            # as a no-op so one native session cannot look like two sessions,
+            # and never regress a later input_required/terminal session state
+            # back to active.
+            return validated
+        self._apply_executor_session_result(task, run_id, receipt, "active")
+        task.updated_at = _utc_now()
+        self.store.write_task(task.id, _without_none(task.to_dict()))
+        self.store.append_event(
+            task.id,
+            {
+                "event_type": "executor.session_started",
+                "task_id": task.id,
+                "executor": task.assignee,
+                "executor_run_id": str(run_id or "").strip(),
+                "session_id": str(receipt.get("session_id") or "") if isinstance(receipt, dict) else "",
+                "created_at": task.updated_at,
+            },
+        )
+        self._refresh_task_index()
+        return dict(receipt)
+
     def validate_executor_session_result(
         self,
         task_id: str,
@@ -624,10 +745,174 @@ class TaskService:
         public_status = _normalize_status(task.status)
         if public_status not in {"running", "input_required"}:
             raise ABCError("invalid_transition", f"Cannot update step in state: {task.status}")
+        locked = next(
+            (step for step in task.steps if step.get("id") == step_id and is_locked_inherited_step(step)),
+            None,
+        )
+        if locked is not None:
+            raise ABCError(
+                "inherited_step_locked",
+                f"Step {step_id} is locked inherited work from {locked.get('origin_task_id')}; "
+                "it cannot execute again and may only be reported as done.",
+                {
+                    "task_id": task.id,
+                    "step_id": step_id,
+                    "origin_task_id": locked.get("origin_task_id"),
+                    "origin_step_id": locked.get("origin_step_id"),
+                },
+            )
         task.steps = [_update_step(step, step_id, result) for step in task.steps]
         task.updated_at = _utc_now()
         self.store.write_task(task_id, _without_none(task.to_dict()))
-        self.store.append_event(task_id, {"event_type": "step_executed", "task_id": task_id, "step_id": step_id, "created_at": task.updated_at, "result": result})
+        self.store.append_event(
+            task_id,
+            {"event_type": "step_executed", "task_id": task_id, "step_id": step_id, "created_at": task.updated_at, "result": result},
+        )
+
+    @_serialize_task_elevation_write
+    def record_step_progress(self, task_id: str, step_id: int) -> dict[str, Any]:
+        """Persist one Core-owned, run/session-bound monotonic step receipt."""
+        task = self.get_task(task_id)
+        if _normalize_status(task.status) != "running":
+            raise ABCError(
+                "progress_task_not_running",
+                f"Authoritative step progress requires a running task, not {task.status}",
+            )
+        if isinstance(step_id, bool) or not isinstance(step_id, int) or step_id <= 0:
+            raise ABCError("progress_receipt_step_invalid", "Step ID must be a positive integer")
+        declared_steps = {
+            int(step.get("id", index))
+            for index, step in enumerate(task.steps, 1)
+            if isinstance(step.get("id", index), int) and not isinstance(step.get("id", index), bool)
+        }
+        if step_id not in declared_steps:
+            raise ABCError("progress_receipt_step_unknown", f"Unknown declared step ID: {step_id}")
+        selected_step = next(
+            (step for index, step in enumerate(task.steps, 1) if step.get("id", index) == step_id),
+            None,
+        )
+        if selected_step is not None and is_locked_inherited_step(selected_step):
+            raise ABCError(
+                "inherited_step_locked",
+                f"Step {step_id} is locked inherited work and cannot receive a new progress receipt",
+            )
+
+        extensions = dict(task.extensions or {})
+        session = extensions.get(SESSION_EXTENSION_KEY)
+        session_errors = validate_session_snapshot(session, executor=task.assignee)
+        if session_errors:
+            raise ABCError(
+                "progress_session_receipt_invalid",
+                "; ".join(session_errors),
+                {"errors": session_errors},
+            )
+        session = dict(session)
+        if session.get("official_receipt_bound") is not True:
+            raise ABCError(
+                "progress_session_receipt_unbound",
+                "Authoritative progress requires an official Executor session receipt",
+            )
+        run_ids = list(session.get("run_ids") or [])
+        executor_run_id = str(run_ids[-1] if run_ids else "").strip()
+        session_id = str(session.get("session_id") or "").strip()
+        execution = extensions.get("agentbc.execution")
+        active_run_id = str(execution.get("executor_run_id") or "").strip() if isinstance(execution, dict) else ""
+        if not executor_run_id or not session_id or session.get("session_state") != "active" or active_run_id != executor_run_id:
+            raise ABCError(
+                "progress_session_drift",
+                "Authoritative progress requires the active Runner run and official session to match",
+            )
+
+        attempt_index = _execution_attempt_index(extensions)
+        existing = extensions.get(PROGRESS_EXTENSION_KEY)
+        if existing is None:
+            record = {
+                "version": PROGRESS_RECEIPT_VERSION,
+                "task_id": task.id,
+                "attempt_index": attempt_index,
+                "latest_sequence": 0,
+                "receipts": [],
+                "updated_at": task.updated_at,
+            }
+        else:
+            record = validate_progress_record(
+                existing,
+                task_id=task.id,
+                declared_step_ids=declared_steps,
+            )
+            if int(record.get("attempt_index") or 0) != attempt_index:
+                raise ABCError(
+                    "progress_receipt_attempt_mismatch",
+                    "Progress receipt belongs to a different task attempt",
+                )
+        prior = next(
+            (item for item in record["receipts"] if item.get("step_id") == step_id),
+            None,
+        )
+        if isinstance(prior, dict):
+            projection = progress_public_projection(record)
+            if projection is None:
+                raise ABCError("progress_receipt_invalid", "Stored progress receipt is invalid")
+            return {**projection, "step_id": step_id, "replayed": True}
+
+        now = _utc_now()
+        sequence = int(record.get("latest_sequence") or 0) + 1
+        receipt = {
+            "step_id": step_id,
+            "status": "done",
+            "sequence": sequence,
+            "evidence_source": "agent_cli",
+            "recorded_at": now,
+            "binding": {
+                "executor": str(task.assignee or "").strip().lower(),
+                "executor_run_id": executor_run_id,
+                "session_id": session_id,
+            },
+        }
+        record["receipts"] = [*record["receipts"], receipt]
+        record["latest_sequence"] = sequence
+        record["updated_at"] = now
+        validate_progress_record(
+            record,
+            task_id=task.id,
+            declared_step_ids=declared_steps,
+        )
+        task.steps = [
+            _update_step(
+                step,
+                step_id,
+                {
+                    "status": "done",
+                    "progress_receipt": {
+                        "version": PROGRESS_RECEIPT_VERSION,
+                        "sequence": sequence,
+                        "evidence_source": "agent_cli",
+                    },
+                },
+            )
+            for step in task.steps
+        ]
+        extensions[PROGRESS_EXTENSION_KEY] = record
+        task.extensions = extensions
+        task.updated_at = now
+        self.store.write_task(task.id, _without_none(task.to_dict()))
+        self.store.append_event(
+            task.id,
+            {
+                "event_type": "task.progress_recorded",
+                "task_id": task.id,
+                "step_id": step_id,
+                "status": "done",
+                "sequence": sequence,
+                "evidence_source": "agent_cli",
+                "created_at": now,
+            },
+        )
+        self._refresh_task_index()
+        projection = progress_public_projection(record)
+        if projection is None:
+            raise ABCError("progress_receipt_invalid", "Stored progress receipt is invalid")
+        return {**projection, "step_id": step_id, "replayed": False}
 
     def complete_task(self, task_id: str) -> None:
         raise ABCError(
@@ -737,18 +1022,17 @@ class TaskService:
         *,
         execution_session: dict[str, Any] | None = None,
     ) -> bool:
-        from .reports import write_report_files
         from .task_health import clear_task_progress
+        from .terminal_delivery import (
+            TERMINAL_DELIVERY_EXTENSION_KEY,
+            build_terminal_delivery_receipt,
+        )
 
         task = self.get_task(task_id)
         task_id = task.id
         if _has_close_intent(task):
             return False
-        raw_input_details = (
-            dict(callback.get("input"))
-            if isinstance(callback, dict) and isinstance(callback.get("input"), dict)
-            else None
-        )
+        raw_input_details = dict(callback.get("input")) if isinstance(callback, dict) and isinstance(callback.get("input"), dict) else None
         validation = validate_callback_payload(callback, task_id, task.steps)
         if not validation.valid or validation.callback is None:
             permission_failure = self._permission_wait_failure_for_callback_validation(
@@ -756,11 +1040,7 @@ class TaskService:
                 validation.code,
             )
             if permission_failure is not None:
-                executor_run_id = (
-                    str(callback.get("executor_run_id") or "")
-                    if isinstance(callback, dict)
-                    else ""
-                )
+                executor_run_id = str(callback.get("executor_run_id") or "") if isinstance(callback, dict) else ""
                 return self._fail_closed_permission_wait(
                     task,
                     executor_run_id,
@@ -782,11 +1062,7 @@ class TaskService:
             raise ABCError("invalid_agent_callback", "Agent callback summary is required")
         if final_state == "input_required":
             validated_input_details = callback.get("input")
-            input_type = (
-                str(validated_input_details.get("type") or "").strip().lower()
-                if isinstance(validated_input_details, dict)
-                else ""
-            )
+            input_type = str(validated_input_details.get("type") or "").strip().lower() if isinstance(validated_input_details, dict) else ""
             if input_type == "permission":
                 if execution_session is None:
                     return self._fail_closed_permission_wait(
@@ -883,7 +1159,11 @@ class TaskService:
         expected_artifacts = str(workspace.get("artifacts_dir") or "")
         if expected_report and Path(report_file).expanduser().resolve() != Path(expected_report).expanduser().resolve():
             raise ABCError("invalid_agent_callback", "Agent callback report_file does not match task workspace")
-        if expected_artifacts and artifacts_dir and Path(artifacts_dir).expanduser().resolve() != Path(expected_artifacts).expanduser().resolve():
+        if (
+            expected_artifacts
+            and artifacts_dir
+            and Path(artifacts_dir).expanduser().resolve() != Path(expected_artifacts).expanduser().resolve()
+        ):
             raise ABCError("invalid_agent_callback", "Agent callback artifacts_dir does not match task workspace")
         task.workspace = dict(workspace)
         task.workspace.setdefault("report_file", report_file)
@@ -919,13 +1199,21 @@ class TaskService:
             "exit_code": callback.get("exit_code"),
             "step_results": callback["step_results"],
             "marker_valid": True,
-            "completed_step_count": sum(
-                1 for item in callback["step_results"] if item.get("status") == "done"
-            ),
+            "completed_step_count": sum(1 for item in callback["step_results"] if item.get("status") == "done"),
         }
         task.extensions = _merge_execution(task.extensions, {"internal_status": final_state})
         self.revoke_permission_grant(task.id, "task_terminal", model=task)
         self._release_lease(task_id)
+        # FLOW-104-002: the durable terminal-delivery receipt is created inside
+        # this same authoritative task write as the business terminal state so
+        # a later report/record/index/notification failure can never lose the
+        # fact that this terminal outcome still needs delivery.
+        task.extensions[TERMINAL_DELIVERY_EXTENSION_KEY] = build_terminal_delivery_receipt(
+            task_id,
+            terminal_state=final_state,
+            terminal_event="task.finalized",
+            committed_at=task.updated_at,
+        )
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)
         self.store.append_event(
@@ -938,431 +1226,133 @@ class TaskService:
                 "summary": summary,
             },
         )
-        try:
-            write_report_files(task_id, self.board_root)
-        except (ABCError, OSError, PermissionError) as exc:
-            # Report generation writes the canonical Markdown before compacting
-            # Record state and refreshing indexes. A later bookkeeping failure
-            # must not rewrite a confirmed normal executor exit as task failure.
-            if Path(report_file).expanduser().is_file():
-                self._cleanup_empty_managed_artifacts(task_id)
-                try:
-                    self._refresh_task_index()
-                except (OSError, PermissionError):
-                    pass
-                return True
-            self.mark_task_failed(
-                task_id,
-                "report_contract_missing",
-                f"Agent callback received but report contract failed: {exc}",
-                {"callback": task.extensions.get("agentbc.final_callback") or {}},
-            )
-            return True
-        if not Path(report_file).expanduser().exists():
-            self.mark_task_failed(
-                task_id,
-                "report_contract_missing",
-                "Agent callback received but report file is missing after report generation",
-                {"callback": task.extensions.get("agentbc.final_callback") or {}},
-            )
-            return True
+        # FLOW-104-002: report writing, record compaction and index refresh are
+        # three independently catchable operations.  None of them may rewrite a
+        # valid terminal task to ``failed`` only because the report is
+        # unavailable; every failure is recorded on the delivery receipt and
+        # replayed by Runner maintenance.
+        self._run_terminal_delivery_stages(
+            task_id,
+            executors=self._terminal_delivery_executors(task_id, report_file),
+            refresh_index=not self._runner_worker,
+        )
         self._cleanup_empty_managed_artifacts(task_id)
-        self._refresh_task_index()
         return True
 
-    def revoke_permission_grant(
+    def clear_execution_run_references(
         self,
         task_id: str,
-        code: str,
         *,
-        model: TaskModel | None = None,
-    ) -> bool:
-        """Revoke any issued or consumed one-shot grant with a stable reason.
+        expected_worker_run_id: str = "",
+        expected_executor_run_id: str = "",
+    ) -> list[str]:
+        """Remove pointers only when they still identify the exiting run.
 
-        Core-owned helper the Runner can call when a resume dispatch or start
-        fails.  Tasks without an ``agentbc.permission_grant`` extension remain
-        untouched (idempotent), and a grant already revoked for the same reason
-        is returned unchanged.
-        """
-        current = model if model is not None else self.get_task(task_id)
-        extensions = dict(current.extensions or {})
-        if PERMISSION_GRANT_EXTENSION_KEY not in extensions:
-            return False
-        try:
-            revoked = revoke_grant_contract(
-                extensions[PERMISSION_GRANT_EXTENSION_KEY],
-                _stable_revocation_code(code),
-            )
-        except ABCError:
-            return False
-        extensions[PERMISSION_GRANT_EXTENSION_KEY] = revoked
-        current.extensions = extensions
-        if model is None:
-            current.updated_at = _utc_now()
-            self.store.write_task(task_id, _without_none(current.to_dict()))
-        return True
-
-    def revoke_permission_grant_for_recovery(self, task_id: str) -> None:
-        """Fail-closed revocation used by explicit task recovery.
-
-        Raises ``ABCError`` when a live grant cannot be durably revoked so the
-        caller must not mark the task ready for retry/recover. Tasks without a
-        grant extension and grants already revoked for any lifecycle reason are
-        safe no-ops. ``OSError`` from the durable task write propagates.
+        A permission-elevation continuation may be dispatched before the
+        original worker finishes unwinding.  The old worker must never erase
+        the newly published worker/executor pointers.
         """
         current = self.get_task(task_id)
         extensions = dict(current.extensions or {})
-        if PERMISSION_GRANT_EXTENSION_KEY not in extensions:
-            return
-        try:
-            revoked = revoke_grant_contract(
-                extensions[PERMISSION_GRANT_EXTENSION_KEY],
-                _stable_revocation_code("task_recover"),
-            )
-        except ABCError as exc:
-            if exc.code == "permission_grant_replay":
-                return
-            raise ABCError(
-                "permission_grant_revocation_failed",
-                f"Cannot revoke permission grant for recovery: {exc.code}",
-            ) from exc
-        extensions[PERMISSION_GRANT_EXTENSION_KEY] = revoked
+        execution = dict(extensions.get("agentbc.execution") or {})
+        if expected_worker_run_id and str(execution.get("worker_run_id") or "") != str(expected_worker_run_id):
+            return []
+        if expected_executor_run_id and str(execution.get("executor_run_id") or "") != str(expected_executor_run_id):
+            return []
+        keys = (
+            "worker_run_id",
+            "worker_pid",
+            "executor_run_id",
+            "dispatch_status",
+            "monitor_status",
+            "monitor_message",
+        )
+        removed = [key for key in keys if key in execution]
+        if not removed:
+            return []
+        for key in removed:
+            execution.pop(key, None)
+        extensions["agentbc.execution"] = execution
         current.extensions = extensions
         current.updated_at = _utc_now()
         self.store.write_task(task_id, _without_none(current.to_dict()))
-
-    def _approval_receipt_for_response(
-        self,
-        task: TaskModel,
-        extensions: dict[str, Any],
-        request: dict[str, Any],
-        input_id: str,
-    ) -> dict[str, Any]:
-        """Return the durable approval receipt bound to a responding input."""
-        if APPROVAL_EXTENSION_KEY not in extensions:
-            raise ABCError(
-                "permission_input_invalid",
-                "Approval input is missing the persisted agentbc.approval receipt",
-            )
-        session_id = str(
-            (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
+        self.store.append_event(
+            task_id,
+            {
+                "event_type": "worker_references_cleared",
+                "task_id": task_id,
+                "removed": removed,
+                "created_at": current.updated_at,
+                "source": "runner_worker_reap",
+            },
         )
-        if not session_id:
-            raise ABCError(
-                "permission_input_invalid",
-                "Approval input is missing the authoritative executor session",
-            )
-        return validate_approval_receipt(
-            extensions[APPROVAL_EXTENSION_KEY],
-            executor=task.assignee,
-            task_id=task.id,
-            session_id=session_id,
-            request_id=str(request.get("request_id") or ""),
+        self._refresh_task_index()
+        return removed
+
+    def close_needs_recovery_run_lifecycle(self, task_id: str) -> bool:
+        """Idempotently close the RunLease and active pointers for recovery."""
+        from .run_lease import RunLeaseState, close_lease, load_lease
+
+        current = self.get_task(task_id)
+        if _normalize_status(current.status) != "needs_recovery":
+            return False
+        # A task must never become retry-ready while an issued or consumed
+        # permission grant may still be live.  Revoke durably before closing
+        # the lifecycle; failure propagates and leaves recovery fail-closed.
+        self.revoke_permission_grant_for_recovery(current.id)
+        current = self.get_task(task_id)
+        extensions = dict(current.extensions or {})
+        execution = dict(extensions.get("agentbc.execution") or {})
+        run_lease = load_lease(current.id, self.board_root)
+        run_id = str(run_lease.run_id if run_lease is not None else "")
+        already_ready = (run_lease is None or run_lease.state == RunLeaseState.CLOSED) and str(
+            (extensions.get("run_lease") or {}).get("recovery_status") or ""
+        ) == "ready_for_retry"
+        active_keys = (
+            "worker_run_id",
+            "worker_pid",
+            "executor_run_id",
+            "dispatch_status",
+            "monitor_status",
+            "monitor_message",
         )
-
-    def _permission_wait_failure_for_callback_validation(
-        self,
-        callback: Any,
-        validation_code: str,
-    ) -> PermissionWaitFailure | None:
-        """Project permission-specific callback validation into the recovery taxonomy."""
-        if not isinstance(callback, dict):
-            return None
-        if str(callback.get("final_state") or "").strip().lower() != "input_required":
-            return None
-        input_details = callback.get("input")
-        if not isinstance(input_details, dict):
-            return None
-        if str(input_details.get("type") or "").strip().lower() != "permission":
-            return None
-
-        if validation_code in {
-            "completion_marker_input_step_missing",
-            "completion_marker_permission_step_invalid",
-        }:
-            return permission_wait_failure(PERMISSION_BLOCKED_STEP_CARDINALITY_INVALID)
-        if validation_code == "completion_marker_permission_request_invalid":
-            return permission_wait_failure(PERMISSION_REQUESTED_SCOPE_INVALID)
-        if validation_code in {
-            "completion_marker_permission_reason_invalid",
-            "completion_marker_permission_native_flags_invalid",
-            "completion_marker_steps_invalid",
-            "completion_marker_step_duplicate",
-            "completion_marker_step_unknown",
-            "completion_marker_step_status_invalid",
-        }:
-            return permission_wait_failure(PERMISSION_INPUT_INVALID)
-        return None
-
-    def _permission_wait_failure_for_session_error(
-        self,
-        task: TaskModel,
-        executor_run_id: str,
-        error: ABCError,
-    ) -> PermissionWaitFailure:
-        """Map adapter/session validation errors without persisting their raw text."""
-        error_details = error.details if isinstance(error.details, dict) else {}
-        raw_errors = error_details.get("errors")
-        validation_errors = (
-            [str(item) for item in raw_errors if isinstance(item, str)]
-            if isinstance(raw_errors, list)
-            else []
+        if already_ready and not any(key in execution for key in active_keys):
+            return False
+        extensions = self._record_run_interval(current.id, extensions)
+        if run_lease is not None and run_lease.state != RunLeaseState.CLOSED:
+            close_lease(run_lease, self.board_root)
+        execution = dict(extensions.get("agentbc.execution") or {})
+        for key in active_keys:
+            execution.pop(key, None)
+        execution["internal_status"] = "needs_recovery"
+        execution["lease_state"] = RunLeaseState.CLOSED
+        extensions["agentbc.execution"] = execution
+        if run_lease is not None:
+            extensions["run_lease"] = {
+                "run_id": run_lease.run_id,
+                "state": RunLeaseState.CLOSED,
+                "recovery_status": "ready_for_retry",
+                "last_heartbeat_at": run_lease.last_heartbeat_at,
+                "recommendation": (f"Run agentbc task retry {current.id} or handoff this chain head."),
+            }
+        current.extensions = extensions
+        current.updated_at = _utc_now()
+        self._release_lease(current.id)
+        self.store.write_task(current.id, _without_none(current.to_dict()))
+        self.store.append_event(
+            current.id,
+            {
+                "event_type": "task.recovery_ready",
+                "task_id": current.id,
+                "run_id": run_id,
+                "created_at": current.updated_at,
+                "recovery_status": "ready_for_retry",
+                "source": "runner_worker_exit",
+            },
         )
-        if any("executor does not match" in item for item in validation_errors):
-            return permission_wait_failure(
-                PERMISSION_EXECUTOR_SESSION_MISMATCH,
-                executor=task.assignee,
-            )
-        if error.code == "executor_session_receipt_invalid":
-            return permission_wait_failure(
-                PERMISSION_SESSION_RECEIPT_INVALID,
-                receipt_state="invalid",
-                executor=task.assignee,
-            )
-        if error.code in {"executor_session_run_mismatch", "executor_session_resume_mismatch"}:
-            return permission_wait_failure(
-                PERMISSION_EXECUTOR_SESSION_RUN_MISMATCH,
-                executor=task.assignee,
-                run_id_present=bool(str(executor_run_id or "").strip()),
-            )
-        if error.code == "executor_session_id_mismatch":
-            return permission_wait_failure(
-                PERMISSION_EXECUTOR_SESSION_MISMATCH,
-                executor=task.assignee,
-                session_id_present=True,
-            )
-        if error.code == "executor_session_invalid":
-            session = (task.extensions or {}).get(SESSION_EXTENSION_KEY)
-            if not isinstance(session, dict):
-                return permission_wait_failure(PERMISSION_RESUME_SESSION_MISSING)
-            session_id_present = bool(str(session.get("session_id") or "").strip())
-            if not session_id_present:
-                return permission_wait_failure(
-                    PERMISSION_RESUME_SESSION_MISSING,
-                    session_id_present=False,
-                )
-            return permission_wait_failure(PERMISSION_SESSION_SNAPSHOT_INVALID)
-        # The only remaining session failure at this gate is a malformed or
-        # otherwise unusable receipt.  The receipt is deliberately not echoed.
-        return permission_wait_failure(
-            PERMISSION_SESSION_RECEIPT_INVALID,
-            receipt_state="invalid",
-            executor=task.assignee,
-        )
-
-    def _permission_wait_contract_failure(
-        self,
-        task: TaskModel,
-        callback: dict[str, Any],
-        executor_run_id: str,
-        blocked_results: list[dict[str, Any]],
-    ) -> PermissionWaitFailure | None:
-        """Return one stable reason when a permission wait cannot be persisted.
-
-        The wait is executor-neutral for codex, claude and hermes.  A permission
-        request may only be persisted after a trusted runtime block. ``inherit``
-        is a selection strategy and remains approval-capable; a concrete full
-        base is the only non-escalatable state. The executor must ask for full,
-        exactly one declared step must be blocked, the task must be the unique
-        current chain head, the RunLease must match, and the authoritative
-        session snapshot must bind the latest run.
-        """
-        from .run_lease import RunLeaseState, load_lease
-
-        try:
-            permission = permission_record_from_extensions(task.extensions)
-        except ABCError as error:
-            if error.code == "unsupported_permission_mode":
-                raw_permission = (task.extensions or {}).get(PERMISSION_EXTENSION_KEY)
-                if isinstance(raw_permission, dict):
-                    raw_version = raw_permission.get("version")
-                    requested = str(raw_permission.get("requested_mode") or "").strip().lower()
-                    effective = str(raw_permission.get("effective_mode") or "").strip().lower()
-                    if (
-                        raw_version is not None
-                        and raw_version != 2
-                    ) or (
-                        requested
-                        and effective
-                        and requested != effective
-                    ):
-                        return permission_wait_failure(
-                            PERMISSION_INPUT_INVALID,
-                            field="permission",
-                        )
-                effective = (
-                    str(raw_permission.get("effective_mode") or "").strip().lower()
-                    if isinstance(raw_permission, dict)
-                    else ""
-                )
-                return permission_wait_failure(
-                    PERMISSION_MODE_UNSUPPORTED,
-                    effective_mode=effective,
-                )
-            return permission_wait_failure(PERMISSION_INPUT_INVALID, field="permission")
-        except (TypeError, ValueError):
-            return permission_wait_failure(PERMISSION_INPUT_INVALID, field="permission")
-        if not isinstance(permission, dict):
-            return permission_wait_failure(PERMISSION_INPUT_INVALID, field="permission")
-        runtime_policy = permission_runtime_policy(permission)
-        if runtime_policy["approval_on_block"] is not True:
-            return permission_wait_failure(
-                PERMISSION_MODE_UNSUPPORTED,
-                effective_mode=str(permission.get("effective_mode") or ""),
-            )
-
-        raw_input = callback.get("input") if isinstance(callback, dict) else None
-        if not isinstance(raw_input, dict):
-            return permission_wait_failure(PERMISSION_INPUT_INVALID, field="input")
-        if str(raw_input.get("type") or "").strip().lower() != "permission":
-            return permission_wait_failure(PERMISSION_INPUT_INVALID, field="input_type")
-        requested_permission = raw_input.get("requested_permission")
-        if (
-            not isinstance(requested_permission, str)
-            or requested_permission.strip().lower() != "full"
-        ):
-            return permission_wait_failure(PERMISSION_REQUESTED_SCOPE_INVALID)
-        reason = raw_input.get("reason")
-        if not isinstance(reason, str) or not reason.strip():
-            return permission_wait_failure(PERMISSION_INPUT_INVALID, field="reason")
-        if any(
-            field in raw_input
-            for field in ("argv", "command", "executor_flags", "flags", "native_executor_flags")
-        ):
-            return permission_wait_failure(PERMISSION_INPUT_INVALID, field="native_flags")
-        if len(blocked_results) != 1 or _safe_blocked_step_id(blocked_results) is None:
-            return permission_wait_failure(
-                PERMISSION_BLOCKED_STEP_CARDINALITY_INVALID,
-                blocked_step_count=len(blocked_results),
-            )
-
-        try:
-            chain = self.resolve_chain(task.id)
-        except ABCError:
-            return permission_wait_failure(
-                PERMISSION_CHAIN_HEAD_AMBIGUOUS,
-                chain_state="unresolvable",
-            )
-        if chain.anomalies or len(chain.head_task_ids) != 1:
-            return permission_wait_failure(
-                PERMISSION_CHAIN_HEAD_AMBIGUOUS,
-                chain_state="ambiguous",
-                head_count=len(chain.head_task_ids),
-            )
-        if not chain.requested_is_head:
-            return permission_wait_failure(
-                PERMISSION_CHAIN_HEAD_STALE,
-                chain_state="stale",
-            )
-
-        normalized_run_id = str(executor_run_id or "").strip()
-        try:
-            lease = load_lease(task.id, self.board_root)
-            lease_state = (
-                str(getattr(lease, "state", "") or "").strip().lower()
-                if lease is not None
-                else ""
-            )
-        except (AttributeError, KeyError, OSError, TypeError, ValueError):
-            return permission_wait_failure(
-                PERMISSION_RUN_LEASE_INVALID,
-                lease_state="invalid",
-            )
-        if lease is None or lease_state not in {
-            RunLeaseState.SUSPENDED,
-            RunLeaseState.CLOSED,
-        }:
-            return permission_wait_failure(
-                PERMISSION_RUN_LEASE_INVALID,
-                lease_state=lease_state or "missing",
-            )
-        if (
-            str(getattr(lease, "task_id", "") or "") != task.id
-            or str(getattr(lease, "executor_id", "") or "").strip().lower()
-            != str(task.assignee or "").strip().lower()
-        ):
-            return permission_wait_failure(
-                PERMISSION_RUN_LEASE_INVALID,
-                lease_state=lease_state,
-                executor=task.assignee,
-            )
-        if str(getattr(lease, "run_id", "") or "").strip() != normalized_run_id:
-            return permission_wait_failure(
-                PERMISSION_RUN_LEASE_RUN_MISMATCH,
-                run_id_present=bool(normalized_run_id),
-            )
-
-        session = (task.extensions or {}).get(SESSION_EXTENSION_KEY)
-        if not isinstance(session, dict):
-            return permission_wait_failure(PERMISSION_RESUME_SESSION_MISSING)
-        session_state = str(session.get("session_state") or "").strip().lower()
-        if session_state not in {"pending", "active", "input_required", "needs_recovery", "terminal"}:
-            return permission_wait_failure(PERMISSION_SESSION_SNAPSHOT_INVALID)
-        if session_state != "input_required":
-            return permission_wait_failure(
-                PERMISSION_SESSION_STATE_STALE,
-                session_state=session_state,
-            )
-        session_id_present = bool(str(session.get("session_id") or "").strip())
-        if not session_id_present:
-            return permission_wait_failure(
-                PERMISSION_RESUME_SESSION_MISSING,
-                session_id_present=False,
-            )
-        session_errors = validate_session_snapshot(session, executor=task.assignee)
-        if session_errors:
-            return permission_wait_failure(PERMISSION_SESSION_SNAPSHOT_INVALID)
-        run_ids = session.get("run_ids")
-        if not isinstance(run_ids, list) or not run_ids:
-            return permission_wait_failure(
-                PERMISSION_RESUME_SESSION_MISSING,
-                run_id_present=False,
-            )
-        if run_ids[-1] != normalized_run_id:
-            return permission_wait_failure(
-                PERMISSION_EXECUTOR_SESSION_RUN_MISMATCH,
-                run_id_present=True,
-            )
-        return None
-
-    def _fail_closed_permission_wait(
-        self,
-        task: TaskModel,
-        executor_run_id: str,
-        *,
-        failure: PermissionWaitFailure,
-        blocked_step_id: int | None = None,
-    ) -> bool:
-        """Convert an unblockable permission wait into a recoverable terminal."""
-        current = self.get_task(task.id)
-        if _normalize_status(current.status) == "needs_recovery":
-            latest_error = (current.errors or [])[-1] if current.errors else {}
-            latest_details = (
-                latest_error.get("details")
-                if isinstance(latest_error, dict)
-                and isinstance(latest_error.get("details"), dict)
-                else {}
-            )
-            if (
-                isinstance(latest_error, dict)
-                and latest_error.get("code") == PERMISSION_WAIT_COMPATIBILITY_CODE
-                and latest_details.get("reason_code") == failure.reason_code
-            ):
-                return False
-        merged_details = failure.to_details(
-            executor_run_id=executor_run_id,
-            blocked_step_id=blocked_step_id,
-        )
-        return self.mark_task_needs_recovery(
-            task.id,
-            PERMISSION_WAIT_COMPATIBILITY_CODE,
-            (
-                "Permission wait cannot be created safely; task requires recovery "
-                f"(reason: {failure.reason_code})"
-            ),
-            merged_details,
-            executor_run_id=executor_run_id,
-        )
+        self._refresh_task_index()
+        self._sync_terminal_report(current.id)
+        return True
 
     def _suspend_task_for_input(
         self,
@@ -1385,17 +1375,11 @@ class TaskService:
             history.append(previous)
 
         blocked_results = [
-            item
-            for item in callback.get("step_results") or []
-            if isinstance(item, dict) and item.get("status") == "blocked"
+            item for item in callback.get("step_results") or [] if isinstance(item, dict) and item.get("status") == "blocked"
         ]
         blocked_step_id = _safe_blocked_step_id(blocked_results)
         validated_input_details = callback.get("input")
-        input_details = (
-            validated_input_details
-            if isinstance(validated_input_details, dict)
-            else {}
-        )
+        input_details = validated_input_details if isinstance(validated_input_details, dict) else {}
         input_type = str(input_details.get("type") or "message").strip().lower() or "message"
         input_choices = (
             [dict(option) for option in input_details.get("options", []) if isinstance(option, dict)]
@@ -1403,15 +1387,9 @@ class TaskService:
             else []
         )
         input_reason = str(input_details.get("reason") or "").strip()
-        requested_permission = (
-            str(input_details.get("requested_permission") or "").strip()
-            if input_type == "permission"
-            else ""
-        )
+        requested_permission = str(input_details.get("requested_permission") or "").strip() if input_type == "permission" else ""
         created_at = str(callback.get("finished_at") or _utc_now())
-        deadline_at = (
-            _parse_timestamp(created_at) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)
-        ).isoformat().replace("+00:00", "Z")
+        deadline_at = (_parse_timestamp(created_at) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)).isoformat().replace("+00:00", "Z")
         executor_run_id = str(callback.get("executor_run_id") or "")
         if input_type == "permission":
             failure = self._permission_wait_contract_failure(
@@ -1435,8 +1413,7 @@ class TaskService:
         self.revoke_permission_grant(task.id, "input_superseded", model=task)
         extensions = dict(task.extensions or {})
         is_full_fallback_permission = input_type == "permission" and not (
-            input_details.get("scope") == APPROVAL_SCOPE
-            and bool(str(input_details.get("request_id") or "").strip())
+            input_details.get("scope") == APPROVAL_SCOPE and bool(str(input_details.get("request_id") or "").strip())
         )
         fallback_reason_summary = ""
         fallback_summary_truncated = False
@@ -1449,15 +1426,11 @@ class TaskService:
             # structured callback, never from input history, logs or executor
             # session storage.  Sanitization is fail-closed for private paths,
             # argv, raw output and credential-bearing material.
-            raw_reason = str(
-                (raw_input_details or {}).get("reason") or input_reason
-            ).strip()
+            raw_reason = str((raw_input_details or {}).get("reason") or input_reason).strip()
             raw_detail_marker = (raw_input_details or {}).get("reason_detail")
             if raw_detail_marker is not None:
                 fallback_reason_detail = sanitize_reason_detail(raw_detail_marker)
-            elif raw_reason and not (
-                len(raw_reason) == 240 and raw_reason.endswith("…")
-            ):
+            elif raw_reason and not (len(raw_reason) == 240 and raw_reason.endswith("…")):
                 fallback_reason_detail = sanitize_reason_detail(raw_reason)
 
             summary_source = input_reason or raw_reason
@@ -1485,11 +1458,7 @@ class TaskService:
             "executor_run_id": executor_run_id,
             "blocked_step_id": blocked_step_id,
             "type": input_type,
-            "summary": (
-                fallback_reason_summary
-                if is_full_fallback_permission
-                else str(redact_secrets(summary))
-            ),
+            "summary": (fallback_reason_summary if is_full_fallback_permission else str(redact_secrets(summary))),
             "created_at": created_at,
             "deadline_at": deadline_at,
             "status": "waiting",
@@ -1497,25 +1466,15 @@ class TaskService:
         if requested_permission:
             request["requested_permission"] = str(redact_secrets(requested_permission))
         if input_reason:
-            request["reason"] = (
-                fallback_reason_summary
-                if is_full_fallback_permission
-                else str(redact_secrets(input_reason))
-            )
+            request["reason"] = fallback_reason_summary if is_full_fallback_permission else str(redact_secrets(input_reason))
         if is_full_fallback_permission:
             request["reason_summary"] = fallback_reason_summary
             request["summary_truncated"] = fallback_summary_truncated
             if fallback_reason_detail:
                 request["reason_detail"] = fallback_reason_detail
         if input_choices:
-            request["options"] = [
-                str(redact_secrets(str(option.get("label") or "").strip()))
-                for option in input_choices
-            ]
-            request["option_descriptions"] = [
-                str(redact_secrets(str(option.get("description") or "").strip()))
-                for option in input_choices
-            ]
+            request["options"] = [str(redact_secrets(str(option.get("label") or "").strip())) for option in input_choices]
+            request["option_descriptions"] = [str(redact_secrets(str(option.get("description") or "").strip())) for option in input_choices]
         input_kind = str(input_details.get("kind") or "").strip()
         if input_kind:
             request["kind"] = str(redact_secrets(input_kind))
@@ -1655,9 +1614,7 @@ class TaskService:
         extensions = dict(task.extensions or {})
         resources = dict(extensions[RESOURCE_EXTENSION_KEY])
         now = _utc_now()
-        deadline_at = (
-            _parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)
-        ).isoformat().replace("+00:00", "Z")
+        deadline_at = (_parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)).isoformat().replace("+00:00", "Z")
         used = resource_exhaustion.get("used")
         observed_limit = resource_exhaustion.get("limit")
         limit = observed_limit if isinstance(observed_limit, (int, float)) else current_limit
@@ -1698,10 +1655,7 @@ class TaskService:
 
         task.status = "input_required"
         task.updated_at = now
-        task.steps = [
-            _resource_block_step(step, blocked_step_id)
-            for step in task.steps
-        ]
+        task.steps = [_resource_block_step(step, blocked_step_id) for step in task.steps]
         resources["exhaustion_count"] = int(resources.get("exhaustion_count") or 0) + 1
         extensions[RESOURCE_EXTENSION_KEY] = resources
         extensions = self._record_run_interval(task_id, extensions)
@@ -1725,11 +1679,7 @@ class TaskService:
             self.board_root,
             executor_run_id=normalized_run_id,
             executor_id=task.assignee,
-            work_dir=str(
-                (task.workspace or {}).get("project_root")
-                or (task.workspace or {}).get("root")
-                or self.board_root
-            ),
+            work_dir=str((task.workspace or {}).get("project_root") or (task.workspace or {}).get("root") or self.board_root),
         )
         clear_task_progress(task)
         self.store.append_event(
@@ -1757,224 +1707,6 @@ class TaskService:
             "current_limit": current_limit,
             "next_limit": next_limit,
             "exhaustion_count": resources["exhaustion_count"],
-        }
-
-    def block_task_for_approval(
-        self,
-        task_id: str,
-        *,
-        executor_run_id: str,
-        session_id: str,
-        request_id: str,
-        request_fingerprint: str,
-        executor: str,
-        operation: str,
-        summary: str = "",
-        reason: str = "",
-        reason_detail: str = "",
-        blocked_step_id: int | None = None,
-        execution_session: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Block the first incomplete step for one structured native approval request.
-
-        Core entry for the ``PERM-103-003`` approval flow.  The caller supplies
-        the executor-neutral ``agentbc.approval`` v1 binding facts; Core builds a
-        bounded summary, persists the approval receipt under
-        ``agentbc.approval``, and creates an ``input_required(type=permission)``
-        request that only Approve / Deny can answer through
-        :func:`notify_input_required`.  The optional ``reason`` is normalized to
-        a Core single-line ``reason_summary`` (at most 120 characters) and the
-        optional ``reason_detail`` is persisted only after redaction,
-        control-character removal and a 2000-character bound.  No safe-to-full
-        grant is issued and the task ``effective_mode`` is never changed.
-        """
-        from .approval import (
-            APPROVAL_SCOPE,
-            compute_request_fingerprint,
-            core_bounded_summary,
-            new_request_id,
-        )
-        from .reports import redact_secrets
-        from .run_lease import suspend_lease
-        from .task_health import clear_task_progress
-
-        task = self.get_task(task_id)
-        task_id = task.id
-        if execution_session is not None:
-            self._apply_executor_session_result(
-                task,
-                executor_run_id,
-                execution_session,
-                "input_required",
-            )
-        chain = self.resolve_chain(task_id)
-        if not chain.requested_is_head or len(chain.head_task_ids) != 1:
-            raise ABCError(
-                "approval_stale_chain",
-                "Approval request must target the current unique chain head",
-                chain.to_dict(),
-            )
-        normalized_executor = str(executor or "").strip().lower()
-        if normalized_executor != str(task.assignee or "").strip().lower():
-            raise ABCError(
-                "approval_executor_mismatch",
-                "Approval request executor does not match the task assignee",
-            )
-        normalized_run_id = str(executor_run_id or "").strip()
-        if not normalized_run_id:
-            raise ABCError(
-                "approval_run_missing",
-                "Approval request requires the authoritative executor run id",
-            )
-        session = (task.extensions or {}).get(SESSION_EXTENSION_KEY)
-        session_errors = validate_session_snapshot(session, executor=task.assignee)
-        if session_errors:
-            raise ABCError("approval_session_invalid", "; ".join(session_errors), {"errors": session_errors})
-        official_session_id = str(session.get("session_id") or "").strip()
-        if not official_session_id or official_session_id != str(session_id or "").strip():
-            raise ABCError(
-                "approval_session_mismatch",
-                "Approval request does not match the official executor session",
-            )
-        run_ids = list(session.get("run_ids") or [])
-        if not run_ids or run_ids[-1] != normalized_run_id:
-            raise ABCError(
-                "approval_run_mismatch",
-                "Approval request does not match the latest executor run",
-            )
-
-        clean_request_id = str(request_id or "").strip()
-        if not clean_request_id:
-            clean_request_id = new_request_id()
-        clean_fingerprint = str(request_fingerprint or "").strip()
-        if not clean_fingerprint:
-            clean_fingerprint = compute_request_fingerprint(
-                executor=normalized_executor,
-                session_id=official_session_id,
-                tool_name=operation,
-            )
-        clean_operation = str(operation or "").strip()
-        if not clean_operation:
-            raise ABCError("approval_operation_invalid", "Approval request requires an operation")
-        clean_summary = str(summary or "").strip()
-        if not clean_summary:
-            clean_summary = core_bounded_summary(
-                executor=normalized_executor,
-                operation=clean_operation,
-            )
-        clean_reason_summary = normalize_reason_summary(
-            reason,
-            executor=normalized_executor,
-            operation=clean_operation,
-        )
-        clean_reason_detail = sanitize_reason_detail(reason_detail)
-
-        receipt = build_approval_receipt(
-            task_id=task_id,
-            executor_run_id=normalized_run_id,
-            executor=normalized_executor,
-            session_id=official_session_id,
-            request_id=clean_request_id,
-            request_fingerprint=clean_fingerprint,
-            kind="permission",
-            operation=clean_operation,
-            summary=str(redact_secrets(clean_summary)),
-            reason_summary=clean_reason_summary,
-            reason_detail=clean_reason_detail,
-            scope=APPROVAL_SCOPE,
-        )
-
-        step_id = blocked_step_id or _first_incomplete_step_id(task.steps)
-        if step_id is None:
-            raise ABCError(
-                "approval_no_step",
-                "Approval request cannot be created: no incomplete step exists",
-            )
-
-        now = _utc_now()
-        deadline_at = (
-            _parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)
-        ).isoformat().replace("+00:00", "Z")
-        request: dict[str, Any] = {
-            "input_id": f"input-{uuid.uuid4().hex}",
-            "executor_run_id": normalized_run_id,
-            "blocked_step_id": step_id,
-            "type": "permission",
-            "scope": APPROVAL_SCOPE,
-            "request_id": clean_request_id,
-            "request_fingerprint": clean_fingerprint,
-            "operation": clean_operation,
-            "summary": receipt["summary"],
-            "reason_summary": clean_reason_summary,
-            "summary_truncated": bool(receipt.get("summary_truncated", False)),
-            "created_at": now,
-            "deadline_at": deadline_at,
-            "status": "waiting",
-        }
-
-        extensions = dict(task.extensions or {})
-        previous = extensions.get("agentbc.input")
-        history = list(extensions.get("agentbc.input_history") or [])
-        if isinstance(previous, dict):
-            history.append(previous)
-
-        extensions[APPROVAL_EXTENSION_KEY] = receipt
-        extensions = self._record_run_interval(task_id, extensions)
-        extensions.pop("agentbc.completion_intent", None)
-        extensions.pop("agentbc.final_callback", None)
-        extensions["agentbc.input"] = request
-        if history:
-            extensions["agentbc.input_history"] = history
-        task.extensions = _merge_execution(
-            extensions,
-            {
-                "internal_status": "waiting",
-                "lease_state": "suspended",
-                "waiting_since": now,
-            },
-        )
-        task.status = "input_required"
-        task.updated_at = now
-        task.steps = [
-            _resource_block_step(step, step_id)
-            for step in task.steps
-        ]
-        self._release_lease(task_id)
-        self.store.write_task(task_id, _without_none(task.to_dict()))
-        suspend_lease(
-            task_id,
-            self.board_root,
-            executor_run_id=normalized_run_id,
-            executor_id=task.assignee,
-            work_dir=str(
-                (task.workspace or {}).get("project_root")
-                or (task.workspace or {}).get("root")
-                or self.board_root
-            ),
-        )
-        clear_task_progress(task)
-        self.store.append_event(
-            task_id,
-            {
-                "event_type": "task.approval_required",
-                "task_id": task_id,
-                "created_at": now,
-                "input_id": request["input_id"],
-                "request_id": clean_request_id,
-                "blocked_step_id": step_id,
-                "scope": APPROVAL_SCOPE,
-            },
-        )
-        self._refresh_task_index()
-        return {
-            "ok": True,
-            "task_id": task_id,
-            "status": "input_required",
-            "input_id": request["input_id"],
-            "request_id": clean_request_id,
-            "request_fingerprint": clean_fingerprint,
-            "scope": APPROVAL_SCOPE,
-            "blocked_step_id": step_id,
         }
 
     def cutover_preflight(self) -> dict[str, Any]:
@@ -2046,7 +1778,7 @@ class TaskService:
         response_type: str,
         message: str = "",
     ) -> dict[str, Any]:
-        """Atomically record a redacted answer and prepare the same task for resume."""
+        """Atomically record an answer and route permission transitions."""
         from .reports import redact_secrets
         from .run_lease import RunLeaseState, load_lease
         from .task_health import write_task_progress
@@ -2061,7 +1793,11 @@ class TaskService:
             raise ABCError(
                 "stale_input",
                 f"Input {input_id} is not current for task {task.id}",
-                {"task_id": task.id, "input_id": input_id, "current_input_id": current_input_id},
+                {
+                    "task_id": task.id,
+                    "input_id": input_id,
+                    "current_input_id": current_input_id,
+                },
             )
         if str(request.get("status") or "") == "answered":
             return {
@@ -2075,7 +1811,11 @@ class TaskService:
             raise ABCError("input_not_pending", f"Input {input_id} is not waiting")
         chain = self.resolve_chain(task.id)
         if not chain.requested_is_head or len(chain.head_task_ids) != 1:
-            raise ABCError("stale_input", f"Task {task.id} is not the current chain head", chain.to_dict())
+            raise ABCError(
+                "stale_input",
+                f"Task {task.id} is not the current chain head",
+                chain.to_dict(),
+            )
         now = _utc_now()
         if _parse_timestamp(str(request.get("deadline_at") or "")) <= _parse_timestamp(now):
             raise ABCError("input_expired", f"Input {input_id} reached its response deadline")
@@ -2084,30 +1824,44 @@ class TaskService:
             raise ABCError(
                 "executor_active",
                 f"Task {task.id} still has an active executor",
-                {"task_id": task.id, "run_id": lease.run_id, "run_lease_state": lease.state},
+                {
+                    "task_id": task.id,
+                    "run_id": lease.run_id,
+                    "run_lease_state": lease.state,
+                },
             )
         response_type = str(response_type or "").strip()
-        if response_type not in {"message", "approve", "deny"}:
-            raise ABCError("invalid_input_response", f"Unsupported response type: {response_type}")
+        if response_type not in {
+            "message",
+            "approve",
+            "approve_full",
+            "deny",
+            "permission_option",
+        }:
+            raise ABCError(
+                "invalid_input_response",
+                f"Unsupported response type: {response_type}",
+            )
         clean_message = str(redact_secrets(message)).strip() if response_type == "message" else response_type
         if response_type == "message" and not clean_message:
             raise ABCError("invalid_input_response", "--message requires non-empty text")
 
-        is_permission_request = request.get("type") == "permission"
-        if is_permission_request and response_type not in {"approve", "deny"}:
-            raise ABCError(
-                "invalid_input_response",
-                "Permission requests only accept approve or deny",
+        if request.get("type") == "permission":
+            return self._respond_to_permission_input(
+                task,
+                request,
+                input_id=current_input_id,
+                response_type=response_type,
+                message=message,
+                clean_message=clean_message,
+                now=now,
             )
 
         is_resource_decision = is_resource_decision_request(request)
         updated_resources: dict[str, Any] | None = None
         if is_resource_decision:
             blocked_step_id = request.get("blocked_step_id")
-            if not any(
-                step.get("id") == blocked_step_id and step.get("status") == "blocked"
-                for step in task.steps
-            ):
+            if not any(step.get("id") == blocked_step_id and step.get("status") == "blocked" for step in task.steps):
                 raise ABCError(
                     "resource_decision_invalid",
                     "Resource input does not identify the current blocked step",
@@ -2122,125 +1876,14 @@ class TaskService:
         answered = dict(request)
         answered["status"] = "answered"
         answered["responded_at"] = now
-        permission_denial_source = (
-            "timeout"
-            if is_permission_request
-            and response_type == "deny"
-            and message == PERMISSION_DIALOG_TIMEOUT_RESPONSE
-            else "dialog_closed"
-            if is_permission_request
-            and response_type == "deny"
-            and message == PERMISSION_DIALOG_CLOSED_RESPONSE
-            else "user"
-        )
         answered["response"] = {
             "type": response_type,
             "summary": clean_message,
-            **(
-                {"source": permission_denial_source}
-                if is_permission_request and response_type == "deny"
-                else {}
-            ),
         }
         extensions = dict(task.extensions or {})
         extensions["agentbc.input"] = answered
         if updated_resources is not None:
             extensions[RESOURCE_EXTENSION_KEY] = updated_resources
-
-        is_approval_request = (
-            is_permission_request
-            and request.get("scope") == APPROVAL_SCOPE
-            and bool(str(request.get("request_id") or "").strip())
-        )
-        if is_approval_request:
-            receipt = self._approval_receipt_for_response(
-                task,
-                extensions,
-                request,
-                current_input_id,
-            )
-            approval_source = permission_denial_source if response_type == "deny" else "user"
-            updated_receipt = record_approval_decision(
-                receipt,
-                response_type,
-                source=approval_source,
-                decided_at=now,
-                executor=task.assignee,
-                task_id=task.id,
-                session_id=str(
-                    (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
-                ),
-                request_id=str(request.get("request_id") or ""),
-            )
-            extensions[APPROVAL_EXTENSION_KEY] = updated_receipt
-            blocked_step_id = request.get("blocked_step_id")
-            if not any(
-                step.get("id") == blocked_step_id and step.get("status") == "blocked"
-                for step in task.steps
-            ):
-                raise ABCError(
-                    "permission_input_invalid",
-                    "Approval input does not identify the current blocked step",
-                )
-            task.steps = [
-                {**step, "status": "pending"}
-                if step.get("id") == blocked_step_id and step.get("status") == "blocked"
-                else dict(step)
-                for step in task.steps
-            ]
-            task.status = "running"
-            task.updated_at = now
-            task.extensions = _merge_execution(
-                extensions,
-                {
-                    "internal_status": "resuming",
-                    "lease_state": "suspended",
-                    "resuming_at": now,
-                },
-            )
-            self.store.write_task(task.id, _without_none(task.to_dict()))
-            self.store.append_event(
-                task.id,
-                {
-                    "event_type": "task.input_answered",
-                    "task_id": task.id,
-                    "input_id": current_input_id,
-                    "response_type": response_type,
-                    "response_source": approval_source,
-                    "approval_scope": APPROVAL_SCOPE,
-                    "created_at": now,
-                },
-            )
-            self.store.append_event(
-                task.id,
-                {
-                    "event_type": "task.approval_decided",
-                    "task_id": task.id,
-                    "request_id": str(request.get("request_id") or ""),
-                    "decision": response_type,
-                    "decision_source": approval_source,
-                    "scope": APPROVAL_SCOPE,
-                    "created_at": now,
-                },
-            )
-            write_task_progress(
-                task,
-                state="resuming",
-                message="approval decision recorded; resuming the same task session",
-                source="runner",
-            )
-            self._refresh_task_index()
-            return {
-                "ok": True,
-                "task_id": task.id,
-                "input_id": current_input_id,
-                "request_id": str(request.get("request_id") or ""),
-                "status": "resuming",
-                "dispatch_required": True,
-                "approval_decision": response_type,
-                "approval_source": approval_source,
-                "same_session": True,
-            }
 
         if is_resource_decision and response_type == "deny":
             failure_code = {
@@ -2252,9 +1895,7 @@ class TaskService:
                     "resource_decision_invalid",
                     f"Resource decisions are unsupported for executor: {task.assignee}",
                 )
-            failure_message = (
-                "User terminated the task after the executor resource limit was exhausted"
-            )
+            failure_message = "User terminated the task after the executor resource limit was exhausted"
             task.extensions = extensions
             task.updated_at = now
             self._mark_task_failed_model(
@@ -2299,68 +1940,10 @@ class TaskService:
                 },
             }
 
-        if is_permission_request and response_type == "deny":
-            timed_out = permission_denial_source == "timeout"
-            failure_message = (
-                "Permission request timed out and was automatically denied"
-                if timed_out
-                else "User denied the requested full permission"
-            )
-            failure_code = (
-                "permission_denied_by_timeout"
-                if timed_out
-                else "permission_denied_by_user"
-            )
-            task.extensions = extensions
-            task.updated_at = now
-            self._mark_task_failed_model(
-                task,
-                failure_code,
-                failure_message,
-                {
-                    "failure": {
-                        "kind": failure_code,
-                        "layer": "permission",
-                        "message": failure_message,
-                        "retryable": False,
-                    },
-                    "input_id": current_input_id,
-                    "executor": task.assignee,
-                    "requested_permission": request.get("requested_permission", ""),
-                },
-            )
-            self.store.append_event(
-                task.id,
-                {
-                    "event_type": "task.input_answered",
-                    "task_id": task.id,
-                    "input_id": current_input_id,
-                    "response_type": response_type,
-                    "response_source": permission_denial_source,
-                    "created_at": now,
-                },
-            )
-            return {
-                "ok": True,
-                "task_id": task.id,
-                "input_id": current_input_id,
-                "status": "failed",
-                "dispatch_required": False,
-                "permission_denied": True,
-                "failure": {
-                    "kind": failure_code,
-                    "layer": "permission",
-                    "message": failure_message,
-                    "retryable": False,
-                },
-            }
-
         if is_resource_decision:
             blocked_step_id = request.get("blocked_step_id")
             task.steps = [
-                {**step, "status": "pending"}
-                if step.get("id") == blocked_step_id and step.get("status") == "blocked"
-                else dict(step)
+                {**step, "status": "pending"} if step.get("id") == blocked_step_id and step.get("status") == "blocked" else dict(step)
                 for step in task.steps
             ]
             session = extensions.get(SESSION_EXTENSION_KEY)
@@ -2378,54 +1961,8 @@ class TaskService:
                         {"errors": session_errors},
                     )
                 extensions[SESSION_EXTENSION_KEY] = updated_session
-        elif is_permission_request:
-            blocked_step_id = request.get("blocked_step_id")
-            if not any(
-                step.get("id") == blocked_step_id and step.get("status") == "blocked"
-                for step in task.steps
-            ):
-                raise ABCError(
-                    "permission_input_invalid",
-                    "Permission input does not identify the current blocked step",
-                )
-            task.steps = [
-                {**step, "status": "pending"}
-                if step.get("id") == blocked_step_id and step.get("status") == "blocked"
-                else dict(step)
-                for step in task.steps
-            ]
-            session = extensions.get(SESSION_EXTENSION_KEY)
-            session_id = (
-                str(session.get("session_id") or "").strip()
-                if isinstance(session, dict)
-                else ""
-            )
-            if not session_id:
-                raise ABCError(
-                    "permission_input_invalid",
-                    "Permission input is missing the authoritative executor session",
-                )
-            base_permission = permission_record_from_extensions(extensions)
-            runtime_policy = permission_runtime_policy(base_permission)
-            if runtime_policy["approval_on_block"] is not True:
-                raise ABCError(
-                    "permission_input_invalid",
-                    "Permission input cannot escalate an already-full permission base",
-                )
-            extensions[PERMISSION_GRANT_EXTENSION_KEY] = build_permission_grant(
-                executor=task.assignee,
-                task_id=task.id,
-                input_id=current_input_id,
-                session_id=session_id,
-                source_run_id=str(request.get("executor_run_id") or ""),
-                base_mode=str(runtime_policy["base_mode"]),
-                issued_at=now,
-            )
         else:
-            task.steps = [
-                {**step, "status": "pending"} if step.get("status") == "blocked" else dict(step)
-                for step in task.steps
-            ]
+            task.steps = [{**step, "status": "pending"} if step.get("status") == "blocked" else dict(step) for step in task.steps]
         task.status = "running"
         task.updated_at = now
         task.extensions = _merge_execution(
@@ -2462,7 +1999,12 @@ class TaskService:
                     "created_at": now,
                 },
             )
-        write_task_progress(task, state="resuming", message="user response received; resuming task", source="runner")
+        write_task_progress(
+            task,
+            state="resuming",
+            message="user response received; resuming task",
+            source="runner",
+        )
         self._refresh_task_index()
         return {
             "ok": True,
@@ -2485,107 +2027,13 @@ class TaskService:
                 continue
             if request.get("type") == "permission":
                 expired_at = now or _utc_now()
-                answered_request = dict(request)
-                answered_request["status"] = "answered"
-                answered_request["responded_at"] = expired_at
-                answered_request["response"] = {
-                    "type": "deny",
-                    "summary": "deny",
-                    "source": "timeout",
-                }
-                task.extensions = dict(task.extensions or {})
-                task.extensions["agentbc.input"] = answered_request
-                task.updated_at = expired_at
-                is_approval_request = (
-                    request.get("scope") == APPROVAL_SCOPE
-                    and bool(str(request.get("request_id") or "").strip())
-                )
-                if is_approval_request:
-                    # Approval-based timeout auto-denies on the same native
-                    # request, records the decision source, and never issues a
-                    # safe-to-full grant.  The task is moved to needs_recovery so
-                    # the official session is never silently lost.
-                    extensions = dict(task.extensions)
-                    try:
-                        receipt = self._approval_receipt_for_response(
-                            task,
-                            extensions,
-                            request,
-                            str(request.get("input_id") or ""),
-                        )
-                    except ABCError:
-                        receipt = None
-                    if receipt is not None:
-                        updated_receipt = record_approval_decision(
-                            receipt,
-                            "deny",
-                            source="timeout",
-                            decided_at=expired_at,
-                            executor=task.assignee,
-                            task_id=task.id,
-                            session_id=str(
-                                (extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or ""
-                            ),
-                            request_id=str(request.get("request_id") or ""),
-                        )
-                        extensions[APPROVAL_EXTENSION_KEY] = updated_receipt
-                        task.extensions = extensions
-                        self.store.write_task(task.id, _without_none(task.to_dict()))
-                    changed = self.mark_task_needs_recovery(
-                        task.id,
-                        "approval_denied_by_timeout",
-                        "Approval request timed out and was automatically denied",
+                if self._expire_permission_input(task, request, expired_at):
+                    expired.append(
                         {
+                            "task_id": task.id,
                             "input_id": request.get("input_id", ""),
-                            "request_id": request.get("request_id", ""),
-                            "executor": task.assignee,
-                            "response_source": "timeout",
-                        },
+                        }
                     )
-                    if changed:
-                        expired.append(
-                            {
-                                "task_id": task.id,
-                                "input_id": request.get("input_id", ""),
-                            }
-                        )
-                    continue
-                failure_code = "permission_denied_by_timeout"
-                failure_message = "Permission request timed out and was automatically denied"
-                self._mark_task_failed_model(
-                    task,
-                    failure_code,
-                    failure_message,
-                    {
-                        "failure": {
-                            "kind": failure_code,
-                            "layer": "permission",
-                            "message": failure_message,
-                            "retryable": False,
-                        },
-                        "input_id": request.get("input_id", ""),
-                        "executor": task.assignee,
-                        "requested_permission": request.get("requested_permission", ""),
-                        "response_source": "timeout",
-                    },
-                )
-                self.store.append_event(
-                    task.id,
-                    {
-                        "event_type": "task.input_answered",
-                        "task_id": task.id,
-                        "input_id": request.get("input_id", ""),
-                        "response_type": "deny",
-                        "response_source": "timeout",
-                        "created_at": expired_at,
-                    },
-                )
-                expired.append(
-                    {
-                        "task_id": task.id,
-                        "input_id": request.get("input_id", ""),
-                    }
-                )
                 continue
             expired_request = dict(request)
             expired_request["status"] = "expired"
@@ -2689,6 +2137,19 @@ class TaskService:
         task.extensions = _merge_execution(task.extensions, execution_updates)
         self.revoke_permission_grant(task.id, code, model=task)
         self._release_lease(task_id)
+        # FLOW-104-002: create the terminal-delivery receipt inside this same
+        # authoritative task write as the ``failed`` terminal state.
+        from .terminal_delivery import (
+            TERMINAL_DELIVERY_EXTENSION_KEY,
+            build_terminal_delivery_receipt,
+        )
+
+        task.extensions[TERMINAL_DELIVERY_EXTENSION_KEY] = build_terminal_delivery_receipt(
+            task_id,
+            terminal_state="failed",
+            terminal_event="task.failed",
+            committed_at=now,
+        )
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)
         self.store.append_event(
@@ -2713,6 +2174,7 @@ class TaskService:
         *,
         executor_run_id: str = "",
         execution_session: dict[str, Any] | None = None,
+        close_run_lease: bool = False,
     ) -> bool:
         from .task_health import clear_task_progress
 
@@ -2759,17 +2221,74 @@ class TaskService:
         else:
             self._set_known_executor_session_state(task, "needs_recovery")
         _supersede_final_callback(task, "needs_recovery", compact_message)
+        invalidated_input_id = self._invalidate_waiting_input_for_recovery(
+            task,
+            code=code,
+            at=now,
+        )
         execution_updates = {"internal_status": "needs_recovery"}
         from .run_lease import RunLeaseState, close_lease, load_lease
 
         run_lease = load_lease(task_id, self.board_root)
-        if run_lease is not None and run_lease.state == RunLeaseState.SUSPENDED:
+        # Record the active interval before closing it.  Worker/transport exit
+        # reconciliation opts into the authoritative close; ordinary in-worker
+        # recovery callers retain the legacy behavior so they never signal
+        # their own process group while persisting diagnostics.
+        task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
+        if run_lease is not None and (close_run_lease or run_lease.state == RunLeaseState.SUSPENDED):
             close_lease(run_lease, self.board_root)
             execution_updates["lease_state"] = RunLeaseState.CLOSED
-        task.extensions = self._record_run_interval(task_id, dict(task.extensions or {}))
+            if close_run_lease:
+                task.extensions = dict(task.extensions or {})
+                task.extensions["run_lease"] = {
+                    "run_id": run_lease.run_id,
+                    "state": RunLeaseState.CLOSED,
+                    "recovery_status": "ready_for_retry",
+                    "last_heartbeat_at": run_lease.last_heartbeat_at,
+                    "recommendation": (f"Run agentbc task retry {task_id} or handoff this chain head."),
+                }
         task.extensions = _merge_execution(task.extensions, execution_updates)
+        if close_run_lease:
+            # Persist the recovery state, closed lease projection, and absence
+            # of active worker pointers in the same task-record write.  This
+            # prevents status readers from observing needs_recovery paired
+            # with a stale active worker/run snapshot.
+            extensions = dict(task.extensions or {})
+            execution = dict(extensions.get("agentbc.execution") or {})
+            for key in (
+                "worker_run_id",
+                "worker_pid",
+                "executor_run_id",
+                "dispatch_status",
+                "monitor_status",
+                "monitor_message",
+            ):
+                execution.pop(key, None)
+            extensions["agentbc.execution"] = execution
+            task.extensions = extensions
         self.revoke_permission_grant(task.id, code, model=task)
         self._release_lease(task_id)
+        # A recovery-required outcome still ends this execution attempt.  It
+        # therefore owns the same durable task-end dialog receipt as completed,
+        # failed, cancelled and rejected outcomes.  Session cleanup consumes
+        # only the confirmed UI stage of this receipt, never the task status.
+        from .terminal_delivery import (
+            build_terminal_delivery_receipt,
+            read_terminal_delivery_receipt,
+        )
+
+        stored_delivery = task.extensions.get(TERMINAL_DELIVERY_EXTENSION_KEY)
+        try:
+            existing_delivery = read_terminal_delivery_receipt(stored_delivery)
+        except ABCError:
+            existing_delivery = {}
+        if existing_delivery.get("terminal_state") != "needs_recovery":
+            task.extensions[TERMINAL_DELIVERY_EXTENSION_KEY] = build_terminal_delivery_receipt(
+                task_id,
+                terminal_state="needs_recovery",
+                terminal_event="task.recovery_required",
+                committed_at=now,
+            )
         self.store.write_task(task_id, _without_none(task.to_dict()))
         clear_task_progress(task)
         self.store.append_event(
@@ -2781,6 +2300,29 @@ class TaskService:
                 "error": {"code": code, "message": compact_message},
             },
         )
+        if close_run_lease and run_lease is not None and run_lease.state == RunLeaseState.CLOSED:
+            self.store.append_event(
+                task_id,
+                {
+                    "event_type": "task.recovery_ready",
+                    "task_id": task_id,
+                    "created_at": now,
+                    "recovery_status": "ready_for_retry",
+                    "source": "recovery_terminal_transaction",
+                },
+            )
+        if invalidated_input_id:
+            self.store.append_event(
+                task_id,
+                {
+                    "event_type": "task.input_invalidated",
+                    "task_id": task_id,
+                    "input_id": invalidated_input_id,
+                    "created_at": now,
+                    "reason_code": code,
+                    "source": "fail_closed_recovery",
+                },
+            )
         self._refresh_task_index()
         self._sync_terminal_report(task_id)
         return True
@@ -2797,6 +2339,28 @@ class TaskService:
             raise ABCError("task_leased", f"Cannot requeue task with active run lease: {task_id}")
         now = _utc_now()
         cleanup_task_report_records(task)
+        session = (task.extensions or {}).get(SESSION_EXTENSION_KEY)
+        cleared_unbound_runs: list[str] = []
+        if (
+            isinstance(session, dict)
+            and str(session.get("session_state") or "").strip().lower() == "pending"
+            and not str(session.get("session_id") or "").strip()
+            and isinstance(session.get("run_ids"), list)
+            and session.get("run_ids")
+        ):
+            # A run may be recorded before an Executor emits its official
+            # session receipt.  If that attempt fails, its run ID is execution
+            # history, not proof that a resumable session exists.  Keeping it
+            # here poisons every retry: adapters see a non-empty run list and
+            # demand a session ID that was never created.  Requeue therefore
+            # restores the still-pending session snapshot to a fresh start.
+            # Sessions with an official ID are never changed.
+            cleared_unbound_runs = list(session["run_ids"])
+            reset_session = dict(session)
+            reset_session["run_ids"] = []
+            reset_session["resume_count"] = 0
+            task.extensions = dict(task.extensions or {})
+            task.extensions[SESSION_EXTENSION_KEY] = reset_session
         task.status = "pending"
         task.updated_at = now
         task.extensions = _merge_execution(
@@ -2813,6 +2377,16 @@ class TaskService:
             task_id,
             {"event_type": "task.requeued", "task_id": task_id, "created_at": now},
         )
+        if cleared_unbound_runs:
+            self.store.append_event(
+                task_id,
+                {
+                    "event_type": "executor.unbound_session_runs_cleared",
+                    "task_id": task_id,
+                    "cleared_run_count": len(cleared_unbound_runs),
+                    "created_at": now,
+                },
+            )
         self._refresh_task_index()
         return task
 
@@ -2821,7 +2395,7 @@ class TaskService:
         task.extensions = _merge_execution(task.extensions, updates)
         task.updated_at = _utc_now()
         self.store.write_task(task_id, _without_none(task.to_dict()))
-        return dict((task.extensions.get("agentbc.execution") or {}))
+        return dict(task.extensions.get("agentbc.execution") or {})
 
     def pause_task(self, task_id: str, reason: str | None = None) -> None:
         task = self.get_task(task_id)
@@ -2877,6 +2451,14 @@ class TaskService:
         task.extensions = _merge_execution(task.extensions, execution_updates)
         self.revoke_permission_grant(task.id, "task_cancelled", model=task)
         self._release_lease(task_id)
+        from .terminal_delivery import build_terminal_delivery_receipt
+
+        task.extensions[TERMINAL_DELIVERY_EXTENSION_KEY] = build_terminal_delivery_receipt(
+            task_id,
+            terminal_state="cancelled",
+            terminal_event="task.cancelled",
+            committed_at=task.updated_at,
+        )
         self.store.write_task(task_id, _without_none(task.to_dict()))
         cleanup_cancelled_task_files(task)
         clear_task_progress(task, remove_log=True)
@@ -3003,7 +2585,7 @@ class TaskService:
             if rollback_complete:
                 try:
                     self._refresh_task_index()
-                except Exception:
+                except Exception:  # noqa: BLE001,S110
                     pass
             raise ABCError(
                 "task_delete_index_error",
@@ -3107,7 +2689,10 @@ class TaskService:
 
     def commit_task_close(self, task_id: str, token: str) -> dict[str, Any]:
         """Commit a reserved close even if process cancellation has raced task state."""
-        from .task_health import cleanup_cancelled_task_files, cleanup_task_report_records
+        from .task_health import (
+            cleanup_cancelled_task_files,
+            cleanup_task_report_records,
+        )
 
         task = self.get_task(task_id)
         intent = (task.extensions or {}).get("agentbc.close_intent")
@@ -3140,13 +2725,225 @@ class TaskService:
         return result
 
     def _sync_terminal_report(self, task_id: str) -> None:
-        try:
-            from .reports import write_report_files
+        """Run the local terminal side effects and record each independently.
 
-            write_report_files(task_id, self.board_root)
-        except (ABCError, OSError, PermissionError):
-            pass
+        FLOW-104-002: this never changes the task terminal state.  When the task
+        carries a ``agentbc.terminal_delivery`` receipt, a report, record or
+        index failure is recorded on it so Runner maintenance can replay only
+        the incomplete stages.  Tasks without a receipt (cancelled, recovered or
+        legacy records) keep the historical direct behaviour.
+        """
+        try:
+            task = self.get_task(task_id)
+            has_receipt = TERMINAL_DELIVERY_EXTENSION_KEY in dict(task.extensions or {})
+        except ABCError:
+            has_receipt = False
+        if has_receipt:
+            try:
+                self._run_terminal_delivery_stages(
+                    task_id,
+                    executors=self._terminal_delivery_executors(task_id),
+                    refresh_index=not self._runner_worker,
+                )
+            except (ABCError, OSError, PermissionError):
+                pass
+        else:
+            try:
+                from .reports import (
+                    compact_task_record,
+                    refresh_board_index,
+                    write_report_markdown,
+                )
+
+                write_report_markdown(task_id, self.board_root)
+                compact_task_record(task_id, self.board_root)
+                if not self._runner_worker:
+                    refresh_board_index(self.board_root)
+            except (ABCError, OSError, PermissionError):
+                pass
         self._cleanup_empty_managed_artifacts(task_id)
+
+    # ------------------------------------------------- terminal delivery (v1)
+    def run_terminal_side_effects(self, task_id: str) -> None:
+        """Run the local terminal side effects through the durable stage split.
+
+        FLOW-104-002 public wrapper around :meth:`_sync_terminal_report`.  When
+        the task carries a ``agentbc.terminal_delivery`` receipt the report,
+        record and index stages are attempted under it and recorded, so Runner
+        maintenance replays only the unconfirmed ones.  Tasks without a receipt
+        (``needs_recovery``, cancelled, or legacy records) keep the historical
+        direct behaviour and never gain a receipt: the terminal coordinator must
+        not touch a ``needs_recovery`` session.
+        """
+        self._sync_terminal_report(task_id)
+
+    def _terminal_delivery_executors(
+        self,
+        task_id: str,
+        report_file: str = "",
+    ) -> dict[str, Any]:
+        """Build the locally owned terminal delivery stage handlers.
+
+        Handlers are zero-argument callables bound to ``task_id`` so Core and the
+        Runner share one :class:`StageExecutors` calling convention.
+
+        FLOW-104-002: Runner is the production owner of terminal delivery, so
+        Core only executes the three idempotent local projections (report,
+        record, index) inline.  The notification stage handlers are deliberately
+        omitted: a missing handler leaves that stage ``pending`` without
+        consuming an attempt, and the Runner delivers it immediately when handed
+        the task and replays it during maintenance until confirmed.
+        """
+        from .reports import (
+            compact_task_record,
+            refresh_board_index,
+            write_report_markdown,
+        )
+        from .terminal_delivery import StageOutcome
+
+        board_root = self.board_root
+
+        def _report() -> Any:
+            report, _markdown = write_report_markdown(task_id, board_root)
+            target = str(report_file or (report.get("workspace") or {}).get("report_file") or "")
+            if target and not Path(target).expanduser().is_file():
+                return StageOutcome(False, error_code="report_missing")
+            return StageOutcome(True)
+
+        def _record() -> Any:
+            compact_task_record(task_id, board_root)
+            return StageOutcome(True)
+
+        def _index() -> Any:
+            refresh_board_index(board_root)
+            return StageOutcome(True)
+
+        return {
+            "report": _report,
+            "record": _record,
+            "index": _index,
+        }
+
+    def _run_terminal_delivery_stages(
+        self,
+        task_id: str,
+        *,
+        executors: dict[str, Any] | None = None,
+        refresh_index: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Attempt the incomplete delivery stages and persist the receipt.
+
+        Every stage runs inside its own ``try``/``except`` boundary; a failure is
+        recorded on the receipt and never raised into the caller's terminal
+        state transition.
+        """
+        from .terminal_delivery import (
+            TERMINAL_DELIVERY_EXTENSION_KEY,
+            TERMINAL_DELIVERY_STAGES,
+            StageOutcome,
+            read_terminal_delivery_receipt,
+            transition_terminal_delivery_stage,
+        )
+
+        try:
+            task = self.get_task(task_id)
+        except ABCError:
+            return []
+        extensions = dict(task.extensions or {})
+        stored = extensions.get(TERMINAL_DELIVERY_EXTENSION_KEY)
+        if not isinstance(stored, dict):
+            return []
+        try:
+            receipt = read_terminal_delivery_receipt(stored)
+        except ABCError:
+            return []
+        handlers = executors or self._terminal_delivery_executors()
+
+        results: list[dict[str, Any]] = []
+        for stage in TERMINAL_DELIVERY_STAGES:
+            entry = receipt["stages"][stage]
+            if entry["state"] in {"succeeded", "not_applicable"}:
+                # Confirmed stages must never repeat.
+                continue
+            if stage == "index" and not refresh_index:
+                continue
+            handler = handlers.get(stage)
+            if handler is None:
+                # Core does not own this stage (the notification stages belong to
+                # the Runner).  It must stay ``pending`` with no attempt consumed
+                # so the Runner can deliver it immediately: reserving it here
+                # would force every delivery through the 300s uncertain-retry
+                # backoff instead.
+                continue
+            if entry["state"] != "in_progress":
+                try:
+                    receipt = transition_terminal_delivery_stage(receipt, stage, "in_progress")
+                except ABCError:
+                    # Attempt limit reached for this stage.
+                    continue
+            try:
+                outcome = handler()
+            except ABCError as exc:
+                outcome = StageOutcome(
+                    False,
+                    error_code=str(getattr(exc, "code", "") or f"{stage}_failed"),
+                )
+            except (OSError, PermissionError, ValueError):
+                outcome = StageOutcome(False, error_code=f"{stage}_failed")
+            if outcome is None or isinstance(outcome, dict):
+                outcome = StageOutcome(False, error_code=f"{stage}_failed")
+            if outcome.ok:
+                receipt = transition_terminal_delivery_stage(receipt, stage, "succeeded")
+                results.append({"stage": stage, "status": "succeeded", "error_code": ""})
+            elif outcome.not_applicable:
+                receipt = transition_terminal_delivery_stage(receipt, stage, "not_applicable", not_applicable=True)
+                results.append({"stage": stage, "status": "not_applicable", "error_code": ""})
+            else:
+                code = outcome.error_code or f"{stage}_failed"
+                receipt = transition_terminal_delivery_stage(
+                    receipt,
+                    stage,
+                    "retry_wait",
+                    error_code=code,
+                    delivery_uncertain=outcome.delivery_uncertain,
+                )
+                results.append(
+                    {
+                        "stage": stage,
+                        "status": "retry_wait",
+                        "error_code": code,
+                        "delivery_uncertain": outcome.delivery_uncertain,
+                    }
+                )
+        if results:
+            self._persist_terminal_delivery_receipt(task_id, receipt, results)
+        return results
+
+    def _persist_terminal_delivery_receipt(
+        self,
+        task_id: str,
+        receipt: dict[str, Any],
+        results: list[dict[str, Any]],
+    ) -> None:
+        from .record_management import append_bounded_jsonl
+        from .terminal_delivery import (
+            TERMINAL_DELIVERY_EXTENSION_KEY,
+            delivery_event_payload,
+        )
+
+        # Re-read the authoritative record and change only the receipt extension:
+        # the stages ran against an older snapshot, so writing it back verbatim
+        # could revert a concurrently recorded execution interval.
+        task = self.get_task(task_id)
+        task.extensions = dict(task.extensions or {})
+        task.extensions[TERMINAL_DELIVERY_EXTENSION_KEY] = receipt
+        self.store.write_task(task_id, _without_none(task.to_dict()))
+        task_dir = self.store.task_dir(task_id)
+        task_dir.mkdir(parents=True, exist_ok=True)
+        append_bounded_jsonl(
+            task_dir / "delivery.jsonl",
+            delivery_event_payload(receipt, results, occurred_at=_utc_now()),
+        )
 
     def _cleanup_empty_managed_artifacts(self, task_id: str) -> None:
         try:
@@ -3167,7 +2964,9 @@ class TaskService:
         task.intervention["latest_correction_id"] = correction_id
         task.updated_at = now
         self.store.write_task(task_id, _without_none(task.to_dict()))
-        self._append_intervention(task_id, "correct", now, intervention_type="correction", step_id=step_id, message=message, correction_id=correction_id)
+        self._append_intervention(
+            task_id, "correct", now, intervention_type="correction", step_id=step_id, message=message, correction_id=correction_id
+        )
 
     def retry_step(self, task_id: str, step_id: int) -> None:
         task = self.get_task(task_id)
@@ -3178,8 +2977,22 @@ class TaskService:
         task.updated_at = _utc_now()
         self.revoke_permission_grant(task.id, "task_retry", model=task)
         self.store.write_task(task_id, _without_none(task.to_dict()))
-        self.store.append_event(task_id, {"event_type": "step_retry", "task_id": task_id, "step_id": step_id, "created_at": task.updated_at})
+        self.store.append_event(
+            task_id, {"event_type": "step_retry", "task_id": task_id, "step_id": step_id, "created_at": task.updated_at}
+        )
         self._append_intervention(task_id, "retry", task.updated_at, step_id=step_id)
+
+    def retry_failed_task(self, task_id: str) -> TaskModel:
+        """Retry one failed/needs-recovery current-chain head as a new attempt."""
+        from .retry_flow import retry_failed_task
+
+        return retry_failed_task(self, task_id)
+
+    def retry_preflight(self, task_id: str) -> dict[str, Any]:
+        """Return the stable retry preflight projection for a revivable task."""
+        from .retry_flow import failed_retry_preflight
+
+        return failed_retry_preflight(self, task_id)
 
     def reassign_task(self, task_id: str, new_executor: str) -> None:
         task = self.get_task(task_id)
@@ -3246,6 +3059,7 @@ class TaskService:
         branch: bool = False,
         source_platform: str | None = None,
         images: list[str | Path] | None = None,
+        files: list[str | Path] | None = None,
         session_id: str | None = None,
         permission_mode: str | None = None,
     ) -> TaskModel:
@@ -3270,44 +3084,26 @@ class TaskService:
         if normalized_source_status not in HANDOFF_SOURCE_STATUSES:
             raise ABCError(
                 "handoff_source_not_ready",
-                f"Task {source.id} is {normalized_source_status}; handoff requires completed.",
+                (f"Task {source.id} is {normalized_source_status}; handoff requires one of {sorted(HANDOFF_SOURCE_STATUSES)}."),
                 {
                     "source_task_id": source.id,
                     "status": normalized_source_status,
                     "allowed_statuses": sorted(HANDOFF_SOURCE_STATUSES),
                 },
             )
-        chain = self.resolve_chain(source.id)
-        if chain.anomalies:
-            raise ABCError(
-                "invalid_lineage",
-                f"Task chain for {source.id} has inconsistent lineage; resolve it before handoff.",
-                chain.to_dict(),
+        if is_handoff_recovery_source(normalized_source_status):
+            return self.handoff_failed_task(
+                source,
+                target_assignee,
+                message=message,
+                branch=branch,
+                source_platform=source_platform,
+                images=images,
+                files=files,
+                session_id=session_id,
+                permission_mode=permission_mode,
             )
-        if not branch:
-            if len(chain.head_task_ids) > 1:
-                raise ABCError(
-                    "ambiguous_chain_head",
-                    (
-                        f"Task {source.id} belongs to a chain with multiple heads; "
-                        "pass an explicit head task id, or use --branch intentionally."
-                    ),
-                    chain.to_dict(),
-                )
-            if not chain.requested_is_head:
-                suggested = (
-                    f"agentbc task handoff {chain.current_head_task_id} --to {target_assignee}"
-                    if chain.current_head_task_id
-                    else ""
-                )
-                raise ABCError(
-                    "stale_handoff_source",
-                    (
-                        f"Task {source.id} is not the current chain head. "
-                        f"Use {chain.current_head_task_id} instead."
-                    ),
-                    {**chain.to_dict(), "suggested_command": suggested},
-                )
+        self._validate_handoff_chain(source, target_assignee, branch=branch)
         workspace = source.workspace or {}
         source_permission = permission_record_from_extensions(source.extensions)
         validate_path_plan_workspace(workspace)
@@ -3317,22 +3113,18 @@ class TaskService:
         report_record_path = Path(str(report_file)).expanduser()
         if report_record_path.exists():
             if task_record_path != report_record_path and task_record_path.exists():
-                source_context = (
-                    f"Read the previous AgentBC task record at {task_file} "
-                    f"and report record at {report_file}."
-                )
+                source_context = f"Read the previous AgentBC task record at {task_file} and report record at {report_file}."
             else:
                 source_context = f"Read the previous AgentBC task/report record at {report_file}."
         else:
-            source_context = (
-                f"The compact record was cleaned; restore the preserved task state with "
-                f"`agentbc task report {source.id}`."
-            )
+            source_context = f"The compact record was cleaned; restore the preserved task state with `agentbc task report {source.id}`."
         description = (
             f"Continue from AgentBC task {source.id} in task code {workspace.get('task_code')}. "
             f"{source_context} Then perform this handoff request: "
             f"{message or 'review current state and complete the next required action.'}"
         )
+        inherited_images, inherited_files = task_input_sources(source.to_dict())
+        replace_inputs = images is not None or files is not None
         handoff = self.create_task(
             title=f"Handoff from {source.id}: {source.title}",
             assignee=target_assignee,
@@ -3342,11 +3134,15 @@ class TaskService:
             customer_dir=bool(workspace.get("customer_dir")),
             customer_path=workspace.get("customer_path") or None,
             lineage=_next_lineage(source, workspace, branch=branch),
-            images=images if images is not None else task_image_paths(source.to_dict()),
+            images=(images or []) if replace_inputs else inherited_images,
+            files=(files or []) if replace_inputs else inherited_files,
             permission_mode=permission_mode,
             inherited_permission=source_permission if permission_mode is None else None,
         )
         now = _utc_now()
+        # PERM-104-002: a handoff supersedes the source run — the source
+        # task's session-scoped rule must not be inherited by the new
+        # iteration (the new iteration runs in its own official session).
         self.store.append_event(
             source.id,
             {
@@ -3367,6 +3163,278 @@ class TaskService:
         )
         return handoff
 
+    def handoff_failed_task(
+        self,
+        source: TaskModel,
+        target_assignee: str,
+        *,
+        message: str | None = None,
+        branch: bool = False,
+        source_platform: str | None = None,
+        images: list[str | Path] | None = None,
+        files: list[str | Path] | None = None,
+        session_id: str | None = None,
+        permission_mode: str | None = None,
+    ) -> TaskModel:
+        """Create exactly one recovery iteration from a failed chain head.
+
+        FLOW-104-003.  The source stays terminal: its task brief, failure
+        report, artifacts, events, terminal receipt and cleanup evidence are
+        imported, never rewritten.  Requirements and the canonical failure
+        report are imported mechanically; the receiving Executor never chooses
+        the recovery point.
+        """
+        now = _utc_now()
+        if self.store.is_leased(source.id):
+            raise ABCError(
+                "handoff_source_leased",
+                f"Task {source.id} still holds an active run lease; close it before handoff.",
+                {"source_task_id": source.id},
+            )
+        input_request = (source.extensions or {}).get("agentbc.input")
+        if isinstance(input_request, dict) and input_request.get("status") == "waiting":
+            raise ABCError(
+                "input_pending",
+                f"Task {source.id} is waiting for input; respond before handoff.",
+                {
+                    "source_task_id": source.id,
+                    "input_id": str(input_request.get("input_id") or ""),
+                },
+            )
+        session_snapshot = (source.extensions or {}).get(SESSION_EXTENSION_KEY)
+        cleanup = session_snapshot.get("cleanup") if isinstance(session_snapshot, dict) else None
+        if isinstance(cleanup, dict) and cleanup.get("state") == "pending":
+            raise ABCError(
+                "handoff_source_cleanup_pending",
+                (f"Task {source.id} has a session cleanup pass in progress; retry the handoff after it settles."),
+                {"source_task_id": source.id},
+            )
+
+        chain = self._validate_handoff_chain(
+            source,
+            target_assignee,
+            branch=branch,
+            recovery=True,
+        )
+
+        workspace = source.workspace or {}
+        try:
+            validate_path_plan_workspace(workspace)
+        except ABCError as exc:
+            raise revival_error(
+                "path_plan_invalid",
+                f"Task {source.id} has an invalid PathPlan: {exc}",
+                {"source_task_id": source.id, "cause": exc.code},
+            ) from exc
+
+        # A duplicate request never re-imports (or regenerates) source evidence.
+        task_code = _task_code_for(source)
+        existing = has_recovery_child(
+            [task for task in self.list_tasks() if _task_code_for(task) == task_code],
+            source.id,
+        )
+        if existing is not None:
+            return existing
+
+        # Mechanical import happens before anything is created so an unreadable
+        # brief/report can never leave a partial iteration behind.
+        snapshot = read_recovery_source(source, board_root=self.board_root)
+        steps = plan_recovery_steps(snapshot)
+        brief_bytes, report_bytes = read_source_bytes(snapshot)
+
+        from .run_lease import RunLeaseState, load_lease
+
+        run_lease = load_lease(source.id, self.board_root)
+        lease_state = run_lease.state if run_lease is not None else "missing"
+        execution = (source.extensions or {}).get("agentbc.execution")
+        execution = execution if isinstance(execution, dict) else {}
+        dispatch_state = str(execution.get("dispatch_status") or "").lower()
+        facts = revival_facts_from_task(
+            source.to_dict(),
+            is_chain_head=(not chain.anomalies and len(chain.head_task_ids) == 1 and chain.requested_is_head),
+            lease_state=lease_state,
+            worker_active=self.store.is_leased(source.id),
+            dispatch_active=(dispatch_state in {"dispatching", "starting", "running"} and lease_state != RunLeaseState.CLOSED),
+            requirements_readable=True,
+            lineage_valid=not chain.anomalies,
+            path_plan_valid=True,
+            report_state=("readable" if report_bytes else "absent"),
+            warnings=([SOURCE_REPORT_STEP_MISMATCH] if snapshot.step_mismatches else []),
+        )
+        raw_cleanup_state = str(cleanup.get("state") or "").strip().lower() if isinstance(cleanup, dict) else ""
+        if raw_cleanup_state in {"retained", "succeeded", "unsupported"}:
+            facts["session_cleanup_state"] = raw_cleanup_state
+        revival_preflight = evaluate_revival_preflight(
+            facts,
+            requested_operation=REVIVAL_OPERATION_HANDOFF,
+        )
+        if not revival_preflight.ok:
+            raise ABCError(
+                revival_preflight.error_codes[0],
+                "Failed-task handoff did not pass the shared revival preflight.",
+                {
+                    "source_task_id": source.id,
+                    "error_codes": list(revival_preflight.error_codes),
+                    "warnings": list(revival_preflight.warnings),
+                },
+            )
+
+        lock = HandoffRecoveryLock(handoff_lock_path(self.board_root, task_code))
+        with lock:
+            # Conclusive duplicate check: the winner of the lock created the
+            # iteration, so a concurrent replay converges on it.
+            existing = has_recovery_child(
+                [task for task in self.list_tasks() if _task_code_for(task) == task_code],
+                source.id,
+            )
+            if existing is not None:
+                return existing
+
+            permission_override = permission_mode is not None
+            source_permission = permission_record_from_extensions(source.extensions)
+            task: TaskModel | None = None
+            source_before_reservation = copy.deepcopy(source.to_dict())
+            reservation = build_revival_reservation(
+                operation=REVIVAL_OPERATION_HANDOFF,
+                source_task_id=source.id,
+                source_attempt_id=str(facts.get("source_attempt_id") or ""),
+                steps=source.steps,
+                source_report_digest=(revival_digest(report_bytes) if report_bytes else ""),
+                source_requirements_digest=revival_digest(brief_bytes),
+                path_plan_digest=revival_path_plan_digest(source.workspace or {}),
+                policy_digest=revival_policy_digest(source.extensions or {}),
+                now=now,
+            )
+            if snapshot.step_mismatches:
+                reservation["warnings"] = [SOURCE_REPORT_STEP_MISMATCH]
+            source_extensions = dict(source.extensions or {})
+            source_extensions[REVIVAL_EXTENSION_KEY] = reservation
+            source.extensions = source_extensions
+            self.store.write_task(source.id, _without_none(source.to_dict()))
+            try:
+                inherited_images, inherited_files = task_input_sources(source.to_dict())
+                replace_inputs = images is not None or files is not None
+                task = self.create_task(
+                    title=f"Handoff recovery from {source.id}: {source.title}",
+                    assignee=target_assignee,
+                    steps=steps,
+                    session_id=session_id,
+                    source_platform=source_platform,
+                    customer_dir=bool(workspace.get("customer_dir")),
+                    customer_path=workspace.get("customer_path") or None,
+                    lineage=_next_lineage(source, workspace, branch=branch),
+                    images=(images or []) if replace_inputs else inherited_images,
+                    files=(files or []) if replace_inputs else inherited_files,
+                    permission_mode=permission_mode,
+                    inherited_permission=(None if permission_override else source_permission),
+                )
+                snapshot_paths = write_source_snapshots(
+                    snapshot,
+                    report_root=task.workspace["report_root"],
+                    task_brief_bytes=brief_bytes,
+                    report_bytes=report_bytes,
+                )
+                record = build_recovery_record(
+                    snapshot,
+                    task.steps,
+                    target_assignee=target_assignee,
+                    message=message,
+                    snapshot_paths=snapshot_paths,
+                    created_at=now,
+                    permission_override=permission_override,
+                )
+                extensions = dict(task.extensions or {})
+                inherited_resources = inherit_frozen_resources(
+                    source.extensions,
+                    target_assignee,
+                    created_at=now,
+                )
+                if inherited_resources is not None:
+                    extensions = attach_execution_policy(
+                        extensions,
+                        resources=inherited_resources,
+                    )
+                committed_revival = commit_revival_reservation(
+                    reservation,
+                    target_task_id=task.id,
+                    target_attempt_id=str(((task.extensions or {}).get("agentbc.execution") or {}).get("worker_run_id") or ""),
+                    now=now,
+                )
+                extensions[REVIVAL_EXTENSION_KEY] = committed_revival
+                extensions[HANDOFF_RECOVERY_EXTENSION_KEY] = record
+                task.extensions = extensions
+                self.store.write_task(task.id, _without_none(task.to_dict()))
+                source.extensions = dict(source.extensions or {})
+                source.extensions[REVIVAL_EXTENSION_KEY] = committed_revival
+                self.store.write_task(source.id, _without_none(source.to_dict()))
+                _write_task_requirements(task, Path(task.workspace["task_file"]))
+            except Exception:
+                released = release_revival_reservation(reservation)
+                restored_source = copy.deepcopy(source_before_reservation)
+                restored_extensions = dict(restored_source.get("extensions") or {})
+                restored_extensions[REVIVAL_EXTENSION_KEY] = released
+                restored_source["extensions"] = restored_extensions
+                self.store.write_task(source.id, _without_none(restored_source))
+                if task is not None:
+                    rollback_created_iteration(self.store.task_dir(task.id))
+                    if not bool((task.workspace or {}).get("customer_dir")):
+                        try:
+                            Path(str(task.workspace.get("artifacts_dir") or "")).rmdir()
+                        except OSError:
+                            pass
+                    self._refresh_task_index()
+                raise
+            self.store.append_event(
+                task.id,
+                {
+                    "event_type": "handoff_recovery_created",
+                    "task_id": task.id,
+                    "created_at": now,
+                    "source_task_id": source.id,
+                    "source_status": snapshot.status,
+                    "source_failure_code": snapshot.failure_code,
+                    "target_assignee": target_assignee,
+                    "source_task_brief_sha256": snapshot.task_brief_sha256,
+                    "source_report_sha256": snapshot.report_sha256,
+                    "source_report_step_mismatch": [dict(item) for item in snapshot.step_mismatches],
+                },
+            )
+            self._refresh_task_index()
+            return task
+
+    def _validate_handoff_chain(
+        self,
+        source: TaskModel,
+        target_assignee: str,
+        *,
+        branch: bool,
+        recovery: bool = False,
+    ) -> ChainResolution:
+        chain = self.resolve_chain(source.id)
+        if chain.anomalies:
+            error = revival_error if recovery else ABCError
+            raise error(
+                "lineage_invalid" if recovery else "invalid_lineage",
+                f"Task chain for {source.id} has inconsistent lineage; resolve it before handoff.",
+                chain.to_dict(),
+            )
+        if branch:
+            return chain
+        if len(chain.head_task_ids) > 1:
+            raise ABCError(
+                "ambiguous_chain_head",
+                f"Task {source.id} belongs to a chain with multiple heads; pass an explicit head task id, or use --branch intentionally.",
+                chain.to_dict(),
+            )
+        if not chain.requested_is_head:
+            suggested = f"agentbc task handoff {chain.current_head_task_id} --to {target_assignee}" if chain.current_head_task_id else ""
+            raise ABCError(
+                "stale_handoff_source",
+                f"Task {source.id} is not the current chain head. Use {chain.current_head_task_id} instead.",
+                {**chain.to_dict(), "suggested_command": suggested},
+            )
+        return chain
+
     def preflight(self, task_id: str) -> PreflightResult:
         try:
             raw_task = self.store.read_task(task_id)
@@ -3379,24 +3447,26 @@ class TaskService:
             errors.append("task has an active lease")
         if not task.steps:
             errors.append("task has no steps")
-        try:
-            validate_path_plan_workspace(task.workspace or {})
-        except ABCError as exc:
-            errors.append(str(exc))
+        permission = permission_record_from_extensions(task.extensions)
+        if permission["effective_mode"] != "full":
+            try:
+                validate_path_plan_workspace(task.workspace or {})
+            except ABCError as exc:
+                errors.append(str(exc))
         errors.extend(validate_execution_policy_extensions(task.extensions or {}))
         if _normalize_status(task.status) in TASK_TERMINAL_STATES:
             errors.append(f"task is terminal: {task.status}")
         try:
-            permission = permission_record_from_extensions(task.extensions)
             executor = get_executor(
                 task.assignee,
                 get_executor_config(self.config, task.assignee),
             )
-            assert_executor_permission_supported(
-                task.assignee,
-                permission["effective_mode"],
-                getattr(executor, "agent_bin", None),
-            )
+            if permission["effective_mode"] != "full":
+                assert_executor_permission_supported(
+                    task.assignee,
+                    permission["effective_mode"],
+                    getattr(executor, "agent_bin", None),
+                )
         except ABCError as exc:
             errors.append(f"{exc.code}: {exc}")
         except (TypeError, ValueError):
@@ -3406,12 +3476,6 @@ class TaskService:
             errors=errors,
             execution_policy=execution_policy_view(task.extensions),
         )
-
-    def _supports_immediate_pause(self, assignee: str) -> bool:
-        try:
-            return get_executor(assignee).capabilities().level >= 3
-        except (TypeError, ValueError):
-            return False
 
     def _refresh_active_tasks(self, tasks: list[TaskModel]) -> list[TaskModel]:
         from .run_lease import reconcile_task
@@ -3482,6 +3546,14 @@ class TaskService:
         session = dict(extensions[SESSION_EXTENSION_KEY])
         if not str(session.get("session_id") or "").strip():
             session["session_id"] = validated["session_id"]
+        # Freeze the source and binding fact alongside the exact session ID.
+        # Codex cleanup uses this narrow proof to reject unregistered or fuzzy
+        # candidates; Claude/Hermes retain their existing cleanup behavior.
+        session["receipt_source"] = str(validated.get("source") or "")
+        session["official_receipt_bound"] = True
+        if validated.get("archive_acknowledged") is True:
+            session["archive_acknowledged"] = True
+            session["archive_checked_at"] = str(validated.get("archive_checked_at") or _utc_now())
         session["session_state"] = session_state
         errors = validate_session_snapshot(session, executor=task.assignee)
         if errors:
@@ -3557,6 +3629,7 @@ class TaskService:
             {
                 "run_id": lease.run_id,
                 "executor_id": lease.executor_id,
+                "attempt_index": _execution_attempt_index(merged),
                 "started_at": lease.started_at,
                 "ended_at": end_raw,
                 "duration_s": round(max((ended - started).total_seconds(), 0.0), 3),
@@ -3586,14 +3659,21 @@ class TaskService:
 
     def generate_report(self, task_id: str) -> dict[str, Any]:
         task = self.get_task(task_id)
+        from .retry_flow import failed_revival_projection
+
         report = {
             "task_id": task.id,
             "status": task.status,
             "generated_at": _utc_now(),
             "steps_total": len(task.steps),
-            "steps_done": sum(1 for step in task.steps if step.get("status") in {"done", "completed"}),
+            "steps_done": sum(1 for step in task.steps if step.get("status") in {"done", "completed", "inherited_done"}),
             "events": len(self.store.read_events(task_id)),
             "interventions": len(self.store.read_interventions(task_id)),
+            "revival": (
+                failed_revival_projection(task, self.retry_preflight(task.id))
+                if task.status in {"failed", "needs_recovery"} or "agentbc.revival" in (task.extensions or {})
+                else None
+            ),
         }
         task.report = report
         task.updated_at = report["generated_at"]
@@ -3608,9 +3688,10 @@ class TaskService:
         """Request one authoritative post-terminal session cleanup pass.
 
         The coordinator re-reads the task/session from disk, re-validates every
-        eligibility gate (terminal task, closed RunLease, written report,
-        recorded terminal notification, terminal session with an exact session
-        ID) under a per-task lock, and only then transitions the cleanup receipt.
+        eligibility gate (confirmed task-end dialog, closed RunLease, retention,
+        and exact official session binding) under a per-task lock, and only then
+        transitions the cleanup receipt. Task and session status values are not
+        cleanup lifecycle gates.
         The primary ``agentbc.session`` is processed first, then every registered
         auxiliary session deepest/newest first; auxiliary attempts continue even
         when the primary pass fails.  Retained sessions are marked ``retained``;
@@ -3715,10 +3796,47 @@ class TaskService:
         }
 
     def _refresh_task_index(self) -> None:
+        if self._runner_worker:
+            return
         refresh_task_index(self.board_root)
 
+    def _invalidate_waiting_input_for_recovery(
+        self,
+        task: TaskModel,
+        *,
+        code: str,
+        at: str,
+    ) -> str:
+        """Close a live input before exposing ``needs_recovery``.
+
+        Recovery is terminal for the current executor attempt.  Keeping a
+        ``waiting`` input alongside that state would leave a stale dialog able
+        to resume a dead run.  The request remains in bounded history for
+        audit, but no live input can be answered or redispatched.
+        """
+        extensions = dict(task.extensions or {})
+        request = extensions.get("agentbc.input")
+        if not isinstance(request, dict) or request.get("status") != "waiting":
+            return ""
+        input_id = str(request.get("input_id") or "").strip()
+        invalidated = dict(request)
+        invalidated["status"] = "invalidated"
+        invalidated["invalidated_at"] = at
+        invalidated["invalidated_reason"] = str(code or "recovery")[:120]
+        invalidated["response"] = {
+            "type": "deny",
+            "summary": "request invalidated by fail-closed recovery",
+            "source": "fail_closed_recovery",
+        }
+        history = [item for item in list(extensions.get("agentbc.input_history") or []) if isinstance(item, dict)]
+        history.append(invalidated)
+        extensions["agentbc.input_history"] = history[-16:]
+        extensions.pop("agentbc.input", None)
+        task.extensions = extensions
+        return input_id
+
     def _task_status_with_chain(self, task: TaskModel) -> dict[str, Any]:
-        status = task_to_status(task)
+        status = task_to_status(task, self)
         from .timing_view import build_timing_view
 
         timing = build_timing_view(task, self.board_root)
@@ -3762,6 +3880,7 @@ def create_task(
     artifacts_dir: str | Path | None = None,
     lineage: dict[str, Any] | None = None,
     images: list[str | Path] | None = None,
+    files: list[str | Path] | None = None,
     permission_mode: str | None = None,
 ) -> TaskModel:
     return TaskService(board_root).create_task(
@@ -3777,6 +3896,7 @@ def create_task(
         artifacts_dir=artifacts_dir,
         lineage=lineage,
         images=images,
+        files=files,
         permission_mode=permission_mode,
     )
 
@@ -3835,6 +3955,14 @@ def retry_step(task_id: str, step_id: int, board_root: str | Path = DEFAULT_BOAR
     TaskService(board_root).retry_step(task_id, step_id)
 
 
+def retry_failed_task(task_id: str, board_root: str | Path = DEFAULT_BOARD_ROOT) -> TaskModel:
+    return TaskService(board_root).retry_failed_task(task_id)
+
+
+def retry_preflight(task_id: str, board_root: str | Path = DEFAULT_BOARD_ROOT) -> dict[str, Any]:
+    return TaskService(board_root).retry_preflight(task_id)
+
+
 def reassign_task(task_id: str, new_executor: str, board_root: str | Path = DEFAULT_BOARD_ROOT) -> None:
     TaskService(board_root).reassign_task(task_id, new_executor)
 
@@ -3847,6 +3975,7 @@ def handoff_task(
     branch: bool = False,
     source_platform: str | None = None,
     images: list[str | Path] | None = None,
+    files: list[str | Path] | None = None,
     session_id: str | None = None,
     permission_mode: str | None = None,
 ) -> TaskModel:
@@ -3858,6 +3987,7 @@ def handoff_task(
         session_id=session_id,
         source_platform=source_platform,
         images=images,
+        files=files,
         permission_mode=permission_mode,
     )
 
@@ -3882,7 +4012,10 @@ def load_steps(path: str | Path) -> list[dict[str, Any]]:
     return _load_steps_text(text)
 
 
-def task_to_status(task: TaskModel) -> dict[str, Any]:
+def task_to_status(
+    task: TaskModel,
+    service: TaskService | None = None,
+) -> dict[str, Any]:
     from .task_health import task_health
 
     data = task.to_dict()
@@ -3890,6 +4023,17 @@ def task_to_status(task: TaskModel) -> dict[str, Any]:
     data["status"] = _normalize_status(raw_status)
     data["steps"] = [dict(step, status=step.get("status", "pending")) for step in data.get("steps", [])]
     extensions = dict(data.get("extensions") or {})
+    if raw_status in {"failed", "needs_recovery"} or "agentbc.revival" in extensions:
+        from .retry_flow import failed_revival_projection, public_revival_projection
+
+        preflight = service.retry_preflight(task.id) if service is not None else None
+        data["revival"] = failed_revival_projection(task, preflight)
+        if "agentbc.revival" in extensions:
+            projected_revival = public_revival_projection(extensions.get("agentbc.revival"))
+            if projected_revival is None:
+                extensions.pop("agentbc.revival", None)
+            else:
+                extensions["agentbc.revival"] = projected_revival
     extensions.setdefault(
         PERMISSION_EXTENSION_KEY,
         permission_record_from_extensions(extensions),
@@ -3900,11 +4044,34 @@ def task_to_status(task: TaskModel) -> dict[str, Any]:
     approval_value = extensions.get(APPROVAL_EXTENSION_KEY)
     if approval_value is not None:
         try:
-            extensions[APPROVAL_EXTENSION_KEY] = approval_public_projection(
-                approval_value
-            )
+            extensions[APPROVAL_EXTENSION_KEY] = approval_public_projection_v2(approval_value)
         except ABCError:
             extensions.pop(APPROVAL_EXTENSION_KEY, None)
+    elevation_value = extensions.get(PERMISSION_ELEVATION_EXTENSION_KEY)
+    if elevation_value is not None:
+        try:
+            from .permission_elevation import permission_elevation_public_projection
+
+            extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = permission_elevation_public_projection(elevation_value)
+        except ABCError:
+            extensions.pop(PERMISSION_ELEVATION_EXTENSION_KEY, None)
+    claude_elevation_value = extensions.get(CLAUDE_ELEVATION_EXTENSION_KEY)
+    if claude_elevation_value is not None:
+        try:
+            extensions[CLAUDE_ELEVATION_EXTENSION_KEY] = claude_elevation_public_projection(claude_elevation_value)
+        except ABCError:
+            extensions.pop(CLAUDE_ELEVATION_EXTENSION_KEY, None)
+    # PERM-104-002 1.04A: the session tool rule surface is retired; historical
+    # receipts are projected through the audit-only public view (matcher,
+    # digests, state) so terminal tasks stay readable without rewriting
+    # history.  No new receipt can ever be issued.
+    session_rule_value = extensions.get(SESSION_RULE_RECEIPT_EXTENSION_KEY)
+    if session_rule_value is not None:
+        projected_rule = session_rule_public_projection(session_rule_value)
+        if projected_rule is None:
+            extensions.pop(SESSION_RULE_RECEIPT_EXTENSION_KEY, None)
+        else:
+            extensions[SESSION_RULE_RECEIPT_EXTENSION_KEY] = projected_rule
     data["extensions"] = extensions
     if raw_status != data["status"]:
         extensions = dict(data.get("extensions") or {})
@@ -3937,7 +4104,22 @@ def _normalize_step(step: dict[str, Any], index: int) -> dict[str, Any]:
             "task_create_error",
             f"step {index} must define a non-empty description or action",
         )
-    normalized.setdefault("id", index)
+    # FLOW-104-001 / transport correction schema correction: canonical new tasks carry
+    # integer step ids only.  A string id (e.g. ``"1"``) used to pass task
+    # creation and then fail the matching final callback with
+    # ``completion_marker_task_steps_invalid`` after the whole run had
+    # executed.  The mismatch now fails BEFORE dispatch with a stable
+    # ``task_create_error``; legacy tasks keep their stored ids (dual-read).
+    declared_id = normalized.get("id")
+    if declared_id is not None and (isinstance(declared_id, bool) or not isinstance(declared_id, int)):
+        raise ABCError(
+            "task_create_error",
+            f"step {index} id must be an integer (got {type(declared_id).__name__}); "
+            "string step ids are rejected before dispatch so the final "
+            "callback can never diverge from the declared steps",
+        )
+    if declared_id is None:
+        normalized["id"] = index
     normalized["description"] = description
     normalized.setdefault("record", f"steps/{index:02d}.json")
     return normalized
@@ -3980,9 +4162,7 @@ def _validate_resource_block_receipt(
     if source not in allowed_sources.get(executor, set()):
         return "resource_block_invalid_receipt"
     limit = resource_exhaustion.get("limit")
-    if limit is not None and (
-        isinstance(limit, bool) or not isinstance(limit, (int, float))
-    ):
+    if limit is not None and (isinstance(limit, bool) or not isinstance(limit, (int, float))):
         return "resource_block_invalid_receipt"
     if resource_exhaustion.get("limit_matches_snapshot") is False:
         return "resource_block_snapshot_invalid"
@@ -4002,39 +4182,6 @@ def _validate_resource_block_receipt(
         if existing_id and received_id and received_id != existing_id:
             return "resource_block_receipt_invalid"
     return None
-
-
-def _first_incomplete_step_id(steps: list[dict[str, Any]]) -> int | None:
-    for step in steps:
-        if str(step.get("status") or "pending") != "done":
-            step_id = step.get("id")
-            if isinstance(step_id, int):
-                return step_id
-    return None
-
-
-def _safe_blocked_step_id(blocked_results: list[dict[str, Any]]) -> int | None:
-    if len(blocked_results) != 1:
-        return None
-    step_id = blocked_results[0].get("id")
-    if isinstance(step_id, bool) or not isinstance(step_id, int):
-        return None
-    return step_id
-
-
-def _resource_block_step(
-    step: dict[str, Any],
-    blocked_step_id: int | None,
-) -> dict[str, Any]:
-    """Mark the first incomplete step blocked; keep done steps and pending status."""
-    updated = dict(step)
-    if str(updated.get("status") or "pending") == "done":
-        return updated
-    if updated.get("id") == blocked_step_id:
-        updated["status"] = "blocked"
-    else:
-        updated["status"] = str(updated.get("status") or "pending")
-    return updated
 
 
 def _resource_block_reason(executor: str, used: Any, limit: Any) -> str:
@@ -4065,11 +4212,6 @@ def _retry_step(step: dict[str, Any], step_id: int) -> dict[str, Any]:
 def _require_step(task: TaskModel, step_id: int) -> None:
     if not any(step.get("id") == step_id for step in task.steps):
         raise ABCError("step_not_found", f"Step not found: {step_id}", {"task_id": task.id, "step_id": step_id})
-
-
-def _validate_path(*states: str) -> None:
-    for from_state, to_state in zip(states, states[1:]):
-        validate_transition(from_state, to_state)
 
 
 def _load_steps_text(text: str) -> list[dict[str, Any]]:
@@ -4192,7 +4334,9 @@ def _write_task_requirements(task: TaskModel, path: Path) -> None:
     workspace = task.workspace or {}
     provenance = task.extensions.get("agentbc.provenance") or {}
     lineage = task.extensions.get("agentbc.lineage") or {}
+    recovery = task.extensions.get(HANDOFF_RECOVERY_EXTENSION_KEY)
     images = task_image_paths(task.to_dict())
+    files = task_input_paths(task.to_dict(), kind="file")
     permission = permission_record_from_extensions(task.extensions)
     policy = execution_policy_view(task.extensions)
     resources = policy.get("resources") or {}
@@ -4235,9 +4379,13 @@ def _write_task_requirements(task: TaskModel, path: Path) -> None:
     ]
     if images:
         lines.extend(["", "## Image Inputs", *[f"- `{image}`" for image in images]])
+    if files:
+        lines.extend(["", "## File Inputs", *[f"- `{item}`" for item in files]])
     lines.extend(["", "## Requirements"])
     for index, step in enumerate(task.steps, 1):
         lines.append(f"{index}. {task_step_text(step)}")
+    if isinstance(recovery, dict):
+        lines.extend(_handoff_recovery_brief_lines(task, recovery))
     lines.extend(
         [
             "",
@@ -4254,48 +4402,73 @@ def _write_task_requirements(task: TaskModel, path: Path) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def _validate_failure_path(status: str) -> None:
-    if _normalize_status(status) not in {"pending", "running", "input_required", "needs_recovery"}:
-        raise ABCError("invalid_transition", f"Cannot enter recovery from state: {status}")
+def _handoff_recovery_brief_lines(task: TaskModel, recovery: dict[str, Any]) -> list[str]:
+    """Append the deterministic FLOW-104-003 recovery section to a task brief.
 
-
-def _without_none(data: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in data.items() if value is not None}
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _parse_timestamp(value: Any) -> datetime:
-    if isinstance(value, str) and value:
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            parsed = datetime.min.replace(tzinfo=timezone.utc)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed
-    return datetime.min.replace(tzinfo=timezone.utc)
-
-
-def _stable_revocation_code(code: str) -> str:
-    """Sanitize a lifecycle reason into a stable non-sensitive revocation code."""
-    cleaned = re.sub(r"[^a-z0-9_]", "_", str(code or "").strip().lower())
-    cleaned = re.sub(r"_+", "_", cleaned).strip("_")
-    if not cleaned:
-        return "permission_revoked"
-    if not cleaned[0].isalpha():
-        cleaned = f"r_{cleaned}"
-    return cleaned[:64]
-
-
-def _is_running_status(status: str) -> bool:
-    return _normalize_status(status) == "running" or status in RUNNING_TASK_STATUSES
-
-
-def _is_reportable_status(status: str) -> bool:
-    return _normalize_status(status) in REPORTABLE_TASK_STATUSES
+    The section lists every inherited requirement, the locked completed steps,
+    the executable remaining steps, the imported failure report digest and the
+    optional additive handoff goal.  Content is derived only from the recovery
+    record so a re-read of the brief is byte-stable for one task state.
+    """
+    steps_by_id = {step.get("id"): step for step in task.steps if isinstance(step, dict)}
+    brief = recovery.get("source_task_brief") or {}
+    report = recovery.get("source_report") or {}
+    mismatches = recovery.get(SOURCE_REPORT_STEP_MISMATCH) or []
+    locked = [int(item) for item in recovery.get("locked_step_ids") or []]
+    remaining = [int(item) for item in recovery.get("remaining_step_ids") or []]
+    closeout = recovery.get("terminal_verification_step_id")
+    lines = [
+        "",
+        "## Handoff Recovery",
+        f"- Source task: `{recovery.get('source_task_id', '')}`",
+        f"- Source status: `{recovery.get('source_status', '')}`",
+        f"- Source failure code: `{recovery.get('source_failure_code') or 'none'}`",
+        f"- Source assignee: `{recovery.get('source_assignee', '')}`",
+        f"- Imported source task brief: `{brief.get('path', '')}` (sha256 `{brief.get('sha256', '')}`)",
+        f"- Imported source report: `{report.get('path', '')}` (sha256 `{report.get('sha256', '')}`)",
+        (
+            "- Imported source report regenerated: `yes`"
+            if report.get("regenerated") is True
+            else "- Imported source report regenerated: `no`"
+        ),
+    ]
+    if mismatches:
+        lines.append("- Source report step mismatch (task state is authoritative):")
+        lines.extend(
+            f"  - Step `{item.get('step_id')}`: report `{item.get('report_status') or 'missing'}` "
+            f"vs task `{item.get('task_status')}` ({item.get('reason')})"
+            for item in mismatches
+        )
+    else:
+        lines.append("- Source report step mismatch: `none`")
+    lines.append(
+        f"- Locked inherited steps (already done, never re-execute): `{', '.join(str(item) for item in locked) if locked else 'none'}`"
+    )
+    lines.append(f"- Executable remaining steps: `{', '.join(str(item) for item in remaining) if remaining else 'none'}`")
+    lines.append(f"- Terminal-verification closeout step: `{closeout if isinstance(closeout, int) else 'none'}`")
+    message = str(recovery.get("additive_message") or "")
+    lines.append(f"- Additive handoff goal: {message if message else '`none`'}")
+    lines.extend(
+        [
+            "",
+            "### Inherited Requirements",
+        ]
+    )
+    for step_id in sorted(id_ for id_ in steps_by_id if isinstance(id_, int)):
+        step = steps_by_id[step_id]
+        lines.append(f"{step_id}. {task_step_text(step)} [inherited status: {step.get('status', 'pending')}]")
+    lines.extend(
+        [
+            "",
+            "### Recovery Rules",
+            "- Never re-execute a locked inherited step; report it as done only.",
+            "- The additive handoff goal may add an objective; it cannot change, remove or "
+            "reorder the inherited requirements and cannot choose the resume step.",
+            "- The imported failure report and task brief are read-only evidence; do not "
+            "rewrite the source task, its report or its artifacts.",
+        ]
+    )
+    return lines
 
 
 def _task_sort_key(task: TaskModel) -> tuple[int, float, str]:
@@ -4353,9 +4526,7 @@ def _task_chain_delete_ownership(
             record_root,
             f"record for {task.id}",
         )
-        delete_objects.append(
-            {"kind": "record", "task_id": task.id, "path": str(expected_record), "exists": expected_record.exists()}
-        )
+        delete_objects.append({"kind": "record", "task_id": task.id, "path": str(expected_record), "exists": expected_record.exists()})
 
         agentbc_root = Path(str(workspace.get("agentbc_root") or "")).expanduser().resolve()
         task_date = str(workspace.get("task_date") or "")
@@ -4372,25 +4543,35 @@ def _task_chain_delete_ownership(
         _require_exact_path(workspace.get("task_file"), expected_task_file, f"task brief for {task.id}")
         _require_exact_path(workspace.get("report_file"), expected_report_file, f"report for {task.id}")
         for kind, path in (("task_brief", expected_task_file), ("report", expected_report_file)):
-            delete_objects.append(
-                {"kind": kind, "task_id": task.id, "path": str(path), "exists": path.exists()}
-            )
+            delete_objects.append({"kind": kind, "task_id": task.id, "path": str(path), "exists": path.exists()})
         if report_root.exists():
             targets_by_path.setdefault(
                 str(report_root),
                 {"kind": "reports", "path": str(report_root), "allowed_root": str(report_base.resolve())},
             )
 
-        delete_objects.append(
-            {"kind": "index_entry", "task_id": task.id, "path": f"task_index:{task.id}", "exists": True}
-        )
+        delete_objects.append({"kind": "index_entry", "task_id": task.id, "path": f"task_index:{task.id}", "exists": True})
+        input_root_text = str(workspace.get("input_root") or "").strip()
+        if input_root_text:
+            input_base = agentbc_root / "tasks" / "inputs"
+            expected_input_root = input_base / task_date / task_code / task.id
+            input_root = _require_owned_delete_path(
+                input_root_text,
+                expected_input_root,
+                input_base,
+                f"input root for {task.id}",
+            )
+            delete_objects.append({"kind": "inputs", "task_id": task.id, "path": str(input_root), "exists": input_root.exists()})
+            if input_root.exists():
+                targets_by_path.setdefault(
+                    str(input_root),
+                    {"kind": "inputs", "path": str(input_root), "allowed_root": str(input_base.resolve())},
+                )
         if bool(workspace.get("customer_dir")):
             customer_path = str(Path(str(workspace.get("project_root") or "")).expanduser().resolve())
             if customer_path and customer_path not in customer_paths:
                 customer_paths.add(customer_path)
-                preserve_objects.append(
-                    {"kind": "customer_project", "path": customer_path, "reason": "customer-owned"}
-                )
+                preserve_objects.append({"kind": "customer_project", "path": customer_path, "reason": "customer-owned"})
             continue
 
         artifact_base = agentbc_root / "tasks" / "artifacts"
@@ -4410,9 +4591,7 @@ def _task_chain_delete_ownership(
                 {"kind": "artifacts", "path": str(artifact_root), "allowed_root": str(artifact_base.resolve())},
             )
 
-    delete_objects.append(
-        {"kind": "task_code_claim", "task_code": task_code, "path": str(record_chain), "exists": record_chain.exists()}
-    )
+    delete_objects.append({"kind": "task_code_claim", "task_code": task_code, "path": str(record_chain), "exists": record_chain.exists()})
     targets_by_path[str(record_chain)] = {
         "kind": "records",
         "path": str(record_chain),
@@ -4547,6 +4726,10 @@ def _task_summary(task: TaskModel, board_root: str | Path | None = None) -> dict
         "health_state": health.get("state", ""),
         "health_color": health.get("color", "gray"),
     }
+    if _normalize_status(task.status) in {"failed", "needs_recovery"} or "agentbc.revival" in (task.extensions or {}):
+        from .retry_flow import failed_revival_projection
+
+        summary["revival"] = failed_revival_projection(task)
     if board_root is not None:
         from .timing_view import build_timing_view
 
@@ -4574,9 +4757,13 @@ def _lineage_for(task: TaskModel) -> dict[str, Any]:
         "branch_mode": lineage.get("branch_mode", "linear"),
         "chain_id": lineage.get("chain_id") or (task.workspace or {}).get("chain_id"),
         "chain_token": lineage.get("chain_token") or (task.workspace or {}).get("chain_token"),
-        "chain_dir": lineage.get("chain_dir") or (task.workspace or {}).get("chain_dir") or Path((task.workspace or {}).get("output_dir", "")).name,
+        "chain_dir": lineage.get("chain_dir")
+        or (task.workspace or {}).get("chain_dir")
+        or Path((task.workspace or {}).get("output_dir", "")).name,
         "chain_task_id": lineage.get("chain_task_id") or (task.workspace or {}).get("chain_task_id"),
-        "chain_output_dir": lineage.get("chain_output_dir") or (task.workspace or {}).get("chain_output_dir") or (task.workspace or {}).get("output_dir"),
+        "chain_output_dir": lineage.get("chain_output_dir")
+        or (task.workspace or {}).get("chain_output_dir")
+        or (task.workspace or {}).get("output_dir"),
     }
 
 
@@ -4642,20 +4829,6 @@ def _next_lineage(source: TaskModel, workspace: dict[str, Any], branch: bool = F
     }
 
 
-def _normalize_status(status: str) -> str:
-    mapping = {
-        "assigned": "running",
-        "working": "running",
-        "pause_pending": "running",
-        "paused": "running",
-        "review_required": "input_required",
-        "needs_review": "needs_recovery",
-        "failed": "failed",
-        "in_progress": "running",
-    }
-    return mapping.get(status, status if status in PUBLIC_TASK_STATUSES else "needs_recovery")
-
-
 def _has_close_intent(task: TaskModel) -> bool:
     return isinstance((task.extensions or {}).get("agentbc.close_intent"), dict)
 
@@ -4681,14 +4854,6 @@ def _supersede_final_callback(task: TaskModel, state: str, reason: str) -> None:
     task.extensions = extensions
 
 
-def _merge_execution(extensions: dict[str, Any] | None, updates: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(extensions or {})
-    execution = dict(merged.get("agentbc.execution") or {})
-    execution.update({key: value for key, value in updates.items() if value is not None})
-    merged["agentbc.execution"] = execution
-    return merged
-
-
 def _execution_ledger(extensions: dict[str, Any]) -> list[dict[str, Any]]:
     execution = extensions.get("agentbc.execution")
     if not isinstance(execution, dict):
@@ -4697,6 +4862,16 @@ def _execution_ledger(extensions: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(intervals, list):
         return []
     return [item for item in intervals if isinstance(item, dict)]
+
+
+def _execution_attempt_index(extensions: dict[str, Any]) -> int:
+    execution = extensions.get("agentbc.execution")
+    if not isinstance(execution, dict):
+        return 0
+    try:
+        return max(int(execution.get("attempt_index") or 0), 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _finalize_steps(
@@ -4715,11 +4890,26 @@ def _finalize_steps(
         if result is None:
             finalized.append(dict(step))
             continue
+        existing_status = str(step.get("status") or "").strip().lower()
+        incoming_status = str(result.get("status") or "").strip().lower()
+        if existing_status == "inherited_done":
+            finalized.append(dict(step))
+            continue
+        if existing_status in {"done", "completed"} and incoming_status not in {"done", "completed"}:
+            finalized.append(dict(step))
+            continue
+        merged_result: dict[str, Any] = {
+            "status": result["status"],
+            "executor_result": result,
+        }
+        existing_result = step.get("result")
+        if isinstance(existing_result, dict) and isinstance(existing_result.get("progress_receipt"), dict):
+            merged_result["progress_receipt"] = dict(existing_result["progress_receipt"])
         finalized.append(
             _update_step(
                 step,
                 step_id,
-                {"status": result["status"], "executor_result": result},
+                merged_result,
             )
         )
     return finalized

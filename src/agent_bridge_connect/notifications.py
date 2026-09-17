@@ -7,11 +7,17 @@ from typing import Any, Callable
 from .approval import (
     APPROVAL_EXTENSION_KEY,
     APPROVAL_SCOPE,
+    APPROVAL_V3_SCOPE,
     core_bounded_summary_details,
     normalize_reason_summary_details,
     sanitize_reason_detail,
     validate_approval_receipt,
 )
+from .permission_elevation import (
+    PERMISSION_ELEVATION_EXTENSION_KEY,
+    PERMISSION_ELEVATION_MODE,
+)
+from .adapters import DeliveryResult
 from .protocol import ABCError
 from .execution_policy import execution_policy_view
 from .notifiers.dialog import DialogNotifier
@@ -26,6 +32,22 @@ RESOURCE_DECISION_KIND = "resource_limit"
 RESOURCE_DECISION_PROTOCOL = "approve_deny"
 PERMISSION_DIALOG_TIMEOUT_RESPONSE = "agentbc_permission_dialog_timeout"
 PERMISSION_DIALOG_CLOSED_RESPONSE = "agentbc_permission_dialog_closed"
+#: Stable marker returned to a contained worker for the board-level file side
+#: channel it is not allowed to write.  The terminal delivery receipt records
+#: that stage as ``deferred`` instead of failed so the Runner can deliver it.
+RUNNER_WORKER_FILE_DEFERRAL = "runner_worker_file_notification_deferred"
+
+
+def _file_notification(service: Any, payload: dict[str, Any]) -> DeliveryResult:
+    """Deliver file notifications only from the Runner-owned process.
+
+    A contained worker may append its task event and report, but it must not
+    write the board-level ``notifications.jsonl`` side channel.  Runner can
+    replay or deliver the notification after it observes the task event.
+    """
+    if bool(getattr(service, "_runner_worker", False)):
+        return DeliveryResult(False, RUNNER_WORKER_FILE_DEFERRAL)
+    return FileNotifier(service.board_root / "notifications.jsonl").send(payload)
 
 
 def notify_terminal(
@@ -34,26 +56,82 @@ def notify_terminal(
     event_type: str,
     level: str,
     message: str,
-) -> None:
+) -> dict[str, Any]:
+    result = deliver_terminal_notification(service, task_id, event_type, level, message)
+    record_terminal_notification(
+        service,
+        task_id,
+        event_type,
+        file_ok=bool(result["file_ok"]),
+        dialog_ok=bool(result["dialog_ok"]),
+        dialog_message=str(result["dialog_message"]),
+        dialog_delay_s=int(result["dialog_delay_s"]),
+    )
+    return {key: value for key, value in result.items() if key != "payload"}
+
+
+def deliver_terminal_notification(
+    service: Any,
+    task_id: str,
+    event_type: str,
+    level: str,
+    message: str,
+    *,
+    channels: frozenset[str] | set[str] = frozenset({"file", "dialog"}),
+) -> dict[str, Any]:
+    """Deliver the terminal notification on exactly the requested channels.
+
+    FLOW-104-002: the durable ``agentbc.terminal_delivery`` receipt owns the
+    ``file_notification`` and ``ui_notification`` stages independently, so each
+    stage must be able to deliver *its own channel only*.  A stage that is
+    already confirmed is never re-sent, and no channel is delivered twice.
+    """
     payload = build_notification_payload(service, task_id, event_type, level, message)
-    file_result = FileNotifier(service.board_root / "notifications.jsonl").send(payload)
+    file_result: DeliveryResult | None = None
+    dialog_result: DeliveryResult | None = None
     delay_s = 0
+    if "file" in channels:
+        file_result = _file_notification(service, payload)
     # Every terminal result must reach the user. Concurrency changes only the
     # delivery timing; suppressing a completed dialog loses it permanently.
-    delay_s = notification_delay_seconds(service, task_id)
-    if delay_s > 0:
-        time.sleep(delay_s)
-    dialog_result = DialogNotifier().send(payload)
+    if "dialog" in channels:
+        delay_s = notification_delay_seconds(service, task_id)
+        if delay_s > 0:
+            time.sleep(delay_s)
+        dialog_result = DialogNotifier().send(payload)
+    return {
+        "payload": payload,
+        "file_ok": None if file_result is None else bool(file_result.ok),
+        "file_deferred": bool(
+            file_result is not None and file_result.message == RUNNER_WORKER_FILE_DEFERRAL
+        ),
+        "dialog_ok": None if dialog_result is None else bool(dialog_result.ok),
+        "dialog_message": "" if dialog_result is None else str(dialog_result.message),
+        "dialog_delay_s": delay_s,
+    }
+
+
+def record_terminal_notification(
+    service: Any,
+    task_id: str,
+    event_type: str,
+    *,
+    file_ok: bool,
+    dialog_ok: bool,
+    dialog_message: str = "",
+    dialog_delay_s: int = 0,
+) -> None:
+    """Append the durable ``notification_delivery`` evidence event."""
     service.store.append_event(
         task_id,
         {
             "event_type": "notification_delivery",
             "task_id": task_id,
             "notification_event": event_type,
-            "file_ok": file_result.ok,
-            "dialog_ok": dialog_result.ok,
-            "dialog_message": dialog_result.message,
-            "dialog_delay_s": delay_s,
+            "file_ok": bool(file_ok),
+            "dialog_ok": bool(dialog_ok),
+            "dialog_message": dialog_message,
+            "dialog_delay_s": int(dialog_delay_s),
             "created_at": utc_now(),
         },
     )
@@ -70,8 +148,51 @@ def notify_input_required(
 ) -> dict[str, Any]:
     """Immediately deliver an actionable, explicitly nonterminal input notice."""
     payload = build_input_required_notification(service, task_id)
-    file_result = FileNotifier(service.board_root / "notifications.jsonl").send(payload)
-    dialog_result = DialogNotifier().send(payload)
+    live_dialog_already_reserved = False
+    task_elevation_dialog_already_reserved = False
+    if (
+        payload.get("input_type") == "permission"
+        and int(payload.get("approval_version") or 1) == 3
+        and payload.get("elevation_mode") == PERMISSION_ELEVATION_MODE
+    ):
+        reserve = getattr(service, "reserve_task_elevation_notification", None)
+        if callable(reserve):
+            _receipt, newly_reserved = reserve(task_id)
+            task_elevation_dialog_already_reserved = not newly_reserved
+        else:
+            # Compatibility for narrow test doubles and historical service
+            # facades that predate the atomic reservation helper.
+            existing_task = service.get_task(task_id)
+            existing_extensions = (
+                existing_task.extensions
+                if isinstance(existing_task.extensions, dict)
+                else {}
+            )
+            existing_receipt = existing_extensions.get(PERMISSION_ELEVATION_EXTENSION_KEY)
+            existing_cardinality = (
+                existing_receipt.get("cardinality")
+                if isinstance(existing_receipt, dict)
+                else None
+            )
+            task_elevation_dialog_already_reserved = (
+                isinstance(existing_cardinality, dict)
+                and existing_cardinality.get("notifications") == 1
+            )
+            service.record_task_elevation_notification(task_id)
+    file_result = _file_notification(service, payload)
+    if live_dialog_already_reserved or task_elevation_dialog_already_reserved:
+        dialog_result = DeliveryResult(
+            True,
+            (
+                "live Claude elevation dialog already delivered"
+                if live_dialog_already_reserved
+                else "Hermes task elevation notification already delivered"
+            ),
+            "dialog:task.input_required",
+            {"action": "already_delivered"},
+        )
+    else:
+        dialog_result = DialogNotifier().send(payload)
     action = str(dialog_result.details.get("action") or "dismissed")
     decision_source = str(dialog_result.details.get("decision_source") or "")
     service.store.append_event(
@@ -92,25 +213,37 @@ def notify_input_required(
     )
     response_result: dict[str, Any] = {}
     response_error = ""
-    if responder is not None and action in {"message", "approve", "deny"}:
+    option_handle = str(dialog_result.details.get("option_handle") or "")
+    if (
+        responder is not None
+        and action in {"message", "approve", "approve_full", "deny"}
+        or (responder is not None and action == "permission_option" and option_handle)
+    ):
         try:
-            response_result = responder(
-                str(payload["input_id"]),
-                action,
-                (
-                    PERMISSION_DIALOG_TIMEOUT_RESPONSE
-                    if payload.get("input_type") == "permission"
-                    and action == "deny"
-                    and decision_source == "timeout"
-                    else PERMISSION_DIALOG_CLOSED_RESPONSE
-                    if payload.get("input_type") == "permission"
-                    and action == "deny"
-                    and decision_source == "dialog_closed"
-                    else ""
-                    if payload.get("input_type") == "permission"
-                    else str(dialog_result.details.get("message") or "")
-                ),
-            )
+            if action == "permission_option":
+                response_result = responder(
+                    str(payload["input_id"]),
+                    "permission_option",
+                    option_handle,
+                )
+            else:
+                response_result = responder(
+                    str(payload["input_id"]),
+                    action,
+                    (
+                        PERMISSION_DIALOG_TIMEOUT_RESPONSE
+                        if payload.get("input_type") == "permission"
+                        and action == "deny"
+                        and decision_source == "timeout"
+                        else PERMISSION_DIALOG_CLOSED_RESPONSE
+                        if payload.get("input_type") == "permission"
+                        and action == "deny"
+                        and decision_source == "dialog_closed"
+                        else ""
+                        if payload.get("input_type") == "permission"
+                        else str(dialog_result.details.get("message") or "")
+                    ),
+                )
         except Exception as exc:
             response_error = compact_notification_text(str(redact_secrets(str(exc))), 240)
             DialogNotifier().send(
@@ -196,7 +329,24 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
     )
     if len(option_descriptions) != len(input_options):
         option_descriptions = []
-    if input_type == "permission" or is_resource_decision:
+    is_task_elevation = (
+        input_type == "permission"
+        and int(request.get("approval_version") or 1) == 3
+        and request.get("scope") == APPROVAL_V3_SCOPE
+        and request.get("elevation_mode") == PERMISSION_ELEVATION_MODE
+    )
+    is_native_live_elevation = is_task_elevation and request.get("native_live_elevation") is True
+    if is_native_live_elevation:
+        command = (
+            f"agentbc task respond {task_id} --input {input_id} --approve"
+            f" (or --deny)"
+        )
+    elif is_task_elevation:
+        command = (
+            f"agentbc task respond {task_id} --input {input_id} --approve-full"
+            f" (or --deny)"
+        )
+    elif input_type == "permission" or is_resource_decision:
         command = (
             f"agentbc task respond {task_id} --input {input_id} --approve"
             f" (or --deny)"
@@ -271,7 +421,28 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
             "Why this is blocked:",
             summary,
         ]
-        if input_type == "permission" and is_single_action_approval:
+        if is_native_live_elevation:
+            body_lines.extend(
+                [
+                    "Requested access: elevate this live Claude session to bypassPermissions.",
+                    "Approve Full sends one native setMode/bypassPermissions/session response for this exact blocked action.",
+                    "The current task, RunLease, worker, and official Claude session remain unchanged.",
+                    "Deny returns one native PermissionResultDeny and does not change permission mode.",
+                    "Choose Approve Full or Deny below; View Details does not answer the request.",
+                ]
+            )
+        elif is_task_elevation:
+            body_lines.extend(
+                [
+                    "Requested access: full for this Task ID.",
+                    "Approve Full restarts or updates the executor in its native strongest noninteractive mode.",
+                    "AgentBC adds no filesystem sandbox, PathPlan restriction, capability probe, or per-tool approval after elevation.",
+                    "This is the only permission dialog allowed for the task.",
+                    "Deny terminates the task as failed.",
+                    "Choose Approve Full or Deny below.",
+                ]
+            )
+        elif input_type == "permission" and is_single_action_approval:
             operation = compact_notification_text(
                 str(request.get("operation") or ""), 120
             )
@@ -305,7 +476,16 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
     # the input request, so report/status projections of ``agentbc.input`` keep
     # exposing only the short summary by default.
     reason_detail = ""
-    if is_single_action_approval:
+    if is_task_elevation:
+        receipt_value = (task.extensions or {}).get(APPROVAL_EXTENSION_KEY)
+        if isinstance(receipt_value, dict):
+            try:
+                reason_detail = str(
+                    validate_approval_receipt(receipt_value).get("reason_detail") or ""
+                )
+            except ABCError:
+                reason_detail = ""
+    elif is_single_action_approval:
         receipt_value = (task.extensions or {}).get(APPROVAL_EXTENSION_KEY)
         if isinstance(receipt_value, dict):
             try:
@@ -332,7 +512,9 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         identity_blocked_step = compact_notification_text(
             str(request.get("blocked_step_id") or ""), 24
         )
-        if is_single_action_approval:
+        if is_task_elevation:
+            identity_scope = PERMISSION_ELEVATION_MODE
+        elif is_single_action_approval:
             identity_scope = APPROVAL_SCOPE
         elif str(request.get("requested_permission") or "").strip().lower() == "full":
             identity_scope = "full"
@@ -371,23 +553,39 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         "input_options": input_options,
         "input_option_descriptions": option_descriptions,
         "permission_grant": permission_grant,
+        "approval_version": int(request.get("approval_version") or 1),
+        "elevation_mode": (
+            str(request.get("elevation_mode") or "") if is_task_elevation else ""
+        ),
+        "elevation_source": (
+            "claude_native_live" if is_native_live_elevation else
+            "task_elevation" if is_task_elevation else ""
+        ),
+        "native_live_elevation": is_native_live_elevation,
+        "native_elevation_protocol": (
+            str(request.get("native_elevation_protocol") or "")
+            if is_native_live_elevation else ""
+        ),
         # Single-action approval binding: the notification is tied to exactly one
         # native request so a dialog can only Approve/Deny the bound request.
         "approval_request_id": (
-            str(request.get("request_id") or "") if is_single_action_approval else ""
+            str(request.get("request_id") or "")
+            if is_single_action_approval or is_native_live_elevation else ""
         ),
         "approval_request_fingerprint": (
             str(request.get("request_fingerprint") or "")
-            if is_single_action_approval
+            if is_single_action_approval or is_native_live_elevation
             else ""
         ),
         "approval_executor_run_id": (
             str(request.get("executor_run_id") or "")
-            if is_single_action_approval
+            if is_single_action_approval or is_native_live_elevation
             else ""
         ),
         "approval_scope": (
-            str(request.get("scope") or "") if is_single_action_approval else ""
+            str(request.get("scope") or "")
+            if is_single_action_approval or is_task_elevation
+            else ""
         ),
         # Sanitized bounded identity facts rendered deterministically by the
         # macOS decision view.  These are safe public facts (never private paths,
@@ -399,6 +597,24 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         "identity_executor": executor_label,
         "identity_blocked_step": identity_blocked_step,
         "identity_scope": identity_scope,
+        # PERM-104-002 v2: the executor-native choices (sanitized labels plus
+        # opaque handles) rendered by the Choose Permission picker.  Raw
+        # native payloads never travel on the public payload; ``full`` is
+        # never offered here.
+        "native_options": (
+            [
+                {
+                    "handle": str(choice.get("handle") or ""),
+                    "kind": str(choice.get("kind") or ""),
+                    "label": str(choice.get("label") or ""),
+                    "selectable": choice.get("selectable", True) is not False,
+                }
+                for choice in request.get("choices") or []
+                if isinstance(choice, dict) and str(choice.get("handle") or "")
+            ]
+            if is_single_action_approval and int(request.get("approval_version") or 1) == 2
+            else []
+        ),
     }
 
 
@@ -420,15 +636,22 @@ def build_notification_payload(
     status = terminal_status_label(task.status) or str(task.status or level or "unknown")
     timing = build_timing_view(task, service.board_root)
     duration_text = format_duration_seconds(timing.get("wall_duration_s"))
-    body = "\n".join(
-        [
-            f"Task: {task_id} {status}",
-            f"Title: {compact_notification_text(task.title, 96)}",
-            f"Dispatcher/Executor: {dispatcher} -> {executor}",
-            f"Duration: {duration_text}",
-            f"Report: {report_path}",
-        ]
-    )
+    progress = execution_policy_view(extensions).get("progress")
+    progress_view = progress or {}
+    body_lines = [
+        f"Task: {task_id} {status}",
+        f"Title: {compact_notification_text(task.title, 96)}",
+        f"Dispatcher/Executor: {dispatcher} -> {executor}",
+        f"Duration: {duration_text}",
+        f"Report: {report_path}",
+    ]
+    if progress:
+        body_lines.append(
+            "Confirmed progress: "
+            f"{progress_view.get('confirmed_count', 0)}/{len(task.steps)} steps "
+            f"(sequence {progress_view.get('latest_sequence', 0)})"
+        )
+    body = "\n".join(body_lines)
     payload = {
         "task_id": task_id,
         "event_type": event_type,
@@ -436,6 +659,7 @@ def build_notification_payload(
         "level": level,
         "message": body,
         "report_path": report_path,
+        "progress": progress,
     }
     payload.update(
         {

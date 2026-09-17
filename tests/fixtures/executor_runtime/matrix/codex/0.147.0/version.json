@@ -1,0 +1,7 @@
+{
+  "captured_live": false,
+  "note": "Format verified against this release's frozen schema bundle; no live binary existed on the capture host.",
+  "output_format": "codex-cli 0.147.0",
+  "parsed": "0.147.0",
+  "surface": "version_probe"
+}

@@ -3,9 +3,8 @@
 Covers the PERM-103-009 freeze:
 
 * the canonical ``app-server`` transport value and the capability gate that
-  verifies the configured executable against the frozen schema contract for
-  both the Runner-pinned ``0.146.0`` and local ``0.147.0`` surfaces,
-* fail-closed behavior for unknown versions, missing schema methods,
+  verifies the configured executable against the required schema contract,
+* default compatibility for new/fork versions and fail-closed behavior for missing schema methods,
   malformed receipts, cross-task/run/session requests, duplicate/concurrent/
   late responses and transport death,
 * the executor-neutral exact-action receipt (accept/decline only) and the
@@ -56,8 +55,8 @@ FIXTURES = Path(__file__).parent / "fixtures" / "executor_runtime"
 
 # Both surfaces share the frozen schema bundle shape.
 CONTRACT_FIXTURES = {
-    "0.146.0": FIXTURES / "codex_app_server_protocol.0.146.0.contract.json",
-    "0.147.0": FIXTURES / "codex_app_server_protocol.0.147.0.contract.json",
+    "0.146.0": FIXTURES / "matrix" / "codex" / "0.146.0" / "app_server_schema.json",
+    "0.147.0": FIXTURES / "matrix" / "codex" / "0.147.0" / "app_server_schema.json",
 }
 
 
@@ -73,7 +72,7 @@ def capability_override(version: str = "0.146.0") -> dict:
         "version": f"codex-cli {version}",
         "version_parsed": tuple(int(part) for part in version.split(".")),
         "schema_missing": [],
-        "evidence": ["version_gate", "schema_methods_verified"],
+        "evidence": ["protocol_surface_default_compatible", "schema_methods_verified"],
         "schema_summary": "CodexAppServerProtocol",
     }
 
@@ -92,18 +91,26 @@ class SchemaContractTests(unittest.TestCase):
                 self.assertEqual(result["transport"], CODEX_APP_SERVER_TRANSPORT)
                 self.assertEqual(result["protocol_version"], 2)
                 self.assertEqual(result["schema_missing"], [])
-                self.assertEqual(result["evidence"], ["version_gate", "schema_methods_verified"])
+                self.assertEqual(
+                    result["evidence"],
+                    ["protocol_surface_default_compatible", "schema_methods_verified"],
+                )
 
-    def test_unknown_version_fails_closed(self) -> None:
-        for version in ("codex-cli 0.145.0", "codex-cli 0.148.0", "codex-cli 9.9.9"):
+    def test_unknown_and_fork_versions_use_protocol_surface(self) -> None:
+        for version in (
+            "codex-cli 0.145.0",
+            "codex-cli 0.153.4",
+            "codex-cli 9.9.9",
+            "codex-custom-fork",
+        ):
             with self.subTest(version=version):
                 result = codex_app_server_contract(
                     "/tmp/fake-codex",
                     version_output=version,
                     schema_bundle=load_contract_fixture("0.147.0"),
                 )
-                self.assertFalse(result["ok"])
-                self.assertIn("outside the frozen", result["reason"])
+                self.assertTrue(result["ok"])
+                self.assertIn("schema_methods_verified", result["evidence"])
 
     def test_missing_method_fails_closed(self) -> None:
         bundle = load_contract_fixture("0.147.0")
@@ -161,9 +168,9 @@ class SchemaContractTests(unittest.TestCase):
         self.assertIsNone(parse_codex_version(""))
         self.assertIsNone(parse_codex_version("codex-cli"))
 
-    def test_min_max_version_bounds_are_frozen(self) -> None:
+    def test_min_max_version_bounds_are_fixture_metadata_only(self) -> None:
         self.assertEqual(CODEX_APP_SERVER_MIN_VERSION, (0, 146, 0))
-        self.assertEqual(CODEX_APP_SERVER_MAX_VERSION, (0, 147, 0))
+        self.assertEqual(CODEX_APP_SERVER_MAX_VERSION, (0, 150, 1))
 
     def test_transport_aliases_are_only_backward_compatible(self) -> None:
         self.assertEqual(CODEX_APP_SERVER_TRANSPORT, "app-server")
@@ -204,7 +211,7 @@ class CapabilityGateTests(unittest.TestCase):
     def test_probe_success_freezes_transport_and_surface(self) -> None:
         probe = {
             **capability_override("0.147.0"),
-            "evidence": ["version_gate", "schema_methods_verified"],
+            "evidence": ["protocol_surface_default_compatible", "schema_methods_verified"],
         }
         with mock.patch(
             "agent_bridge_connect.codex_app_server.assert_codex_app_server_capability",
@@ -216,19 +223,19 @@ class CapabilityGateTests(unittest.TestCase):
         self.assertTrue(report["supported"])
         self.assertEqual(report["transport"], TRANSPORT_CODEX_APP_SERVER)
         self.assertEqual(report["capability_id"], "codex.sandbox_workspace_write")
-        self.assertIn("version_gate", report["evidence"])
+        self.assertIn("protocol_surface_default_compatible", report["evidence"])
         self.assertEqual(report["details"]["decisions"], ["accept", "decline"])
         self.assertEqual(report["details"]["scope"], "single_action")
         self.assertIn("item/commandExecution/requestApproval", report["details"]["request_methods"])
 
-    def test_executor_capability_gate_accepts_inherit_and_rejects_full(self) -> None:
+    def test_executor_capability_gate_accepts_inherit_safe_and_receipted_full(self) -> None:
         executor = CodexExecutor(command=sys.executable, transport="app-server")
         executor._app_server_capability_override = capability_override()
         report = executor._freeze_app_server_capability({"effective_mode": "inherit"})
         self.assertTrue(report["ok"])
-        with self.assertRaises(ABCError) as raised:
-            executor._freeze_app_server_capability({"effective_mode": "full"})
-        self.assertEqual(raised.exception.code, "permission_capability_unsupported")
+        self.assertTrue(
+            executor._freeze_app_server_capability({"effective_mode": "full"})["ok"]
+        )
 
     def test_executor_capability_gate_accepts_safe_with_verified_report(self) -> None:
         executor = CodexExecutor(command=sys.executable, transport="app-server")
@@ -248,6 +255,7 @@ class BlockingFakeTransport:
         *,
         version: str = "0.146.0",
         emit_callback: bool = True,
+        interleave_child_completion: bool = False,
     ) -> None:
         self.board = board
         self.task_id = task_id
@@ -259,6 +267,7 @@ class BlockingFakeTransport:
         self.receipt_before_turn = False
         self.approval_count = 0
         self.emit_callback = emit_callback
+        self.interleave_child_completion = interleave_child_completion
 
     def start(self) -> None:
         return None
@@ -324,8 +333,41 @@ class BlockingFakeTransport:
                         },
                     }
                 )
+            elif method == "thread/archive":
+                self.queue.append(
+                    {"jsonrpc": "2.0", "id": message["id"], "result": {}}
+                )
             elif message.get("id") == 90:
                 self.approval_count += 1
+                if self.interleave_child_completion:
+                    self.queue.extend(
+                        [
+                            {
+                                "jsonrpc": "2.0",
+                                "method": "item/completed",
+                                "params": {
+                                    "threadId": "thread-child-1",
+                                    "turnId": "turn-child-1",
+                                    "item": {
+                                        "id": "item-child-agent-1",
+                                        "type": "agentMessage",
+                                        "text": "CHILD_SESSION_CANARY_OK",
+                                    },
+                                },
+                            },
+                            {
+                                "jsonrpc": "2.0",
+                                "method": "turn/completed",
+                                "params": {
+                                    "threadId": "thread-child-1",
+                                    "turn": {
+                                        "id": "turn-child-1",
+                                        "status": "completed",
+                                    },
+                                },
+                            },
+                        ]
+                    )
                 if self.emit_callback:
                     callback = {
                         "version": 1,
@@ -390,9 +432,21 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
-        self.task_id = "CDEX-PROD-001"
         self.board = self.root / "record"
         self.board.mkdir()
+        self.service = TaskService(
+            self.board,
+            config={"workspace_root": str(self.root)},
+        )
+        persisted = self.service.create_task(
+            "production app server chain",
+            "codex",
+            [{"id": 1, "description": "exercise approval"}],
+            customer_dir=True,
+            customer_path=self.root,
+            permission_mode="safe",
+        )
+        self.task_id = persisted.id
         self.receipt = {
             "version": 1,
             "executor": "codex",
@@ -430,6 +484,56 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
                 "agentbc.session": session,
             },
         }
+
+    def test_collaboration_task_selects_official_ultra_activation(self) -> None:
+        fake = BlockingFakeTransport(self.board, self.task_id, emit_callback=False)
+        executor = self._executor(fake, version="0.150.1")
+        executor._collaboration_spawn_capability = {
+            "enabled": True,
+            "version": "0.150.1",
+            "fixture": {"ok": True},
+            "live": {"ok": True},
+        }
+        packet = self._packet()
+        packet["extensions"]["agentbc.codex.collaboration_spawn"] = {
+            "version": 1,
+            "enabled": True,
+        }
+        persisted = self.service.get_task(self.task_id)
+        persisted.extensions = dict(packet["extensions"])
+        self.service.store.write_task(persisted.id, persisted.to_dict())
+        with (
+            mock.patch.object(executor, "_start_run_lease"),
+            mock.patch.object(executor, "_suspend_run"),
+            mock.patch.object(executor, "_resume_run"),
+            mock.patch.object(executor, "_close_run_lease"),
+        ):
+            started = executor.start(packet)
+            self.assertEqual(
+                self._wait_status(executor, started.run_id, {"input_required"}),
+                "input_required",
+            )
+            persisted_session = (
+                self.service.get_task(self.task_id).extensions or {}
+            )["agentbc.session"]
+            self.assertEqual(persisted_session["session_id"], "thread-fake-1")
+            self.assertIn(started.run_id, persisted_session["run_ids"])
+            self.assertTrue(persisted_session["official_receipt_bound"])
+            executor.cancel(started.run_id)
+        thread_start = next(
+            message for message in fake.sent if message.get("method") == "thread/start"
+        )
+        turn_start = next(
+            message for message in fake.sent if message.get("method") == "turn/start"
+        )
+        self.assertEqual(
+            thread_start["params"]["multiAgentMode"], "explicitRequestOnly"
+        )
+        self.assertEqual(
+            turn_start["params"]["multiAgentMode"], "explicitRequestOnly"
+        )
+        self.assertEqual(thread_start["params"]["effort"], "ultra")
+        self.assertEqual(turn_start["params"]["effort"], "ultra")
 
     def _executor(self, fake: BlockingFakeTransport, *, version: str = "0.146.0") -> CodexExecutor:
         executor = CodexExecutor(
@@ -479,16 +583,23 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
             self.assertEqual(approval["type"], "permission")
             self.assertEqual(approval["scope"], "single_action")
             self.assertEqual(approval["session_id"], "thread-fake-1")
+            once_handle = next(
+                choice["handle"]
+                for choice in approval["offered_choices"]
+                if choice["kind"] == "once"
+            )
             self._plane(started.run_id).respond_approval(
                 self.task_id,
                 started.run_id,
                 "thread-fake-1",
                 approval["request_id"],
                 "accept",
+                choice_handle=once_handle,
             )
             status = self._wait_status(executor, started.run_id, {"completed", "needs_recovery", "failed"})
             result = executor.poll(started.run_id)
         self.assertEqual(status, "completed")
+        self.assertTrue(fake.closed)
         self.assertTrue(suspend_lease.called)
         self.assertTrue(resume_lease.called)
         # The decision is returned to the same live App Server session.
@@ -503,11 +614,60 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
         )
         self.assertEqual(result.result["execution_session"]["session_id"], "thread-fake-1")
         self.assertFalse(result.result["execution_session"]["resumed"])
+        self.assertTrue(
+            result.result["execution_session"]["archive_acknowledged"]
+        )
         self.assertTrue(result.result["marker_valid"])
         self.assertEqual(
             result.result["agent_callback"]["summary"],
             "app server callback accepted",
         )
+
+    def test_child_turn_completion_cannot_terminate_parent_run(self) -> None:
+        fake = BlockingFakeTransport(
+            self.board,
+            self.task_id,
+            interleave_child_completion=True,
+        )
+        executor = self._executor(fake)
+        with (
+            mock.patch.object(executor, "_start_run_lease"),
+            mock.patch.object(executor, "_suspend_run"),
+            mock.patch.object(executor, "_resume_run"),
+            mock.patch.object(executor, "_close_run_lease"),
+        ):
+            started = executor.start(self._packet())
+            self.assertEqual(
+                self._wait_status(executor, started.run_id, {"input_required"}),
+                "input_required",
+            )
+            approval = executor.poll(started.run_id).result["approval_request"]
+            once_handle = next(
+                choice["handle"]
+                for choice in approval["offered_choices"]
+                if choice["kind"] == "once"
+            )
+            self._plane(started.run_id).respond_approval(
+                self.task_id,
+                started.run_id,
+                "thread-fake-1",
+                approval["request_id"],
+                "accept",
+                choice_handle=once_handle,
+            )
+            status = self._wait_status(
+                executor,
+                started.run_id,
+                {"completed", "needs_recovery", "failed"},
+            )
+            result = executor.poll(started.run_id)
+
+        self.assertEqual(status, "completed")
+        self.assertEqual(
+            result.result["agent_callback"]["summary"],
+            "app server callback accepted",
+        )
+        self.assertEqual(result.result["summary"], "done")
 
     def test_completed_turn_without_agent_marker_fails(self) -> None:
         fake = BlockingFakeTransport(
@@ -528,12 +688,18 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
                 "input_required",
             )
             approval = executor.poll(started.run_id).result["approval_request"]
+            deny_handle = next(
+                choice["handle"]
+                for choice in approval["offered_choices"]
+                if choice["kind"] == "deny"
+            )
             self._plane(started.run_id).respond_approval(
                 self.task_id,
                 started.run_id,
                 "thread-fake-1",
                 approval["request_id"],
                 "decline",
+                choice_handle=deny_handle,
             )
             status = self._wait_status(
                 executor,
@@ -603,12 +769,18 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
             status = self._wait_status(executor, started.run_id, {"input_required"})
             self.assertEqual(status, "input_required")
             approval = executor.poll(started.run_id).result["approval_request"]
+            deny_handle = next(
+                choice["handle"]
+                for choice in approval["offered_choices"]
+                if choice["kind"] == "deny"
+            )
             self._plane(started.run_id).respond_approval(
                 self.task_id,
                 started.run_id,
                 "thread-fake-1",
                 approval["request_id"],
                 "decline",
+                choice_handle=deny_handle,
             )
             status = self._wait_status(executor, started.run_id, {"completed", "needs_recovery", "failed"})
             executor.poll(started.run_id)
@@ -632,12 +804,18 @@ class CodexAppServerProductionFlowTests(unittest.TestCase):
             status = self._wait_status(executor, started.run_id, {"input_required"})
             self.assertEqual(status, "input_required")
             request = executor.poll(started.run_id).result["approval_request"]
+            deny_handle = next(
+                choice["handle"]
+                for choice in request["offered_choices"]
+                if choice["kind"] == "deny"
+            )
             self._plane(started.run_id).respond_approval(
                 self.task_id,
                 started.run_id,
                 "thread-fake-1",
                 request["request_id"],
                 "decline",
+                choice_handle=deny_handle,
             )
             status = self._wait_status(executor, started.run_id, {"completed", "needs_recovery", "failed"})
         self.assertEqual(status, "completed")
@@ -906,6 +1084,101 @@ class RunnerCapabilityValidationTests(unittest.TestCase):
             "thread-native-1",
         )
 
+    def test_v2_option_handle_crosses_runner_client_message_envelope(self) -> None:
+        service = TaskService(
+            self.board,
+            config={"workspace_root": str(self.root), "permission_mode": "inherit"},
+        )
+        task = service.create_task(
+            "native v2 response bridge",
+            "codex",
+            [{"id": 1, "description": "request one action"}],
+            customer_dir=True,
+            customer_path=self.root,
+            permission_mode="inherit",
+        )
+        run_id = "codex-native-v2-run-1"
+        session_id = "thread-native-v2-1"
+        service.start_task_run(task.id, "codex")
+        service.record_executor_run_started(task.id, run_id)
+        receipt = {
+            "version": 1,
+            "executor": "codex",
+            "session_id": session_id,
+            "resumed": False,
+            "persistence": "persistent",
+            "source": "jsonl_thread_started",
+        }
+        plane = ApprovalControlPlane(
+            control_root_for_task(task.id, board_root=self.board),
+            task_id=task.id,
+            executor_run_id=run_id,
+            session_id=session_id,
+        )
+        plane.record_session_started(receipt)
+        event = plane.request_approval(
+            {
+                "jsonrpc": "2.0",
+                "id": 88,
+                "method": "item/commandExecution/requestApproval",
+                "params": {
+                    "threadId": session_id,
+                    "turnId": "turn-native-v2-1",
+                    "itemId": "item-native-v2-1",
+                    "command": ["printf", "ok"],
+                },
+                "approval_version": 2,
+                "authority": {
+                    "executor": "codex",
+                    "protocol": "codex_app_server",
+                    "protocol_version": 2,
+                    "method": "item/commandExecution/requestApproval",
+                },
+                "offered_choices": [
+                    {"native_option_id": "decline", "kind": "deny", "label": "Deny"},
+                    {"native_option_id": "accept", "kind": "once", "label": "Once"},
+                ],
+            }
+        )
+        pending = plane.status()["pending_request"]
+        blocked = service.block_task_for_approval(
+            task.id,
+            executor_run_id=run_id,
+            session_id=session_id,
+            request_id="88",
+            request_fingerprint=str(event["request_fingerprint"]),
+            executor="codex",
+            operation="command",
+            execution_session=receipt,
+            tool_use_id="item-native-v2-1",
+            offered_choices=list(pending["offered_choices"]),
+            authority=dict(pending["authority"]),
+        )
+        waiting = service.get_task(task.id).extensions["agentbc.input"]
+        once_handle = next(
+            choice["handle"] for choice in waiting["choices"] if choice["kind"] == "once"
+        )
+
+        result = self.state.respond_and_dispatch(
+            {
+                "task_id": task.id,
+                "input_id": blocked["input_id"],
+                "response_type": "permission_option",
+                # This is the exact stable RunnerClient envelope used by the
+                # dialog responder: the handle is carried in message.
+                "message": once_handle,
+                "board_root": str(self.board),
+                "config_path": "",
+                "interval_s": 0.01,
+            }
+        )
+
+        self.assertEqual(result["permission_choice"]["handle"], once_handle)
+        self.assertTrue(result["same_session"])
+        self.assertFalse(result["dispatch_required"])
+        response = plane.wait_for_decision("88", 0.1)
+        self.assertEqual(response["decision"], "accept")
+
     def _packet(
         self,
         *,
@@ -1062,22 +1335,21 @@ class RunnerCapabilityValidationTests(unittest.TestCase):
             )
         self.assertIn("runner_capability_mismatch", str(raised.exception))
 
-    def test_runner_rejects_full_permission_on_app_server_command(self) -> None:
+    def test_runner_full_leaves_transport_selection_to_adapter(self) -> None:
         persisted = self._persisted_task(mode="full", transport="app-server")
         packet = self._packet()
         packet["task_id"] = persisted["id"]
         packet["workspace"] = persisted["workspace"]
         packet["extensions"] = persisted["extensions"]
         packet["task_board"] = {"root": str(self.board)}
-        with self.assertRaises(RunnerError) as raised:
-            self.state.authorize_command(
+        result = self.state.authorize_command(
                 "codex",
                 [str(self.codex), "app-server", "--stdio"],
                 str(self.root),
                 packet,
                 executor_run_id="codex-runner-1",
-            )
-        self.assertIn("runner_capability_mismatch", str(raised.exception))
+        )
+        self.assertEqual(result["effective_permission_mode"], "full")
 
 
 class InheritAndFallbackTests(unittest.TestCase):

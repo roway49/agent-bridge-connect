@@ -1,0 +1,24 @@
+{
+  "definitions": {
+    "ServerNotificationCollaborationEvidence": {
+      "title": "ServerNotificationCollaborationMethod",
+      "enum": [
+        "item/started",
+        "item/completed"
+      ]
+    },
+    "CollaborationSpawnEvidence": {
+      "itemType": {
+        "enum": [
+          "collabAgentToolCall"
+        ]
+      },
+      "tool": {
+        "enum": [
+          "spawnAgent"
+        ]
+      },
+      "receiverThreadIds": {}
+    }
+  }
+}

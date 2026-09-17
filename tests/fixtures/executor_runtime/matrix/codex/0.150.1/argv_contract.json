@@ -1,0 +1,35 @@
+{
+  "canonical_argv_prefix": [
+    "{binary}",
+    "exec",
+    "--json",
+    "{permission_flags}",
+    "--skip-git-repo-check"
+  ],
+  "controlled_environment": {
+    "inherits_parent_env": true,
+    "never_persisted_in_results_or_fixtures": true
+  },
+  "cwd": "{workspace_root}",
+  "identical_to": "codex/0.146.0",
+  "prompt_delivery": {
+    "images_absent": "{prompt}",
+    "images_present": [
+      "--image",
+      "{image}",
+      "-"
+    ],
+    "stdin_prompt_when_images_present": true
+  },
+  "resume_subcommand": [
+    "resume",
+    "{thread_id}"
+  ],
+  "safe_mode_writable_roots_arg": [
+    "--add-dir",
+    "{writable_root}"
+  ],
+  "surface": "argv_contract",
+  "transport": "cli_exec_jsonl_blocking",
+  "writable_roots_source": "_codex_writable_roots(task_packet, workspace_root)"
+}

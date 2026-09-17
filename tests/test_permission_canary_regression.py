@@ -25,6 +25,7 @@ from agent_bridge_connect.service import TaskService
 class _FailedPermissionExecutor(ExecutorPort):
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
+        self.task_packet: dict | None = None
 
     def probe(self) -> ProbeResult:
         return ProbeResult(ok=True, message="ready")
@@ -33,6 +34,7 @@ class _FailedPermissionExecutor(ExecutorPort):
         return ExecutorCapabilities(level=ExecutorLevel.L2, resume=True)
 
     def start(self, task_packet: dict) -> StartResult:
+        self.task_packet = task_packet
         return StartResult(ok=True, run_id=f"codex-{task_packet['task_id']}-canary")
 
     def poll(self, run_id: str) -> PollResult:
@@ -136,6 +138,8 @@ class PermissionCanaryRegressionTests(unittest.TestCase):
 
             failed = service.get_task(task.id)
             self.assertEqual(code, 1)
+            self.assertIsNotNone(executor.task_packet)
+            self.assertEqual(executor.task_packet["assignee"], "codex")
             self.assertEqual(failed.status, "failed")
             persisted_permission = failed.extensions[PERMISSION_EXTENSION_KEY]
             self.assertEqual(persisted_permission["version"], 2)
@@ -174,10 +178,14 @@ class PermissionCanaryRegressionTests(unittest.TestCase):
                 board,
                 executor_port=_UnsupportedCleanupExecutor(),
             ).request_cleanup(task.id)
-            self.assertEqual(result["receipt"]["state"], "unsupported", result)
+            # A terminal Codex cleanup with no current Desktop route remains
+            # pending and retryable; the legacy App Server/CLI capability must
+            # not bypass the Desktop acknowledgement gate.
+            self.assertEqual(result["status"], "waiting_for_desktop", result)
+            self.assertEqual(result["receipt"]["state"], "pending", result)
             self.assertEqual(
                 service.get_task(task.id).extensions["agentbc.session"]["cleanup"]["state"],
-                "unsupported",
+                "pending",
             )
 
 

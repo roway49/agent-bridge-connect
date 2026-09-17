@@ -1,0 +1,38 @@
+{
+  "probe": "synthetic-tool-request-control",
+  "sdk_package": "claude-agent-sdk",
+  "sdk_version": "0.2.142",
+  "cli_version": "2.1.233 (Claude Code)",
+  "events": [
+    {
+      "event": "can_use_tool",
+      "tool": "Bash",
+      "tool_use_id": "call_cccccccccccccccccccccccc",
+      "input_keys": [
+        "command",
+        "description"
+      ]
+    },
+    {
+      "event": "can_use_tool",
+      "tool": "Bash",
+      "tool_use_id": "call_dddddddddddddddddddddddd",
+      "input_keys": [
+        "command",
+        "description"
+      ]
+    }
+  ],
+  "checks": {
+    "allow_result": {
+      "is_error": false
+    },
+    "allow_file_created": true,
+    "allow_file_content": "probe-allow",
+    "deny_file_created": false,
+    "single_session_all_phases": true,
+    "session_count": 1,
+    "ok": true
+  },
+  "verdict": "pass"
+}

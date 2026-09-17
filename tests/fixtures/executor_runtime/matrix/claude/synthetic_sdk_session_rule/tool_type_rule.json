@@ -1,0 +1,38 @@
+{
+  "probe": "PERM-104-002-session-rule-safe-live-probe",
+  "sdk_version": "0.2.142",
+  "cli_path": "<configured-claude-cli>/2.1.233",
+  "cli_version": "2.1.233 (Claude Code)",
+  "probe_model": "synthetic-test-model",
+  "rule": {
+    "tool_name": "mcp__perm104__record_probe",
+    "rule_content": "*"
+  },
+  "can_use_tool_calls": [
+    {
+      "tool": "mcp__perm104__record_probe",
+      "tool_use_id": "call_333333333333333333333333"
+    },
+    {
+      "tool": "mcp__perm104__other_probe",
+      "tool_use_id": "call_444444444444444444444444"
+    }
+  ],
+  "recorded_values": [
+    "first",
+    "second"
+  ],
+  "session_ids": [
+    "00000000-0000-4000-8000-000000000003"
+  ],
+  "result_tail": "DONE",
+  "checks": {
+    "single_session": true,
+    "two_matching_calls_executed": true,
+    "tool_type_rule_prevented_second_prompt": true,
+    "distinct_tool_re_prompted": true,
+    "distinct_tool_not_executed": true,
+    "settings_files_untouched": true
+  },
+  "verdict": "pass"
+}

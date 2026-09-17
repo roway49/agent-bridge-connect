@@ -1,0 +1,10 @@
+{
+  "detector": "_claude_resource_exhaustion / _claude_structured_budget_receipt",
+  "flag_reference": "reached --max-budget-usd",
+  "limit_extraction": "_claude_budget_amount_from_text",
+  "message_prefix": "Error: Exceeded USD budget (",
+  "on_detection": "runner-level resource decision; no further turns are started",
+  "structured_subtype": "error_max_budget_usd",
+  "surface": "resource_exhaustion",
+  "verified_by_live_paid_canary": false
+}

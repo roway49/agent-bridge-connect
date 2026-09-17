@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentbc"
-version = "1.0.3a2"
+version = "1.0.4a1"
 description = "Local-first task control plane for coordinating Codex, Claude Code, and Hermes."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -22,13 +22,24 @@ Issues = "https://github.com/roway49/agent-bridge-connect/issues"
 [project.scripts]
 agentbc = "agent_bridge_connect.cli:main"
 
+[project.optional-dependencies]
+# PERM-104-002: the official Claude Agent SDK transport is an optional extra
+# pinned to the exact version represented by the public synthetic protocol
+# fixtures (tests/fixtures/executor_runtime/matrix/claude/synthetic_sdk_control).
+# Core installs stay light; Alpha/full installs select this extra by default.
+claude = [
+    "claude-agent-sdk==0.2.142",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 agent_bridge_connect = [
+    "assets/*.mjs",
     "skills/*.md",
     "skills/*.yaml",
     "skills/references/*.md",
+    "protocol_fixtures/codex/*/*.json",
     "_build_info.json",
 ]

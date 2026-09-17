@@ -1,0 +1,45 @@
+{
+  "cleanup": {
+    "argv": [
+      "sessions",
+      "delete",
+      "{session_id}",
+      "--yes"
+    ],
+    "probe": "`hermes sessions delete --help` must expose the exact-ID entry",
+    "strategy": "official_session_delete"
+  },
+  "early_receipt": {
+    "acp_event": "initialize response protocolVersion == 1",
+    "cli_event": "stderr line 'session_id: YYYYMMDD_HHMMSS_<hex>'",
+    "extractor": "execution_policy.extract_hermes_session_id",
+    "format_regex": "^\\d{8}_\\d{6}_[0-9a-fA-F]{6,32}$",
+    "required": true
+  },
+  "fail_closed": {
+    "incomplete_capability_group_fails_closed": true,
+    "mismatched_event_payload_fails_closed": true,
+    "missing_early_receipt_fails_closed": true,
+    "unknown_critical_event_fails_closed": true,
+    "unknown_noncritical_fields_ignored": true
+  },
+  "receipt_sample_stderr": "session_id: 20260810_010203_a1b2c3",
+  "resume": {
+    "explicit_resume_requires_task_session_id": true,
+    "flag": "--resume SESSION_ID",
+    "requires_earlier_receipt": true
+  },
+  "sample_source": "migrated verbatim from tests/fixtures/executor_runtime/hermes_outputs.json",
+  "surface": "session_events",
+  "terminal": {
+    "acp_stop_reasons_completed": [
+      "end_turn",
+      "success",
+      "completed"
+    ],
+    "callback_marker_dependency": false,
+    "cli_events": [
+      "final assistant message plus receipt stderr"
+    ]
+  }
+}

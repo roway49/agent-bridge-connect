@@ -1,0 +1,44 @@
+{
+  "cleanup": {
+    "argv": [
+      "project",
+      "purge",
+      "[path]",
+      "--yes"
+    ],
+    "probe": "`claude project purge --help` must expose the documented usage",
+    "strategy": "claude_project_purge"
+  },
+  "early_receipt": {
+    "event": "system stream-json line",
+    "property": "received session_id must equal the requested session ID",
+    "required": true,
+    "subtype": "init",
+    "verifier": "ClaudeExecutor._verify_init_receipt"
+  },
+  "fail_closed": {
+    "incomplete_capability_group_fails_closed": true,
+    "mismatched_event_payload_fails_closed": true,
+    "missing_early_receipt_fails_closed": true,
+    "unknown_critical_event_fails_closed": true,
+    "unknown_noncritical_fields_ignored": true
+  },
+  "resume": {
+    "alternative": [
+      "--continue"
+    ],
+    "flags": [
+      "--resume",
+      "{uuid}"
+    ],
+    "fork_flag": "--fork-session creates a new session ID instead of reusing"
+  },
+  "surface": "session_events",
+  "terminal": {
+    "callback_marker_dependency": false,
+    "events": [
+      "result"
+    ],
+    "summary_source": "extracted result text"
+  }
+}

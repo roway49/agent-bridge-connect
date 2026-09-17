@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from agent_bridge_connect.execution_policy import SESSION_EXTENSION_KEY
+from agent_bridge_connect.executors.hermes import HermesExecutor, _task_resume_session
 from agent_bridge_connect.protocol import ABCError
 from agent_bridge_connect.service import TaskService
 
@@ -117,6 +118,8 @@ class Phase3SessionLifecycleTests(unittest.TestCase):
         task = self._task(service, "hermes")
         service.start_task_run(task.id, "hermes")
         service.record_executor_run_started(task.id, "hermes-run-1")
+        first_session = service.get_task(task.id).extensions[SESSION_EXTENSION_KEY]
+        self.assertEqual(first_session["run_resume_facts"], {"hermes-run-1": False})
         receipt = self._receipt("hermes", "20260810_010203_a1b2c3", resumed=False)
         service.validate_executor_session_result(task.id, "hermes-run-1", receipt)
         service.mark_task_needs_recovery(
@@ -129,6 +132,18 @@ class Phase3SessionLifecycleTests(unittest.TestCase):
         session = service.get_task(task.id).extensions[SESSION_EXTENSION_KEY]
         self.assertEqual(session["session_id"], "20260810_010203_a1b2c3")
         self.assertEqual(session["session_state"], "needs_recovery")
+
+    def test_duplicate_run_registration_preserves_frozen_resume_fact(self) -> None:
+        service = self._service(retain=False)
+        task = self._task(service, "hermes")
+        first = service.record_executor_run_started(task.id, "hermes-run-1")
+        duplicate = service.record_executor_run_started(task.id, "hermes-run-1")
+
+        self.assertFalse(first["resumed"])
+        self.assertFalse(duplicate["resumed"])
+        session = service.get_task(task.id).extensions[SESSION_EXTENSION_KEY]
+        self.assertEqual(session["run_ids"], ["hermes-run-1"])
+        self.assertEqual(session["run_resume_facts"], {"hermes-run-1": False})
 
     def test_mismatched_resume_receipt_is_rejected_without_overwrite(self) -> None:
         service = self._service()
@@ -157,6 +172,83 @@ class Phase3SessionLifecycleTests(unittest.TestCase):
             )
         session = service.get_task(task.id).extensions[SESSION_EXTENSION_KEY]
         self.assertEqual(session["session_id"], "019feed0-0000-7000-8000-000000000001")
+
+    def test_fresh_registration_freezes_false_and_duplicate_is_idempotent(self) -> None:
+        service = self._service(retain=False)
+        task = self._task(service, "hermes")
+        service.start_task_run(task.id, "hermes")
+        first = service.record_executor_run_started(task.id, "hermes-fresh-1")
+        duplicate = service.record_executor_run_started(task.id, "hermes-fresh-1")
+        self.assertFalse(first["resumed"])
+        self.assertFalse(duplicate["resumed"])
+        session = service.get_task(task.id).extensions[SESSION_EXTENSION_KEY]
+        self.assertEqual(session["run_ids"], ["hermes-fresh-1"])
+        self.assertEqual(session["run_resume_facts"], {"hermes-fresh-1": False})
+
+    def test_genuine_resume_uses_frozen_official_session_for_command(self) -> None:
+        service = self._service(retain=False)
+        task = self._task(service, "hermes")
+        service.start_task_run(task.id, "hermes")
+        first = service.record_executor_run_started(task.id, "hermes-resume-1")
+        session_id = "20260905_010203_resume"
+        receipt = self._receipt("hermes", session_id, resumed=False)
+        service.mark_task_needs_recovery(
+            task.id,
+            "transport_test",
+            "first ACP run ended after its official receipt",
+            executor_run_id=first["run_id"],
+            execution_session=receipt,
+        )
+        service.requeue_task(task.id)
+        service.start_task_run(task.id, "hermes")
+        second = service.record_executor_run_started(task.id, "hermes-resume-2")
+        self.assertTrue(second["resumed"])
+        packet = service.store.read_task(task.id)
+        packet["_agentbc_resume_fact"] = {
+            "run_id": second["run_id"],
+            "resumed": second["resumed"],
+            "session_id": session_id,
+        }
+        self.assertEqual(
+            _task_resume_session(
+                packet,
+                resume_fact=False,
+                resume_session_id="",
+            ),
+            (False, ""),
+        )
+        self.assertEqual(
+            _task_resume_session(
+                packet,
+                resume_fact=True,
+                resume_session_id=session_id,
+            ),
+            (True, session_id),
+        )
+        executor = HermesExecutor(command="/bin/echo", transport="direct", quiet=True)
+        command = executor._build_command(
+            "continue",
+            permission={"effective_mode": "full"},
+            task_packet=packet,
+        )
+        self.assertIn("--resume", command)
+        self.assertIn(session_id, command)
+
+    def test_missing_resume_receipt_is_rejected_before_new_run(self) -> None:
+        service = self._service(retain=False)
+        task = self._task(service, "hermes")
+        raw = service.store.read_task(task.id)
+        session = raw["extensions"][SESSION_EXTENSION_KEY]
+        session.update(
+            {
+                "run_ids": ["hermes-missing-receipt"],
+                "run_resume_facts": {"hermes-missing-receipt": False},
+            }
+        )
+        service.store.write_task(task.id, raw)
+        service.start_task_run(task.id, "hermes")
+        with self.assertRaisesRegex(ABCError, "authoritative session ID"):
+            service.record_executor_run_started(task.id, "hermes-missing-receipt-2")
 
 
 if __name__ == "__main__":

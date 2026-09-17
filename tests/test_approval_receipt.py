@@ -11,11 +11,17 @@ from agent_bridge_connect.approval import (
     APPROVAL_SCOPE,
     assert_no_pending_approval,
     build_approval_receipt,
+    build_approval_receipt_v3,
     compute_request_fingerprint,
     core_bounded_summary,
     pending_approval_request,
     record_approval_decision,
     validate_approval_receipt,
+    validate_approval_receipt_v3,
+)
+from agent_bridge_connect.permission_elevation import (
+    build_permission_elevation,
+    validate_permission_elevation,
 )
 from agent_bridge_connect.permission_grants import PERMISSION_GRANT_EXTENSION_KEY
 from agent_bridge_connect.permission_modes import PERMISSION_EXTENSION_KEY
@@ -41,6 +47,47 @@ def _receipt() -> dict:
 
 
 class ApprovalReceiptContractTests(unittest.TestCase):
+    def test_v3_accepts_native_protocol_method_with_slashes(self) -> None:
+        native_event = "codex_app_server.item/commandExecution/requestApproval"
+        digest = "sha256:" + "a" * 64
+        authority = {
+            "executor": "codex",
+            "protocol": "codex_app_server",
+            "protocol_version": 2,
+            "method": "item/commandExecution/requestApproval",
+        }
+        receipt = build_approval_receipt_v3(
+            task_id=TASK_ID,
+            executor_run_id=RUN_ID,
+            executor="codex",
+            session_id=SESSION_ID,
+            request_id="0",
+            request_fingerprint="fp-" + "a" * 40,
+            operation="command",
+            path_plan_digest=digest,
+            containment_profile_digest=digest,
+            authority=authority,
+            native_event=native_event,
+            tool_call_id="exec-1",
+        )
+        validate_approval_receipt_v3(receipt)
+
+        elevation = build_permission_elevation(
+            task_id=TASK_ID,
+            path_plan_digest=digest,
+            executor="codex",
+            executor_run_id=RUN_ID,
+            session_id=SESSION_ID,
+            request_id="0",
+            request_fingerprint="fp-" + "a" * 40,
+            containment_profile_digest=digest,
+            operation="command",
+            native_event=native_event,
+            tool_call_id="exec-1",
+            authority=authority,
+        )
+        validate_permission_elevation(elevation)
+
     def test_build_links_all_binding_fields(self) -> None:
         receipt = _receipt()
         self.assertEqual(receipt["version"], 1)
@@ -261,6 +308,53 @@ class ApprovalServiceFlowTests(unittest.TestCase):
         self.assertEqual(input_request["type"], "permission")
         self.assertEqual(input_request["scope"], APPROVAL_SCOPE)
         self.assertEqual(input_request["request_id"], "approval-request-1")
+
+    def test_v2_block_persists_matching_v2_receipt_and_accepts_handle(self) -> None:
+        task_id, session_id = self._started_task()
+        result = self.service.block_task_for_approval(
+            task_id,
+            executor_run_id=RUN_ID,
+            session_id=session_id,
+            request_id="approval-request-v2",
+            request_fingerprint="fp-" + "a" * 40,
+            executor="claude",
+            operation="Bash",
+            tool_use_id="tool-use-v2",
+            offered_choices=[
+                {"native_option_id": "deny", "kind": "deny", "label": "Deny"},
+                {
+                    "native_option_id": "allow_once",
+                    "kind": "once",
+                    "label": "Approve once",
+                },
+            ],
+            authority={
+                "executor": "claude",
+                "protocol": "claude_agent_sdk",
+                "protocol_version": 1,
+                "method": "sdk.can_use_tool",
+            },
+        )
+        self.assertTrue(result["ok"])
+        task = self.service.get_task(task_id)
+        receipt = task.extensions[APPROVAL_EXTENSION_KEY]
+        request = task.extensions["agentbc.input"]
+        self.assertEqual(receipt["version"], 2)
+        self.assertEqual(request["approval_version"], 2)
+        self.assertEqual(request["choices"], receipt["choices"])
+
+        once = next(choice for choice in receipt["choices"] if choice["kind"] == "once")
+        response = self.service.respond_to_input(
+            task_id,
+            request["input_id"],
+            response_type="permission_option",
+            message=once["handle"],
+        )
+        self.assertEqual(response["approval_decision"], "permission_option")
+        answered = self.service.get_task(task_id)
+        selected = answered.extensions[APPROVAL_EXTENSION_KEY]["selection"]
+        self.assertEqual(selected["kind"], "once")
+        self.assertEqual(selected["handle"], once["handle"])
 
     def test_approve_does_not_issue_grant_and_keeps_effective_mode(self) -> None:
         task_id, session_id = self._started_task()

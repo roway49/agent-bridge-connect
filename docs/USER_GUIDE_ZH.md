@@ -2,8 +2,8 @@
 
 中文 | [English](USER_GUIDE.md)
 
-适用于 AgentBC **1.0.3A** 正式 Alpha 版本（tag `v1.0.3A2`，Python 包
-`1.0.3a2`）。
+适用于 AgentBC **1.0.4A** 正式 Alpha 版本（tag `v1.0.4A`，Python 包
+`1.0.4a1`）。
 
 ## 命令结构
 
@@ -269,6 +269,11 @@ agentbc task logs 4XMC
 - `completed`：执行正常启动并结束，不代表质量通过验收。
 - `needs_recovery`：执行未能正常启动或继续。
 - `failed`：执行已启动，但未能确认执行器正常退出。
+
+当前任务链 head 处于 `failed` 或 `needs_recovery` 时，使用完全相同的显式复活入口：
+`agentbc task retry <TASK_ID>` 按 retry 清理边界保留 Task ID 并从 Step 1 重跑；
+`agentbc task handoff <TASK_ID> --to <executor>` 保留既有报告和产物，机械导入基线并创建
+下一 iteration。两个交互命令均在派发前要求确认。
 
 每次成功的 Codex、Claude 或 Hermes 运行，其最终回复都必须以单行恰好一个 version-1 标记结束：
 

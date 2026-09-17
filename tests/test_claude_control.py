@@ -15,7 +15,10 @@ from agent_bridge_connect.executors.claude import (
     ClaudePermissionPromptBroker,
     _parse_stream_json_line,
 )
-from agent_bridge_connect.service import TaskService
+from agent_bridge_connect.permission_runtime import (
+    PERMISSION_TRANSPORT_UNSUPPORTED,
+)
+from agent_bridge_connect.protocol import ABCError
 
 RUN_ID = "claude-ABCD-001-run1"
 
@@ -161,26 +164,27 @@ class ClaudeControlCommandTests(unittest.TestCase):
         }
 
     @mock.patch("agent_bridge_connect.executors.claude.ClaudeExecutor.supports_permission_prompt_tool")
-    def test_control_command_preallocates_session_and_adds_prompt_tool(
+    def test_control_command_never_fabricates_a_prompt_tool_broker(
         self, supports: mock.Mock
     ) -> None:
+        # T2A6-003: even when the live probe claims --permission-prompt-tool
+        # exists, the control command must NOT embed a self-authored broker
+        # shell command; the transport fails closed instead.
         supports.return_value = True
         executor = ClaudeExecutor(command=sys.executable, transport="direct")
         broker = ClaudePermissionPromptBroker(
             session_id=self.session_id,
             decision_callback=lambda request: {"permission": "deny"},
         )
-        command = executor._build_control_command(
-            "prompt",
-            self.project,
-            self._packet(),
-            {"requested_mode": "safe", "effective_mode": "safe", "selection_source": "x"},
-            broker,
-        )
-        self.assertEqual(command[command.index("--session-id") + 1], self.session_id)
-        self.assertIn(PERMISSION_PROMPT_TOOL_FLAG, command)
-        self.assertIn("--output-format", command)
-        self.assertEqual(command[command.index("--output-format") + 1], "stream-json")
+        with self.assertRaises(ABCError) as raised:
+            executor._build_control_command(
+                "prompt",
+                self.project,
+                self._packet(),
+                {"requested_mode": "safe", "effective_mode": "safe", "selection_source": "x"},
+                broker,
+            )
+        self.assertEqual(raised.exception.code, PERMISSION_TRANSPORT_UNSUPPORTED)
 
     @mock.patch("agent_bridge_connect.executors.claude.ClaudeExecutor.supports_permission_prompt_tool")
     def test_control_command_without_flag_uses_local_broker(self, supports: mock.Mock) -> None:
@@ -366,151 +370,6 @@ class ClaudeBrokerTransportDeathTests(unittest.TestCase):
         self.assertTrue(result["transport_death_while_approval"])
         self.assertEqual(result["aborted_request_id"], "approval-z")
         self.assertEqual(self.deaths, ["approval-z"])
-
-
-class ClaudeApprovalCallbackFailClosedTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name).resolve()
-        self.board = self.root / "record"
-        self.project = self.root / "customer"
-        self.project.mkdir()
-        self.session_id = str(uuid.uuid4())
-        self.executor = ClaudeExecutor(command=sys.executable, transport="direct")
-
-    def _task_packet(self, task_id: str) -> dict:
-        return {
-            "task_id": task_id,
-            "title": "control approval",
-            "steps": [{"id": 1, "description": "finish"}],
-            "workspace": {
-                "root": str(self.project),
-                "project_root": str(self.project),
-                "artifact_root": str(self.project),
-                "report_file": str(self.root / "report.md"),
-            },
-            "task_board": {"root": str(self.board)},
-            "extensions": {
-                "agentbc.session": {
-                    "version": 1,
-                    "executor": "claude",
-                    "retain": False,
-                    "session_id": self.session_id,
-                    "session_state": "active",
-                    "project_mode": "ephemeral",
-                    "project_path": str(self.project / "claude"),
-                    "run_ids": [RUN_ID],
-                },
-                "agentbc.permission": {
-                    "requested_mode": "safe",
-                    "effective_mode": "safe",
-                    "selection_source": "configured_default",
-                },
-            },
-        }
-
-    def _started_task(self) -> str:
-        service = TaskService(
-            self.board,
-            config={"workspace_root": str(self.root), "permission_mode": "safe"},
-        )
-        task = service.create_task(
-            "control approval",
-            "claude",
-            [{"id": 1, "description": "finish"}],
-            customer_dir=True,
-            customer_path=self.project,
-            permission_mode="safe",
-        )
-        service.start_task_run(task.id, "claude")
-        service.record_executor_run_started(task.id, RUN_ID)
-        model = service.get_task(task.id)
-        session = dict((model.extensions or {})["agentbc.session"])
-        session["session_state"] = "active"
-        session["run_ids"] = [RUN_ID]
-        model.extensions = dict(model.extensions or {})
-        model.extensions["agentbc.session"] = session
-        service.store.write_task(model.id, model.to_dict())
-        return model.id
-
-    @mock.patch("agent_bridge_connect.notifications.notify_input_required")
-    def test_callback_rejects_concurrent_second_request(self, notify: mock.Mock) -> None:
-        task_id = self._started_task()
-        service = TaskService(
-            self.board,
-            config={"workspace_root": str(self.root), "permission_mode": "safe"},
-        )
-        session_id = str(
-            (service.get_task(task_id).extensions or {})["agentbc.session"]["session_id"]
-        )
-        service.block_task_for_approval(
-            task_id,
-            executor_run_id=RUN_ID,
-            session_id=session_id,
-            request_id="approval-1",
-            request_fingerprint="fp-" + "a" * 40,
-            executor="claude",
-            operation="Bash",
-        )
-        result = self.executor._approval_decision_callback(
-            self._task_packet(task_id),
-            RUN_ID,
-            {"session_id": session_id},
-            _can_use_tool_event(),
-        )
-        self.assertEqual(result["permission"], "deny")
-        self.assertEqual(result["error"], "approval_already_pending")
-        notify.assert_not_called()
-        # The first request is untouched.
-        current = service.get_task(task_id).extensions["agentbc.input"]
-        self.assertEqual(current["request_id"], "approval-1")
-
-    @mock.patch("agent_bridge_connect.notifications.notify_input_required")
-    def test_callback_approves_only_the_bound_request(self, notify: mock.Mock) -> None:
-        task_id = self._started_task()
-        service = TaskService(
-            self.board,
-            config={"workspace_root": str(self.root), "permission_mode": "safe"},
-        )
-        session_id = str(
-            (service.get_task(task_id).extensions or {})["agentbc.session"]["session_id"]
-        )
-        # First request is answered so the callback reaches a second request.
-        first = service.block_task_for_approval(
-            task_id,
-            executor_run_id=RUN_ID,
-            session_id=session_id,
-            request_id="approval-bound",
-            request_fingerprint="fp-" + "b" * 40,
-            executor="claude",
-            operation="Bash",
-        )
-        service.respond_to_input(
-            task_id,
-            first["input_id"],
-            response_type="approve",
-        )
-        # The dialog for the second request records a decision against a
-        # different native request: the callback must not report that as an
-        # allow for the bound request.
-        notify.return_value = {
-            "dialog_action": "approve",
-            "response": {
-                "request_id": "approval-other",
-                "approval_decision": "approve",
-                "status": "resuming",
-            },
-        }
-        result = self.executor._approval_decision_callback(
-            self._task_packet(task_id),
-            RUN_ID,
-            {"session_id": session_id},
-            _can_use_tool_event(),
-        )
-        self.assertEqual(result["permission"], "deny")
-        self.assertEqual(result["error"], "approval_request_mismatch")
-        self.assertTrue(result["request_id"].startswith("approval-"))
 
 
 if __name__ == "__main__":

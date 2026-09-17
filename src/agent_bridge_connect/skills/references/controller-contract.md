@@ -43,6 +43,12 @@ AgentBC accepts exactly `inherit`, `safe`, and `full` task permission selectors:
 - `safe` is the explicit conservative task base and preserves established executor approval behavior.
 - `full` is the explicit audited non-escalatable task base for the installed executor's strongest documented noninteractive access. Warn before selecting it.
 
+Hermes uses two permission-dependent runtime modes. `inherit` and `safe` run
+through native ACP so a blocked action can produce an exact interactive
+permission request. `full` runs through the non-interactive
+`hermes chat --yolo` transport so the task can finish without ACP edit
+prompts. The Runner and task path policy remain in force in both modes.
+
 First-time setup defaults to `inherit`; an existing configured default is preserved. Legacy tasks
 that have no persisted permission extension still fail closed to `safe`.
 
@@ -69,6 +75,25 @@ permission dialog has exactly Approve and Deny, collects no text, defaults to De
 denies on timeout or close. A concrete `full` task base does not ask because no broader AgentBC
 permission exists; plain message/choice text and native executor flags never escalate permissions.
 AgentBC never treats approval prose as a valid completion marker.
+
+### Executor-Native Choice Broker (agentbc.approval v2, PERM-104-002 1.04A)
+
+Native permission requests are persisted as `agentbc.approval` v2 receipts: Core offers exactly the
+choices the executor itself offered (Codex `accept`/`acceptForSession`/`decline` or permissions
+turn/session responses on the original ID; Claude `deny`/`allow_once`/`allow_session` where the SDK
+callback's own rule suggestions can be mechanically bound to `destination=session`; Hermes the exact offered
+ACP optionIds). Core never infers a permission category and never converts matchers. Each choice
+carries an opaque handle bound to that exact request. The native dialog's first level is exactly
+`View Details` / `Deny` / `Approve`; `Approve` opens a second level with `Back` / `Once` /
+`This Session`. Only `Deny`, `Once`, and `This Session` return a native choice handle;
+`View Details`, `Approve`, and `Back` are navigation only and never answer the request. The CLI
+equivalent is `agentbc task respond <task-id> --input <input-id> --permission-option <handle>`.
+A v2 request rejects flattened `--approve`/`--deny` with
+`native_permission_choice_required`. An identical replay is idempotent; a conflicting or
+cross-request handle is rejected. Responses never create a grant, worker, continuation, or mode
+change, and `full` never appears in the choice popup. Persistent/always choices are audit-only in
+1.04A. The legacy `--approve-tool/--scope session` matcher grammar is removed behind a one-release
+`legacy_session_tool_rule_removed` tombstone.
 
 ## Steps Contract
 
@@ -169,6 +194,62 @@ and default artifacts that will be removed, then asks `Continue? [y/N]`. Only ex
 deletes; Enter, `n`, EOF, or interrupt cancels without writes. Customer projects are always
 preserved. There is no public `task delete --confirm` mode.
 
+## Failed/Needs-Recovery Revival Protocol (agentbc.revival v1, FLOW-104-003)
+
+A `failed` or `needs_recovery` task that is the exact current chain head is mechanically revivable
+through `agentbc.revival` v1. Status and report carry the mechanical
+projection: `revival.eligible`, `revival.allowed_next_actions`,
+`revival.recommended_action`, `revival.error_codes` and `revival.warnings`.
+`allowed_next_actions` is mechanical data; the failure taxonomy only orders
+`recommended_action` inside the allowed set and never permanently suppresses a
+mechanically valid user choice.
+
+Fixed meanings (authoritative for every consumer):
+
+- `retry` keeps the Task ID, deletes its failure report, resets every step,
+  and clears only AgentBC-managed default artifacts (`cleanup_scope`
+  `managed_default_artifacts`). It never deletes custom-path
+  (`customer_dir=true`) contents.
+- `handoff` preserves all source evidence, creates a new iteration with a new
+  Task ID, mechanically imports the prior requirements/task record and the
+  failure report by digest, locks completed steps as `inherited_done`, and
+  resumes the remainder.
+
+The plain interactive commands are confirm-and-run operations. `task retry`
+shows the report/default-artifact cleanup boundary and asks `y/N`; `task
+handoff --to <executor>` shows the preserved baseline and predicted next
+iteration and asks `y/N`. A negative, empty, interrupted, or EOF answer makes
+no change. `y` performs the operation and immediately submits it to Runner,
+which opens or refreshes the standard Task List. `--dispatch` is the explicit
+non-interactive form: it skips this human confirmation but performs the same
+operation and submission. A successful command must print the exact Task ID,
+worker run ID, dispatch status, and monitor status; creating an undispatched
+pending revival is not a successful interactive recovery.
+
+The authoritative task record wins when the stored report's step statuses
+differ: Core keeps the task record's binding and emits the
+`source_report_step_mismatch` warning instead of blocking the handoff.
+`source_report_absent` / `source_report_unreadable` are likewise warnings, not
+errors.
+
+The common revivable-current-head preflight requires, all at once: task status
+`failed` or `needs_recovery`, exact current chain head, closed RunLease, no active worker or
+dispatch, no unresolved input, stable session cleanup
+(`retained`/`succeeded`/`unsupported`), readable requirements, valid lineage
+and PathPlan, and at most one open retry/handoff reservation. Rejections carry
+stable codes (`revival_source_status_invalid`, `revival_source_not_chain_head`,
+`revival_run_lease_open`, `revival_worker_active`, `revival_dispatch_active`,
+`revival_input_unresolved`, `revival_session_cleanup_unstable`,
+`revival_requirements_unreadable`, `revival_lineage_invalid`,
+`revival_path_plan_invalid`, `revival_reservation_conflict`,
+`revival_reservation_invalid`); an identical re-request of the same operation
+is an idempotent replay (`revival_replayed`), never a duplicate reservation.
+
+Retry filesystem cleanup and failed-handoff creation are implemented by the
+dedicated CLI/service work packages. Until both sibling implementations are
+integrated, do not claim retry/handoff production delivery; keep using the
+documented manual recovery paths for failed tasks.
+
 ## Configuration And Health
 
 Use the configured values for future executor runs; do not invent executor-native budget or turn
@@ -204,11 +285,17 @@ dispatcher conversation.
 
 ## Progress, Completion, Intervention, And Acceptance
 
-For long-running work, refresh progress at least every few minutes:
+After completing each declared step, persist its authoritative completion receipt. The same command
+also refreshes task health; omit `--step` only for a heartbeat that must not change step state:
 
 ```bash
-agentbc task progress <task-id> --root <board-root> --summary "short progress update"
+agentbc task progress <task-id> --root <board-root> --step <id> --summary "evidence"
 ```
+
+Core accepts only a persisted declared step ID while the current Runner run and official Executor
+session agree. The receipt is monotonic and attempt-scoped: duplicate calls are idempotent, a later
+input/resource/recovery/final callback cannot regress confirmed `done`, and a from-zero retry clears
+the live receipt while preserving historical events. Progress never completes a task by itself.
 
 An executor completing structured work must end its final response with exactly one valid
 `AGENTBC_FINAL_CALLBACK` marker for the actual task and every declared step exactly once. A zero exit

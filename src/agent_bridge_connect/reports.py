@@ -4,9 +4,20 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
+from .execution_policy import execution_policy_view, public_workspace_view
+from .input_manifest import INPUTS_EXTENSION_KEY, public_inputs_view
 from .permission_modes import permission_record_from_extensions
+from .permission_elevation import (
+    permission_elevation_from_extensions,
+    permission_elevation_public_projection,
+)
+from .permission_runtime import (
+    permission_runtime_from_extensions,
+    permission_runtime_public_projection,
+)
 from .protocol import task_step_text
 from .run_lease import (
     RunLeaseState,
@@ -17,10 +28,14 @@ from .run_lease import (
 )
 from .task_id import split_task_ref, task_sequence
 from .task_store import TaskStore
+from .terminal_delivery import (
+    TERMINAL_DELIVERY_EXTENSION_KEY,
+    delivery_health_view,
+    import_legacy_terminal_delivery,
+    terminal_delivery_view,
+)
 from .terminal_states import TASK_TERMINAL_STATES
 from .timing_view import build_timing_view
-from .execution_policy import execution_policy_view, public_workspace_view
-
 
 _OPENAI_KEY_RE = re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{12,}", re.IGNORECASE)
 _PASSWORD_ASSIGNMENT_RE = re.compile(
@@ -70,6 +85,23 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
     completed_at = _completed_at(task, events)
     workspace = task.get("workspace") or {}
     extensions = task.get("extensions") or {}
+    revival = None
+    if public_status in {"failed", "needs_recovery"} or "agentbc.revival" in extensions:
+        from .retry_flow import failed_revival_projection, public_revival_projection
+        from .service import TaskService
+
+        revival_task = SimpleNamespace(
+            id=task.get("id", task_id),
+            status=public_status,
+            steps=steps,
+            extensions=extensions,
+        )
+        revival = failed_revival_projection(
+            revival_task,
+            TaskService(root).retry_preflight(task_id),
+        )
+        if "agentbc.revival" in extensions:
+            revival = public_revival_projection(extensions.get("agentbc.revival")) or revival
     session_snapshot = extensions.get("agentbc.session") or {}
     artifacts = _dedupe_values(
         [
@@ -91,7 +123,7 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
     report_ready = bool(workspace.get("report_file")) and Path(str(workspace.get("report_file"))).expanduser().exists()
     chain = _chain_snapshot(task_id, root, task)
     completed_step_count = sum(
-        1 for step in steps if step.get("status") in {"done", "completed"}
+        1 for step in steps if step.get("status") in {"done", "completed", "inherited_done"}
     )
     failed_steps = [step.get("id") for step in steps if step.get("status") == "failed"]
     blocked_steps = [step.get("id") for step in steps if step.get("status") == "blocked"]
@@ -118,6 +150,35 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
     # report/status input projection must remain summary-only.
     input_request.pop("reason_detail", None)
     permission = permission_record_from_extensions(extensions)
+    # PERM-104-002: status/report/doctor project only mode, permission source,
+    # hierarchy statuses, stable error codes, timestamps and sanitized
+    # digests from the runtime capability record - never binding identifiers.
+    permission_runtime_projection = None
+    runtime_record = permission_runtime_from_extensions(extensions)
+    if runtime_record is not None:
+        permission_runtime_projection = permission_runtime_public_projection(
+            runtime_record
+        )
+    permission_elevation_projection = None
+    elevation_record = permission_elevation_from_extensions(extensions)
+    if elevation_record is not None:
+        permission_elevation_projection = permission_elevation_public_projection(
+            elevation_record
+        )
+    # FLOW-104-002: public terminal-delivery projections.  A legacy terminal
+    # record without a receipt projects historical evidence (existing report /
+    # terminal notification event) or ``not_applicable``; no historical UI
+    # dialog is ever replayed.
+    delivery_source = extensions.get(TERMINAL_DELIVERY_EXTENSION_KEY)
+    if not isinstance(delivery_source, dict):
+        try:
+            delivery_source = import_legacy_terminal_delivery(
+                None, task=task, events=events
+            )
+        except Exception:  # noqa: BLE001 - projection must never break reporting
+            delivery_source = None
+    terminal_delivery = terminal_delivery_view(delivery_source)
+    delivery_health = delivery_health_view(delivery_source)
 
     report = {
         "task_id": task.get("id", task_id),
@@ -136,7 +197,9 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "provenance": extensions.get("agentbc.provenance") or {},
         "lineage": extensions.get("agentbc.lineage") or {},
         "media": extensions.get("agentbc.media") or {},
+        "inputs": public_inputs_view(extensions.get(INPUTS_EXTENSION_KEY)),
         "chain": chain,
+        "revival": revival,
         "final_callback": final_callback,
         "has_final_callback": bool(final_callback),
         "marker_valid": marker_valid,
@@ -150,6 +213,10 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "waiting_duration_s": waiting_duration_s,
         "wall_duration_s": wall_duration_s,
         "last_run_duration_s": timing["last_run_duration_s"],
+        "attempt_index": timing["attempt_index"],
+        "attempt_started_at": timing["attempt_started_at"],
+        "attempt_wall_duration_s": timing["attempt_wall_duration_s"],
+        "attempt_execution_duration_s": timing["attempt_execution_duration_s"],
         "execution_evidence": timing["evidence_quality"],
         "execution_duration_known": timing["execution_duration_known"],
         "run_count": timing["run_count"],
@@ -157,7 +224,12 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "timing": timing,
         "input": input_request,
         "permission": permission,
+        "permission_runtime": permission_runtime_projection,
+        "permission_elevation": permission_elevation_projection,
+        "terminal_delivery": terminal_delivery,
+        "delivery_health": delivery_health,
         "execution_policy": execution_policy_view(extensions),
+        "progress": execution_policy_view(extensions).get("progress"),
         "run_lease_state": lease_state,
         "time_since_last_heartbeat_s": heartbeat_age,
         "recovery_recommendation": (
@@ -214,6 +286,7 @@ def generate_task_brief(task_id: str, board_root: Path) -> dict[str, Any]:
             "interventions": report["interventions"],
             "workspace": report.get("workspace") or {},
             "permission": report.get("permission") or {},
+            "permission_elevation": report.get("permission_elevation") or {},
             "execution_policy": report.get("execution_policy") or {},
         },
         "changed_files": changed_files,
@@ -229,11 +302,17 @@ def generate_task_brief(task_id: str, board_root: Path) -> dict[str, Any]:
     return redact_secrets(brief)
 
 
-def write_report_files(task_id: str, board_root: Path) -> tuple[dict[str, Any], str]:
-    """Write the single human-readable task record and enforce its size budget."""
+def write_report_markdown(
+    task_id: str,
+    board_root: Path,
+) -> tuple[dict[str, Any], str]:
+    """Report stage only: generate and write the canonical Markdown projection.
+
+    FLOW-104-002 keeps this independently catchable from record compaction and
+    index refresh so one failure can never suppress the other terminal side
+    effects or rewrite a confirmed terminal task state.
+    """
     root = Path(board_root).expanduser().resolve()
-    store = TaskStore(root)
-    task_dir = store.task_dir(task_id)
     report = generate_report(task_id, root)
     workspace = report.get("workspace") or {}
     report_file = workspace.get("report_file")
@@ -256,12 +335,55 @@ def write_report_files(task_id: str, board_root: Path) -> tuple[dict[str, Any], 
             from .runner import RunnerClient
 
             RunnerClient().write_report(user_report, markdown)
+    return report, markdown
+
+
+def compact_task_record(
+    task_id: str,
+    board_root: Path,
+) -> int:
+    """Record stage only: enforce the terminal 50 KiB task record budget."""
     from .record_management import enforce_task_record_budget
 
-    enforce_task_record_budget(task_dir, report_file)
+    root = Path(board_root).expanduser().resolve()
+    store = TaskStore(root)
+    task_dir = store.task_dir(task_id)
+    report_file = ""
+    try:
+        task = store.read_task(task_id)
+    except Exception:  # noqa: BLE001 - projection only; compaction stays best effort
+        task = {}
+    workspace = (task or {}).get("workspace") or {}
+    if isinstance(workspace, dict):
+        report_file = str(workspace.get("report_file") or "")
+    return enforce_task_record_budget(task_dir, report_file)
+
+
+def refresh_board_index(board_root: Path) -> list[dict[str, Any]]:
+    """Index stage only: rebuild the board task lookup index."""
     from .task_index import refresh_task_index
 
-    refresh_task_index(root)
+    return refresh_task_index(Path(board_root).expanduser().resolve())
+
+
+def write_report_files(
+    task_id: str,
+    board_root: Path,
+    *,
+    refresh_index: bool = True,
+) -> tuple[dict[str, Any], str]:
+    """Write the report, then compact the record, then refresh the index.
+
+    The three terminal side effects stay independently catchable (see
+    :func:`write_report_markdown`, :func:`compact_task_record`,
+    :func:`refresh_board_index`); this composed entry point preserves the
+    historical raise-on-first-failure contract for existing callers.
+    """
+    root = Path(board_root).expanduser().resolve()
+    report, markdown = write_report_markdown(task_id, root)
+    compact_task_record(task_id, root)
+    if refresh_index:
+        refresh_board_index(root)
     return report, markdown
 
 
@@ -586,6 +708,13 @@ def _parse_timestamp(value: Any) -> datetime | None:
     return parsed
 
 
+def _format_delivery_stages(stages: Any) -> str:
+    """Render outstanding delivery stages as a bounded public label."""
+    if not isinstance(stages, list) or not stages:
+        return "none"
+    return ",".join(str(stage) for stage in stages)
+
+
 def _render_report_md(report: dict[str, Any]) -> str:
     created_at = str(report.get("created_at") or "")
     completed_at = str(report.get("completed_at") or "")
@@ -599,6 +728,8 @@ def _render_report_md(report: dict[str, Any]) -> str:
         f"- Marker valid: `{'yes' if report.get('marker_valid') else 'no'}`",
         f"- Completed steps: `{(report.get('summary') or {}).get('steps_done', 0)}/{(report.get('summary') or {}).get('steps_total', 0)}`",
         f"- Flow contract satisfied: `{'yes' if report.get('flow_contract_satisfied') else 'no'}`",
+        f"- Terminal delivery: `{(report.get('delivery_health') or {}).get('state', 'unknown')}`",
+        f"- Terminal delivery outstanding: `{_format_delivery_stages((report.get('delivery_health') or {}).get('outstanding_stages'))}`",
         f"- Failure code: `{report.get('failure_code') or 'none'}`",
         f"- Failed steps: `{_format_step_ids(report.get('failed_steps'))}`",
         f"- Blocked steps: `{_format_step_ids(report.get('blocked_steps'))}`",
@@ -620,6 +751,19 @@ def _render_report_md(report: dict[str, Any]) -> str:
         "",
         "## Path Plan",
     ]
+    revival = report.get("revival") or {}
+    if revival:
+        lines.extend(
+            [
+                "",
+                "## Revival",
+                f"- Operation: `{revival.get('operation', '')}`",
+                f"- Attempt: `{revival.get('attempt_index', '')}`",
+                f"- Cleanup scope: `{revival.get('cleanup_scope', '')}`",
+                f"- Allowed next actions: `{', '.join(revival.get('allowed_next_actions') or [])}`",
+                f"- Recommended action: `{revival.get('recommended_action', '')}`",
+            ]
+        )
     workspace = report.get("workspace") or {}
     lineage = report.get("lineage") or {}
     if workspace:
@@ -642,6 +786,7 @@ def _render_report_md(report: dict[str, Any]) -> str:
         lines.append("- None")
 
     policy = report.get("execution_policy") or {}
+    progress = report.get("progress") or {}
     resources = policy.get("resources") or {}
     executor_session = policy.get("session") or {}
     session_cleanup = executor_session.get("cleanup") or {}
@@ -666,8 +811,46 @@ def _render_report_md(report: dict[str, Any]) -> str:
             f"- Cleanup attempts: `{session_cleanup.get('attempts', 0)}`",
             f"- Cleanup error code: `{session_cleanup.get('error_code') or 'none'}`",
             f"- Cleanup retryable: `{'yes' if session_cleanup.get('retryable') else 'no'}`",
+            f"- Cleanup phase: `{session_cleanup.get('phase') or 'unknown'}`",
         ]
     )
+    if session_cleanup.get("version") in (3, 4, 5):
+        verification = session_cleanup.get("verification") or {}
+        cli = verification.get("cli") if isinstance(verification, dict) else {}
+        desktop_backend = verification.get("desktop_backend") if isinstance(verification, dict) else {}
+        desktop_live = verification.get("desktop_live") if isinstance(verification, dict) else {}
+        desktop = verification.get("desktop") if isinstance(verification, dict) else {}
+        cli_status = cli.get("status") if isinstance(cli, dict) else "unknown"
+        cli_checked_at = cli.get("checked_at") if isinstance(cli, dict) else ""
+        backend_status = desktop_backend.get("status") if isinstance(desktop_backend, dict) else "unknown"
+        backend_checked_at = desktop_backend.get("checked_at") if isinstance(desktop_backend, dict) else ""
+        live_status = desktop_live.get("status") if isinstance(desktop_live, dict) else "unknown"
+        live_checked_at = desktop_live.get("checked_at") if isinstance(desktop_live, dict) else ""
+        desktop_status = desktop.get("status") if isinstance(desktop, dict) else "unknown"
+        desktop_checked_at = desktop.get("checked_at") if isinstance(desktop, dict) else ""
+        lines.extend(
+            [
+                f"- Cleanup strategy: `{session_cleanup.get('strategy') or 'none'}`",
+                f"- CLI verification: `{cli_status}` checked_at=`{cli_checked_at}`",
+                f"- Desktop backend verification: `{backend_status}` checked_at=`{backend_checked_at}`",
+                f"- Desktop live verification: `{live_status}` checked_at=`{live_checked_at}`",
+                f"- Desktop verification (aggregate): `{desktop_status}` checked_at=`{desktop_checked_at}`",
+            ]
+        )
+    if session_cleanup.get("version") in (4, 5):
+        commands = session_cleanup.get("commands") or {}
+        command_names = (
+            ("archive", "delete")
+            if session_cleanup.get("version") == 4
+            else ("desktop_archive", "app_server_archive", "delete")
+        )
+        for command in command_names:
+            entry = commands.get(command) if isinstance(commands, dict) else None
+            status = entry.get("status") if isinstance(entry, dict) else "not_requested"
+            checked_at = entry.get("checked_at") if isinstance(entry, dict) else ""
+            lines.append(
+                f"- Cleanup `{command}` command: `{status or 'not_requested'}` checked_at=`{checked_at}`"
+            )
     if grant:
         lines.extend(
             [
@@ -681,6 +864,23 @@ def _render_report_md(report: dict[str, Any]) -> str:
                 f"- Permission grant issued: `{grant.get('issued_at') or 'none'}`",
                 f"- Permission grant consumed: `{grant.get('consumed_at') or 'none'}`",
                 f"- Permission grant revoked: `{grant.get('revoked_at') or 'none'}`",
+            ]
+        )
+
+    elevation = report.get("permission_elevation") or {}
+    if elevation:
+        lines.extend(
+            [
+                "",
+                "### Task Elevation",
+                f"- Mode: `{elevation.get('mode') or 'none'}`",
+                f"- Source: `{elevation.get('source') or 'none'}`",
+                f"- State: `{elevation.get('state') or 'unknown'}`",
+                f"- Error code: `{elevation.get('error_code') or 'none'}`",
+                f"- Request cardinality: `{(elevation.get('cardinality') or {}).get('permission_requests', 0)}`",
+                f"- Notification cardinality: `{(elevation.get('cardinality') or {}).get('notifications', 0)}`",
+                f"- Human decision cardinality: `{(elevation.get('cardinality') or {}).get('human_decisions', 0)}`",
+                f"- Full continuation cardinality: `{(elevation.get('cardinality') or {}).get('full_continuations', 0)}`",
             ]
         )
 
@@ -705,9 +905,30 @@ def _render_report_md(report: dict[str, Any]) -> str:
                 f"error=`{cleanup.get('error_code') or 'none'}`"
             )
 
+    if progress:
+        lines.extend(
+            [
+                "",
+                "## Confirmed Progress",
+                f"- Evidence: `{progress.get('evidence_quality') or 'unknown'}`",
+                f"- Attempt: `{progress.get('attempt_index', 0)}`",
+                f"- Latest sequence: `{progress.get('latest_sequence', 0)}`",
+                f"- Confirmed steps: `{', '.join(str(item) for item in progress.get('confirmed_step_ids') or []) or 'none'}`",
+                f"- Updated: `{progress.get('updated_at') or 'unknown'}`",
+            ]
+        )
+
     image_inputs = (report.get("media") or {}).get("images") or []
     if image_inputs:
         lines.extend(["", "## Image Inputs", *[f"- `{image}`" for image in image_inputs]])
+    input_entries = (report.get("inputs") or {}).get("entries") or []
+    if input_entries:
+        lines.extend(["", "## Frozen Inputs"])
+        for entry in input_entries:
+            lines.append(
+                f"- `{entry.get('input_id')}` {entry.get('kind')}: "
+                f"`{entry.get('display_name')}` ({entry.get('size_bytes')} bytes, sha256 `{entry.get('sha256')}`)"
+            )
 
     if lineage:
         chain = report.get("chain") or {}
@@ -851,7 +1072,7 @@ def _format_report_timestamp(value: str) -> str:
 
 def _format_duration(value: Any) -> str:
     try:
-        seconds = max(int(round(float(value))), 0)
+        seconds = max(round(float(value)), 0)
     except (TypeError, ValueError):
         return "unknown"
     hours, remainder = divmod(seconds, 3600)

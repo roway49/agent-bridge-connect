@@ -35,6 +35,10 @@ jobs:
             "build==1.5.0" \
             "ruff==0.15.22" \
             "twine==6.2.0"
+          python -m pip install -e ".[claude]"
+
+      - name: Verify public release boundary
+        run: python scripts/check_public_release.py
 
       - name: Run static checks
         run: |

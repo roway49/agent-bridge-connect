@@ -4,23 +4,23 @@
 
 This checklist prepares and publishes AgentBC without allowing a local smoke
 test, a mutable branch, or an existing artifact name to stand in for a release.
-The current release is **1.0.3A**. Because the initial Homebrew bootstrap
-already occupies the first Alpha serial, the immutable final-release mapping is:
+The current release candidate is **1.0.4A**. Its immutable release mapping is:
 
 ```text
-Release name:   AgentBC 1.0.3A
-Product tag:    v1.0.3A2
-Python package: 1.0.3a2
+Release name:   AgentBC 1.0.4A
+Product tag:    v1.0.4A
+Python package: 1.0.4a1
 ```
 
 ## 1. Freeze The Release Commit
 
 - Finish the changelog entry and replace `Unreleased` with the publication date.
 - Require a clean, attached release branch and review every file in the release diff.
+- Run `python3 scripts/check_public_release.py`; it must pass before any public push.
 - Confirm `pyproject.toml` and `agent_bridge_connect.__version__` both contain
-  `1.0.3a2`.
-- Confirm the public remote has no existing `v1.0.3A2` tag and PyPI has no
-  existing `agentbc==1.0.3a2` file. Published tags and package files are immutable.
+  `1.0.4a1`.
+- Confirm the public remote has no existing `v1.0.4A` tag and PyPI has no
+  existing `agentbc==1.0.4a1` file. Published tags and package files are immutable.
 
 ## 2. Run The Release Matrix
 
@@ -30,7 +30,7 @@ distribution-name validation, manifest generation, wheel installation, and the
 package-only smoke test.
 
 Before tagging, also complete the release-specific manual gates recorded in the
-1.0.3A checklist: dual-host Update/Homebrew coverage, successful and failed
+1.0.4A checklist: dual-host Update/Homebrew coverage, successful and failed
 terminal-session cleanup, clean install/restore, and real-executor checks. A
 green Runner or one smoke test does not replace the other gates.
 
@@ -57,8 +57,8 @@ final release if the source commit changes.
 Build the macOS local-alpha bundle from the same commit as a separate candidate:
 
 ```bash
-./scripts/build_local_alpha_bundle.sh /tmp/agentbc-v1.0.3A2-release
-shasum -a 256 -c /tmp/agentbc-v1.0.3A2-release/agentbc-v1.0.3A2-macos-local-alpha.tar.gz.sha256
+./scripts/build_local_alpha_bundle.sh /tmp/agentbc-v1.0.4A-release
+shasum -a 256 -c /tmp/agentbc-v1.0.4A-release/agentbc-v1.0.4A-macos-local-alpha.tar.gz.sha256
 ```
 
 Extract it once and run `shasum -a 256 -c SHA256SUMS` inside the bundle. The
@@ -72,18 +72,18 @@ After every gate passes, create the immutable annotated tag on the reviewed
 release commit and validate the tag/version/commit relationship:
 
 ```bash
-git tag -a v1.0.3A2 -m "AgentBC 1.0.3A"
-python3 scripts/build_provenance.py validate --tag v1.0.3A2
+git tag -a v1.0.4A -m "AgentBC 1.0.4A"
+python3 scripts/build_provenance.py validate --tag v1.0.4A
 git push public <release-branch>
-git push public refs/tags/v1.0.3A2
+git push public refs/tags/v1.0.4A
 ```
 
-Create a **draft** GitHub Release named `AgentBC 1.0.3A` from `v1.0.3A2` using the matching changelog
+Create a **draft** GitHub Release named `AgentBC 1.0.4A` from `v1.0.4A` using the matching changelog
 section. Upload and verify these four macOS assets before publication:
 
 ```text
-agentbc-v1.0.3A2-macos-local-alpha.tar.gz
-agentbc-v1.0.3A2-macos-local-alpha.tar.gz.sha256
+agentbc-v1.0.4A-macos-local-alpha.tar.gz
+agentbc-v1.0.4A-macos-local-alpha.tar.gz.sha256
 install-agentbc-alpha.sh
 uninstall-agentbc-alpha.sh
 ```
@@ -99,13 +99,13 @@ distributions from a developer credential or from an untagged tree.
 After publication:
 
 - compare GitHub Release and PyPI artifact hashes with the generated manifest;
-- install `agentbc==1.0.3a2` in a clean environment;
+- install `agentbc==1.0.4a1` in a clean environment;
 - verify `agentbc --version`, `agentbc setup --show`, Runner identity, Skill
   manifests, and `agentbc doctor`;
 - verify both Apple Silicon and Intel installation paths before announcing the release.
 
 If the publication job fails after the tag exists, fix the workflow rather than
 moving or recreating the tag. The guarded recovery path is a manual workflow
-dispatch with `release_tag=v1.0.3A2` and `publish=true`; it checks out and validates
+dispatch with `release_tag=v1.0.4A` and `publish=true`; it checks out and validates
 the existing tag before rebuilding. Never overwrite an already published PyPI
 file with the same version.

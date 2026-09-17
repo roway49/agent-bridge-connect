@@ -157,10 +157,31 @@ class SkillManifestTests(unittest.TestCase):
             fingerprints["codex"]["files"]["references/controller-contract.md"],
             "370af89b528469368c75f49b9986f004951397b240a1d9721d6598057665c38d",
         )
-        # The published 1.0.2a1 sdist shipped byte-identical Skill templates,
-        # so the trusted 1.0.2a1 -> 1.0.3a1 upgrade differs only in the
-        # manifest package_version and must classify as managed_outdated and
-        # refresh without any forced overwrite.
+
+    def test_managed_103a2_fingerprints_are_frozen_and_match_template_bytes(self):
+        """The historical 1.0.3a2 managed-package fingerprint is frozen."""
+        fingerprints = MANAGED_SKILL_FINGERPRINTS["1.0.3a2"]
+        self.assertEqual(set(fingerprints), {"codex", "claude", "hermes"})
+        # FLOW-104-003 (T2AC-001): the shared controller contract documents
+        # the agentbc.revival v1 failed/needs-recovery revival protocol.
+        self.assertEqual(
+            fingerprints["codex"]["files"]["references/controller-contract.md"],
+            "a8548e70a6c5d16d9f856e346918d5c3b10584c817f54a4b3cd83312edfac2fc",
+        )
+        # The Codex entrypoint changed for the Desktop archive bridge; its
+        # previous bytes are preserved as a fixture below.
+        self.assertNotEqual(
+            fingerprints["codex"]["files"]["SKILL.md"],
+            MANAGED_SKILL_FINGERPRINTS["1.0.2a1"]["codex"]["files"]["SKILL.md"],
+        )
+        self.assertEqual(
+            fingerprints["codex"]["files"]["references/agentbc-steps-yaml.md"],
+            MANAGED_SKILL_FINGERPRINTS["1.0.2a1"]["codex"]["files"][
+                "references/agentbc-steps-yaml.md"
+            ],
+        )
+        # The 1.0.4a1 templates remain byte-compatible with the frozen
+        # 1.0.3a2 managed package; only the generated manifest version changes.
         from agent_bridge_connect.setup import _current_skill_files, _expected_skill_manifest
 
         for platform in ("codex", "claude", "hermes"):
@@ -192,14 +213,56 @@ class SkillManifestTests(unittest.TestCase):
         (root / ".agentbc-skill.json").write_bytes(serialize_skill_manifest(manifest))
 
     def _write_real_102a1_package(self, platform: str, root: Path) -> None:
+        # The current package is newer, so the genuine intact-older-package
+        # fixture reconstructs 1.0.2a1 from the
+        # FROZEN per-file fingerprints instead of the current templates
+        # (whose controller contract changed in this release).
+        from agent_bridge_connect.skill_packages import (
+            MANAGED_SKILL_FINGERPRINTS,
+        )
+
+        fingerprint = MANAGED_SKILL_FINGERPRINTS["1.0.2a1"][platform]
         from agent_bridge_connect.setup import _current_skill_files
 
-        self._write_managed_package(
-            platform,
-            root,
-            _current_skill_files(platform),
-            "1.0.2a1",
-        )
+        current = _current_skill_files(platform)
+        # The controller contract changed in 1.0.3a2 (executor-native choice
+        # broker section); its 1.0.2a1 bytes are preserved verbatim as a
+        # committed fixture.  Byte-identical files come from the current
+        # package.  Every path is hash-verified against the frozen
+        # fingerprint so an invented fixture can never pass.
+        frozen_override = {
+            "SKILL.md": Path(__file__).parent
+            / "fixtures"
+            / "skill"
+            / "1.0.2a1"
+            / "codex-SKILL.md"
+            if platform == "codex"
+            else Path(""),
+            "references/controller-contract.md": Path(__file__).parent
+            / "fixtures"
+            / "skill"
+            / "1.0.2a1"
+            / "controller-contract.md",
+        }
+        files: dict[str, bytes] = {}
+        for relative_path, digest in fingerprint["files"].items():
+            override = frozen_override.get(relative_path)
+            if override is not None and override.is_file():
+                candidate = override.read_bytes()
+            else:
+                candidate = current.get(relative_path)
+                if candidate is None:
+                    raise AssertionError(
+                        f"no current bytes for {platform}:{relative_path}"
+                    )
+            if sha256_bytes(candidate) != digest:
+                raise AssertionError(
+                    "frozen 1.0.2a1 bytes unavailable for "
+                    f"{platform}:{relative_path}; the file changed and the "
+                    "preserved fixture is missing or stale"
+                )
+            files[relative_path] = candidate
+        self._write_managed_package(platform, root, files, "1.0.2a1")
 
     def test_managed_outdated_real_102a1_is_classified_and_refreshed_for_every_platform(self):
         for platform in ("codex", "claude", "hermes"):

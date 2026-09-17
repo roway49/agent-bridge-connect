@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable
 
+from .input_manifest import task_input_paths
 from .protocol import ABCError
 
 
@@ -45,6 +46,9 @@ def media_extension(images: Iterable[str | Path] | None) -> dict[str, Any]:
 
 
 def task_image_paths(task_packet: dict[str, Any]) -> list[Path]:
+    frozen = task_input_paths(task_packet, kind="image")
+    if frozen:
+        return frozen
     extensions = task_packet.get("extensions")
     if not isinstance(extensions, dict):
         return []

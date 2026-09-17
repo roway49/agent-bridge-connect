@@ -108,12 +108,15 @@ class RunLeaseTests(unittest.TestCase):
 
     def test_oversized_task_definition_is_rejected_without_partial_task(self):
         from agent_bridge_connect.protocol import ABCError
+        from agent_bridge_connect.record_management import MAX_TASK_RECORD_BYTES
+
+        self.assertEqual(MAX_TASK_RECORD_BYTES, 50 * 1024)
 
         with self.assertRaises(ABCError) as raised:
             self.service.create_task(
                 "Oversized task",
                 "codex",
-                [{"id": 1, "description": "large requirement " * 2000}],
+                [{"id": 1, "description": "large requirement " * 5000}],
                 customer_path="default path",
             )
         self.assertEqual(raised.exception.code, "record_budget_exceeded")
@@ -138,7 +141,7 @@ class RunLeaseTests(unittest.TestCase):
         self.assertEqual(snapshots[0].suffix, ".gz")
         self.assertLessEqual(task_record_size(self.service.store.task_dir(self.task.id)), MAX_TASK_RECORD_BYTES)
 
-    def test_terminal_record_stays_within_ten_kilobytes(self):
+    def test_terminal_record_stays_within_fifty_kibibytes(self):
         from agent_bridge_connect.record_management import MAX_TASK_RECORD_BYTES, task_record_size
 
         self.service.start_task_run(self.task.id, "shell")
@@ -371,7 +374,9 @@ class RunLeaseTests(unittest.TestCase):
 
         self.service.cancel_task(self.task.id)
         with (
-            mock.patch("agent_bridge_connect.task_completion.write_report_files") as write_report,
+            mock.patch(
+                "agent_bridge_connect.service.TaskService.run_terminal_side_effects"
+            ) as side_effects,
             mock.patch("agent_bridge_connect.task_completion.notify_terminal") as notify,
         ):
             result = apply_agent_completion(
@@ -383,7 +388,7 @@ class RunLeaseTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "cancelled")
         self.assertFalse(result["notified"])
-        write_report.assert_not_called()
+        side_effects.assert_not_called()
         notify.assert_not_called()
 
     def test_global_task_index_updates_recovery_result(self):
@@ -638,7 +643,13 @@ class RunLeaseTests(unittest.TestCase):
             ["task", "close", self.task.id, "--root", str(self.board), "--confirm"]
         )
         output = io.StringIO()
-        with contextlib.redirect_stdout(output):
+        with (
+            mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.cancel_task_runs",
+                return_value={"runs": []},
+            ),
+            contextlib.redirect_stdout(output),
+        ):
             code = command_task_intervention(args)
 
         self.assertEqual(code, 0)
@@ -709,7 +720,14 @@ class RunLeaseTests(unittest.TestCase):
             ["task", "close", code, "--root", str(self.board)]
         )
         confirm_output = io.StringIO()
-        with contextlib.redirect_stdout(confirm_output), mock.patch("sys.stdin", io.StringIO("y\n")):
+        with (
+            mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.cancel_task_runs",
+                return_value={"runs": []},
+            ),
+            contextlib.redirect_stdout(confirm_output),
+            mock.patch("sys.stdin", io.StringIO("y\n")),
+        ):
             confirm_code = command_task_intervention(confirm_args)
 
         self.assertEqual(confirm_code, 0)
@@ -806,8 +824,12 @@ class RunLeaseTests(unittest.TestCase):
         output = io.StringIO()
         with (
             mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.cancel_task_runs",
+                return_value={"runs": []},
+            ),
+            mock.patch(
                 "agent_bridge_connect.runner.RunnerClient.cancel",
-                return_value={"status": "cancelling"},
+                return_value={"status": "cancelled"},
             ) as cancel,
             contextlib.redirect_stdout(output),
         ):
@@ -825,6 +847,35 @@ class RunLeaseTests(unittest.TestCase):
         self.assertFalse(record_dir.exists())
         self.assertFalse(report_dir.exists())
         self.assertFalse(artifact_dir.exists())
+        self.assertIn(f"close: {self.task.id}", output.getvalue())
+
+    def test_task_close_cancels_task_bound_worker_when_projection_is_missing(self):
+        from agent_bridge_connect.cli import main
+
+        self.service.start_task_run(self.task.id, "shell")
+        output = io.StringIO()
+        with (
+            mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.cancel_task_runs",
+                return_value={
+                    "runs": [
+                        {
+                            "run_id": "runner-worker-bound",
+                            "status": "cancelled",
+                        }
+                    ]
+                },
+            ) as cancel_task_runs,
+            mock.patch(
+                "agent_bridge_connect.runner.RunnerClient.cancel",
+            ) as cancel,
+            contextlib.redirect_stdout(output),
+        ):
+            code = main(["task", "close", self.task.id, "--root", str(self.board)])
+
+        self.assertEqual(code, 0)
+        cancel_task_runs.assert_called_once_with(self.task.id, self.board.resolve())
+        cancel.assert_not_called()
         self.assertIn(f"close: {self.task.id}", output.getvalue())
 
     def test_heartbeat_refreshes_timestamp(self):
@@ -874,8 +925,8 @@ class RunLeaseTests(unittest.TestCase):
         task = self.service.store.read_task(self.task.id)
         self.assertEqual(task["status"], "working")
 
-    def test_runner_lost_reconcile_marks_failed_and_cleans_temp(self):
-        from agent_bridge_connect.run_lease import reconcile_task
+    def test_runner_lost_reconcile_marks_recovery_ready_and_closes_lease(self):
+        from agent_bridge_connect.run_lease import load_lease, reconcile_task
         from agent_bridge_connect.task_health import task_run_temp_path, write_task_progress
 
         self._working_task()
@@ -885,22 +936,38 @@ class RunLeaseTests(unittest.TestCase):
         from agent_bridge_connect.run_lease import save_lease
 
         save_lease(lease, self.board)
-        self.assertEqual(reconcile_task(self.task.id, self.board), "orphaned")
+        self.assertEqual(reconcile_task(self.task.id, self.board), "closed")
         self.assertEqual(
             self.service.store.read_task(self.task.id)["status"],
-            "failed",
+            "needs_recovery",
         )
         self.assertFalse(task_run_temp_path(self.task).exists())
+        closed = load_lease(self.task.id, self.board)
+        self.assertIsNotNone(closed)
+        self.assertEqual(closed.state, "closed")
+        task = self.service.store.read_task(self.task.id)
+        self.assertEqual(
+            task["extensions"]["run_lease"]["recovery_status"],
+            "ready_for_retry",
+        )
+        events = self.service.store.read_events(self.task.id)
+        self.assertEqual(
+            [event["event_type"] for event in events].count("task.recovery_required"),
+            1,
+        )
+        self.assertNotIn("task.failed", [event["event_type"] for event in events])
 
-    def test_reaper_lists_only_orphaned_tasks(self):
-        from agent_bridge_connect.run_lease import reap_orphaned, save_lease
+    def test_reaper_reconciles_lost_active_task_without_leaving_orphan(self):
+        from agent_bridge_connect.run_lease import load_lease, reap_orphaned, save_lease
 
         self._working_task()
         lease = self._lease(age_s=700)
         lease.pid = 99999999
         save_lease(lease, self.board)
         result = reap_orphaned(self.board)
-        self.assertEqual([item["task_id"] for item in result], [self.task.id])
+        self.assertEqual(result, [])
+        self.assertEqual(self.service.get_task(self.task.id).status, "needs_recovery")
+        self.assertEqual(load_lease(self.task.id, self.board).state, "closed")
 
     def test_cleanup_is_idempotent(self):
         from agent_bridge_connect.run_lease import cleanup_lease
@@ -2344,8 +2411,35 @@ class Phase10dIntegrationTests(unittest.TestCase):
         )
         output = io.StringIO()
 
+        def dispatch_handoff(**kwargs):
+            followup = self.service.handoff_task(
+                kwargs["source_task_id"],
+                kwargs["target_assignee"],
+                kwargs["message"],
+                branch=kwargs["branch"],
+                session_id=kwargs["session_id"],
+                source_platform=kwargs["source_platform"],
+                images=kwargs["images"],
+                permission_mode=kwargs["permission_mode"],
+            )
+            return {
+                "task_id": followup.id,
+                "assignee": followup.assignee,
+                "workspace": followup.workspace,
+                "run_id": "test-run",
+                "dispatch_status": "accepted",
+                "monitor_status": "opened",
+            }
+
         try:
-            with contextlib.redirect_stdout(output):
+            with (
+                mock.patch("builtins.input", return_value="y"),
+                mock.patch(
+                    "agent_bridge_connect.runner.RunnerClient.handoff_and_dispatch",
+                    side_effect=dispatch_handoff,
+                ),
+                contextlib.redirect_stdout(output),
+            ):
                 code = command_task_intervention(args)
         finally:
             source_report.chmod(0o600)
@@ -2449,6 +2543,40 @@ class Phase10dIntegrationTests(unittest.TestCase):
         self.assertEqual(task.status, "pending")
         events = self.service.store.read_events(self.task.id)
         self.assertEqual(events[-1]["event_type"], "task.requeued")
+
+    def test_requeue_clears_run_without_an_official_session_receipt(self):
+        from agent_bridge_connect.execution_policy import SESSION_EXTENSION_KEY
+
+        task = self.service.create_task(
+            "retry pre-session failure",
+            "codex",
+            [{"id": 1, "description": "run"}],
+            customer_dir=False,
+            permission_mode="full",
+        )
+        pending = dict(task.extensions[SESSION_EXTENSION_KEY])
+        pending["session_state"] = "pending"
+        pending["session_id"] = ""
+        pending["run_ids"] = ["codex-pre-session-failure"]
+        task.extensions = dict(task.extensions)
+        task.extensions[SESSION_EXTENSION_KEY] = pending
+        self.service.store.write_task(task.id, task.to_dict())
+        self.service.mark_task_needs_recovery(
+            task.id, "executor_start_failed", "pre-session failure"
+        )
+
+        requeued = self.service.requeue_task(task.id)
+
+        session = requeued.extensions[SESSION_EXTENSION_KEY]
+        self.assertEqual(session["session_state"], "pending")
+        self.assertEqual(session["session_id"], "")
+        self.assertEqual(session["run_ids"], [])
+        self.assertEqual(session["resume_count"], 0)
+        events = self.service.store.read_events(task.id)
+        self.assertEqual(
+            events[-1]["event_type"], "executor.unbound_session_runs_cleared"
+        )
+        self.assertEqual(events[-1]["cleared_run_count"], 1)
 
     def test_needs_recovery_report_requires_recovery(self):
         from agent_bridge_connect.reports import generate_report
@@ -3445,7 +3573,9 @@ class Phase10dIntegrationTests(unittest.TestCase):
         self.assertEqual(executor.permission_mode, "acceptEdits")
         self.assertTrue(executor.safe_mode)
         self.assertEqual(executor.output_format, "text")
-        self.assertEqual(executor.allowed_tools, ["Read", "Write"])
+        # PERM-104-002: legacy ``allowed_tools`` is dual-read as ``tools``.
+        self.assertEqual(executor.tools, ["Read", "Write"])
+        self.assertEqual(executor.auto_approve_tools, [])
 
     def test_executor_registry_rejects_claude_bypass_permissions(self):
         from agent_bridge_connect.executor_registry import get_executor

@@ -29,9 +29,10 @@ import os
 import signal
 import tempfile
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .adapters import SessionCleanupRequest, SessionCleanupResult
 from .auxiliary_sessions import (
@@ -48,13 +49,17 @@ from .auxiliary_sessions import (
 from .execution_policy import (
     MAX_SESSION_CLEANUP_ATTEMPTS,
     RESOLVED_CLEANUP_STATES,
+    _empty_cleanup_commands,
+    _empty_cleanup_verification,
     build_session_cleanup_receipt,
+    normalize_cleanup_commands,
+    normalize_cleanup_verification,
     read_session_cleanup_receipt,
     session_cleanup_view,
+    upgrade_session_cleanup_receipt,
     validate_session_cleanup_receipt,
 )
 from .protocol import ABCError
-
 
 E2E_JOURNAL_VERSION = 1
 
@@ -298,7 +303,7 @@ class E2ESessionSupervisor:
         parent_session_id: str | None = None,
         project_mode: str = "none",
         project_path: str = "",
-    ) -> "AuxSessionHandle":
+    ) -> AuxSessionHandle:
         """Reserve, create, and atomically bind one auxiliary session.
 
         ``creator`` must perform the official session creation and return the
@@ -323,7 +328,7 @@ class E2ESessionSupervisor:
         self._sync_to_task_ledger(bound)
         return AuxSessionHandle(self, bound)
 
-    def mark_terminal(self, handle: "AuxSessionHandle") -> dict[str, Any]:
+    def mark_terminal(self, handle: AuxSessionHandle) -> dict[str, Any]:
         entry = self.journal.mark_terminal(handle.aux_id)
         self._sync_to_task_ledger(entry)
         return entry
@@ -455,13 +460,15 @@ class E2ESessionSupervisor:
             project_mode=str(entry.get("project_mode") or "none"),
             strategy=str(pending["strategy"]) or auxiliary_cleanup_strategy(entry),
             project_path=str(entry.get("project_path") or ""),
+            receipt_source=str(entry.get("source") or ""),
+            official_receipt_bound=bool(str(entry.get("source") or "").strip()),
         )
         try:
             port = self._resolve_port(executor)
             result = port.cleanup_session(request)
             if not isinstance(result, SessionCleanupResult):
                 raise TypeError("cleanup_session must return SessionCleanupResult")
-        except Exception:
+        except Exception:  # noqa: BLE001 - replay must convert adapter failures to receipts
             result = SessionCleanupResult(
                 state="failed",
                 capability="supported",
@@ -491,13 +498,33 @@ class E2ESessionSupervisor:
                 "blockers": [],
                 "receipt": session_cleanup_view(current),
             }
+        result_verification = (
+            normalize_cleanup_verification(result.verification)
+            if result.verification
+            else None
+        )
+        if result_verification is not None and executor != "codex":
+            result_verification = _empty_cleanup_verification("not_applicable")
+        if result.state == "succeeded" and executor == "codex":
+            from .session_cleanup import _strict_codex_success_result
+
+            result, result_verification = _strict_codex_success_result(
+                result,
+                result_verification,
+            )
         if result.state == "succeeded":
+            result_verification = (
+                result_verification
+                if result_verification is not None
+                else _empty_cleanup_verification("not_applicable", checked_at=occurred_at)
+            )
             updated = self._resolved_receipt(
                 current,
                 "succeeded",
                 occurred_at,
                 capability="supported",
                 strategy=_sanitize_strategy(result.strategy) or current["strategy"],
+                verification=result_verification,
             )
         elif result.state == "unsupported":
             updated = self._resolved_receipt(
@@ -507,11 +534,13 @@ class E2ESessionSupervisor:
                 capability="unsupported",
                 strategy="none",
                 error_code=_sanitize_error_code(result.error_code) or "session_cleanup_unsupported",
+                verification=result_verification,
             )
         else:
             retryable = bool(result.retryable) and current["attempts"] < MAX_SESSION_CLEANUP_ATTEMPTS
             next_attempt_at = _add_delay(occurred_at, 60) if retryable else ""
             updated = copy.deepcopy(current)
+            updated = upgrade_session_cleanup_receipt(updated)
             updated.update(
                 {
                     "capability": current["capability"] or "supported",
@@ -522,6 +551,9 @@ class E2ESessionSupervisor:
                     "error_code": _sanitize_error_code(result.error_code),
                     "retryable": retryable,
                     "next_attempt_at": next_attempt_at,
+                    "verification": normalize_cleanup_verification(result.verification)
+                    if result.verification
+                    else updated["verification"],
                 }
             )
             _validated_receipt(updated)
@@ -544,7 +576,7 @@ class E2ESessionSupervisor:
         receipt: dict[str, Any],
         occurred_at: str,
     ) -> dict[str, Any]:
-        updated = copy.deepcopy(receipt)
+        updated = upgrade_session_cleanup_receipt(copy.deepcopy(receipt))
         updated.update(
             {
                 "capability": receipt["capability"] or "supported",
@@ -557,6 +589,7 @@ class E2ESessionSupervisor:
                 "completed_at": "",
                 "error_code": "",
                 "retryable": False,
+                "verification": _empty_cleanup_verification(),
             }
         )
         return _validated_receipt(updated)
@@ -570,8 +603,18 @@ class E2ESessionSupervisor:
         capability: str,
         strategy: str,
         error_code: str = "",
+        verification: dict[str, dict[str, str]] | None = None,
     ) -> dict[str, Any]:
-        updated = copy.deepcopy(receipt)
+        updated = upgrade_session_cleanup_receipt(copy.deepcopy(receipt))
+        resolved_commands = normalize_cleanup_commands(updated.get("commands"))
+        if all(
+            resolved_commands.get(command, {}).get("status") == "not_requested"
+            for command in ("archive", "delete")
+        ):
+            # The supervisor resolved this receipt without command evidence
+            # (unsupported port, replay, or a pre-v4 journal): stamp
+            # not_applicable instead of leaving invalid not_requested proof.
+            resolved_commands = _empty_cleanup_commands("not_applicable", checked_at=occurred_at)
         updated.update(
             {
                 "capability": capability,
@@ -582,14 +625,19 @@ class E2ESessionSupervisor:
                 "error_code": error_code,
                 "retryable": False,
                 "next_attempt_at": "",
+                "verification": normalize_cleanup_verification(verification)
+                if verification is not None
+                else updated["verification"],
+                "commands": resolved_commands,
             }
         )
         return _validated_receipt(updated)
 
     def _retained_receipt(self, receipt: dict[str, Any], occurred_at: str) -> dict[str, Any]:
+        upgraded = upgrade_session_cleanup_receipt(copy.deepcopy(receipt))
         return _validated_receipt(
             {
-                "version": receipt["version"],
+                "version": upgraded["version"],
                 "capability": "not_applicable",
                 "strategy": "retain",
                 "state": "retained",
@@ -600,6 +648,8 @@ class E2ESessionSupervisor:
                 "completed_at": occurred_at,
                 "error_code": "",
                 "retryable": False,
+                "verification": upgraded["verification"],
+                "commands": _empty_cleanup_commands("not_applicable", checked_at=occurred_at),
             }
         )
 
@@ -716,9 +766,9 @@ class AuxSessionHandle:
 
 
 __all__ = [
+    "E2E_JOURNAL_VERSION",
     "AuxSessionHandle",
     "CanarySessionJournal",
-    "E2E_JOURNAL_VERSION",
     "E2ESessionSupervisor",
     "default_e2e_journal_root",
 ]

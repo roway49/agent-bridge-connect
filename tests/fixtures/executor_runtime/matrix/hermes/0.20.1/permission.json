@@ -1,0 +1,20 @@
+{
+  "acp_permission_request": {
+    "approved_outcome": "allow the selected option; turn continues in-session",
+    "denied_outcome": "selected outcome rejected; no escalation is fabricated",
+    "request_method": "session/request_permission",
+    "timeout_effect": "turn aborted and treated as unresolved",
+    "transport_lost_effect": "transport marked lost; the task can never report success"
+  },
+  "raw_request_payload_retained": false,
+  "surface": "decisions",
+  "full_mode": {
+    "audit": "the capability freeze is recorded in the permission_audit payload",
+    "permission_flag": "--yolo",
+    "transport": "cli_chat_single_query"
+  },
+  "non_full_mode": {
+    "modes": ["inherit", "safe"],
+    "transport": "acp"
+  }
+}

@@ -8,6 +8,7 @@ import os
 import signal
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -27,13 +28,27 @@ from .config import (
 )
 from .executor_registry import get_executor
 from .path_model import DEFAULT_CUSTOMER_PATH, derive_customer_path_plan
+from .permission_elevation import PERMISSION_ELEVATION_MODE
 from .permission_modes import CANONICAL_PERMISSION_MODES, PERMISSION_EXTENSION_KEY
 from .protocol import ABCError
 from .service import TaskService, load_steps, task_to_status
-from .task_id import is_task_like, split_task_ref
+from .task_id import format_task_id, is_task_like, split_task_ref
 from .terminal_states import TASK_TERMINAL_STATES, terminal_status_label
 
 _TASK_TERMINAL_STATUSES = TASK_TERMINAL_STATES
+# Poll statuses that end an executor run.  Every one of them must be arbitrated
+# against a durably waiting v3 task-elevation input before the worker can treat
+# it as a real terminal outcome (PERM-104-003).
+TERMINAL_POLL_STATUSES = frozenset(
+    {
+        "completed",
+        "cancelled",
+        "input_required",
+        "needs_recovery",
+        "failed",
+        "needs_review",
+    }
+)
 _SHORTHAND_ALIASES = {
     "list": ["task", "list"],
 }
@@ -137,6 +152,13 @@ def build_parser() -> argparse.ArgumentParser:
     retention_sub.add_parser("status", help="Show the effective retention setting.")
     retention_sub.add_parser("enable", help="Retain executor temporary sessions after terminal tasks.")
     retention_sub.add_parser("disable", help="Remove executor temporary sessions after terminal tasks.")
+    archive_ack = session_sub.add_parser(
+        "acknowledge-desktop-archive",
+        help="Record an exact native Codex Desktop archive acknowledgement and continue cleanup.",
+    )
+    add_task_root(archive_ack)
+    archive_ack.add_argument("id")
+    archive_ack.add_argument("--session-id", required=True)
 
     permissions = sub.add_parser(
         "permissions",
@@ -181,12 +203,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Attach an existing image input. Repeat for multiple images when the executor supports it.",
     )
+    task_create.add_argument(
+        "--input-file",
+        action="append",
+        type=Path,
+        default=[],
+        help="Attach an existing file input. Repeat for multiple files.",
+    )
     task_create.add_argument("--session-id")
     task_create.add_argument("--source-platform")
     task_create.add_argument(
         "--permission-mode",
         choices=CANONICAL_PERMISSION_MODES,
         help="Override the configured permission mode for this task.",
+    )
+    task_create.add_argument(
+        "--collaboration-spawn",
+        action="store_true",
+        help="Require one verified native Codex collaboration/spawn capability for this task.",
     )
     task_create.add_argument(
         "--customer-dir",
@@ -258,7 +292,34 @@ def build_parser() -> argparse.ArgumentParser:
     response = task_respond.add_mutually_exclusive_group(required=True)
     response.add_argument("--message")
     response.add_argument("--approve", action="store_true")
+    response.add_argument(
+        "--approve-full",
+        dest="approve_full",
+        action="store_true",
+        help="Approve the single task-scoped contained-full elevation.",
+    )
     response.add_argument("--deny", action="store_true")
+    response.add_argument(
+        "--permission-option",
+        dest="permission_option",
+        help=(
+            "Select one executor-native permission choice by its opaque "
+            "handle, exactly as offered on the pending request."
+        ),
+    )
+    # PERM-104-002 1.04A tombstone: session tool rules were removed.  The
+    # flags parse for one release and always fail with
+    # legacy_session_tool_rule_removed so old scripts fail loudly instead of
+    # silently changing behavior.
+    task_respond.add_argument(
+        "--approve-tool",
+        dest="approve_tool",
+        help=argparse.SUPPRESS,
+    )
+    task_respond.add_argument(
+        "--scope",
+        help=argparse.SUPPRESS,
+    )
     task_respond.add_argument("--config", type=Path)
     task_respond.add_argument("--interval", type=float, default=2)
 
@@ -279,6 +340,17 @@ def build_parser() -> argparse.ArgumentParser:
     task_progress.add_argument("--state", default="running")
     task_progress.add_argument("--summary", required=True)
     task_progress.add_argument("--source", default="agent")
+    task_progress.add_argument(
+        "--step",
+        type=int,
+        help="Persist authoritative completion progress for one declared step.",
+    )
+    task_progress.add_argument(
+        "--step-status",
+        choices=["done"],
+        default="done",
+        help="Authoritative step state (currently only done).",
+    )
 
     task_pause = task_sub.add_parser("pause", help="Pause a task.")
     add_task_root(task_pause)
@@ -321,10 +393,38 @@ def build_parser() -> argparse.ArgumentParser:
     task_correct.add_argument("--step", required=True, type=int)
     task_correct.add_argument("--message", required=True)
 
-    task_retry = task_sub.add_parser("retry", help="Reset a task step to pending.")
+    task_retry = task_sub.add_parser(
+        "retry", help="Retry a failed or needs_recovery task from its current chain head."
+    )
     add_task_root(task_retry)
     task_retry.add_argument("id")
-    task_retry.add_argument("--step", required=True, type=int)
+    task_retry.add_argument(
+        "--step",
+        type=int,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    task_retry.add_argument(
+        "--dispatch",
+        action="store_true",
+        help="Skip confirmation and immediately submit the reset task to Runner.",
+    )
+    task_retry.add_argument("--config", type=Path)
+    task_retry.add_argument("--interval", type=float, default=2)
+    task_retry.add_argument(
+        "--monitor",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Open a separate Terminal window for live task output after dispatch.",
+    )
+
+    task_retry_step = task_sub.add_parser(
+        "retry-step",
+        help="Reset one live task step to pending.",
+    )
+    add_task_root(task_retry_step)
+    task_retry_step.add_argument("id")
+    task_retry_step.add_argument("--step", required=True, type=int)
 
     task_reassign = task_sub.add_parser("reassign", help="Reassign a task.")
     add_task_root(task_reassign)
@@ -343,6 +443,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Replace inherited image inputs for this iteration. Repeat when supported.",
     )
+    task_handoff.add_argument(
+        "--input-file",
+        action="append",
+        type=Path,
+        default=None,
+        help="Replace inherited inputs with these files for this iteration. Repeat as needed.",
+    )
     task_handoff.add_argument("--session-id")
     task_handoff.add_argument("--source-platform")
     task_handoff.add_argument(
@@ -351,7 +458,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the inherited permission mode for this handoff task.",
     )
     task_handoff.add_argument("--branch", action="store_true", help="Intentionally create a branch from a non-head task.")
-    task_handoff.add_argument("--dispatch", action="store_true", help="Atomically create and submit the handoff task to Runner.")
+    task_handoff.add_argument(
+        "--dispatch",
+        action="store_true",
+        help="Skip confirmation and atomically create and submit the handoff task to Runner.",
+    )
     task_handoff.add_argument("--config", type=Path)
     task_handoff.add_argument("--interval", type=float, default=2)
     task_handoff.add_argument(
@@ -462,6 +573,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def command_task_create(args: argparse.Namespace) -> int:
     session_id, source_platform = _origin_context(args.session_id, args.source_platform)
+    _best_effort_desktop_route(getattr(args, "root", None))
     config_path = _optional_path_arg(getattr(args, "config", None))
     if getattr(args, "workspace", None) is not None or getattr(args, "output_dir", None) is not None:
         print('path_model_v2_required: use --customer-path "default path" or --customer-path <project-path> instead of --workspace/--output-dir')
@@ -497,9 +609,11 @@ def command_task_create(args: argparse.Namespace) -> int:
                 customer_dir=customer_dir,
                 customer_path=customer_path or DEFAULT_CUSTOMER_PATH,
                 images=_image_args(args),
+                files=_input_file_args(args),
                 interval_s=getattr(args, "interval", 2),
                 monitor=getattr(args, "monitor", False),
                 permission_mode=_permission_mode_arg(args),
+                collaboration_spawn=getattr(args, "collaboration_spawn", False) is True,
             )
         except (ABCError, RunnerError) as exc:
             print(f"atomic_dispatch_error: {exc}")
@@ -517,7 +631,9 @@ def command_task_create(args: argparse.Namespace) -> int:
             customer_dir=customer_dir,
             customer_path=customer_path,
             images=_image_args(args),
+            files=_input_file_args(args),
             permission_mode=_permission_mode_arg(args),
+            collaboration_spawn=getattr(args, "collaboration_spawn", False) is True,
         )
     except ABCError as exc:
         print(f"task_create_error: {exc}")
@@ -695,6 +811,12 @@ def command_task_progress(args: argparse.Namespace) -> int:
     service = _task_service(args.root)
     try:
         task = service.get_task(args.id)
+        step_receipt = None
+        requested_step = getattr(args, "step", None)
+        if isinstance(requested_step, int) and not isinstance(requested_step, bool):
+            _bind_live_hermes_progress_session(service, task)
+            step_receipt = service.record_step_progress(task.id, requested_step)
+            task = service.get_task(task.id)
         payload = write_task_progress(
             task,
             state=str(args.state or "running"),
@@ -710,10 +832,80 @@ def command_task_progress(args: argparse.Namespace) -> int:
     print(f"progress: {payload['task_id']}")
     print(f"state: {payload['state']}")
     print(f"updated_at: {payload['updated_at']}")
+    if step_receipt is not None:
+        print(f"confirmed_step: {step_receipt['step_id']}")
+        print(f"sequence: {step_receipt['latest_sequence']}")
+        print(f"replayed: {'yes' if step_receipt['replayed'] else 'no'}")
     return 0
 
 
+def _bind_live_hermes_progress_session(service: TaskService, task: Any) -> None:
+    """Bind Hermes' official live session before recording step progress.
+
+    ``hermes chat`` exposes the durable session ID to every tool subprocess as
+    ``HERMES_SESSION_ID`` as soon as the session exists, but prints its stderr
+    receipt only when the one-shot process exits. A Runner-owned AgentBC
+    progress command is therefore the earliest authoritative bridge for a
+    full-mode task. Require the immutable task/worker identity exported by the
+    Runner and the already-persisted executor run binding; arbitrary
+    controller invocations cannot manufacture this transition.  This identity
+    is lifecycle metadata and remains available when Plan-D full correctly
+    runs without containment or a private Runner IPC channel.
+    """
+    if str(getattr(task, "assignee", "") or "").strip().lower() != "hermes":
+        return
+    extensions = dict(getattr(task, "extensions", None) or {})
+    session = extensions.get("agentbc.session")
+    if not isinstance(session, dict) or session.get("official_receipt_bound") is True:
+        return
+    session_id = str(os.environ.get("HERMES_SESSION_ID") or "").strip()
+    execution = extensions.get("agentbc.execution")
+    run_id = (
+        str(execution.get("executor_run_id") or "").strip()
+        if isinstance(execution, dict)
+        else ""
+    )
+    worker_run_id = (
+        str(execution.get("worker_run_id") or "").strip()
+        if isinstance(execution, dict)
+        else ""
+    )
+    runner_task_id = str(os.environ.get("AGENTBC_RUNNER_TASK_ID") or "").strip()
+    runner_worker_id = str(
+        os.environ.get("AGENTBC_RUNNER_WORKER_ID") or ""
+    ).strip()
+    run_ids = list(session.get("run_ids") or [])
+    resume_facts = session.get("run_resume_facts")
+    if (
+        not session_id
+        or not run_id
+        or run_id not in run_ids
+        or runner_task_id.upper() != str(task.id).upper()
+        or not worker_run_id
+        or runner_worker_id != worker_run_id
+    ):
+        return
+    resumed = (
+        bool(resume_facts.get(run_id))
+        if isinstance(resume_facts, dict) and type(resume_facts.get(run_id)) is bool
+        else run_ids.index(run_id) > 0
+    )
+    service.record_executor_session_started(
+        task.id,
+        run_id,
+        {
+            "version": 1,
+            "executor": "hermes",
+            "session_id": session_id,
+            "resumed": resumed,
+            "persistence": "persistent",
+            "source": "stderr_receipt",
+        },
+    )
+
+
 def command_task_status(args: argparse.Namespace) -> int:
+    _best_effort_desktop_route(getattr(args, "root", None))
     service = _task_service(args.root)
     try:
         if args.watch:
@@ -765,6 +957,16 @@ def command_task_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _best_effort_desktop_route(board_root: str | Path | None = None) -> None:
+    """Refresh the current Desktop route without making ordinary CLI fail."""
+    try:
+        from .runner import RunnerClient
+
+        RunnerClient()._try_register_current_desktop_route(board_root=board_root)
+    except Exception:  # noqa: BLE001 - route registration is an optional wake-up.
+        return
+
+
 def command_task_logs(args: argparse.Namespace) -> int:
     service = _task_service(args.root)
     stdout_offset = 0
@@ -772,7 +974,7 @@ def command_task_logs(args: argparse.Namespace) -> int:
     last_status_line = ""
     last_status_print_at = 0.0
     while True:
-        status = task_to_status(service.get_task(args.id))
+        status = task_to_status(service.get_task(args.id), service)
         execution = _execution_snapshot(args.id, service.board_root, status)
         remote, run_id, source, error = _task_log_remote(execution)
         if remote is None:
@@ -845,8 +1047,25 @@ def command_task_dispatch(args: argparse.Namespace) -> int:
 def command_task_respond(args: argparse.Namespace) -> int:
     from .runner import RunnerClient, RunnerError
 
-    if args.message is not None:
+    approve_tool = str(getattr(args, "approve_tool", "") or "").strip()
+    scope = str(getattr(args, "scope", "") or "").strip()
+    if approve_tool or scope:
+        # PERM-104-002 1.04A tombstone: the legacy session tool rule grammar
+        # was removed.  The flags parse for one release and always fail so
+        # existing automation never silently changes behavior.
+        print(
+            "respond_error: legacy_session_tool_rule_removed: "
+            "--approve-tool/--scope session were removed; respond with "
+            "--permission-option <handle> (or --approve/--deny) instead."
+        )
+        return 1
+    permission_option = str(getattr(args, "permission_option", "") or "").strip()
+    if permission_option:
+        response_type, message = "permission_option", permission_option
+    elif args.message is not None:
         response_type, message = "message", str(args.message)
+    elif getattr(args, "approve_full", False):
+        response_type, message = "approve_full", ""
     elif args.approve:
         response_type, message = "approve", ""
     else:
@@ -915,7 +1134,8 @@ def _execution_snapshot(task_id: str, board_root: Path, status: dict) -> dict:
 def _decorate_task_status(task, board_root: Path) -> dict:
     from .timing_view import build_timing_view
 
-    status = task_to_status(task)
+    service = TaskService(board_root)
+    status = task_to_status(task, service)
     try:
         chain = TaskService(board_root).resolve_chain(task.id).to_dict()
     except ABCError:
@@ -1008,9 +1228,21 @@ def command_task_intervention(args: argparse.Namespace) -> int:
         getattr(args, "session_id", None),
         getattr(args, "source_platform", None),
     )
-    if args.task_command == "handoff" and getattr(args, "dispatch", False) is True:
+    if args.task_command == "handoff":
         from .runner import RunnerClient, RunnerError
 
+        if not getattr(args, "dispatch", False):
+            service = _task_service(args.root, config_path)
+            try:
+                source = service.get_task(args.id)
+                if str(source.status or "").lower() in {"failed", "needs_recovery"}:
+                    _require_revival_action(service, source.id, "handoff")
+            except ABCError as exc:
+                print(f"{exc.code}: {exc}")
+                return 1
+            if not _confirm_task_handoff(source, args.to):
+                print("handoff_cancelled")
+                return 0
         try:
             result = RunnerClient().handoff_and_dispatch(
                 source_task_id=args.id,
@@ -1024,6 +1256,7 @@ def command_task_intervention(args: argparse.Namespace) -> int:
                 session_id=session_id,
                 source_platform=source_platform,
                 images=_image_args(args, inherit_when_missing=True),
+                files=_input_file_args(args, inherit_when_missing=True),
                 permission_mode=_permission_mode_arg(args),
             )
         except RunnerError as exc:
@@ -1044,7 +1277,7 @@ def command_task_intervention(args: argparse.Namespace) -> int:
                 return 1
             task = service.get_task(args.id)
             service.cancel_task(task.id)
-            cancellation_errors = _cancel_task_runner_runs(task)
+            cancellation_errors = _cancel_task_runner_runs(task, service.board_root)
             _finish_task_close_cleanup(task, service.board_root)
             _write_terminal_report(task.id, service.board_root)
             _notify_terminal(
@@ -1064,21 +1297,40 @@ def command_task_intervention(args: argparse.Namespace) -> int:
                 pass
         elif args.task_command == "close":
             plan = service.plan_task_close(args.id)
-            if plan["is_chain_iteration"] and not args.confirm:
-                if not _confirm_chain_close(plan):
-                    print("close_cancelled")
-                    return 0
+            if plan["is_chain_iteration"] and not args.confirm and not _confirm_chain_close(plan):
+                print("close_cancelled")
+                return 0
             reservation = service.reserve_task_close(
                 args.id,
                 confirmed=bool(args.confirm or plan["is_chain_iteration"]),
             )
             task = reservation["task"]
-            cancellation_errors = _cancel_task_runner_runs(task)
+            cancellation_errors = _cancel_task_runner_runs(task, service.board_root)
             if cancellation_errors:
                 service.abort_task_close(reservation["task_id"], reservation["close_token"])
                 for error in cancellation_errors:
                     print(f"execution_cancel_warning: {error}")
                 return 1
+            from .retry_flow import is_retry_chain_task, retry_close_cleanup_ready
+
+            if is_retry_chain_task(task):
+                current = service.get_task(task.id)
+                if str(current.status or "").lower() not in (
+                    set(TASK_TERMINAL_STATES) | {"cancelled", "rejected"}
+                ):
+                    service.cancel_task(task.id)
+                    _write_terminal_report(task.id, service.board_root)
+                    _notify_terminal(
+                        service,
+                        task.id,
+                        "task.cancelled",
+                        "info",
+                        "Task closed by user",
+                    )
+                current = service.get_task(task.id)
+                if not retry_close_cleanup_ready(current):
+                    print(f"close_pending_cleanup: {task.id}")
+                    return 0
             result = service.commit_task_close(reservation["task_id"], reservation["close_token"])
             _finish_task_chain_close_cleanup([result["task_id"]], service.board_root)
             print(f"close: {result['task_id']}")
@@ -1086,30 +1338,48 @@ def command_task_intervention(args: argparse.Namespace) -> int:
         elif args.task_command == "correct":
             service.correct_step(args.id, args.step, args.message)
         elif args.task_command == "retry":
+            from .retry_flow import REVIVAL_STEP_FLAG_UNSUPPORTED
+
+            if getattr(args, "step", None) is not None:
+                raise ABCError(
+                    REVIVAL_STEP_FLAG_UNSUPPORTED,
+                    "--step belongs to 'agentbc task retry-step <TASK_ID> --step <N>'; "
+                    "failed-task retry resets the complete task attempt.",
+                )
+            from .runner import RunnerClient, RunnerError
+
+            if not getattr(args, "dispatch", False):
+                retry_source = service.get_task(args.id)
+                _require_revival_action(service, retry_source.id, "retry")
+                if not _confirm_failed_task_retry(retry_source):
+                    print("retry_cancelled")
+                    return 0
+            task = service.retry_failed_task(args.id)
+            try:
+                result = RunnerClient().dispatch_task(
+                    task.id,
+                    args.root,
+                    config_path,
+                    getattr(args, "interval", 2),
+                    getattr(args, "monitor", False),
+                )
+            except RunnerError as exc:
+                print(f"atomic_dispatch_error: {exc}")
+                return 1
+            print(f"retried: {task.id}")
+            _print_atomic_dispatch(
+                {
+                    **result,
+                    "task_id": task.id,
+                    "assignee": task.assignee,
+                    "workspace": task.workspace,
+                }
+            )
+            return 0
+        elif args.task_command == "retry-step":
             service.retry_step(args.id, args.step)
         elif args.task_command == "reassign":
             service.reassign_task(args.id, args.to)
-        elif args.task_command == "handoff":
-            task = service.handoff_task(
-                args.id,
-                args.to,
-                args.message,
-                branch=getattr(args, "branch", False),
-                session_id=session_id,
-                source_platform=source_platform,
-                images=_image_args(args, inherit_when_missing=True),
-                permission_mode=_permission_mode_arg(args),
-            )
-            print(f"handoff_created: {args.id} -> {task.id}")
-            print(f"assignee: {task.assignee}")
-            if task.workspace:
-                print(f"task_code: {task.workspace.get('task_code', '')}")
-                print(f"iteration: {task.workspace.get('iteration', '')}")
-                print(f"project_root: {task.workspace.get('project_root', '')}")
-                print(f"requirements: {task.workspace.get('task_file', '')}")
-                print(f"artifact_root: {task.workspace.get('artifact_root', task.workspace.get('artifacts_dir', ''))}")
-                print(f"report: {task.workspace.get('report_file', '')}")
-            return 0
         else:
             raise AssertionError(args.task_command)
     except ABCError as exc:
@@ -1151,10 +1421,13 @@ def command_task_delete(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cancel_task_runner_runs(task: Any) -> list[str]:
+def _cancel_task_runner_runs(task: Any, board_root: str | Path) -> list[str]:
     from .runner import RunnerClient, RunnerError
 
-    execution = dict(((getattr(task, "extensions", None) or {}).get("agentbc.execution") or {}))
+    execution = dict((getattr(task, "extensions", None) or {}).get("agentbc.execution") or {})
+    # close/cancel must never report success while a task-bound Executor is
+    # still active.  This applies to roots and retry chains alike.
+    require_terminal = True
     candidates = (
         ("executor", str(execution.get("executor_run_id") or "")),
         ("worker", str(execution.get("worker_run_id") or "")),
@@ -1162,17 +1435,60 @@ def _cancel_task_runner_runs(task: Any) -> list[str]:
     client = RunnerClient()
     errors: list[str] = []
     seen: set[str] = set()
+    try:
+        task_result = client.cancel_task_runs(task.id, board_root)
+    except RunnerError as exc:
+        errors.append(f"task-bound runs for {task.id}: {exc}")
+        task_result = {"runs": []}
+    for result in task_result.get("runs") or []:
+        if not isinstance(result, dict):
+            continue
+        run_id = str(result.get("run_id") or "").strip()
+        if run_id:
+            seen.add(run_id)
+        status = str(result.get("status") or "").strip().lower()
+        if not require_terminal or not run_id:
+            continue
+        deadline = time.monotonic() + 12.0
+        while status not in {"completed", "failed", "cancelled"} and time.monotonic() < deadline:
+            time.sleep(0.05)
+            try:
+                result = client.status(run_id)
+            except RunnerError as exc:
+                errors.append(f"task-bound run {run_id}: {exc}")
+                break
+            status = str(result.get("status") or "").strip().lower()
+        if status not in {"completed", "failed", "cancelled"}:
+            errors.append(
+                f"task-bound run {run_id}: cancellation did not reach a terminal state "
+                f"({status or 'unknown'})"
+            )
     for source, run_id in candidates:
         if not run_id or run_id in seen:
             continue
         seen.add(run_id)
         try:
-            client.cancel(run_id)
+            result = client.cancel(run_id)
         except RunnerError as exc:
             message = str(exc)
             if "unknown runner run" in message:
                 continue
             errors.append(f"{source} run {run_id}: {message}")
+            continue
+        status = str(result.get("status") or "").strip().lower()
+        if not require_terminal:
+            continue
+        deadline = time.monotonic() + 5.0
+        while status not in {"completed", "failed", "cancelled"} and time.monotonic() < deadline:
+            time.sleep(0.05)
+            try:
+                result = client.status(run_id)
+            except RunnerError as exc:
+                errors.append(f"{source} run {run_id}: {exc}")
+                break
+            status = str(result.get("status") or "").strip().lower()
+        if status not in {"completed", "failed", "cancelled"}:
+            errors.append(f"{source} run {run_id}: cancellation did not reach a terminal state ({status or 'unknown'})")
     return errors
 
 
@@ -1181,6 +1497,64 @@ def _confirm_chain_close(plan: dict[str, Any]) -> bool:
     print("Original project files may already have changed and cannot be restored.")
     try:
         answer = input("Continue? [y/N]: ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer.strip().lower() in {"y", "yes"}
+
+
+def _require_revival_action(service: TaskService, task_id: str, action: str) -> None:
+    preflight = service.retry_preflight(task_id)
+    if action in list(preflight.get("allowed_next_actions") or []):
+        return
+    errors = list(preflight.get("errors") or [])
+    first = errors[0] if errors and isinstance(errors[0], dict) else {}
+    code = str(first.get("code") or "revival_preflight_failed")
+    message = str(first.get("message") or f"Task {task_id} cannot {action}")
+    raise ABCError(code, message, {"errors": errors})
+
+
+def _confirm_failed_task_retry(task: Any) -> bool:
+    workspace = dict(getattr(task, "workspace", None) or {})
+    report = str(workspace.get("report_file") or "the previous failure report")
+    artifacts = str(
+        workspace.get("artifact_root")
+        or workspace.get("artifacts_dir")
+        or "the AgentBC-managed artifact root"
+    )
+    print(f"Retry {task.id} from Step 1.")
+    print(f"This will delete the previous failure report: {report}")
+    if workspace.get("customer_dir") is True:
+        print("Custom-path contents will be preserved.")
+    else:
+        print(f"This will clear previous AgentBC-managed artifacts: {artifacts}")
+    print("The Task ID and revival audit receipt will be preserved.")
+    try:
+        answer = input("Continue and dispatch? [y/N]: ")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return answer.strip().lower() in {"y", "yes"}
+
+
+def _confirm_task_handoff(source: Any, target_assignee: str) -> bool:
+    extensions = dict(getattr(source, "extensions", None) or {})
+    lineage = dict(extensions.get("agentbc.lineage") or {})
+    workspace = dict(getattr(source, "workspace", None) or {})
+    task_code = str(lineage.get("task_code") or workspace.get("task_code") or "")
+    try:
+        iteration = int(
+            lineage.get("iteration_index") or workspace.get("iteration") or 1
+        ) + 1
+        target_task_id = format_task_id(task_code, iteration)
+    except (TypeError, ValueError):
+        target_task_id = "the next iteration"
+    print(f"Continue {source.id} from its existing baseline.")
+    print(f"This will preserve its report and artifacts, then create {target_task_id}.")
+    print("Requirements and recorded step state will be imported mechanically.")
+    print(f"The new iteration will be dispatched to {target_assignee}.")
+    try:
+        answer = input("Continue and dispatch? [y/N]: ")
     except (EOFError, KeyboardInterrupt):
         print()
         return False
@@ -1228,6 +1602,19 @@ def _image_args(
         return None if inherit_when_missing else []
     if isinstance(value, (list, tuple)):
         return [Path(image).expanduser() for image in value]
+    return None if inherit_when_missing else []
+
+
+def _input_file_args(
+    args: argparse.Namespace,
+    *,
+    inherit_when_missing: bool = False,
+) -> list[Path] | None:
+    value = getattr(args, "input_file", None)
+    if value is None:
+        return None if inherit_when_missing else []
+    if isinstance(value, (list, tuple)):
+        return [Path(item).expanduser() for item in value]
     return None if inherit_when_missing else []
 
 
@@ -1387,7 +1774,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 )
                 if recovery_marked:
                     _write_terminal_report(task_id, service.board_root)
-                _request_task_list_refresh(service.board_root)
+                _request_task_list_refresh_for_service(service)
             except ABCError:
                 pass
             print(f"worker_error: async dispatch failed: {exc}")
@@ -1399,6 +1786,11 @@ def command_worker_run(args: argparse.Namespace) -> int:
         return 0
 
     config = load_config(args.config)
+    # Runner-authorized workers run inside the task-scoped Seatbelt profile.
+    # Keep their TaskService writes task-local; the Runner refreshes global
+    # indexes after the process exits.
+    if getattr(args, "runner_authorize", False) is True:
+        config = {**config, "_runner_worker": True}
     service = TaskService(args.root, config=config)
     try:
         executor = get_executor(
@@ -1424,7 +1816,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                         {"executor": args.executor, "probe": probe.details},
                     )
                     if recovery_marked:
-                        _write_terminal_report(requested.id, service.board_root)
+                        _write_worker_terminal_report(service, requested.id)
                         _notify_terminal(
                             service,
                             requested.id,
@@ -1432,7 +1824,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                             "warning",
                             probe.message,
                         )
-                    _request_task_list_refresh(service.board_root)
+                    _request_task_list_refresh_for_service(service)
             except ABCError:
                 pass
         print(f"worker_error: executor probe failed: {probe.message}")
@@ -1441,7 +1833,11 @@ def command_worker_run(args: argparse.Namespace) -> int:
     while True:
         for active_status in ("running", "assigned", "working"):
             for active_task in service.list_tasks(status=active_status, assignee=args.executor):
-                reconcile_task(active_task.id, service.board_root)
+                reconcile_task(
+                    active_task.id,
+                    service.board_root,
+                    refresh_index=not bool(getattr(service, "_runner_worker", False)),
+                )
         raw_task_id = getattr(args, "task_id", None)
         requested_task_id = raw_task_id if isinstance(raw_task_id, str) and raw_task_id else None
         if requested_task_id:
@@ -1470,19 +1866,87 @@ def command_worker_run(args: argparse.Namespace) -> int:
         try:
             service.start_task_run(task.id, args.executor)
             claimed_task = service.get_task(task.id)
-            start = executor.start(
-                {
-                    "task_id": claimed_task.id,
-                    "title": claimed_task.title,
-                    "steps": claimed_task.steps,
-                    "workspace": _task_workspace(claimed_task, service.board_root, service.config),
-                    "task_board": {"root": str(service.board_root)},
-                    "extensions": claimed_task.extensions,
-                    "runner_authorization_required": (
-                        getattr(args, "runner_authorize", False) is True
+            preallocated_run_id = ""
+            preallocated_run: dict[str, Any] | None = None
+            from .permission_elevation import permission_elevation_from_extensions
+
+            elevation = permission_elevation_from_extensions(
+                claimed_task.extensions or {},
+                task_id=claimed_task.id,
+            )
+            if elevation is not None and elevation["state"]["status"] == "approved":
+                if getattr(args, "runner_authorize", False) is not True:
+                    raise ABCError(
+                        "permission_elevation_runner_context_required",
+                        "An approved task elevation requires a Runner-authorized continuation",
+                    )
+                preallocated_run_id = (
+                    f"{args.executor}-{claimed_task.id}-{uuid.uuid4().hex[:8]}"
+                )
+                service.activate_task_elevation(
+                    claimed_task.id,
+                    executor_run_id=preallocated_run_id,
+                    session_id=str(elevation["binding"].get("session_id") or ""),
+                )
+                # Bind the preallocated continuation run before the direct
+                # Hermes ``chat --yolo --resume`` process starts.  The
+                # executor's later idempotent registration is retained for
+                # compatibility, but session-first ordering is authoritative
+                # for the resumed full transport.
+                preallocated_run = service.record_executor_run_started(
+                    claimed_task.id,
+                    preallocated_run_id,
+                )
+                claimed_task = service.get_task(claimed_task.id)
+            elif args.executor == "hermes" and getattr(args, "runner_authorize", False) is True:
+                permission = (claimed_task.extensions or {}).get(PERMISSION_EXTENSION_KEY)
+                if (
+                    isinstance(permission, dict)
+                    and str(permission.get("effective_mode") or "").strip().lower() == "full"
+                ):
+                    # Full Hermes uses the synchronous ``chat --yolo`` path.
+                    # Register its unique run before entering that process so
+                    # an in-turn ``agentbc task progress`` call can bind the
+                    # official HERMES_SESSION_ID exposed by Hermes itself.
+                    preallocated_run_id = (
+                        f"{args.executor}-{claimed_task.id}-{uuid.uuid4().hex[:8]}"
+                    )
+                    preallocated_run = service.record_executor_run_started(
+                        claimed_task.id,
+                        preallocated_run_id,
+                    )
+                    claimed_task = service.get_task(claimed_task.id)
+            if preallocated_run_id:
+                service.update_execution_metadata(
+                    claimed_task.id,
+                    {"executor_run_id": preallocated_run_id},
+                )
+                claimed_task = service.get_task(claimed_task.id)
+            task_packet = {
+                "task_id": claimed_task.id,
+                "assignee": claimed_task.assignee,
+                "title": claimed_task.title,
+                "steps": claimed_task.steps,
+                "workspace": _task_workspace(claimed_task, service.board_root, service.config),
+                "task_board": {"root": str(service.board_root)},
+                "extensions": claimed_task.extensions,
+                "runner_authorization_required": (
+                    getattr(args, "runner_authorize", False) is True
+                ),
+            }
+            if preallocated_run_id:
+                task_packet["_agentbc_executor_run_id"] = preallocated_run_id
+                task_packet["_agentbc_resume_fact"] = {
+                    "run_id": preallocated_run_id,
+                    "resumed": bool((preallocated_run or {}).get("resumed")),
+                    "session_id": str(
+                        ((claimed_task.extensions or {}).get("agentbc.session") or {}).get(
+                            "session_id"
+                        )
+                        or ""
                     ),
                 }
-            )
+            start = executor.start(task_packet)
             if not start.ok:
                 start_code = (
                     "input_resume_start_failed"
@@ -1499,11 +1963,20 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     },
                 )
                 if recovery_marked:
-                    _write_terminal_report(task.id, service.board_root)
+                    _write_worker_terminal_report(service, task.id)
                     _notify_terminal(service, task.id, "task.recovery_required", "warning", start.message)
-                _request_task_list_refresh(service.board_root)
+                _request_task_list_refresh_for_service(service)
                 print(f"worker_error: executor start failed for {task.id}: {start.message}")
                 return 1
+            if args.executor == "codex":
+                # Runner sends SIGTERM to the AgentBC worker first. Translate
+                # it into the adapter's cooperative App Server cancellation;
+                # the worker remains alive until the official turn reaches a
+                # terminal state and the in-connection archive is acknowledged.
+                def _cancel_codex_turn(_signum: int, _frame: Any) -> None:
+                    executor.cancel(start.run_id)
+
+                signal.signal(signal.SIGTERM, _cancel_codex_turn)
             manages_executor_session = args.executor in {"claude", "hermes", "codex"}
             if manages_executor_session:
                 service.record_executor_run_started(task.id, start.run_id)
@@ -1514,20 +1987,55 @@ def command_worker_run(args: argparse.Namespace) -> int:
             execution_session: dict[str, Any] | None = None
             while True:
                 poll = executor.poll(start.run_id)
-                terminal_statuses = {
-                    "completed",
-                    "cancelled",
-                    "input_required",
-                    "needs_recovery",
-                    "failed",
-                    "needs_review",
-                }
-                if poll.status not in terminal_statuses:
+                if poll.status not in TERMINAL_POLL_STATUSES:
                     time.sleep(max(args.interval, 0.1))
                     continue
 
+                # PERM-104-003: after every Hermes terminal-like poll, re-read
+                # TaskService BEFORE generic callback validation or failure
+                # finalization.  A durably waiting v3 task-elevation input is
+                # authoritative over completion_marker_missing: the ACP turn can
+                # end right after the adapter persisted the wait, and that must
+                # surface as exactly one input-required notice, never as a task
+                # failure.
+                poll_approval_request = poll.result.get("approval_request")
+                arbitration_session = (
+                    str(
+                        (poll.result.get("execution_session") or {}).get("session_id")
+                        or ""
+                    ).strip()
+                    if isinstance(poll.result.get("execution_session"), dict)
+                    else ""
+                )
+                if (
+                    args.executor == "hermes"
+                    and _arbitrate_waiting_task_elevation(
+                        service,
+                        task.id,
+                        executor_run_id=start.run_id,
+                        poll_status=poll.status,
+                        approval_request=(
+                            poll_approval_request
+                            if isinstance(poll_approval_request, dict)
+                            else None
+                        ),
+                        notified_request_ids=notified_approval_requests,
+                        config_path=getattr(args, "config", None),
+                        interval_s=getattr(args, "interval", 2),
+                        session_id=arbitration_session,
+                    )
+                ):
+                    # The original ACP turn ended while its v3 elevation waits.
+                    # This worker is done: approval dispatches exactly one full
+                    # continuation, deny terminates.  Never finalize here.
+                    return 0
+
                 execution_session = poll.result.get("execution_session")
-                if manages_executor_session:
+                session_receipt_required = (
+                    execution_session is not None
+                    or poll.status in {"completed", "input_required", "cancelled"}
+                )
+                if manages_executor_session and session_receipt_required:
                     try:
                         execution_session = service.validate_executor_session_result(
                             task.id,
@@ -1542,7 +2050,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                             {"executor": args.executor, "phase": "session_receipt"},
                         )
                         if recovery_marked:
-                            _write_terminal_report(task.id, service.board_root)
+                            _write_worker_terminal_report(service, task.id)
                             _notify_terminal(
                                 service,
                                 task.id,
@@ -1550,42 +2058,157 @@ def command_worker_run(args: argparse.Namespace) -> int:
                                 "warning",
                                 str(exc),
                             )
-                        _request_task_list_refresh(service.board_root)
+                        _request_task_list_refresh_for_service(service)
                         print(f"worker_error: executor session receipt failed for {task.id}: {exc}")
                         return 1
-                else:
+                elif not manages_executor_session:
                     execution_session = None
 
                 approval_request = poll.result.get("approval_request")
                 is_native_approval = (
                     poll.status == "input_required"
                     and isinstance(approval_request, dict)
-                    and approval_request.get("scope") == "single_action"
+                    and (
+                        approval_request.get("scope") == "single_action"
+                        or (
+                            int(approval_request.get("approval_version") or 1) == 3
+                            and approval_request.get("scope") == "task_elevation"
+                            and approval_request.get("elevation_mode") in {"full", "contained_full"}
+                        )
+                    )
                     and bool(str(approval_request.get("request_id") or "").strip())
                 )
                 if is_native_approval:
                     request_id = str(approval_request.get("request_id") or "").strip()
+                    is_task_elevation = (
+                        int(approval_request.get("approval_version") or 1) == 3
+                        and approval_request.get("scope") == "task_elevation"
+                        and approval_request.get("elevation_mode") in {"full", "contained_full"}
+                    )
+                    is_native_live_elevation = (
+                        is_task_elevation
+                        and approval_request.get("native_live_elevation") is True
+                    )
                     if request_id not in notified_approval_requests:
                         try:
-                            blocked = service.block_task_for_approval(
-                                task.id,
-                                executor_run_id=start.run_id,
-                                session_id=str(approval_request.get("session_id") or ""),
-                                request_id=request_id,
-                                request_fingerprint=str(
-                                    approval_request.get("request_fingerprint") or ""
-                                ),
-                                executor=args.executor,
-                                operation=str(
-                                    approval_request.get("operation")
-                                    or approval_request.get("kind")
-                                    or "permission"
-                                ),
-                                summary=str(approval_request.get("summary") or ""),
-                                reason=str(approval_request.get("summary") or ""),
-                                reason_detail=str(approval_request.get("summary") or ""),
-                                execution_session=execution_session,
+                            existing_input = (service.get_task(task.id).extensions or {}).get(
+                                "agentbc.input"
                             )
+                            persisted_v3 = (
+                                is_task_elevation
+                                and isinstance(existing_input, dict)
+                                and existing_input.get("status") == "waiting"
+                                and str(existing_input.get("request_id") or "") == request_id
+                            )
+                            if persisted_v3:
+                                if str(existing_input.get("request_fingerprint") or "") != str(
+                                    approval_request.get("request_fingerprint") or ""
+                                ):
+                                    raise ABCError(
+                                        "permission_elevation_binding_mismatch",
+                                        "The persisted native task-elevation fingerprint changed",
+                                    )
+                                blocked = {
+                                    "ok": True,
+                                    "task_id": task.id,
+                                    "status": "input_required",
+                                    "input_id": str(existing_input.get("input_id") or ""),
+                                    "request_id": request_id,
+                                    "idempotent": True,
+                                }
+                            else:
+                                blocked = service.block_task_for_approval(
+                                    task.id,
+                                    executor_run_id=start.run_id,
+                                    session_id=str(approval_request.get("session_id") or ""),
+                                    request_id=request_id,
+                                    request_fingerprint=str(
+                                        approval_request.get("request_fingerprint") or ""
+                                    ),
+                                    executor=args.executor,
+                                    operation=str(
+                                        approval_request.get("operation")
+                                        or approval_request.get("kind")
+                                        or "permission"
+                                    ),
+                                    summary=str(approval_request.get("summary") or ""),
+                                    reason=str(approval_request.get("summary") or ""),
+                                    reason_detail=(
+                                        ""
+                                        if is_task_elevation
+                                        else str(approval_request.get("summary") or "")
+                                    ),
+                                    execution_session=execution_session,
+                                    tool_name=str(
+                                        approval_request.get("tool_name") or ""
+                                    ),
+                                    tool_use_id=str(
+                                        approval_request.get("tool_use_id")
+                                        or approval_request.get("item_id")
+                                        or ""
+                                    ),
+                                    input_fingerprint=str(
+                                        approval_request.get("input_fingerprint") or ""
+                                    ),
+                                    action_fingerprint=str(
+                                        approval_request.get("action_fingerprint") or ""
+                                    ),
+                                    escalation_domain=str(
+                                        approval_request.get("escalation_domain") or ""
+                                    ),
+                                    profile_digest=str(
+                                        approval_request.get("profile_digest")
+                                        or approval_request.get("host_profile_digest")
+                                        or ""
+                                    ),
+                                    control_path=str(
+                                        approval_request.get("control_path") or ""
+                                    ),
+                                    native_event=str(
+                                        approval_request.get("native_event")
+                                        or ("claude_sdk_can_use_tool" if not is_task_elevation else "")
+                                    ),
+                                    approval_version=(
+                                        3 if is_task_elevation else None
+                                    ),
+                                    elevation_mode=(
+                                        str(approval_request.get("elevation_mode") or "")
+                                        if is_task_elevation
+                                        else ""
+                                    ),
+                                    path_plan_digest=str(
+                                        approval_request.get("path_plan_digest") or ""
+                                    ),
+                                    containment_profile_digest=str(
+                                        approval_request.get("containment_profile_digest")
+                                        or approval_request.get("profile_digest")
+                                        or approval_request.get("host_profile_digest")
+                                        or ""
+                                    ),
+                                    full_preflight=(
+                                        dict(approval_request.get("preflight") or {})
+                                        if isinstance(approval_request.get("preflight"), dict)
+                                        else None
+                                    ),
+                                    native_live_elevation=is_native_live_elevation,
+                                    offered_choices=(
+                                        [
+                                            dict(choice)
+                                            for choice in approval_request.get(
+                                                "offered_choices", []
+                                            )
+                                            if isinstance(choice, dict)
+                                        ]
+                                        if isinstance(approval_request.get("offered_choices"), list)
+                                        and approval_request.get("offered_choices")
+                                        else None
+                                    ),
+                                    authority=(
+                                        dict(approval_request.get("authority") or {})
+                                        if isinstance(approval_request.get("authority"), dict)
+                                        else None
+                                    ),
+                                )
                         except ABCError as exc:
                             recovery_marked = service.mark_task_needs_recovery(
                                 task.id,
@@ -1600,7 +2223,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                                 execution_session=execution_session,
                             )
                             if recovery_marked:
-                                _write_terminal_report(task.id, service.board_root)
+                                _write_worker_terminal_report(service, task.id)
                                 _notify_terminal(
                                     service,
                                     task.id,
@@ -1608,7 +2231,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                                     "warning",
                                     str(exc),
                                 )
-                            _request_task_list_refresh(service.board_root)
+                            _request_task_list_refresh_for_service(service)
                             print(f"worker_error: native approval failed for {task.id}: {exc}")
                             return 1
                         notified_approval_requests.add(request_id)
@@ -1618,11 +2241,29 @@ def command_worker_run(args: argparse.Namespace) -> int:
                             config_path=getattr(args, "config", None),
                             interval_s=getattr(args, "interval", 2),
                         )
-                        _request_task_list_refresh(service.board_root)
-                        print(
-                            f"input_required: {task.id} "
-                            f"request={blocked.get('request_id', request_id)}"
-                        )
+                        _request_task_list_refresh_for_service(service)
+                    print(
+                        f"input_required: {task.id} "
+                        f"request={blocked.get('request_id', request_id)}"
+                    )
+                    if is_task_elevation and not is_native_live_elevation:
+                        # A contained-full elevation cannot change the active
+                        # Codex/Hermes process policy in place. End this
+                        # Runner-owned worker after persisting the exact native
+                        # receipt; approval dispatches exactly one continuation
+                        # bound to the same official session.
+                        try:
+                            service.clear_execution_run_references(
+                                task.id,
+                                expected_executor_run_id=start.run_id,
+                            )
+                        except (ABCError, OSError):
+                            # Runner reconciliation has the same v3 waiting
+                            # predicate and will clear stale worker pointers
+                            # without converting this expected worker exit to
+                            # needs_recovery.
+                            pass
+                        return 0
                     # The App Server thread remains alive while the same native
                     # request waits.  A dialog or CLI response writes the
                     # accept/decline decision through Runner; never finalize or
@@ -1631,7 +2272,11 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     continue
                 break
 
-            if manages_executor_session:
+            session_receipt_required = (
+                execution_session is not None
+                or poll.status in {"completed", "input_required", "cancelled"}
+            )
+            if manages_executor_session and session_receipt_required:
                 try:
                     execution_session = service.validate_executor_session_result(
                         task.id,
@@ -1646,7 +2291,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                         {"executor": args.executor, "phase": "session_receipt"},
                     )
                     if recovery_marked:
-                        _write_terminal_report(task.id, service.board_root)
+                        _write_worker_terminal_report(service, task.id)
                         _notify_terminal(
                             service,
                             task.id,
@@ -1654,10 +2299,10 @@ def command_worker_run(args: argparse.Namespace) -> int:
                             "warning",
                             str(exc),
                         )
-                    _request_task_list_refresh(service.board_root)
+                    _request_task_list_refresh_for_service(service)
                     print(f"worker_error: executor session receipt failed for {task.id}: {exc}")
                     return 1
-            else:
+            elif not manages_executor_session:
                 execution_session = None
 
             if poll.status not in {"completed", "input_required", "cancelled"}:
@@ -1698,9 +2343,9 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     )
                     event_type, level = "task.failed", "error"
                 if terminal_marked:
-                    _write_terminal_report(task.id, service.board_root)
+                    _write_worker_terminal_report(service, task.id)
                     _notify_terminal(service, task.id, event_type, level, failure_message)
-                _request_task_list_refresh(service.board_root)
+                _request_task_list_refresh_for_service(service)
                 print(f"worker_error: executor failed for {task.id}: {failure_message}")
                 return 1
 
@@ -1717,7 +2362,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     execution_session=execution_session,
                 )
                 if not blocked.get("ok"):
-                    _write_terminal_report(task.id, service.board_root)
+                    _write_worker_terminal_report(service, task.id)
                     _notify_terminal(
                         service,
                         task.id,
@@ -1728,7 +2373,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                             or "resource exhaustion wait failed; task requires recovery"
                         ),
                     )
-                    _request_task_list_refresh(service.board_root)
+                    _request_task_list_refresh_for_service(service)
                     print(f"needs_recovery: {task.id}")
                     return 1
                 _notify_input_required(
@@ -1737,7 +2382,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     config_path=getattr(args, "config", None),
                     interval_s=getattr(args, "interval", 2),
                 )
-                _request_task_list_refresh(service.board_root)
+                _request_task_list_refresh_for_service(service)
                 print(f"input_required: {task.id}")
                 if args.once:
                     return 0
@@ -1756,6 +2401,156 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 callback=callback if isinstance(callback, dict) else None,
                 execution_session=execution_session,
             )
+            _handoff_terminal_delivery(service, task.id)
+            # PERM-104-002 (compatibility review): ``verified`` may only come
+            # from the structured success receipt of the declared target
+            # action - a valid agent callback finalized by Core plus the
+            # validated official session receipt.  ``poll.status ==
+            # "completed"`` alone is never proof.  Any verification failure
+            # moves the runtime record to ``blocked`` with a stable code and
+            # fails the task closed; the previous code caught ABCError and
+            # silently left a completed task behind.
+            runtime_closure_error: str = ""
+            try:
+                current = service.get_task(task.id)
+                runtime_value = (current.extensions or {}).get(
+                    "agentbc.permission_runtime"
+                )
+                if isinstance(runtime_value, dict):
+                    from .permission_runtime import (
+                        PERMISSION_ESCALATION_INEFFECTIVE,
+                        PERMISSION_RUNTIME_DOMAINS,
+                        block_permission_runtime_record,
+                        verify_permission_runtime_record,
+                    )
+                    from .permission_transport import (
+                        PERMISSION_TRANSPORT_UNSUPPORTED,
+                    )
+
+                    session_id = (
+                        str(execution_session.get("session_id") or "").strip()
+                        if isinstance(execution_session, dict)
+                        else ""
+                    )
+                    structured_success = (
+                        poll.status == "completed"
+                        and finalized_from_worker is True
+                        and isinstance(callback, dict)
+                        and bool(session_id)
+                        and execution_session is not None
+                    )
+                    if structured_success:
+                        runtime_closed = verify_permission_runtime_record(
+                            runtime_value,
+                            session_id=session_id,
+                        )
+                    elif session_id:
+                        runtime_closed = block_permission_runtime_record(
+                            runtime_value,
+                            code=PERMISSION_ESCALATION_INEFFECTIVE,
+                            domain="host_containment",
+                        )
+                    else:
+                        runtime_closed = block_permission_runtime_record(
+                            runtime_value,
+                            code=PERMISSION_TRANSPORT_UNSUPPORTED,
+                            domain=PERMISSION_RUNTIME_DOMAINS[0],
+                        )
+                    if poll.status == "completed" and not structured_success:
+                        runtime_closure_error = (
+                            "permission_runtime_verification_failed: completed "
+                            "run lacks the structured success receipt "
+                            "(valid callback + official session id)"
+                        )
+                    current.extensions = dict(current.extensions or {})
+                    current.extensions["agentbc.permission_runtime"] = (
+                        runtime_closed
+                    )
+                    current.updated_at = _utc_now_cli()
+                    service.store.write_task(current.id, current.to_dict())
+
+                # A v3 Hermes continuation is verified only after the actual
+                # final callback and the official resumed-session receipt have
+                # both passed Core finalization.  Legacy/live Claude records
+                # remain on their existing runtime-only closure path.
+                current = service.get_task(task.id)
+                current_elevation = permission_elevation_from_extensions(
+                    current.extensions or {},
+                    task_id=current.id,
+                )
+                if (
+                    runtime_closure_error == ""
+                    and isinstance(current_elevation, dict)
+                    and current_elevation.get("source") == "task_elevation"
+                    and current_elevation.get("state", {}).get("status") == "active"
+                ):
+                    session_id = (
+                        str(execution_session.get("session_id") or "").strip()
+                        if isinstance(execution_session, dict)
+                        else ""
+                    )
+                    service.verify_task_elevation(
+                        task.id,
+                        executor_run_id=start.run_id,
+                        session_id=session_id,
+                    )
+            except ABCError as closure_exc:
+                # Compatibility: a failed closure is never swallowed.  Persist the
+                # blocked state when the record is still writable and fail
+                # the completed task closed below.
+                try:
+                    failed_current = service.get_task(task.id)
+                    failed_value = (failed_current.extensions or {}).get(
+                        "agentbc.permission_runtime"
+                    )
+                    if isinstance(failed_value, dict):
+                        from .permission_runtime import (
+                            HOST_CONTAINMENT_UNLIFTABLE,
+                            block_permission_runtime_record,
+                        )
+
+                        failed_closed = block_permission_runtime_record(
+                            failed_value,
+                            code=HOST_CONTAINMENT_UNLIFTABLE,
+                            domain="host_containment",
+                        )
+                        failed_current.extensions = dict(
+                            failed_current.extensions or {}
+                        )
+                        failed_current.extensions[
+                            "agentbc.permission_runtime"
+                        ] = failed_closed
+                        failed_current.updated_at = _utc_now_cli()
+                        service.store.write_task(
+                            failed_current.id, failed_current.to_dict()
+                        )
+                except ABCError:
+                    pass
+                runtime_closure_error = (
+                    f"permission_runtime_verification_failed: {closure_exc}"
+                )
+            if runtime_closure_error and finalized_from_worker:
+                failure_message = runtime_closure_error
+                terminal_marked = service.mark_task_failed(
+                    task.id,
+                    "permission_runtime_verification_failed",
+                    failure_message,
+                    {"executor": args.executor},
+                    executor_run_id=start.run_id,
+                    execution_session=execution_session,
+                )
+                if terminal_marked:
+                    _write_worker_terminal_report(service, task.id)
+                    _notify_terminal(
+                        service,
+                        task.id,
+                        "task.failed",
+                        "error",
+                        failure_message,
+                    )
+                    _request_task_list_refresh_for_service(service)
+                print(f"worker_error: {failure_message}")
+                return 1
             finalized = service.get_task(task.id)
             final_status = finalized.status
             if final_status == "completed":
@@ -1778,7 +2573,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     )
                 else:
                     _notify_terminal(service, task.id, event_type, level, summary)
-            _request_task_list_refresh(service.board_root)
+            _request_task_list_refresh_for_service(service)
             print(f"{final_status}: {task.id}")
         except ABCError as exc:
             try:
@@ -1798,11 +2593,11 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     )
                 )
                 if terminal_marked:
-                    _write_terminal_report(task.id, service.board_root)
+                    _write_worker_terminal_report(service, task.id)
                     event_type = "task.failed" if executor_started else "task.recovery_required"
                     level = "error" if executor_started else "warning"
                     _notify_terminal(service, task.id, event_type, level, str(exc))
-                _request_task_list_refresh(service.board_root)
+                _request_task_list_refresh_for_service(service)
             except ABCError:
                 pass
             print(f"worker_error: {exc}")
@@ -2130,6 +2925,14 @@ def _task_list_timer(summary: dict, timer_now: str | None = None) -> str:
         return "cancelled"
     timing = summary.get("timing")
     if isinstance(timing, dict):
+        attempt_index = timing.get("attempt_index")
+        try:
+            is_retry_attempt = int(attempt_index or 0) > 0
+        except (TypeError, ValueError):
+            is_retry_attempt = False
+        if is_retry_attempt:
+            active = timing.get("attempt_execution_duration_s")
+            return _format_seconds_compact(active if active is not None else 0)
         wall = timing.get("wall_duration_s")
         if wall is not None:
             return _format_seconds_compact(wall)
@@ -2146,13 +2949,13 @@ def _format_elapsed_compact(start: str, end: str) -> str:
     parsed_end = _parse_cli_timestamp(end)
     if parsed_start is None or parsed_end is None:
         return "unknown"
-    seconds = max(int(round((parsed_end - parsed_start).total_seconds())), 0)
+    seconds = max(round((parsed_end - parsed_start).total_seconds()), 0)
     return _format_seconds_compact(seconds)
 
 
 def _format_seconds_compact(value: Any) -> str:
     try:
-        seconds = max(int(round(float(value))), 0)
+        seconds = max(round(float(value)), 0)
     except (TypeError, ValueError):
         return "unknown"
     hours, remainder = divmod(seconds, 3600)
@@ -2239,6 +3042,17 @@ def _print_atomic_dispatch(result: dict[str, Any]) -> None:
 def _print_execution_policy(policy: Any) -> None:
     if not isinstance(policy, dict):
         return
+    progress = policy.get("progress")
+    if isinstance(progress, dict):
+        confirmed = ",".join(
+            str(item) for item in progress.get("confirmed_step_ids") or []
+        )
+        print(
+            "Confirmed progress: "
+            f"steps={confirmed or '-'} "
+            f"sequence={progress.get('latest_sequence', 0)} "
+            f"evidence={progress.get('evidence_quality') or 'unknown'}"
+        )
     resources = policy.get("resources")
     if isinstance(resources, dict):
         print(
@@ -2269,8 +3083,23 @@ def _print_execution_policy(policy: Any) -> None:
                 f"state={cleanup.get('state') or 'not_requested'} "
                 f"attempts={cleanup.get('attempts', 0)} "
                 f"error_code={cleanup.get('error_code') or '-'} "
-                f"retryable={'yes' if cleanup.get('retryable') else 'no'}"
+                f"retryable={'yes' if cleanup.get('retryable') else 'no'} "
+                f"phase={cleanup.get('phase') or '-'}"
             )
+            if cleanup.get("version") in (3, 4, 5):
+                verification = cleanup.get("verification") or {}
+                cli_verification = verification.get("cli") if isinstance(verification, dict) else {}
+                backend_verification = verification.get("desktop_backend") if isinstance(verification, dict) else {}
+                live_verification = verification.get("desktop_live") if isinstance(verification, dict) else {}
+                desktop_verification = verification.get("desktop") if isinstance(verification, dict) else {}
+                print(
+                    "Session cleanup verification: "
+                    f"strategy={cleanup.get('strategy') or '-'} "
+                    f"cli={cli_verification.get('status') if isinstance(cli_verification, dict) else 'unknown'} "
+                    f"desktop_backend={backend_verification.get('status') if isinstance(backend_verification, dict) else 'unknown'} "
+                    f"desktop_live={live_verification.get('status') if isinstance(live_verification, dict) else 'unknown'} "
+                    f"desktop={desktop_verification.get('status') if isinstance(desktop_verification, dict) else 'unknown'}"
+                )
     grant = policy.get("permission_grant")
     if isinstance(grant, dict):
         print(
@@ -2285,10 +3114,40 @@ def _print_execution_policy(policy: Any) -> None:
         )
 
 
-def _write_terminal_report(task_id: str, board_root: Path) -> None:
+def _write_terminal_report(
+    task_id: str,
+    board_root: Path,
+    *,
+    refresh_index: bool = True,
+) -> None:
     from .reports import write_report_files
 
-    write_report_files(task_id, board_root)
+    write_report_files(task_id, board_root, refresh_index=refresh_index)
+
+
+def _task_has_terminal_delivery(service: TaskService, task_id: str) -> bool:
+    try:
+        extensions = dict(service.get_task(task_id).extensions or {})
+    except Exception:  # noqa: BLE001 - a projection must never mask the task
+        return False
+    return "agentbc.terminal_delivery" in extensions
+
+
+def _write_worker_terminal_report(service: TaskService, task_id: str) -> None:
+    """Write the terminal report for a task without a delivery receipt.
+
+    FLOW-104-002: when the task carries a receipt, the report, record and index
+    stages were already attempted inside the authoritative terminal write and are
+    recorded on it.  Re-running the composed report entry point here would
+    duplicate them outside the receipt.
+    """
+    if _task_has_terminal_delivery(service, task_id):
+        return
+    _write_terminal_report(
+        task_id,
+        service.board_root,
+        refresh_index=not bool(getattr(service, "_runner_worker", False)),
+    )
 
 
 def _notify_terminal(
@@ -2298,9 +3157,48 @@ def _notify_terminal(
     level: str,
     message: str,
 ) -> None:
-    from .notifications import notify_terminal
+    """Deliver the terminal notification through the durable stage receipt.
 
-    notify_terminal(service, task_id, event_type, level, message)
+    FLOW-104-002: the receipt owns the ``file_notification`` and
+    ``ui_notification`` stages, so each result is recorded on it and Runner
+    maintenance replays only what is unconfirmed.  A task without a receipt
+    (``needs_recovery``, cancelled, or a legacy record) keeps the historical
+    direct notification.  ``input_required`` never reaches this helper.
+    """
+    from .terminal_delivery_coordinator import deliver_terminal_outcome
+
+    deliver_terminal_outcome(
+        service,
+        task_id,
+        event_type=event_type,
+        level=level,
+        message=message,
+    )
+
+
+def _handoff_terminal_delivery(service: TaskService, task_id: str) -> None:
+    """Hand remaining terminal delivery stages to the Runner.
+
+    FLOW-104-002: the worker finalizes the business terminal state and attempts
+    the report/record/index stages inline, but a contained worker must not write
+    the board-level notification side channel.  The Runner is the production
+    owner of terminal delivery, so it receives the outstanding stages
+    immediately; Runner maintenance replays anything still incomplete later.
+    Every failure here is non-fatal: the delivery receipt on the task keeps the
+    outstanding stages and the business terminal state is already durable.
+    """
+    try:
+        extensions = service.get_task(task_id).extensions or {}
+    except Exception:  # noqa: BLE001 - delivery handoff must never mask the task
+        return
+    if "agentbc.terminal_delivery" not in extensions:
+        return
+    try:
+        from .runner import RunnerClient
+
+        RunnerClient().deliver_terminal(task_id, str(service.board_root))
+    except Exception:  # noqa: BLE001 - Runner may be offline; maintenance replays
+        return
 
 
 def _notify_input_required(
@@ -2334,6 +3232,143 @@ def _request_task_list_refresh(board_root: str | Path) -> None:
         request_dashboard_refresh(board_root)
     except OSError:
         pass
+
+
+def _request_task_list_refresh_for_service(service: TaskService) -> None:
+    if bool(getattr(service, "_runner_worker", False)):
+        return
+    _request_task_list_refresh(service.board_root)
+
+
+def _waiting_task_elevation_input(
+    service: TaskService,
+    task_id: str,
+    *,
+    executor_run_id: str,
+    session_id: str = "",
+    approval_request: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Return the durably waiting v3 task-elevation input for one run.
+
+    TaskService is the only authority for a v3 contained-full elevation.  A
+    Hermes terminal-like poll is never proof that the task finished: the ACP
+    turn can end (transport close, stopReason, empty final text, no callback)
+    right after the adapter persisted one waiting elevation input.  This re-read
+    proves the wait is real and that it is bound to the exact
+    task/executor-run/official-session/request identity before the worker
+    treats it as the reason the run ended.
+    """
+    try:
+        persisted = service.get_task(task_id)
+    except ABCError:
+        return None
+    if str(persisted.status or "") != "input_required":
+        return None
+    waiting = (persisted.extensions or {}).get("agentbc.input")
+    if not isinstance(waiting, dict) or waiting.get("status") != "waiting":
+        return None
+    if int(waiting.get("approval_version") or 1) != 3:
+        return None
+    if waiting.get("scope") != "task_elevation":
+        return None
+    if waiting.get("elevation_mode") != PERMISSION_ELEVATION_MODE:
+        return None
+    if not str(waiting.get("request_id") or "").strip():
+        return None
+    # Binding identity: the waiting input must belong to the run that just
+    # ended.  A different run's wait is someone else's business.
+    persisted_run = str(waiting.get("executor_run_id") or "").strip()
+    if persisted_run and persisted_run != str(executor_run_id or "").strip():
+        return None
+    # Binding identity: the official execution session must agree when both
+    # sides declare one.  A mismatch means the wait predates this run.
+    persisted_session = str(waiting.get("session_id") or "").strip()
+    if (
+        persisted_session
+        and session_id
+        and persisted_session != str(session_id).strip()
+    ):
+        return None
+    request = approval_request if isinstance(approval_request, dict) else None
+    if request is not None:
+        request_id = str(request.get("request_id") or "").strip()
+        if request_id and request_id != str(waiting.get("request_id") or "").strip():
+            return None
+        request_fingerprint = str(request.get("request_fingerprint") or "").strip()
+        if (
+            request_fingerprint
+            and request_fingerprint
+            != str(waiting.get("request_fingerprint") or "").strip()
+        ):
+            return None
+    return waiting
+
+
+def _arbitrate_waiting_task_elevation(
+    service: TaskService,
+    task_id: str,
+    *,
+    executor_run_id: str,
+    poll_status: str,
+    approval_request: dict[str, Any] | None = None,
+    notified_request_ids: set[str] | None = None,
+    config_path: str | Path | None = None,
+    interval_s: float = 2.0,
+    session_id: str = "",
+) -> bool:
+    """Make a persisted waiting input authoritative over a terminal poll.
+
+    Called after every Hermes terminal-like poll and before generic callback
+    validation or failure finalization.  When the exact
+    task/run/session/request identity has a durably waiting v3 elevation input,
+    this delivers exactly one input-required notification, asks the UI to
+    refresh, clears only the stale execution-run pointers needed for the planned
+    continuation, and reports that the worker must end successfully.  The task
+    is never marked failed, no terminal-failure notification is written and no
+    terminal cleanup runs while the wait is live.
+
+    Returns ``True`` when the waiting input arbitrates the run end.
+    """
+    if poll_status not in TERMINAL_POLL_STATUSES:
+        return False
+    waiting = _waiting_task_elevation_input(
+        service,
+        task_id,
+        executor_run_id=executor_run_id,
+        session_id=session_id,
+        approval_request=approval_request,
+    )
+    if waiting is None:
+        return False
+    request_id = str(waiting.get("request_id") or "").strip()
+    already_notified = (
+        notified_request_ids is not None and request_id in notified_request_ids
+    )
+    if not already_notified:
+        # ``notify_input_required`` reserves the single v3 notice atomically, so
+        # a duplicate poll, a restart/replay or a racing worker can only ever
+        # deliver one notification for this waiting input.
+        _notify_input_required(
+            service,
+            task_id,
+            config_path=config_path,
+            interval_s=interval_s,
+        )
+        if notified_request_ids is not None:
+            notified_request_ids.add(request_id)
+    _request_task_list_refresh_for_service(service)
+    try:
+        service.clear_execution_run_references(
+            task_id,
+            expected_executor_run_id=executor_run_id,
+        )
+    except (ABCError, OSError):
+        # Runner reconciliation shares the same v3 waiting predicate and will
+        # clear the stale worker pointers without converting this expected
+        # worker exit into a recovery condition.
+        pass
+    print(f"input_required: {task_id} request={request_id}")
+    return True
 
 
 def _build_notification_payload(
@@ -2378,7 +3413,7 @@ def _utc_now_cli() -> str:
     return utc_now()
 
 
-def command_executor_setting(executor: str, key: str, value: int | float) -> int:
+def command_executor_setting(executor: str, key: str, value: float) -> int:
     previous: Any = None
 
     def mutate(config: dict[str, Any]) -> None:
@@ -2435,8 +3470,8 @@ def command_permissions(action: str, mode: str | None = None) -> int:
             return 2
         payload = permissions_status_payload(config)
     else:
-        from .permission_modes import configured_permission_mode
         from .config import apply_permissions_setting
+        from .permission_modes import configured_permission_mode
 
         desired = mode if isinstance(mode, str) else "inherit"
         previous: str | None = None
@@ -2537,6 +3572,25 @@ def command_session_retention(action: str) -> int:
     return 0
 
 
+def command_session_desktop_archive_ack(args: argparse.Namespace) -> int:
+    from .runner import RunnerClient, RunnerError
+
+    try:
+        result = RunnerClient(timeout_s=40).acknowledge_desktop_archive(
+            args.id,
+            args.session_id,
+            args.root,
+        )
+    except (ABCError, RunnerError) as exc:
+        print(f"session_cleanup_error: {exc}")
+        return 1
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    receipt = result.get("receipt")
+    receipt_state = receipt.get("state") if isinstance(receipt, dict) else None
+    cleanup_state = result.get("state") or result.get("status") or receipt_state
+    return 0 if cleanup_state in {"succeeded", "resolved"} else 1
+
+
 def _retention_payload(
     *,
     previous: bool,
@@ -2583,6 +3637,8 @@ def _print_config_command_error(exc: Exception, setting: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if argv is None:
+        _bootstrap_desktop_relay(raw_argv)
     if not raw_argv:
         parser = build_parser()
         parser.print_help()
@@ -2633,6 +3689,8 @@ def main(argv: list[str] | None = None) -> int:
         return command_executor_setting("hermes", "max_turns", args.turns)
 
     if args.command == "session":
+        if args.session_command == "acknowledge-desktop-archive":
+            return command_session_desktop_archive_ack(args)
         return command_session_retention(args.retention_command)
 
     if args.command == "permissions":
@@ -2695,7 +3753,7 @@ def main(argv: list[str] | None = None) -> int:
             return command_task_callback(args)
         if args.task_command == "delete":
             return command_task_delete(args)
-        if args.task_command in {"pause", "resume", "cancel", "close", "correct", "retry", "reassign", "handoff"}:
+        if args.task_command in {"pause", "resume", "cancel", "close", "correct", "retry", "retry-step", "reassign", "handoff"}:
             return command_task_intervention(args)
         raise AssertionError(args.task_command)
 
@@ -2736,6 +3794,46 @@ def _expand_shorthand(argv: list[str]) -> list[str]:
     if is_task_like(first):
         return ["task", "status", first.upper(), *argv[1:]]
     return ["_shorthand", *argv]
+
+
+def _bootstrap_desktop_relay(argv: list[str]) -> None:
+    """Re-exec the installed CLI through Codex's Node host relay bootstrap.
+
+    Desktop scopes its native App Tools pipe to a Node-originating process.
+    Replacing the console-script process before normal CLI startup preserves
+    that mechanical host context without changing task execution semantics.
+    """
+    if (
+        sys.platform != "darwin"
+        or os.environ.get("AGENTBC_DESKTOP_BOOTSTRAPPED") == "1"
+        or Path(sys.argv[0]).name not in {"agentbc", "abc"}
+    ):
+        return
+    try:
+        from .codex_desktop_archive import read_desktop_route_context
+
+        context = read_desktop_route_context()
+        asset = Path(__file__).with_name("assets") / "codex_desktop_relay.mjs"
+        if context is None or not asset.is_file():
+            return
+        environment = {**os.environ, "AGENTBC_DESKTOP_BOOTSTRAPPED": "1"}
+        os.execve(
+            context.mcp_runtime,
+            [
+                context.mcp_runtime,
+                str(asset),
+                "--resource",
+                context.mcp_resource,
+                "--",
+                sys.executable,
+                "-m",
+                "agent_bridge_connect.cli",
+                *argv,
+            ],
+            environment,
+        )
+    except OSError:
+        return
 
 
 def _should_reject_shorthand(description: str) -> bool:

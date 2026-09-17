@@ -427,12 +427,15 @@ class ExecutorPermissionMappingTests(unittest.TestCase):
         self.assertIn("--safe-mode", claude)
         self.assertIn("acceptEdits", claude)
 
-    def test_unsupported_full_capability_fails_closed(self) -> None:
-        completed = mock.Mock(returncode=0, stdout="usage without full flag", stderr="")
-        with mock.patch("agent_bridge_connect.permission_modes.subprocess.run", return_value=completed):
-            with self.assertRaises(ABCError) as raised:
-                assert_executor_permission_supported("codex", "full", sys.executable)
-        self.assertEqual(raised.exception.code, "unsupported_permission_mode")
+    def test_full_uses_native_mapping_without_capability_probe(self) -> None:
+        # Plan D accepts protocol-compatible releases and forks by their
+        # frozen native mapping; --help/version/runtime capability probes are
+        # not a second permission gate.
+        with mock.patch(
+            "agent_bridge_connect.permission_modes.subprocess.run",
+            side_effect=AssertionError("full must not probe executable help"),
+        ):
+            assert_executor_permission_supported("codex", "full", sys.executable)
 
 
 class CanonicalPermissionArgumentTests(unittest.TestCase):
@@ -734,13 +737,13 @@ class RunnerPermissionAuthorizationTests(unittest.TestCase):
         self.assertEqual(result["run_id"], "mock-full")
         run.assert_called_once()
 
-    def test_full_does_not_bypass_task_scoped_cwd_check(self) -> None:
-        from agent_bridge_connect.runner import RunnerError
-
+    def test_full_bypasses_task_scoped_cwd_security_check(self) -> None:
         _service, _task, full = self._packet("full")
         command = [str(self.fake_hermes), "chat", "--yolo", "-q", "prompt"]
-        with self.assertRaisesRegex(RunnerError, "outside allowed roots"):
-            self.state.submit("hermes", command, self.root.anchor, full)
+        spawned = {"ok": True, "run_id": "mock-full-root", "pid": 1, "status": "running"}
+        with mock.patch.object(self.state, "_spawn_process", return_value=spawned):
+            result = self.state.submit("hermes", command, self.root.anchor, full)
+        self.assertEqual(result["run_id"], "mock-full-root")
 
     def test_dispatch_records_redacted_permission_audit_and_report(self) -> None:
         from agent_bridge_connect.reports import generate_report, generate_report_md

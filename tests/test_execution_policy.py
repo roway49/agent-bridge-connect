@@ -144,7 +144,8 @@ class SessionSnapshotTests(unittest.TestCase):
         errors = validate_session_snapshot(invalid)
         self.assertTrue(any("cleanup.attempts" in item for item in errors))
 
-    def test_cleanup_requires_terminal_report_notification_and_closed_lease(self) -> None:
+    def test_cleanup_requires_terminal_status_and_closed_lease(self) -> None:
+        """FLOW-104-002: report/notification evidence is no longer a gate."""
         session = build_session_snapshot(
             "hermes",
             retain=False,
@@ -155,26 +156,39 @@ class SessionSnapshotTests(unittest.TestCase):
             is_session_cleanup_eligible(
                 task_status="completed",
                 lease_state="closed",
-                report_written=True,
-                notification_recorded=True,
                 session=session,
+                task_end_dialog_delivered=True,
             )
         )
         blockers = session_cleanup_blockers(
             task_status="input_required",
             lease_state="suspended",
-            report_written=False,
-            notification_recorded=False,
             session=session,
+            task_end_dialog_delivered=False,
         )
         self.assertEqual(
             blockers,
             [
-                "task_not_terminal",
+                "task_end_dialog_not_delivered",
                 "run_lease_not_closed",
-                "report_not_written",
-                "notification_not_recorded",
             ],
+        )
+
+    def test_cleanup_runs_without_report_or_notification_evidence(self) -> None:
+        """A report or notification failure must never block session cleanup."""
+        session = build_session_snapshot(
+            "hermes",
+            retain=False,
+            session_id="20260810_010203_a1b2c3",
+            session_state="terminal",
+        )
+        self.assertTrue(
+            is_session_cleanup_eligible(
+                task_status="completed",
+                lease_state="closed",
+                session=session,
+                task_end_dialog_delivered=True,
+            )
         )
 
     def test_cleanup_never_runs_for_retained_session(self) -> None:
@@ -187,9 +201,8 @@ class SessionSnapshotTests(unittest.TestCase):
         blockers = session_cleanup_blockers(
             task_status="failed",
             lease_state="closed",
-            report_written=True,
-            notification_recorded=True,
             session=session,
+            task_end_dialog_delivered=True,
         )
         self.assertIn("retention_enabled", blockers)
 

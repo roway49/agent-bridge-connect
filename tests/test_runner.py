@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -66,10 +68,10 @@ class RunnerStateTests(unittest.TestCase):
         return packet
 
     def test_submit_and_poll_to_completion(self):
-        task = self._authorized_task()
+        task = self._authorized_task(mode="full")
         result = self.state.submit(
             "hermes",
-            [str(self.fake_hermes), "chat", "-q", "--max-turns", "90", "hello"],
+            [str(self.fake_hermes), "chat", "--yolo", "-q", "--max-turns", "90", "hello"],
             str(self.root),
             task=task,
         )
@@ -178,18 +180,195 @@ class RunnerStateTests(unittest.TestCase):
             str(self.fake_hermes),
             "sleep",
             "chat",
+            "--yolo",
             "-q",
             "--max-turns",
             "90",
             "hello",
         ]
         result = self.state.submit(
-            "hermes", command, str(self.root), task=self._authorized_task()
+            "hermes", command, str(self.root), task=self._authorized_task(mode="full")
         )
         cancelled = self.state.cancel(result["run_id"])
         self.assertIn(cancelled["status"], {"cancelling", "cancelled"})
         terminal = self._wait_terminal(result["run_id"])
         self.assertEqual(terminal["status"], "cancelled")
+
+    def test_cancel_task_runs_uses_immutable_runner_binding(self):
+        board = self.root / "task-board"
+        board.mkdir()
+        result = self.state._spawn_process(
+            "worker:hermes",
+            [str(self.fake_hermes), "sleep"],
+            self.root,
+            "runner-worker",
+            task_binding={
+                "task_id": "ABCD-001",
+                "board_root": str(board),
+                "executor": "hermes",
+            },
+        )
+
+        cancelled = self.state.cancel_task_runs("abcd-001", str(board))
+
+        self.assertIs(cancelled["ok"], True)
+        self.assertEqual(cancelled["task_id"], "ABCD-001")
+        self.assertEqual(
+            [item["run_id"] for item in cancelled["runs"]],
+            [result["run_id"]],
+        )
+        terminal = self._wait_terminal(result["run_id"])
+        self.assertEqual(terminal["status"], "cancelled")
+
+    def test_uncontained_spawn_exports_immutable_runner_task_binding(self):
+        run_id = "runner-worker-flow103identity"
+        result = self.state._spawn_process(
+            "worker:hermes",
+            [
+                "/bin/sh",
+                "-c",
+                'printf "%s|%s" "$AGENTBC_RUNNER_TASK_ID" "$AGENTBC_RUNNER_WORKER_ID"',
+            ],
+            self.root,
+            "runner-worker",
+            run_id=run_id,
+            containment=None,
+            task_binding={
+                "task_id": "FLOW-001",
+                "board_root": str(self.root / "board"),
+                "executor": "hermes",
+            },
+        )
+
+        terminal = self._wait_terminal(result["run_id"])
+
+        self.assertEqual(terminal["status"], "completed", terminal.get("stderr"))
+        self.assertEqual(terminal["stdout"], f"FLOW-001|{run_id}")
+        self.assertFalse(self.state.runs[run_id]["containment"])
+
+    def test_cancel_worker_codex_signals_worker_before_process_group(self):
+        result = self.state._spawn_process(
+            "worker:codex",
+            [str(self.fake_hermes), "sleep"],
+            self.root,
+            "runner-worker",
+        )
+        record = self.state.runs[result["run_id"]]
+        process = record["process"]
+        process_group = os.getpgid(process.pid)
+        with (
+            mock.patch("agent_bridge_connect.runner.os.kill") as kill,
+            mock.patch("agent_bridge_connect.runner.os.killpg") as killpg,
+            mock.patch("agent_bridge_connect.runner.threading.Thread.start"),
+        ):
+            cancelled = self.state.cancel(result["run_id"])
+
+        self.assertEqual(cancelled["status"], "cancelling")
+        kill.assert_called_once_with(process.pid, signal.SIGTERM)
+        killpg.assert_not_called()
+        os.killpg(process_group, signal.SIGKILL)
+        process.wait(timeout=2)
+
+    def test_cancel_worker_codex_reaps_detached_descendant(self):
+        child_pid_file = self.root / "detached-child.pid"
+        child_activity_file = self.root / "detached-child.activity"
+        child_script = self.root / "detached-child.py"
+        child_script.write_text(
+            "import pathlib, sys, time\n"
+            "path = pathlib.Path(sys.argv[1])\n"
+            "while True:\n"
+            "    with path.open('a', encoding='utf-8') as handle:\n"
+            "        handle.write('tick\\n')\n"
+            "    time.sleep(0.05)\n",
+            encoding="utf-8",
+        )
+        parent_script = self.root / "detached-parent.py"
+        parent_script.write_text(
+            "import pathlib, subprocess, sys, time\n"
+            "child = subprocess.Popen([sys.executable, sys.argv[2], sys.argv[3]], start_new_session=True)\n"
+            "pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding='utf-8')\n"
+            "time.sleep(30)\n",
+            encoding="utf-8",
+        )
+        result = self.state._spawn_process(
+            "worker:codex",
+            [
+                sys.executable,
+                str(parent_script),
+                str(child_pid_file),
+                str(child_script),
+                str(child_activity_file),
+            ],
+            self.root,
+            "runner-worker-detached",
+        )
+        deadline = time.monotonic() + 3
+        while not child_pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+
+        with mock.patch(
+            "agent_bridge_connect.runner._snapshot_descendant_pids",
+            return_value=[child_pid],
+        ):
+            cancelled = self.state.cancel(result["run_id"])
+        self.assertEqual(cancelled["status"], "cancelling")
+        terminal = self._wait_terminal(result["run_id"], attempts=800)
+
+        self.assertEqual(terminal["status"], "cancelled")
+        size_after_cancel = child_activity_file.stat().st_size
+        time.sleep(0.2)
+        self.assertEqual(child_activity_file.stat().st_size, size_after_cancel)
+
+    def test_snapshot_descendant_pids_recurses_exact_worker_tree(self):
+        from agent_bridge_connect.runner import _snapshot_descendant_pids
+
+        sample = mock.Mock(
+            returncode=0,
+            stdout="10 1\n11 10\n12 11\n13 10\n99 1\n",
+        )
+        with mock.patch(
+            "agent_bridge_connect.runner.subprocess.run",
+            return_value=sample,
+        ):
+            self.assertEqual(_snapshot_descendant_pids(10), [11, 13, 12])
+
+    def test_dispatch_worker_publishes_run_id_before_spawn(self):
+        from agent_bridge_connect.service import TaskService
+
+        packet = self._authorized_task(mode="full")
+        task_id = packet["task_id"]
+        board = Path(packet["task_board"]["root"])
+
+        def observe_spawn(*_args, **kwargs):
+            current = TaskService(board).get_task(task_id)
+            execution = current.extensions["agentbc.execution"]
+            self.assertEqual(execution["worker_run_id"], kwargs["run_id"])
+            self.assertEqual(execution["dispatch_status"], "starting")
+            return {
+                "run_id": kwargs["run_id"],
+                "pid": 43210,
+                "status": "running",
+            }
+
+        with mock.patch.object(
+            self.state,
+            "_spawn_process",
+            side_effect=observe_spawn,
+        ):
+            result = self.state.dispatch_worker(
+                task_id,
+                "hermes",
+                str(board),
+                "",
+                0.1,
+                False,
+            )
+
+        current = TaskService(board).get_task(task_id)
+        execution = current.extensions["agentbc.execution"]
+        self.assertEqual(execution["worker_run_id"], result["run_id"])
+        self.assertEqual(execution["dispatch_status"], "accepted")
 
     def test_token_is_owner_only(self):
         from agent_bridge_connect.runner import _load_or_create_token
@@ -206,6 +385,82 @@ class RunnerStateTests(unittest.TestCase):
 
         self.assertEqual(client.token_path, self.root / "custom-spool" / "token")
 
+    def test_runner_client_private_channel_round_trip(self):
+        from agent_bridge_connect.runner import RunnerClient, RunnerService
+
+        spool = self.root / "channel-spool"
+        service = RunnerService(spool, spool / "token", self.state, interval_s=0.01)
+        channel = "runner-worker-private-1"
+        (spool / "requests" / channel).mkdir()
+        (spool / "responses" / channel).mkdir()
+        thread = threading.Thread(target=service.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "AGENTBC_RUNNER_SPOOL": str(spool),
+                    "AGENTBC_RUNNER_CHANNEL": channel,
+                },
+            ):
+                result = RunnerClient(timeout_s=1.0).health()
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["status"], "ready")
+            self.assertEqual(list((spool / "requests").glob("*.json")), [])
+            self.assertEqual(list((spool / "responses").glob("*.json")), [])
+        finally:
+            service.shutdown()
+            thread.join(timeout=1.0)
+
+    def test_contained_spawn_exports_private_runner_ipc_channel(self):
+        channel = "runner-worker-contained-1"
+        spool = self.root / "contained-spool"
+        self.state.spool_root = spool.resolve()
+        captured: dict[str, str] = {}
+
+        def fake_launch(command, _cwd, profile_text, profile_dir):
+            captured["profile"] = profile_text
+            profile_path = Path(profile_dir) / "task-test.sb"
+            profile_path.parent.mkdir(parents=True, exist_ok=True)
+            profile_path.write_text(profile_text, encoding="utf-8")
+            return command, profile_path
+
+        with (
+            mock.patch(
+                "agent_bridge_connect.seatbelt.seatbelt_available",
+                return_value=True,
+            ),
+            mock.patch(
+                "agent_bridge_connect.seatbelt.launch_with_seatbelt",
+                side_effect=fake_launch,
+            ),
+        ):
+            result = self.state._spawn_process(
+                "worker:codex",
+                [
+                    "/bin/sh",
+                    "-c",
+                    'printf "%s|%s" "$AGENTBC_RUNNER_SPOOL" "$AGENTBC_RUNNER_CHANNEL"',
+                ],
+                self.root,
+                "runner-worker",
+                containment={
+                    "writable_roots": [str(self.root)],
+                    "task_temp_root": str(self.root / "task-temp"),
+                    "runner_ipc_channel": channel,
+                },
+            )
+        terminal = self._wait_terminal(result["run_id"])
+        self.assertEqual(terminal["status"], "completed", terminal.get("stderr"))
+        self.assertEqual(terminal["stdout"], f"{spool.resolve()}|{channel}")
+        requests = (spool / "requests" / channel).resolve()
+        responses = (spool / "responses" / channel).resolve()
+        self.assertIn(f'(allow file-write* (subpath "{requests}"))', captured["profile"])
+        self.assertIn(f'(allow file-write* (subpath "{responses}"))', captured["profile"])
+        self.assertNotIn(f'(allow file-write* (subpath "{spool.resolve()}"))', captured["profile"])
+        self.assertFalse(requests.exists())
+        self.assertFalse(responses.exists())
+
     def test_runner_service_rejects_second_instance_for_same_spool(self):
         from agent_bridge_connect.runner import RunnerError, RunnerService
 
@@ -218,6 +473,27 @@ class RunnerStateTests(unittest.TestCase):
             first.shutdown()
         second = RunnerService(spool, spool / "token", self.state, interval_s=0.01)
         second.shutdown()
+
+    def test_runner_service_refreshes_identity_files_without_rotating_token(self):
+        from agent_bridge_connect.runner import RunnerService
+
+        spool = self.root / "spool-identity-heartbeat"
+        service = RunnerService(spool, spool / "token", self.state, interval_s=0.01)
+        try:
+            token_before = (spool / "token").read_text(encoding="utf-8")
+            pid_before = (spool / "runner.pid").read_text(encoding="utf-8")
+            old = time.time() - 86400
+            for path in (spool, spool / "token", spool / "runner.pid"):
+                os.utime(path, (old, old))
+
+            self.assertTrue(service._refresh_identity_files(now=123.0))
+            self.assertEqual((spool / "token").read_text(encoding="utf-8"), token_before)
+            self.assertEqual((spool / "runner.pid").read_text(encoding="utf-8"), pid_before)
+            self.assertGreater((spool / "token").stat().st_mtime, old)
+            self.assertGreater((spool / "runner.pid").stat().st_mtime, old)
+            self.assertEqual(service._last_identity_refresh_at, 123.0)
+        finally:
+            service.shutdown()
 
     def test_managed_report_write_is_atomic_and_restricted(self):
         from agent_bridge_connect.runner import RunnerError
@@ -268,9 +544,135 @@ class RunnerStateTests(unittest.TestCase):
         command = start.call_args.args[1]
         self.assertIn("--task-id", command)
         self.assertEqual(command[command.index("--task-id") + 1], task.id)
+        binding = start.call_args.kwargs["task_binding"]
+        self.assertEqual(binding["task_id"], task.id)
+        self.assertEqual(binding["board_root"], str(board.resolve()))
+        self.assertEqual(binding["executor"], "hermes")
         task = __import__("json").loads((task_dir / "task.json").read_text(encoding="utf-8"))
         execution = task["extensions"]["agentbc.execution"]
         self.assertEqual(execution["worker_run_id"], "runner-worker-test")
+
+    def test_full_worker_interrupt_reconciles_from_non_containment_binding(self):
+        from agent_bridge_connect.run_lease import create_lease, load_lease, save_lease
+        from agent_bridge_connect.service import TaskService
+
+        board = self.root / "interrupt-board"
+        service = TaskService(board, config={"workspace_root": str(self.root)})
+        task = service.create_task(
+            "Interrupted full worker",
+            "hermes",
+            [{"id": 1, "description": "wait"}],
+            customer_dir=True,
+            customer_path=self.root,
+            permission_mode="full",
+        )
+        service.start_task_run(task.id, "hermes")
+        worker_run_id = "runner-worker-interrupt"
+        result = self.state._spawn_process(
+            "worker:hermes",
+            [str(self.fake_hermes), "sleep"],
+            self.root,
+            "runner-worker",
+            run_id=worker_run_id,
+            containment=None,
+            task_binding={
+                "task_id": task.id,
+                "board_root": str(board.resolve()),
+                "executor": "hermes",
+                "executor_run_id": "hermes-interrupt-run",
+                "official_session_id": "session-interrupt",
+            },
+        )
+        service.update_execution_metadata(
+            task.id,
+            {
+                "worker_run_id": worker_run_id,
+                "worker_pid": result["pid"],
+                "executor_run_id": "hermes-interrupt-run",
+            },
+        )
+        save_lease(
+            create_lease(task.id, "hermes", result["pid"], str(self.root)),
+            board,
+        )
+
+        metadata = __import__("json").loads(
+            (
+                self.state.state_root / "runs" / worker_run_id / "run.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertFalse(metadata["containment"])
+        self.assertEqual(metadata["task_id"], task.id)
+        self.assertEqual(metadata["board_root"], str(board.resolve()))
+        self.assertEqual(metadata["task_binding"]["official_session_id"], "session-interrupt")
+
+        self.state.cancel(worker_run_id)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if service.get_task(task.id).status == "needs_recovery":
+                break
+            time.sleep(0.02)
+        recovered = service.get_task(task.id)
+        self.assertEqual(recovered.status, "needs_recovery")
+        self.assertEqual(load_lease(task.id, board).state, "closed")
+        self.assertNotIn(
+            "worker_run_id",
+            recovered.extensions["agentbc.execution"],
+        )
+        events = service.store.read_events(task.id)
+        self.assertIn("task.recovery_required", [event["event_type"] for event in events])
+        self.assertNotIn("task.failed", [event["event_type"] for event in events])
+
+    def test_worker_exit_closes_adapter_declared_recovery_lifecycle(self):
+        from agent_bridge_connect.run_lease import create_lease, load_lease, save_lease
+        from agent_bridge_connect.service import TaskService
+
+        board = self.root / "adapter-recovery-board"
+        service = TaskService(board, config={"workspace_root": str(self.root)})
+        task = service.create_task(
+            "Adapter recovery",
+            "codex",
+            [{"id": 1, "description": "recover"}],
+            customer_dir=True,
+            customer_path=self.root,
+        )
+        service.start_task_run(task.id, "codex")
+        service.update_execution_metadata(
+            task.id,
+            {
+                "worker_run_id": "runner-worker-adapter-recovery",
+                "worker_pid": 99999,
+                "executor_run_id": "codex-adapter-recovery",
+            },
+        )
+        lease = create_lease(task.id, "codex", 99999, str(self.root))
+        save_lease(lease, board)
+        service.mark_task_needs_recovery(
+            task.id,
+            "codex_turn_state_unconfirmed",
+            "adapter declared recovery",
+            executor_run_id="codex-adapter-recovery",
+        )
+
+        self.state._reconcile_worker_exit(
+            {
+                "run_id": "runner-worker-adapter-recovery",
+                "task_id": task.id,
+                "board_root": str(board),
+                "executor": "worker:codex",
+                "returncode": 1,
+            }
+        )
+
+        recovered = service.get_task(task.id)
+        self.assertEqual(recovered.status, "needs_recovery")
+        self.assertEqual(load_lease(task.id, board).state, "closed")
+        self.assertNotIn("worker_run_id", recovered.extensions["agentbc.execution"])
+        event_types = [
+            event["event_type"] for event in service.store.read_events(task.id)
+        ]
+        self.assertEqual(event_types.count("task.recovery_required"), 1)
+        self.assertEqual(event_types.count("task.recovery_ready"), 1)
 
     def test_dispatch_worker_allows_task_scoped_customer_path(self):
         from agent_bridge_connect.service import TaskService
@@ -314,10 +716,12 @@ class RunnerStateTests(unittest.TestCase):
                 [{"id": 1, "description": "run in customer project"}],
                 customer_dir=True,
                 customer_path=workspace,
+                permission_mode="full",
             )
             command = [
                 str(self.fake_hermes),
                 "chat",
+                "--yolo",
                 "-q",
                 "--max-turns",
                 "90",
@@ -770,6 +1174,11 @@ class RunnerStateTests(unittest.TestCase):
         )
         task_service.start_task_run(source.id, "hermes")
         task_service.mark_task_failed(source.id, "test_failure", "cannot hand off")
+        # FLOW-104-003: a failed current chain head is now a valid handoff
+        # source, so this regression uses a cancelled terminal source to keep
+        # exercising the deterministic business-error path.
+        task_service.mark_task_needs_recovery(source.id, "test_failure", "retry not allowed")
+        task_service.cancel_task(source.id)
 
         spool = self.root / "business-error-spool"
         token = spool / "token"
@@ -778,7 +1187,7 @@ class RunnerStateTests(unittest.TestCase):
         thread.start()
         try:
             client = RunnerClient(spool, token, timeout_s=2)
-            with self.assertRaisesRegex(RunnerError, "handoff requires completed"):
+            with self.assertRaisesRegex(RunnerError, "handoff requires"):
                 client.handoff_and_dispatch(
                     source.id,
                     "hermes",
@@ -789,6 +1198,39 @@ class RunnerStateTests(unittest.TestCase):
                 )
             self.assertEqual(client.health()["status"], "ready")
             self.assertTrue(thread.is_alive())
+        finally:
+            runner_service.shutdown()
+            thread.join(timeout=2)
+
+    def test_cancel_task_runs_file_spool_response_is_successful(self):
+        from agent_bridge_connect.runner import RunnerClient, RunnerService
+
+        board = self.root / "cancel-task-board"
+        board.mkdir()
+        run = self.state._spawn_process(
+            "worker:hermes",
+            [str(self.fake_hermes), "sleep"],
+            self.root,
+            "runner-worker-client-cancel",
+            task_binding={
+                "task_id": "ABCD-001",
+                "board_root": str(board),
+                "executor": "hermes",
+            },
+        )
+        spool = self.root / "cancel-task-spool"
+        token = spool / "token"
+        runner_service = RunnerService(spool, token, self.state, interval_s=0.01)
+        thread = threading.Thread(target=runner_service.serve_forever, daemon=True)
+        thread.start()
+        try:
+            client = RunnerClient(spool, token, timeout_s=2)
+            result = client.cancel_task_runs("ABCD-001", board)
+            self.assertIs(result["ok"], True)
+            self.assertEqual(
+                [item["run_id"] for item in result["runs"]],
+                [run["run_id"]],
+            )
         finally:
             runner_service.shutdown()
             thread.join(timeout=2)
@@ -821,13 +1263,14 @@ class RunnerStateTests(unittest.TestCase):
                 [
                     str(self.fake_hermes),
                     "chat",
+                    "--yolo",
                     "-q",
                     "--max-turns",
                     "90",
                     "hello",
                 ],
                 self.root,
-                task=self._authorized_task(),
+                task=self._authorized_task(mode="full"),
             )
             terminal = self._wait_client_terminal(client, submitted["run_id"])
             self.assertEqual(terminal["stdout"], "RUNNER_OK")
@@ -1031,8 +1474,8 @@ class RunnerStateTests(unittest.TestCase):
 
         self.assertFalse((board / "tasks").exists())
 
-    def _wait_terminal(self, run_id: str):
-        for _ in range(300):
+    def _wait_terminal(self, run_id: str, *, attempts: int = 300):
+        for _ in range(attempts):
             status = self.state.status(run_id)
             if status["status"] in {"completed", "failed", "cancelled"}:
                 return status

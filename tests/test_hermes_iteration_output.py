@@ -15,8 +15,12 @@ from agent_bridge_connect.execution_contract import (
 from agent_bridge_connect.executors.hermes import (
     HermesExecutor,
     _build_prompt,
+    _execution_session_receipt,
     _extract_final_response,
+    _hermes_exit_summary_session_id,
+    _hermes_terminal_receipt,
     _iteration_budget_diagnostics,
+    _route_hermes_terminal,
 )
 
 
@@ -90,6 +94,7 @@ class HermesOutputExtractionTests(unittest.TestCase):
         returncode: int = 0,
         stderr: str = "",
         remote_status: str = "completed",
+        output_truncated: bool = False,
     ):
         executor = HermesExecutor(command=sys.executable, transport="runner")
         submitted_run_ids: list[str] = []
@@ -107,7 +112,7 @@ class HermesOutputExtractionTests(unittest.TestCase):
             "stderr": stderr,
             "returncode": returncode,
             "cwd": str(Path(self.temporary.name)),
-            "output_truncated": False,
+            "output_truncated": output_truncated,
         }
         with (
             patch.object(executor, "_start_run_lease"),
@@ -472,6 +477,153 @@ class HermesOutputExtractionTests(unittest.TestCase):
         self.assertIn("openai", command)
         self.assertIn("--model", command)
         self.assertIn("gpt-5", command)
+
+    def test_frozen_turn_limit_uses_visible_native_oneshot_surface(self) -> None:
+        executor = HermesExecutor(command=sys.executable, transport="direct")
+        packet = dict(self.packet)
+        packet["extensions"] = {
+            "agentbc.resources": {
+                "version": 1,
+                "executor": "hermes",
+                "resource": "max_turns",
+                "configured_limit": 2,
+                "current_limit": 2,
+                "multiplier": 2,
+                "exhaustion_count": 0,
+                "last_decision": "",
+                "source": "configured",
+                "created_at": "2026-09-15T00:00:00Z",
+            }
+        }
+        command = executor._build_command(_build_prompt(packet), task_packet=packet)
+        self.assertIn("--max-turns", command)
+        self.assertIn("--oneshot", command)
+        self.assertNotIn("-Q", command)
+
+    def test_native_oneshot_exit_summary_binds_official_session_receipt(self) -> None:
+        session_id = "20260915_154026_a1b2c3"
+        self.packet["extensions"] = {
+            "agentbc.resources": {
+                "version": 1,
+                "executor": "hermes",
+                "resource": "max_turns",
+                "configured_limit": 4,
+                "current_limit": 4,
+                "multiplier": 2,
+                "exhaustion_count": 0,
+                "source": "configured",
+                "created_at": "2026-09-15T00:00:00Z",
+            }
+        }
+        stdout = (
+            "assistant result\n\n"
+            "Resume this session with:\n"
+            f"  hermes --resume {session_id}\n\n"
+            f"Session:        {session_id}\n"
+            "Duration:       1m 23s\n"
+            "Messages:       4 (1 user, 1 tool calls)\n"
+        )
+
+        self.assertEqual(_hermes_exit_summary_session_id(stdout), session_id)
+        receipt = _execution_session_receipt("", self.packet, stdout=stdout)
+        self.assertIsNotNone(receipt)
+        self.assertEqual(receipt["session_id"], session_id)
+        self.assertEqual(receipt["source"], "stderr_receipt")
+        self.assertEqual(receipt["evidence_source"], "stdout_exit_summary")
+        self.assertEqual(_extract_final_response(stdout, self.packet), "assistant result")
+        poll = self._run_direct(stdout)
+        self.assertEqual(poll.status, "failed")
+        self.assertEqual(poll.result["failure"]["kind"], "incomplete_normal_exit")
+        self.assertEqual(poll.result["execution_session"]["session_id"], session_id)
+        self.assertEqual(poll.result["final_text"], "assistant result")
+        terminal = poll.result["terminal_receipt"]
+        self.assertEqual(terminal["task_id"], "TEST-001")
+        self.assertTrue(terminal["executor_run_id"].startswith("hermes-TEST-001-"))
+        self.assertTrue(terminal["official_session_bound"])
+        self.assertEqual(terminal["session_id"], session_id)
+        self.assertEqual(terminal["reason"], "incomplete_normal_exit")
+        self.assertEqual(terminal["turns"]["limit"], 4)
+        self.assertEqual(terminal["turns"]["snapshot_limit"], 4)
+        self.assertEqual(terminal["resource_snapshot"]["current_limit"], 4)
+        self.assertEqual(len(terminal["resource_snapshot_digest"]), 64)
+        self.assertFalse(terminal["final_response"]["marker_valid"])
+
+    def test_official_normal_exit_does_not_relax_malformed_callback(self) -> None:
+        session_id = "20260915_154026_a1b2c3"
+        stdout = (
+            f"{self._marker(task_id='WRONG-001')}\n\n"
+            "Resume this session with:\n"
+            f"  hermes --resume {session_id}\n\n"
+            f"Session:        {session_id}\n"
+            "Duration:       2s\n"
+            "Messages:       2 (1 user, 0 tool calls)\n"
+        )
+        poll = self._run_direct(stdout)
+        self.assertEqual(poll.status, "failed")
+        self.assertEqual(poll.result["failure"]["kind"], "completion_marker_task_mismatch")
+
+    def test_runner_truncation_without_valid_callback_is_recoverable(self) -> None:
+        poll = self._run_runner("ordinary partial output", output_truncated=True)
+        self.assertEqual(poll.status, "needs_recovery")
+        self.assertEqual(poll.result["failure"]["kind"], "executor_output_truncated")
+        self.assertTrue(poll.result["failure"]["retryable"])
+        self.assertTrue(poll.result["terminal_receipt"]["process"]["output_truncated"])
+
+    def test_context_exhaustion_and_unknown_acp_reasons_are_recoverable(self) -> None:
+        validation = extract_callback_validation_from_output("no callback", self.packet, "run-1")
+        execution_session = {
+            "session_id": "acp-session-1",
+            "resumed": False,
+            "source": "stderr_receipt",
+            "evidence_source": "acp_session",
+        }
+        for native_reason, expected_kind in (
+            ("context_window_exhausted", "hermes_context_exhausted"),
+            ("future_protocol_reason", "hermes_terminal_reason_unknown"),
+        ):
+            with self.subTest(native_reason=native_reason):
+                receipt = _hermes_terminal_receipt(
+                    validation,
+                    0,
+                    task_packet=self.packet,
+                    executor_run_id="run-1",
+                    execution_session=execution_session,
+                    iteration=_iteration_budget_diagnostics("", ""),
+                    failure=None,
+                    final_response="no callback",
+                    stop_reason=native_reason,
+                )
+                terminal = _route_hermes_terminal(
+                    validation,
+                    0,
+                    stderr="",
+                    failure=None,
+                    iteration=_iteration_budget_diagnostics("", ""),
+                    task_packet=self.packet,
+                    terminal_receipt=receipt,
+                )
+                self.assertEqual(terminal.status, "needs_recovery")
+                self.assertEqual(terminal.failure["kind"], expected_kind)
+                self.assertTrue(terminal.failure["retryable"])
+
+    def test_native_oneshot_exit_summary_must_be_complete_and_consistent(self) -> None:
+        session_id = "20260915_154026_a1b2c3"
+        mismatched = (
+            "Resume this session with:\n"
+            f"  hermes --resume {session_id}\n\n"
+            "Session:        20260915_154026_deadbe\n"
+            "Duration:       2s\n"
+            "Messages:       2 (1 user, 0 tool calls)\n"
+        )
+        incomplete = (
+            "Resume this session with:\n"
+            f"  hermes --resume {session_id}\n\n"
+            f"Session:        {session_id}\n"
+        )
+
+        self.assertIsNone(_hermes_exit_summary_session_id(mismatched))
+        self.assertIsNone(_hermes_exit_summary_session_id(incomplete))
+        self.assertIsNone(_execution_session_receipt("", self.packet, stdout=incomplete))
 
     # ---- contract-level helpers ---------------------------------------------
 

@@ -24,6 +24,54 @@ from agent_bridge_connect.skill_packages import (
 )
 
 
+def _frozen_102a1_files(platform: str) -> dict[str, bytes]:
+    """Reconstruct the genuine 1.0.2a1 skill files (hash-verified).
+
+    PERM-104-002 T2A3-001: the current package is newer and its controller
+    contract changed after 1.0.2a1. Those contract bytes are preserved as a fixture;
+    byte-identical files come from the current package.
+    """
+    from agent_bridge_connect.setup import _current_skill_files
+    from agent_bridge_connect.skill_packages import (
+        MANAGED_SKILL_FINGERPRINTS,
+        sha256_bytes,
+    )
+
+    fingerprint = MANAGED_SKILL_FINGERPRINTS["1.0.2a1"][platform]
+    frozen_override = {
+        "SKILL.md": (
+            Path(__file__).parent
+            / "fixtures"
+            / "skill"
+            / "1.0.2a1"
+            / "codex-SKILL.md"
+        )
+        if platform == "codex"
+        else Path(""),
+        "references/controller-contract.md": (
+            Path(__file__).parent
+            / "fixtures"
+            / "skill"
+            / "1.0.2a1"
+            / "controller-contract.md"
+        ),
+    }
+    current = _current_skill_files(platform)
+    files: dict[str, bytes] = {}
+    for relative_path, digest in fingerprint["files"].items():
+        override = frozen_override.get(relative_path)
+        if override is not None and override.is_file():
+            candidate = override.read_bytes()
+        else:
+            candidate = current[relative_path]
+        if sha256_bytes(candidate) != digest:
+            raise AssertionError(
+                f"frozen 1.0.2a1 bytes unavailable for {platform}:{relative_path}"
+            )
+        files[relative_path] = candidate
+    return files
+
+
 class _FakeDistribution:
     def read_text(self, filename: str) -> str | None:
         return None if filename != "direct_url.json" else None
@@ -242,7 +290,7 @@ class SetupUpdateTruthfulnessTests(unittest.TestCase):
 
         # Base profile carries an intact, genuine 1.0.2a1 managed package;
         # the dev profile carries a user-modified Skill.
-        current_files = setup._current_skill_files("hermes")
+        current_files = _frozen_102a1_files("hermes")
         for relative_path, content in current_files.items():
             target = base_skill / relative_path
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -345,7 +393,7 @@ class DoctorManagedOutdatedTests(unittest.TestCase):
     def test_doctor_reports_managed_outdated_as_intact_older_package(self):
         from agent_bridge_connect.setup import _current_skill_files
 
-        current_files = _current_skill_files("codex")
+        current_files = _frozen_102a1_files("codex")
         root = self.root / "skills-codex"
         root.mkdir()
         for relative_path, content in current_files.items():

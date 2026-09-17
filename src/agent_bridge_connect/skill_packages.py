@@ -13,7 +13,7 @@ MANIFEST_SCHEMA_VERSION = 1
 PROTOCOL_VERSION = "1.0"
 COMPLETION_VERSION = 1
 
-# Exact package fingerprints from private/integration@33d3d08.  These hashes
+# Exact package fingerprints from the frozen compatibility baseline.  These hashes
 # intentionally remain constants: recomputing them from current templates would
 # make an old, unmodified installation indistinguishable from user content.
 LEGACY_SKILL_FINGERPRINTS: dict[str, dict[str, Any]] = {
@@ -78,6 +78,46 @@ MANAGED_SKILL_FINGERPRINTS: dict[str, dict[str, dict[str, Any]]] = {
                 "SKILL.md": "108723eb662cd22e78a475e48512dc2beae21fb079378be92fc3a26388521654",
                 "references/agentbc-steps-yaml.md": "ec2d398a422e7ae4787b7321a66a29aa77e6442ad1ed27f5b835007bdf8880dc",
                 "references/controller-contract.md": "370af89b528469368c75f49b9986f004951397b240a1d9721d6598057665c38d",
+            },
+        },
+    },
+    # 1.0.3a2 (historical managed release): the controller
+    # contract contains the executor-native choice broker and the split
+    # Hermes full transport contract. Codex SKILL.md also contains the native
+    # Desktop archive acknowledgement bridge; the steps YAML remains
+    # byte-identical to 1.0.2a1. FLOW-104-003 (shared-repository regression): the shared
+    # controller contract additionally documents the agentbc.revival v1
+    # failed/needs-recovery revival protocol.
+    "1.0.3a2": {
+        "codex": {
+            "protocol_version": "1.0",
+            "completion_version": 1,
+            "template_sha256": "7e8d35c9620de6c763ac1adaf63110524c59f9d59f1339447834616a00a73525",
+            "files": {
+                "SKILL.md": "fcffaede3997c0d2876aca396638714a915c234d6400dca6f33525826e1a393c",
+                "agents/openai.yaml": "8f6cf84d2091c1ea1e895ec06f9d2321daceee34e5707cd9df3fc8a9142ca21a",
+                "references/agentbc-steps-yaml.md": "ec2d398a422e7ae4787b7321a66a29aa77e6442ad1ed27f5b835007bdf8880dc",
+                "references/controller-contract.md": "a8548e70a6c5d16d9f856e346918d5c3b10584c817f54a4b3cd83312edfac2fc",
+            },
+        },
+        "claude": {
+            "protocol_version": "1.0",
+            "completion_version": 1,
+            "template_sha256": "c6a25936f73c73ed8df2478c051ad195b312e5d29d3fdcda00e3d40076fdd167",
+            "files": {
+                "SKILL.md": "793e1c2c2ff04785f917f97d39decef3789a14a27d679f4ddf2789e598baf1db",
+                "references/agentbc-steps-yaml.md": "ec2d398a422e7ae4787b7321a66a29aa77e6442ad1ed27f5b835007bdf8880dc",
+                "references/controller-contract.md": "a8548e70a6c5d16d9f856e346918d5c3b10584c817f54a4b3cd83312edfac2fc",
+            },
+        },
+        "hermes": {
+            "protocol_version": "1.0",
+            "completion_version": 1,
+            "template_sha256": "31214ff1aac79d0c78c9753db5c6b884ea0fe6245542c8f2e2a71f6e2029ab2a",
+            "files": {
+                "SKILL.md": "108723eb662cd22e78a475e48512dc2beae21fb079378be92fc3a26388521654",
+                "references/agentbc-steps-yaml.md": "ec2d398a422e7ae4787b7321a66a29aa77e6442ad1ed27f5b835007bdf8880dc",
+                "references/controller-contract.md": "a8548e70a6c5d16d9f856e346918d5c3b10584c817f54a4b3cd83312edfac2fc",
             },
         },
     },

@@ -27,6 +27,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from agent_bridge_connect.execution_contract import FINAL_CALLBACK_PREFIX
+from agent_bridge_connect.handoff_recovery import (
+    HANDOFF_RECOVERY_EXTENSION_KEY,
+    recovery_prompt_lines,
+)
+from agent_bridge_connect.input_manifest import task_input_paths
 from agent_bridge_connect.protocol import resumed_input_prompt_lines, task_step_text
 
 #: Common rules emitted once per prompt for every executor. Wording is the
@@ -43,11 +48,10 @@ COMMON_RULES = (
     "AgentBC Core owns the execution report. Do not write or replace REPORT.md.",
 )
 
-PROGRESS_LEAD = "For long-running work, refresh AgentBC progress at least every few minutes:"
+PROGRESS_LEAD = "After each step, record authoritative completion:"
 
 MARKER_LEAD = (
-    "Your final response must end with exactly one single-line terminal marker "
-    "and no text after it:"
+    "End with exactly one marker. Use each Step ID once; description numbers are not Step IDs:"
 )
 INPUT_REQUIRED_RULE = (
     "Use final_state input_required only with at least one declared step status blocked; "
@@ -57,6 +61,12 @@ INPUT_REQUIRED_RULE = (
     "keep all other steps pending or done, include no native flags, and never use message or choice. "
     "Plain permission or approval prose is not a valid stop, and free-text message responses can "
     "never grant access."
+)
+NATIVE_PERMISSION_RULE = (
+    "For native Claude SDK permission events, never request full, mint a grant, or emit a "
+    "permission input from the model; only the native can_use_tool event can block one exact "
+    "single action. Native transport failure requires needs_recovery and must never become a "
+    "full request."
 )
 CHOICE_SPEC = (
     'For a two-option user decision, include "input":{"type":"choice","reason":"why the user must decide",'
@@ -83,6 +93,7 @@ class PromptPlatformExtras:
     image_rule: str | None = None
     summary_line: str = "After completing all steps, write a summary of what you did."
     extra_rules: tuple[str, ...] = ()
+    native_permission_rule: str | None = None
 
 
 def build_prompt_contract(
@@ -105,9 +116,13 @@ def build_prompt_contract(
     if isinstance(task_packet.get("extensions"), dict):
         value = task_packet["extensions"].get("agentbc.lineage")
         lineage = value if isinstance(value, dict) else {}
+    recovery_record = {}
+    if isinstance(task_packet.get("extensions"), dict):
+        value = task_packet["extensions"].get(HANDOFF_RECOVERY_EXTENSION_KEY)
+        recovery_record = value if isinstance(value, dict) else {}
     progress_command = (
         f"agentbc task progress {shlex.quote(task_id)} --root {shlex.quote(board_root)} "
-        '--summary "describe current progress"'
+        '--step <id> --summary "evidence"'
     )
 
     lines = [platform.opening, ""]
@@ -145,11 +160,18 @@ def build_prompt_contract(
             )
     else:
         lines.append("")
+    file_inputs = task_input_paths(task_packet, kind="file")
+    if file_inputs:
+        lines.extend(["", "Frozen file inputs:"])
+        lines.extend(f"- {path}" for path in file_inputs)
+        lines.append("Use these exact files as task inputs; do not attempt to reopen the original source paths.")
     lines.append("Steps:")
 
     resume_context = resumed_input_prompt_lines(task_packet)
     if resume_context:
         lines.extend(["", *resume_context, ""])
+    if recovery_record:
+        lines.extend(["", *recovery_prompt_lines(recovery_record), ""])
     for index, step in enumerate(task_packet.get("steps") or [], 1):
         lines.append(f"{index}. {task_step_text(step)} [status: {step.get('status', 'pending')}]")
 
@@ -182,7 +204,7 @@ def build_prompt_contract(
                 f'"final_state":"completed","summary":"concise summary",'
                 f'"step_results":[{step_results}]}}'
             ),
-            INPUT_REQUIRED_RULE,
+            platform.native_permission_rule or INPUT_REQUIRED_RULE,
             CHOICE_SPEC,
             ZERO_EXIT_RULE,
         ]

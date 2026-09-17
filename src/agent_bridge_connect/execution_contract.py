@@ -11,6 +11,10 @@ FINAL_CALLBACK_PREFIX = "AGENTBC_FINAL_CALLBACK:"
 FINAL_CALLBACK_VERSION = 1
 AGENT_FINAL_STATES = frozenset({"completed", "input_required", "cancelled"})
 STEP_RESULT_STATUSES = frozenset({"done", "failed", "blocked", "pending"})
+# FLOW-104-003: a locked inherited step imported from a failed handoff source is
+# already complete.  It is stored with this declared-task status and may only be
+# reported back as ``done`` in the final callback; it can never execute again.
+INHERITED_DONE_STATUS = "inherited_done"
 CHOICE_INPUT_TYPE = "choice"
 PERMISSION_INPUT_TYPE = "permission"
 PERMISSION_REQUESTED_MODE = "full"
@@ -126,6 +130,30 @@ def validate_callback_payload(
         normalized_results.append(dict(item))
 
     declared_set = set(declared_ids)
+    # FLOW-104-003: a locked inherited step may only be reported as done.  It is
+    # already complete, so any other declared outcome proves the executor
+    # re-executed locked work and the marker must fail closed.
+    locked_ids = sorted(
+        step_id
+        for step_id, step in zip(declared_ids, declared_steps)
+        if isinstance(step, dict)
+        and (
+            step.get("status") == INHERITED_DONE_STATUS
+            or step.get("locked") is True
+        )
+    )
+    if locked_ids:
+        invalid_locked = sorted(
+            item["id"]
+            for item in normalized_results
+            if item["id"] in set(locked_ids) and item.get("status") != "done"
+        )
+        if invalid_locked:
+            return _invalid(
+                "completion_marker_locked_step_invalid",
+                "Locked inherited steps may only be reported as done: "
+                + ", ".join(map(str, invalid_locked)),
+            )
     if final_state == "completed":
         missing_ids = sorted(declared_set - seen_ids)
         if missing_ids:
@@ -344,6 +372,7 @@ def route_executor_terminal(
     stderr: str = "",
     runtime_failure: dict[str, Any] | None = None,
     resource_exhaustion: dict[str, Any] | None = None,
+    native_approval_authoritative: bool = False,
 ) -> ExecutorTerminalResult:
     """Route only declared flow state plus explicit process/transport evidence.
 
@@ -352,6 +381,32 @@ def route_executor_terminal(
     a confirmed resource exhaustion becomes a system ``input_required`` wait,
     and only then does a strict marker failure apply.
     """
+    if (
+        native_approval_authoritative
+        and returncode == 0
+        and validation.valid
+        and validation.callback is not None
+        and validation.callback.get("final_state") == "input_required"
+    ):
+        # A model-authored callback is never an authority for a native SDK
+        # permission wait.  The only actionable native event is the
+        # structured can_use_tool request projected by the live Adapter.  A
+        # callback that asks for full (or otherwise asks for input) is
+        # diagnostic evidence and must not mint Core input, a grant, or a
+        # continuation.
+        return ExecutorTerminalResult(
+            "needs_recovery",
+            None,
+            {
+                "kind": "native_permission_callback_ignored",
+                "layer": "permission",
+                "message": (
+                    "A Claude SDK callback cannot create native permission input; "
+                    "the native request/control session requires recovery."
+                ),
+                "retryable": False,
+            },
+        )
     if returncode == 0 and validation.valid and validation.callback is not None:
         return ExecutorTerminalResult(
             status=str(validation.callback["final_state"]),

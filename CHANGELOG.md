@@ -1,5 +1,80 @@
 # Changelog
 
+## 1.0.4A - 2026-09-17
+
+> Release candidate for Python package `1.0.4a1`. Publication remains gated
+> on the immutable `v1.0.4A` tag, release-matrix validation, and final user
+> go/no-go.
+
+### Added
+
+- Executor-native permission handling for Codex, Claude, and Hermes, with one
+  trusted task-elevation dialog at most and a single full continuation bound to
+  the exact task, run, and official executor session.
+- Mechanical failed-task revival through `agentbc.revival` v1: `retry` resets
+  the same Task from Step 1 while preserving custom-path contents, and
+  `handoff` creates the next iteration from imported requirements, report, and
+  recorded step state.
+- Content-addressed task input manifests for files outside a custom project
+  root without widening the executor's project write boundary.
+- Monotonic `agentbc.progress` receipts bound to task, attempt, run, session,
+  and declared step, including preserved progress across permission and
+  resource continuations.
+- Independent terminal-delivery receipts for report, record, index, file/UI
+  notification, and session cleanup so one failed delivery stage cannot erase
+  the task's business terminal state.
+
+### Changed
+
+- Full execution is the authoritative noninteractive path. Safe or inherited
+  runs may elevate once from a trusted native permission event; repeated
+  per-action approval loops and legacy matcher/session-rule inference are
+  retired.
+- Hermes uses ACP for interactive safe/inherit work and `hermes chat --yolo`
+  for full execution; Claude applies same-session `bypassPermissions` through
+  its official SDK control path; Codex uses its official app-server session.
+- Codex temporary-session cleanup now delivers Desktop archive acknowledgement
+  before the existing delete operation and verifies the exact official session
+  is absent without touching dispatcher or unrelated conversations.
+- Retry and close paths now join the existing cleanup coordinator rather than
+  implementing a second cleanup policy.
+- Service, Runner, and Doctor responsibilities were split behind compatibility
+  facades. Their combined production LOC is 5.35% below the pre-refactor T0
+  baseline, with a permanent architecture budget regression test.
+
+### Fixed
+
+- Removed callback-, stderr-, prompt-, and exit-code-based permission
+  escalation. Only authoritative executor protocol events can request user
+  input or resume a blocked action.
+- Prevented Claude startup snapshot drift between official session
+  registration and Runner authorization, and preserved same-session completion
+  after approval.
+- Preserved Hermes ACP tool-call identifiers, final assistant output, terminal
+  reason, callback validation, and full-mode session identity across Runner
+  restart and continuation boundaries.
+- Distinguished incomplete normal exit, native resource exhaustion, transport
+  loss, cancellation, denial, and valid completion instead of treating return
+  code zero as success.
+- Fixed retry/handoff confirmation, current-attempt timing, `needs_recovery`
+  eligibility, stale Executor activity, and retry-attempt session cleanup.
+- Raised bounded task-record capacity to 50 KiB while keeping terminal report,
+  notification, and cleanup delivery independently replayable.
+
+### Validation
+
+- The release-preparation source gate passed 2,108 unittests (17 skipped) on
+  Python 3.11 with the supported executor dependencies installed.
+- Source acceptance covers full unittest, Ruff, compileall, shell syntax,
+  `git diff --check`, wheel/sdist build, Twine metadata, release-manifest
+  hashes, isolated wheel install, and package-only smoke testing.
+- Real Codex, Claude, and Hermes canaries cover ordinary execution, one-time
+  permission elevation, exact artifacts and callbacks, closed RunLeases, and
+  executor-session cleanup with retention disabled.
+- Publication is not implied by this entry. The final tag, GitHub Release,
+  PyPI upload, macOS bundle, Homebrew artifacts, and dual-host verification
+  remain separate immutable release gates.
+
 ## 1.0.3A - 2026-08-26
 
 > Development and release validation are complete for AgentBC `1.0.3A`.

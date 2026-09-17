@@ -1,0 +1,42 @@
+{
+  "probe": "synthetic-runtime-verification",
+  "sdk_version": "0.2.142",
+  "cli_version": "2.1.233 (Claude Code)",
+  "events": [
+    {
+      "event": "can_use_tool",
+      "tool_use_id": "call_eeeeeeeeeeeeeeeeeeeeeeee",
+      "tool": "Bash"
+    },
+    {
+      "event": "control_response",
+      "tool_use_id": "call_eeeeeeeeeeeeeeeeeeeeeeee",
+      "decision": "accept"
+    },
+    {
+      "event": "can_use_tool",
+      "tool_use_id": "call_ffffffffffffffffffffffff",
+      "tool": "Bash"
+    },
+    {
+      "event": "control_response",
+      "tool_use_id": "call_ffffffffffffffffffffffff",
+      "decision": "decline"
+    }
+  ],
+  "checks": {
+    "allow_result_is_error_false": true,
+    "result_session_matches_probe_session": true,
+    "allow_file_created": true,
+    "allow_file_content": "probe-allow",
+    "deny_file_created": false,
+    "approved_identity_anchored": true,
+    "structured_post_tool_use_success_for_anchor": true,
+    "anchor_post_session_bound": true,
+    "hook_log_session_bound": true,
+    "two_can_use_tool_requests": true,
+    "real_control_plane_responses": true,
+    "ledger_decisions_normalized": true
+  },
+  "verdict": "pass"
+}

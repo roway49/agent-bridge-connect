@@ -1,0 +1,43 @@
+{
+  "cleanup": {
+    "argv": [
+      "delete",
+      "{uuid}",
+      "--force"
+    ],
+    "probe": "`codex delete --help` must expose the exact UUID form",
+    "strategy": "official_session_delete"
+  },
+  "early_receipt": {
+    "acceptance_rule": "exactly one well-formed thread.started event; duplicate or malformed receipts are rejected",
+    "event": "thread.started",
+    "extractor": "_extract_codex_session_id",
+    "field": "thread_id",
+    "receipt_samples": {},
+    "required": true
+  },
+  "fail_closed": {
+    "incomplete_capability_group_fails_closed": true,
+    "mismatched_event_payload_fails_closed": true,
+    "missing_early_receipt_fails_closed": true,
+    "unknown_critical_event_fails_closed": true,
+    "unknown_noncritical_fields_ignored": true
+  },
+  "resume": {
+    "argv": [
+      "resume",
+      "{thread_id}"
+    ],
+    "requires_earlier_receipt": true
+  },
+  "source": "candidate version: event semantics inherit the frozen surface until a live canary proves otherwise",
+  "surface": "session_events",
+  "terminal": {
+    "callback_marker_dependency": false,
+    "events": [
+      "item.completed(agent_message)",
+      "turn/completed"
+    ],
+    "summary_source": "last agent_message item"
+  }
+}

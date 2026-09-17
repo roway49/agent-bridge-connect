@@ -1,0 +1,5 @@
+{
+  "invalid_callback": "assistant text is stripped of callback markers before storage",
+  "no_callback": "run ends terminal_failed; Hermes is never asked to emit AgentBC markers",
+  "surface": "callback_failures"
+}

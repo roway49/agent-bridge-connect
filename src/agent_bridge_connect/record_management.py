@@ -9,9 +9,12 @@ from typing import Any
 from .protocol import ABCError
 
 
-MAX_TASK_RECORD_BYTES = 10 * 1024
+MAX_TASK_RECORD_BYTES = 50 * 1024
 MAX_EVENT_LOG_BYTES = 1536
 MAX_DIAGNOSTIC_TEXT = 512
+MAX_TIGHT_EVENT_LOG_BYTES = 768
+MAX_TIGHT_INTERVENTION_LOG_BYTES = 384
+MAX_TIGHT_RUN_LOG_BYTES = 384
 
 RECORD_README = """# AgentBC Record Directory
 
@@ -77,6 +80,9 @@ def compact_diagnostic_details(value: Any) -> Any:
                 if event_types:
                     compact["event_types"] = event_types
                 continue
+            if name == "control_events" and isinstance(item, list):
+                compact[name] = _compact_control_events(item)
+                continue
             if name in {"command", "aggregated_output", "prompt", "raw_output"}:
                 compact[f"{name}_bytes"] = len(str(item or "").encode("utf-8"))
                 continue
@@ -95,10 +101,88 @@ def compact_diagnostic_details(value: Any) -> Any:
     return value
 
 
+def _compact_control_events(events: list[Any]) -> dict[str, Any]:
+    """Project a high-volume control stream into bounded causal evidence.
+
+    The full stream remains in task-scoped control storage.  Terminal task
+    state keeps only aggregate cardinality/types plus the first event, latest
+    approval and latest event.  This preserves receipt and permission identity
+    without copying thousands of repeated App Server notifications into
+    ``task.json``.
+    """
+    normalized = [event for event in events if isinstance(event, dict)]
+    event_types: list[str] = []
+    for event in normalized:
+        event_type = str(event.get("event_type") or "").strip()
+        if event_type and event_type not in event_types:
+            event_types.append(event_type)
+        if len(event_types) >= 8:
+            break
+
+    selected: list[dict[str, Any]] = []
+
+    def add(event: dict[str, Any] | None) -> None:
+        if not isinstance(event, dict):
+            return
+        projected = _compact_control_event(event)
+        if projected and projected not in selected:
+            selected.append(projected)
+
+    add(normalized[0] if normalized else None)
+    add(
+        next(
+            (
+                event
+                for event in reversed(normalized)
+                if str(event.get("event_type") or "") == "approval_requested"
+            ),
+            None,
+        )
+    )
+    add(normalized[-1] if normalized else None)
+    return {
+        "events_seen": len(events),
+        "event_types": event_types,
+        "selected": selected,
+    }
+
+
+def _compact_control_event(event: dict[str, Any]) -> dict[str, Any]:
+    fields = (
+        "created_at",
+        "event_type",
+        "executor",
+        "executor_run_id",
+        "session_id",
+        "request_id",
+        "request_fingerprint",
+        "action_fingerprint",
+        "scope",
+        "operation",
+        "decision",
+        "reason",
+        "recovery",
+    )
+    return {
+        field: compact_diagnostic_details(event[field])
+        for field in fields
+        if event.get(field) not in (None, "", [], {})
+    }
+
+
 def append_bounded_jsonl(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps(compact_diagnostic_details(data), ensure_ascii=False, separators=(",", ":")) + "\n"
-    existing = path.read_text(encoding="utf-8").splitlines(keepends=True) if path.exists() else []
+    line = (
+        json.dumps(
+            compact_diagnostic_details(data), ensure_ascii=False, separators=(",", ":")
+        )
+        + "\n"
+    )
+    existing = (
+        path.read_text(encoding="utf-8").splitlines(keepends=True)
+        if path.exists()
+        else []
+    )
     lines = [*existing, line]
     while len("".join(lines).encode("utf-8")) > MAX_EVENT_LOG_BYTES and len(lines) > 2:
         lines.pop(1)
@@ -107,10 +191,16 @@ def append_bounded_jsonl(path: Path, data: dict[str, Any]) -> None:
     path.write_text("".join(lines), encoding="utf-8")
 
 
-def enforce_task_record_budget(task_dir: str | Path, record_file: str | Path | None = None) -> int:
+def enforce_task_record_budget(
+    task_dir: str | Path, record_file: str | Path | None = None
+) -> int:
     directory = Path(task_dir).expanduser().resolve()
     canonical = Path(record_file).expanduser().resolve() if record_file else None
-    for legacy in (directory / "report.json", directory / "report.md", directory / "chain.json"):
+    for legacy in (
+        directory / "report.json",
+        directory / "report.md",
+        directory / "chain.json",
+    ):
         if canonical is None or legacy != canonical:
             legacy.unlink(missing_ok=True)
     shutil.rmtree(directory / "steps", ignore_errors=True)
@@ -125,6 +215,16 @@ def enforce_task_record_budget(task_dir: str | Path, record_file: str | Path | N
     total = task_record_size(directory)
     if total <= MAX_TASK_RECORD_BYTES:
         return total
+    # Terminal task.json owns the authoritative state.  If its compact
+    # projection is still close to the 50 KiB ceiling, tighten only redundant
+    # diagnostic tails before declaring the record impossible to persist.
+    _trim_jsonl(directory / "events.jsonl", MAX_TIGHT_EVENT_LOG_BYTES)
+    _trim_jsonl(directory / "interventions.jsonl", MAX_TIGHT_INTERVENTION_LOG_BYTES)
+    for run_log in directory.glob("*-run.log"):
+        _trim_text_tail(run_log, MAX_TIGHT_RUN_LOG_BYTES)
+    total = task_record_size(directory)
+    if total <= MAX_TASK_RECORD_BYTES:
+        return total
     if canonical is not None and canonical.is_file() and canonical.parent == directory:
         other_bytes = total - canonical.stat().st_size
         allowance = max(MAX_TASK_RECORD_BYTES - other_bytes, 0)
@@ -134,7 +234,11 @@ def enforce_task_record_budget(task_dir: str | Path, record_file: str | Path | N
         raise ABCError(
             "record_budget_exceeded",
             f"Task record exceeds {MAX_TASK_RECORD_BYTES} bytes: {total}",
-            {"task_dir": str(directory), "bytes": total, "limit": MAX_TASK_RECORD_BYTES},
+            {
+                "task_dir": str(directory),
+                "bytes": total,
+                "limit": MAX_TASK_RECORD_BYTES,
+            },
         )
     return total
 
@@ -171,7 +275,11 @@ def _compact_terminal_task_json(path: Path) -> None:
             compact[key] = value
 
     compact["title"] = _compact_text(str(compact.get("title") or ""))
-    compact["steps"] = [_compact_terminal_step(step) for step in (task.get("steps") or []) if isinstance(step, dict)]
+    compact["steps"] = [
+        _compact_terminal_step(step)
+        for step in (task.get("steps") or [])
+        if isinstance(step, dict)
+    ]
     intervention = {
         str(key): compact_diagnostic_details(value)
         for key, value in (task.get("intervention") or {}).items()
@@ -185,7 +293,10 @@ def _compact_terminal_task_json(path: Path) -> None:
     extensions = _compact_terminal_extensions(task.get("extensions"))
     if extensions:
         compact["extensions"] = extensions
-    path.write_text(json.dumps(compact, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(compact, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _compact_terminal_step(step: dict[str, Any]) -> dict[str, Any]:
@@ -218,10 +329,18 @@ def _compact_terminal_extensions(value: Any) -> dict[str, Any]:
         "agentbc.session",
         "agentbc.permission",
         "agentbc.auxiliary_sessions",
+        "agentbc.terminal_delivery",
+        # FLOW-104-003: the imported failure evidence and locked-step contract
+        # must survive terminal compaction so the recovery lineage stays
+        # auditable after the source task is long gone.
+        "agentbc.handoff_recovery",
     ):
         item = value.get(key)
         if item not in (None, "", [], {}):
             # These v1 policy receipts are already bounded and must remain exact.
+            # ``agentbc.terminal_delivery`` (FLOW-104-002) survives 50 KiB
+            # terminal-record compaction verbatim so independent delivery
+            # stages can still be replayed after a record trim.
             compact[key] = item
     for key in (
         "agentbc.provenance",
@@ -244,12 +363,18 @@ def assert_task_record_budget(task_dir: str | Path) -> int:
         raise ABCError(
             "record_budget_exceeded",
             f"Task definition exceeds the {MAX_TASK_RECORD_BYTES}-byte Record budget: {total}",
-            {"task_dir": str(directory), "bytes": total, "limit": MAX_TASK_RECORD_BYTES},
+            {
+                "task_dir": str(directory),
+                "bytes": total,
+                "limit": MAX_TASK_RECORD_BYTES,
+            },
         )
     return total
 
 
-def clean_terminal_records(root: str | Path, *, dry_run: bool = False) -> dict[str, Any]:
+def clean_terminal_records(
+    root: str | Path, *, dry_run: bool = False
+) -> dict[str, Any]:
     from .task_store import TaskStore
 
     record_root = ensure_record_root(root)
@@ -264,11 +389,7 @@ def clean_terminal_records(root: str | Path, *, dry_run: bool = False) -> dict[s
             continue
         task_id = str(task.get("id") or "")
         task_dir = store.task_dir(task_id)
-        targets = [
-            path
-            for path in task_dir.iterdir()
-            if path.name != "task.json"
-        ]
+        targets = [path for path in task_dir.iterdir() if path.name != "task.json"]
         if not targets:
             continue
         cleaned_tasks.append(task_id)

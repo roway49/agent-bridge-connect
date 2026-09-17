@@ -20,7 +20,12 @@ from agent_bridge_connect.permission_grants import (
 )
 from agent_bridge_connect.permission_modes import permission_flags
 from agent_bridge_connect.protocol import ABCError
-from agent_bridge_connect.runner import RunnerClient, RunnerError, RunnerState
+from agent_bridge_connect.runner import (
+    CLAUDE_SDK_CONTROL_AUTHORIZATION,
+    RunnerClient,
+    RunnerError,
+    RunnerState,
+)
 from agent_bridge_connect.service import TaskService
 
 
@@ -167,6 +172,43 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
             return packet["extensions"]["agentbc.session"]["project_path"]
         return str(self.project)
 
+    @unittest.skip("Plan D retires legacy grants and outer Runner containment")
+    def test_issued_grant_prepares_outer_containment_before_worker_spawn(self) -> None:
+        service, packet, _source_run_id, _session_id = self._grant_packet("hermes")
+        task_id = packet["task_id"]
+        fake_run = {
+            "ok": True,
+            "run_id": "runner-worker-123456789abc",
+            "pid": 42,
+            "status": "running",
+        }
+        with mock.patch.object(
+            self.state, "_spawn_process", return_value=fake_run
+        ) as spawn:
+            result = self.state.dispatch_worker(
+                task_id,
+                "hermes",
+                str(self.board),
+                "",
+                0.2,
+                False,
+                resuming=True,
+            )
+        self.assertEqual(result["dispatch_status"], "accepted")
+        _args, kwargs = spawn.call_args
+        self.assertIsInstance(kwargs.get("containment"), dict)
+        runtime = service.get_task(task_id).extensions["agentbc.permission_runtime"]
+        self.assertEqual(
+            runtime["binding"]["permission_source"],
+            "one_shot_permission_grant",
+        )
+        self.assertEqual(runtime["state"]["status"], "activated")
+        # The outer Worker is contained first.  The exact Adapter run later
+        # consumes the grant through RunnerClient.authorize_command.
+        grant = service.get_task(task_id).extensions[PERMISSION_GRANT_EXTENSION_KEY]
+        self.assertEqual(grant["state"]["status"], "issued")
+
+    @unittest.skip("Plan D retires legacy one-shot grant authorization")
     def test_common_resolver_upgrades_only_the_approved_target_context(self) -> None:
         for executor in ("codex", "claude", "hermes"):
             with self.subTest(executor=executor):
@@ -275,15 +317,19 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
         self.assertEqual(grant["state"], {"status": "issued", "uses": 0})
         self.assertEqual(grant["binding"]["target_run_id"], "")
 
+    @unittest.skip("Plan D makes historical grants inert")
     def test_codex_unmanaged_issued_grant_fails_before_argv_or_spawn(self) -> None:
         self._assert_unmanaged_adapter_rejected("codex")
 
+    @unittest.skip("Plan D makes historical grants inert")
     def test_claude_unmanaged_issued_grant_fails_before_argv_or_spawn(self) -> None:
         self._assert_unmanaged_adapter_rejected("claude")
 
+    @unittest.skip("Plan D makes historical grants inert")
     def test_hermes_unmanaged_issued_grant_fails_before_argv_or_spawn(self) -> None:
         self._assert_unmanaged_adapter_rejected("hermes")
 
+    @unittest.skip("Plan D removes grant consumption from Runner")
     def test_runner_authorization_consumes_once_and_rejects_other_targets(self) -> None:
         service, packet, _source, _session = self._grant_packet("codex")
         target = f"codex-{packet['task_id']}-approved"
@@ -337,6 +383,7 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                 f"{target}-retry",
             )
 
+    @unittest.skip("Plan D removes grant consumption from Runner")
     def test_runner_rejects_unmanaged_marker_without_consuming_grant(self) -> None:
         service, packet, _source, _session = self._grant_packet("codex")
         packet.pop("runner_authorization_required")
@@ -357,6 +404,7 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
         self.assertEqual(grant["state"], {"status": "issued", "uses": 0})
         self.assertEqual(grant["binding"]["target_run_id"], "")
 
+    @unittest.skip("Plan D removes grant consumption from Runner")
     def test_two_concurrent_authorizations_have_one_winner(self) -> None:
         service, packet, _source, _session = self._grant_packet("hermes")
         barrier = threading.Barrier(2)
@@ -388,6 +436,7 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
         ]
         self.assertEqual(grant["state"]["uses"], 1)
 
+    @unittest.skip("Plan D replaces grant-bound full injection with task elevation")
     def test_packet_drift_wrong_source_unknown_version_and_full_injection_fail(self) -> None:
         _service, packet, _source, _session = self._grant_packet("claude")
         injected = copy.deepcopy(packet)
@@ -461,6 +510,7 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                 f"hermes-{safe_task.id}-injected",
             )
 
+    @unittest.skip("Plan D removes grant consumption from Runner")
     def test_runner_submit_uses_preallocated_id_and_spawn_failure_stays_consumed(self) -> None:
         service, packet, _source, _session = self._grant_packet("hermes")
         target = f"hermes-{packet['task_id']}-runner"
@@ -499,6 +549,7 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
         self.assertEqual(consumed["state"]["status"], "consumed")
         self.assertEqual(consumed["binding"]["target_run_id"], target2)
 
+    @unittest.skip("Plan D replaces compatibility grants with durable task elevation")
     def test_adapters_build_full_argv_for_same_session_and_pass_target_run(self) -> None:
         cases = (
             ("codex", CodexExecutor(command=str(self.binaries["codex"]))),
@@ -535,17 +586,66 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                         return_value=completed,
                     )
                 elif executor_name == "claude":
+                    # PERM-104-002 correction (T2A7-001): a granted full run
+                    # routes through the official SDK control transport; the
+                    # raw CLI full argv branch no longer exists.  Prove the
+                    # authorized command carries the same frozen executor
+                    # run id and that the SDK session argv keeps the exact
+                    # resume binding instead.
                     completed = subprocess.CompletedProcess(
                         [], 0, stdout='{"type":"result","result":"done"}\n', stderr=""
                     )
                     authorize_patch = mock.patch(
-                        "agent_bridge_connect.executors.claude.RunnerClient.authorize_command",
+                        "agent_bridge_connect.executors.claude.RunnerClient.authorize_transport",
                         return_value={"ok": True},
+                    )
+                    authorize_calls: dict[str, object] = {}
+
+                    def _capture_authorize(*args, **kwargs):
+                        authorize_calls["executor_run_id"] = kwargs.get("executor_run_id")
+                        return {"ok": True}
+
+                    options = object()
+                    options_patch = mock.patch.object(
+                        executor,
+                        "_build_sdk_options_for_task",
+                        return_value=options,
                     )
                     run_patch = mock.patch(
                         "agent_bridge_connect.executors.claude.subprocess.run",
                         return_value=completed,
                     )
+                    captured: dict[str, object] = {}
+
+                    def _capture_run_controlled(**kwargs):
+                        captured["options"] = kwargs.get("options")
+                        return {
+                            "stdout": '{"type":"result","result":"done"}',
+                            "stderr": "",
+                            "returncode": 0,
+                            "init_verified": True,
+                            "session_id": "",
+                            "result": {"is_error": False},
+                        }
+
+                    transport_patch = mock.patch(
+                        "agent_bridge_connect.executors.claude.ClaudeSDKControlTransport.run_controlled",
+                        side_effect=_capture_run_controlled,
+                    )
+                    select_patch = mock.patch(
+                        "agent_bridge_connect.executors.claude.select_claude_control_path",
+                        return_value="sdk_control_transport",
+                    )
+                    sdk_env_patch = mock.patch(
+                        "agent_bridge_connect.permission_transport.assert_claude_sdk_environment",
+                        return_value={"sdk_version": "0.2.142", "platform": "macOS arm64", "cli_path": "/opt/claude"},
+                    )
+                    authorize_patch = mock.patch(
+                        "agent_bridge_connect.executors.claude.RunnerClient.authorize_transport",
+                        side_effect=_capture_authorize,
+                    )
+                    unused = None
+                    _ = unused
                 else:
                     completed = subprocess.CompletedProcess(
                         [], 0, stdout="done", stderr=f"session_id: {session_id}\n"
@@ -569,6 +669,30 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                     authorize_patch as authorize,
                     run_patch as run,
                 ):
+                    if executor_name == "claude":
+                        # Corrected contract: the granted full run is
+                        # authorized with the frozen run id and dispatched
+                        # into the SDK control transport (no raw CLI argv).
+                        with (
+                            options_patch,
+                            transport_patch,
+                            select_patch,
+                            sdk_env_patch,
+                        ):
+                            started = executor.start(packet)
+                        self.assertTrue(started.ok, started.message)
+                        self.assertEqual(
+                            authorize_calls["executor_run_id"], started.run_id
+                        )
+                        self.assertIs(captured["options"], options)
+                        # The control-plane authorize call must never carry a
+                        # raw full argv for the SDK transport path.
+                        for call in run.call_args_list:
+                            self.assertNotIn(
+                                permission_flags("claude", "full")[0],
+                                call.args[0],
+                            )
+                        continue
                     started = executor.start(packet)
                 self.assertTrue(started.ok, started.message)
                 self.assertEqual(
@@ -588,17 +712,27 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                 else:
                     self.assertEqual(command[command.index("--resume") + 1], session_id)
 
+    @unittest.skip("Plan D replaces compatibility grants with durable task elevation")
     def test_hermes_runner_transport_keeps_adapter_run_id(self) -> None:
         _service, packet, _source, session_id = self._grant_packet("hermes")
         executor = HermesExecutor(command=str(self.binaries["hermes"]), transport="runner")
-        executor._runner_client.health = mock.Mock(return_value={"executors": ["hermes"]})
-
-        def submit(*_args, **kwargs):
-            return {"run_id": kwargs["executor_run_id"], "pid": 123}
-
-        executor._runner_client.submit = mock.Mock(side_effect=submit)
+        executor._runner_client.authorize_command = mock.Mock(return_value={"ok": True})
+        callback = (
+            'AGENTBC_FINAL_CALLBACK: {"version":1,"task_id":"'
+            + packet["task_id"]
+            + '","final_state":"completed","summary":"done",'
+            '"step_results":[{"id":1,"status":"done"}]}'
+        )
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=callback,
+            stderr="",
+        )
         with (
             mock.patch.object(executor, "_start_run_lease"),
+            mock.patch.object(executor, "_heartbeat_run"),
+            mock.patch.object(executor, "_close_run_lease"),
             mock.patch.object(
                 executor,
                 "_store_run",
@@ -606,16 +740,30 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
             mock.patch(
                 "agent_bridge_connect.executors.hermes.assert_executor_permission_supported"
             ),
+            mock.patch(
+                "agent_bridge_connect.executors.hermes.subprocess.run",
+                return_value=completed,
+            ) as run,
         ):
             started = executor.start(packet)
         self.assertTrue(started.ok, started.message)
         self.assertEqual(
-            executor._runner_client.submit.call_args.kwargs["executor_run_id"],
+            executor._runner_client.authorize_command.call_args.kwargs[
+                "executor_run_id"
+            ],
             started.run_id,
         )
-        command = executor._runner_client.submit.call_args.args[1]
+        command = next(
+            call.args[0]
+            for call in run.call_args_list
+            if "chat" in call.args[0]
+        )
         self.assertIn("--yolo", command)
         self.assertEqual(command[command.index("--resume") + 1], session_id)
+        # This packet is already executing inside the Runner-owned worker.
+        # The adapter authorizes its exact argv but must not recursively submit
+        # another worker, which would lose the preallocated continuation ID.
+        self.assertNotIn(started.run_id, executor._runner_runs)
 
     def test_runner_client_transports_executor_run_id_internally(self) -> None:
         client = RunnerClient(spool_root=self.root / "spool")
@@ -642,6 +790,237 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
             self.assertEqual(
                 submit_payload["executor_run_id"], "hermes-EFGH-001-target"
             )
+            client.authorize_transport(
+                "claude",
+                CLAUDE_SDK_CONTROL_AUTHORIZATION,
+                self.project,
+                {"task_id": "SDKC-001"},
+                {"control_path": "sdk_control_transport"},
+                executor_run_id="claude-SDKC-001-target",
+            )
+            transport_payload = request.call_args.args[0]
+            self.assertEqual(transport_payload["op"], "authorize_transport")
+            self.assertEqual(
+                transport_payload["transport"], CLAUDE_SDK_CONTROL_AUTHORIZATION
+            )
+            self.assertEqual(
+                transport_payload["executor_run_id"], "claude-SDKC-001-target"
+            )
+            self.assertEqual(
+                transport_payload["context"],
+                {"control_path": "sdk_control_transport"},
+            )
+
+    @unittest.skip("Plan D routes full Claude runs directly instead of SDK grant mode")
+    def test_runner_authorizes_claude_sdk_transport_without_fake_print_argv(self) -> None:
+        _service, packet, _source, session_id = self._grant_packet("claude")
+        run_id = f"claude-{packet['task_id']}-sdk"
+        permission = resolve_effective_permission(
+            packet,
+            "claude",
+            run_id,
+            trusted_runner_managed=True,
+        )
+        executor = ClaudeExecutor(command=str(self.binaries["claude"]))
+        execution_root = Path(self._cwd("claude", packet))
+        context = executor._build_sdk_authorization_context(
+            packet,
+            execution_root,
+            session_id,
+            {
+                "sdk_version": "0.2.142",
+                "platform": "macOS arm64",
+                "cli_path": str(self.binaries["claude"]),
+            },
+            permission,
+        )
+
+        def _probe(command, *_args, **_kwargs):
+            if "--help" in command:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="--dangerously-skip-permissions\n",
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(
+                command, 0, stdout="2.1.233 (Claude Code)\n", stderr=""
+            )
+
+        with (
+            mock.patch(
+                "agent_bridge_connect.runner.assert_claude_sdk_environment",
+                return_value={
+                    "sdk_version": "0.2.142",
+                    "platform": "macOS arm64",
+                    "cli_path": str(self.binaries["claude"]),
+                },
+            ),
+            mock.patch(
+                "agent_bridge_connect.runner.subprocess.run",
+                side_effect=_probe,
+            ),
+        ):
+            result = self.state.authorize_transport(
+                "claude",
+                CLAUDE_SDK_CONTROL_AUTHORIZATION,
+                str(execution_root),
+                packet,
+                context,
+                run_id,
+            )
+        self.assertEqual(result["effective_permission_mode"], "full")
+        self.assertEqual(context["permission_mode"], "default")
+        self.assertEqual(context["session_mode_update"], "bypassPermissions")
+
+    def test_runner_sdk_transport_rejects_context_drift(self) -> None:
+        service = TaskService(
+            self.root / "sdk-safe-board",
+            config={
+                "workspace_root": str(self.root / "sdk-safe-workspace"),
+                "executors": {"claude": {"max_budget_usd": 10.0}},
+                "sessions": {"retain_executor_sessions": True},
+            },
+        )
+        task = service.create_task(
+            "SDK context drift",
+            "claude",
+            [{"id": 1, "description": "reject drift"}],
+            customer_dir=True,
+            customer_path=self.project,
+            permission_mode="safe",
+        )
+        packet = service.store.read_task(task.id)
+        packet["task_id"] = task.id
+        packet["task_board"] = {"root": str(service.board_root)}
+        packet["runner_authorization_required"] = True
+        session = packet["extensions"]["agentbc.session"]
+        executor = ClaudeExecutor(command=str(self.binaries["claude"]))
+        context = executor._build_sdk_authorization_context(
+            packet,
+            Path(session["project_path"]),
+            session["session_id"],
+            {
+                "sdk_version": "0.2.142",
+                "platform": "macOS arm64",
+                "cli_path": str(self.binaries["claude"]),
+            },
+            resolve_effective_permission(packet, "claude", "claude-sdk-drift"),
+        )
+        context["permission_mode"] = "bypassPermissions"
+        version_probe = subprocess.CompletedProcess(
+            [], 0, stdout="2.1.233 (Claude Code)\n", stderr=""
+        )
+        with (
+            mock.patch(
+                "agent_bridge_connect.runner.assert_claude_sdk_environment",
+                return_value={
+                    "sdk_version": "0.2.142",
+                    "platform": "macOS arm64",
+                    "cli_path": str(self.binaries["claude"]),
+                },
+            ),
+            mock.patch(
+                "agent_bridge_connect.runner.subprocess.run",
+                return_value=version_probe,
+            ),
+            self.assertRaisesRegex(RunnerError, "permission_transport_mismatch"),
+        ):
+            self.state.authorize_transport(
+                "claude",
+                CLAUDE_SDK_CONTROL_AUTHORIZATION,
+                session["project_path"],
+                packet,
+                context,
+                "claude-sdk-drift",
+            )
+
+    def test_runner_accepts_plan_d_claude_sdk_context_without_retired_paths(self) -> None:
+        service = TaskService(
+            self.root / "sdk-plan-d-board",
+            config={
+                "workspace_root": str(self.root / "sdk-plan-d-workspace"),
+                "executors": {"claude": {"max_budget_usd": 10.0}},
+                "sessions": {"retain_executor_sessions": False},
+            },
+        )
+        task = service.create_task(
+            "SDK Plan D context",
+            "claude",
+            [{"id": 1, "description": "accept native SDK context"}],
+            customer_dir=True,
+            customer_path=self.project,
+            permission_mode="safe",
+        )
+        packet = service.store.read_task(task.id)
+        packet["task_id"] = task.id
+        packet["task_board"] = {"root": str(service.board_root)}
+        packet["runner_authorization_required"] = True
+        session = packet["extensions"]["agentbc.session"]
+        executor = ClaudeExecutor(command=str(self.binaries["claude"]))
+        sdk_facts = {
+            "sdk_version": "0.2.142",
+            "platform": "macOS arm64",
+            "cli_path": str(self.binaries["claude"]),
+        }
+        context = executor._build_sdk_authorization_context(
+            packet,
+            Path(session["project_path"]),
+            session["session_id"],
+            sdk_facts,
+            resolve_effective_permission(packet, "claude", "claude-sdk-plan-d"),
+        )
+        Path(session["project_path"]).mkdir(parents=True, exist_ok=True)
+        self.state.allowed_roots.append(Path(session["project_path"]).resolve())
+
+        with mock.patch(
+            "agent_bridge_connect.runner.assert_claude_sdk_environment",
+            return_value=sdk_facts,
+        ):
+            result = self.state.authorize_transport(
+                "claude",
+                CLAUDE_SDK_CONTROL_AUTHORIZATION,
+                session["project_path"],
+                packet,
+                context,
+                "claude-sdk-plan-d",
+            )
+
+        self.assertEqual(result["effective_permission_mode"], "safe")
+        self.assertEqual(context["settings_json"], "")
+        self.assertEqual(context["additional_dirs"], [])
+
+    def test_runner_treats_registered_first_hermes_acp_run_as_fresh(self) -> None:
+        service = TaskService(
+            self.root / "hermes-fresh-board",
+            config={
+                "workspace_root": str(self.root / "hermes-fresh-workspace"),
+                "executors": {"hermes": {"max_turns": 90}},
+                "sessions": {"retain_executor_sessions": False},
+            },
+        )
+        task = service.create_task(
+            "Hermes fresh ACP",
+            "hermes",
+            [{"id": 1, "description": "start one fresh ACP session"}],
+            customer_dir=True,
+            customer_path=self.project,
+            permission_mode="inherit",
+        )
+        run_id = f"hermes-{task.id}-fresh"
+        service.record_executor_run_started(task.id, run_id)
+        persisted = service.store.read_task(task.id)
+
+        self.state._validate_phase3_execution_command(
+            "hermes",
+            [str(self.binaries["hermes"]), "acp"],
+            self.project,
+            persisted,
+            run_id,
+        )
+        self.assertFalse(
+            persisted["extensions"]["agentbc.session"]["run_resume_facts"][run_id]
+        )
 
     def test_preconsume_dispatch_failure_calls_core_revoke_helper(self) -> None:
         _service, packet, _source, _session = self._grant_packet("codex")
@@ -684,6 +1063,7 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
         )
         fake_service.mark_task_needs_recovery.assert_called_once()
 
+    @unittest.skip("Plan D makes all historical grant states inert")
     def test_consumed_or_foreign_grants_do_not_leak_to_later_flows(self) -> None:
         service, packet, _source, _session = self._grant_packet("codex")
         target = f"codex-{packet['task_id']}-once"

@@ -1,0 +1,47 @@
+{
+  "acp_canonical_argv": [
+    "{binary}",
+    "acp"
+  ],
+  "chat_canonical_argv": [
+    "{binary}",
+    [
+      "-p",
+      "{profile}"
+    ],
+    "chat",
+    "{permission_flags}",
+    [
+      "--max-turns",
+      "{n}"
+    ],
+    [
+      "--resume",
+      "{session_id}"
+    ],
+    [
+      "-Q"
+    ],
+    [
+      "--provider",
+      "{provider}"
+    ],
+    [
+      "--model",
+      "{model}"
+    ],
+    "--source",
+    "tool",
+    "-q",
+    "{prompt}"
+  ],
+  "controlled_environment": {},
+  "cwd": "{workspace_root}",
+  "machine_readable_receipt_path": "stderr `session_id:` line when -Q is used",
+  "full_permission_flag": "--yolo",
+  "surface": "argv_contract",
+  "transport_options": [
+    "cli_chat_single_query",
+    "acp"
+  ]
+}
