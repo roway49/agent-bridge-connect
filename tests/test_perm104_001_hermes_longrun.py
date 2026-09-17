@@ -424,6 +424,10 @@ class HermesAcpTerminalResultTests(_AcpBoardBase):
             hermes_executor_module,
             "_HERMES_ACP_HEARTBEAT_INTERVAL_S",
             0.01,
+        ), mock.patch.object(
+            hermes_executor_module.time,
+            "monotonic",
+            return_value=100.0,
         ):
             heartbeat = _RunLeaseHeartbeat(executor, "acp-run-2")
             first = lease.last_heartbeat_at
