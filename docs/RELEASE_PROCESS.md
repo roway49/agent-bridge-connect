@@ -20,7 +20,7 @@ Python package: 1.0.4a1
   candidate's parent.
 - Review the complete candidate tree, not only the last commit diff.
 - Run `python3 scripts/check_repository_boundary.py --source revision --revision HEAD`
-  and `python3 scripts/check_public_release.py`; both must pass before any
+  and `python3 scripts/check_public_release.py --revision HEAD`; both must pass before any
   network write.
 - Confirm `pyproject.toml` and `agent_bridge_connect.__version__` both contain
   `1.0.4a1`.

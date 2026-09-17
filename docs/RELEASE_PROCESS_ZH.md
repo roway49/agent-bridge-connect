@@ -19,7 +19,7 @@ Python 包：    1.0.4a1
 - 审阅候选的完整文件树，不能只审阅最后一次 commit diff；
 - 在任何网络写入前执行
   `python3 scripts/check_repository_boundary.py --source revision --revision HEAD` 与
-  `python3 scripts/check_public_release.py`，两项都必须通过；
+  `python3 scripts/check_public_release.py --revision HEAD`，两项都必须通过；
 - 确认 `pyproject.toml` 与 `agent_bridge_connect.__version__` 都是 `1.0.4a1`；
 - 确认公开远端不存在 `v1.0.4A`，PyPI 也不存在 `agentbc==1.0.4a1` 文件。已发布标签和
   包文件不可覆盖。

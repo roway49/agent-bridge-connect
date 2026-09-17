@@ -32,7 +32,7 @@ jobs:
         run: python scripts/check_repository_boundary.py --source revision --revision HEAD
 
       - name: Verify public release boundary
-        run: python scripts/check_public_release.py
+        run: python scripts/check_public_release.py --revision HEAD
 
       - name: Install release tooling
         run: |
