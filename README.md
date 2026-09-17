@@ -10,7 +10,7 @@ gateway, one report contract, and one recovery model.
 > Public Alpha. Use AgentBC on development projects with version control and
 > review agent output before accepting changes.
 
-Current release: **1.0.3A** (Python package version `1.0.3a2`).
+Current release: **1.0.4A** (Python package version `1.0.4a1`).
 
 - Repository and releases: [GitHub](https://github.com/roway49/agent-bridge-connect)
 - Python package: [agentbc](https://pypi.org/project/agentbc/)
@@ -51,15 +51,15 @@ One command downloads, verifies, installs, and configures AgentBC:
 
 ```bash
 curl -fsSL \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.3A2/install-agentbc-alpha.sh \
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.4A/install-agentbc-alpha.sh \
   | sh -s -- \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.3A2
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.4A
 ```
 
 For a package-managed installation from PyPI and Homebrew:
 
 ```bash
-python3 -m pip install agentbc==1.0.3a2
+python3 -m pip install agentbc==1.0.4a1
 brew install roway49/agentbc/agentbc
 brew install agentbc
 agentbc setup

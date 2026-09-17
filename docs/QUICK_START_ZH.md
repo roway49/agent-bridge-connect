@@ -5,7 +5,7 @@
 本文只保留 Public Alpha 的基础部署流程。任务、Runner、恢复和卸载命令统一见
 [用户指南](USER_GUIDE_ZH.md)。
 
-当前发布版本为 **1.0.3A**（Python 包 `1.0.3a2`）。
+当前发布版本为 **1.0.4A**（Python 包 `1.0.4a1`）。
 
 ## 1. 检查环境要求
 
@@ -19,7 +19,7 @@
 包，然后执行 setup；它会识别本地执行器、安装 AgentBC 集成并启动 Runner：
 
 ```bash
-python3 -m pip install agentbc==1.0.3a2
+python3 -m pip install agentbc==1.0.4a1
 agentbc setup
 ```
 
@@ -42,25 +42,25 @@ brew services start agentbc
 
 ## 3. 通过已校验的 GitHub Release 安装
 
-打开 [AgentBC 1.0.3A Release](https://github.com/roway49/agent-bridge-connect/releases/tag/v1.0.3A2)
+打开 [AgentBC 1.0.4A Release](https://github.com/roway49/agent-bridge-connect/releases/tag/v1.0.4A)
 查看发布说明和资产。推荐使用一行安装命令：它会下载发布校验文件、验证压缩包、
 在隔离环境中安装 AgentBC、执行 setup，并运行纯包 smoke test：
 
 ```bash
 curl -fsSL \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.3A2/install-agentbc-alpha.sh \
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.4A/install-agentbc-alpha.sh \
   | sh -s -- \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.3A2
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.4A
 ```
 
 如需手动安装，请从同一个 Release 下载 Alpha 压缩包及其 `.sha256` 文件，随后
 依次校验压缩包和包内文件：
 
 ```bash
-shasum -a 256 -c agentbc-v1.0.3A2-macos-local-alpha.tar.gz.sha256
+shasum -a 256 -c agentbc-v1.0.4A-macos-local-alpha.tar.gz.sha256
 mkdir -p "$HOME/AgentBC-Alpha"
-tar -xzf agentbc-v1.0.3A2-macos-local-alpha.tar.gz -C "$HOME/AgentBC-Alpha"
-cd "$HOME/AgentBC-Alpha/agentbc-v1.0.3A2-macos-local-alpha"
+tar -xzf agentbc-v1.0.4A-macos-local-alpha.tar.gz -C "$HOME/AgentBC-Alpha"
+cd "$HOME/AgentBC-Alpha/agentbc-v1.0.4A-macos-local-alpha"
 shasum -a 256 -c SHA256SUMS
 ```
 
@@ -69,7 +69,7 @@ shasum -a 256 -c SHA256SUMS
 ### 安装手动下载的压缩包
 
 ```bash
-./install_local_alpha.sh ./agentbc-1.0.3a2-py3-none-any.whl
+./install_local_alpha.sh ./agentbc-1.0.4a1-py3-none-any.whl
 ```
 
 安装脚本会创建隔离环境、识别本地执行器、安装 AgentBC 集成、执行 setup，

@@ -2,8 +2,8 @@
 
 中文 | [English](USER_GUIDE.md)
 
-适用于 AgentBC **1.0.3A** 正式 Alpha 版本（tag `v1.0.3A2`，Python 包
-`1.0.3a2`）。
+适用于 AgentBC **1.0.4A** 正式 Alpha 版本（tag `v1.0.4A`，Python 包
+`1.0.4a1`）。
 
 ## 命令结构
 

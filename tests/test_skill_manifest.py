@@ -158,8 +158,8 @@ class SkillManifestTests(unittest.TestCase):
             "370af89b528469368c75f49b9986f004951397b240a1d9721d6598057665c38d",
         )
 
-    def test_managed_103a2_fingerprints_match_current_package(self):
-        """The current managed-package fingerprint is frozen."""
+    def test_managed_103a2_fingerprints_are_frozen_and_match_template_bytes(self):
+        """The historical 1.0.3a2 managed-package fingerprint is frozen."""
         fingerprints = MANAGED_SKILL_FINGERPRINTS["1.0.3a2"]
         self.assertEqual(set(fingerprints), {"codex", "claude", "hermes"})
         # FLOW-104-003 (RFT2-001): the shared controller contract documents
@@ -180,8 +180,8 @@ class SkillManifestTests(unittest.TestCase):
                 "references/agentbc-steps-yaml.md"
             ],
         )
-        # The current package must classify as current against the frozen
-        # 1.0.3a2 fingerprint (template aggregate + per-file hashes).
+        # The 1.0.4a1 templates remain byte-compatible with the frozen
+        # 1.0.3a2 managed package; only the generated manifest version changes.
         from agent_bridge_connect.setup import _current_skill_files, _expected_skill_manifest
 
         for platform in ("codex", "claude", "hermes"):
@@ -213,7 +213,7 @@ class SkillManifestTests(unittest.TestCase):
         (root / ".agentbc-skill.json").write_bytes(serialize_skill_manifest(manifest))
 
     def _write_real_102a1_package(self, platform: str, root: Path) -> None:
-        # The current package is 1.0.3a2, so the genuine intact-older-package
+        # The current package is newer, so the genuine intact-older-package
         # fixture reconstructs 1.0.2a1 from the
         # FROZEN per-file fingerprints instead of the current templates
         # (whose controller contract changed in this release).

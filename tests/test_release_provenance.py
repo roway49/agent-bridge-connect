@@ -37,6 +37,7 @@ class TagVersionMappingTests(unittest.TestCase):
         self.assertEqual(bp.tag_to_python_version("v2.3.4B"), "2.3.4b1")
         self.assertEqual(bp.tag_to_python_version("v2.3.4B12"), "2.3.4b12")
         self.assertEqual(bp.tag_to_python_version("v0.0.0Z"), "0.0.0z1")
+        self.assertEqual(bp.tag_to_python_version("v1.0.4A"), "1.0.4a1")
 
     def test_python_to_tag(self) -> None:
         self.assertEqual(bp.python_to_tag_version("1.0.1a1"), "v1.0.1A")
@@ -45,6 +46,7 @@ class TagVersionMappingTests(unittest.TestCase):
         self.assertEqual(bp.python_to_tag_version("2.3.4b1"), "v2.3.4B")
         self.assertEqual(bp.python_to_tag_version("2.3.4b12"), "v2.3.4B12")
         self.assertEqual(bp.python_to_tag_version("0.0.0z1"), "v0.0.0Z")
+        self.assertEqual(bp.python_to_tag_version("1.0.4a1"), "v1.0.4A")
 
     def test_round_trip_tag_first(self) -> None:
         for tag in ("v1.0.1A", "v1.0.1A2", "v1.0.1A3", "v2.3.4B12", "v5.6.7C"):
@@ -103,6 +105,12 @@ class TagVersionMappingTests(unittest.TestCase):
 
 
 class PackageVersionTests(unittest.TestCase):
+    def test_104a_release_candidate_identity(self) -> None:
+        self.assertEqual(bp.get_package_version(_REPO), "1.0.4a1")
+        self.assertEqual(bp.python_to_tag_version("1.0.4a1"), "v1.0.4A")
+        pyproject = (_REPO / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn('version = "1.0.4a1"', pyproject)
+
     def test_get_package_version_matches_init(self) -> None:
         pv = bp.get_package_version(_REPO)
         init_path = _REPO / "src" / "agent_bridge_connect" / "__init__.py"

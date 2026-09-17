@@ -2,8 +2,8 @@
 
 [中文](USER_GUIDE_ZH.md) | English
 
-Applies to the AgentBC **1.0.3A** release (tag `v1.0.3A2`, Python package
-`1.0.3a2`).
+Applies to the AgentBC **1.0.4A** release (tag `v1.0.4A`, Python package
+`1.0.4a1`).
 
 ## Command Surface
 

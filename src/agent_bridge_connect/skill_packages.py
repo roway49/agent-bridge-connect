@@ -81,7 +81,7 @@ MANAGED_SKILL_FINGERPRINTS: dict[str, dict[str, dict[str, Any]]] = {
             },
         },
     },
-    # 1.0.3a2 (current, private/integration reconciliation): the controller
+    # 1.0.3a2 (historical managed release): the controller
     # contract contains the executor-native choice broker and the split
     # Hermes full transport contract. Codex SKILL.md also contains the native
     # Desktop archive acknowledgement bridge; the steps YAML remains

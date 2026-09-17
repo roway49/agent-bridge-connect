@@ -6,7 +6,7 @@ This page contains only the Public Alpha deployment flow. Task, Runner,
 recovery, and uninstall commands are documented in the
 [User Guide](USER_GUIDE.md).
 
-The current release is **1.0.3A** (Python package `1.0.3a2`).
+The current release is **1.0.4A** (Python package `1.0.4a1`).
 
 ## 1. Check Requirements
 
@@ -21,7 +21,7 @@ Install the published Alpha package from the
 discover local executors, install their AgentBC integrations, and start Runner:
 
 ```bash
-python3 -m pip install agentbc==1.0.3a2
+python3 -m pip install agentbc==1.0.4a1
 agentbc setup
 ```
 
@@ -44,7 +44,7 @@ intentionally reports the Homebrew command instead of changing Cellar files.
 
 ## 3. Install From A Verified GitHub Release
 
-Open the [AgentBC 1.0.3A release](https://github.com/roway49/agent-bridge-connect/releases/tag/v1.0.3A2)
+Open the [AgentBC 1.0.4A release](https://github.com/roway49/agent-bridge-connect/releases/tag/v1.0.4A)
 to review the release notes and assets. The recommended one-command installer
 downloads the release checksum manifest, verifies the bundle, installs
 AgentBC in an isolated environment, runs setup, and performs a package smoke
@@ -52,19 +52,19 @@ test:
 
 ```bash
 curl -fsSL \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.3A2/install-agentbc-alpha.sh \
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.4A/install-agentbc-alpha.sh \
   | sh -s -- \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.3A2
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.4A
 ```
 
 For a manual installation, download the Alpha archive and its `.sha256` file
 from the same release, then verify both the archive and its contents:
 
 ```bash
-shasum -a 256 -c agentbc-v1.0.3A2-macos-local-alpha.tar.gz.sha256
+shasum -a 256 -c agentbc-v1.0.4A-macos-local-alpha.tar.gz.sha256
 mkdir -p "$HOME/AgentBC-Alpha"
-tar -xzf agentbc-v1.0.3A2-macos-local-alpha.tar.gz -C "$HOME/AgentBC-Alpha"
-cd "$HOME/AgentBC-Alpha/agentbc-v1.0.3A2-macos-local-alpha"
+tar -xzf agentbc-v1.0.4A-macos-local-alpha.tar.gz -C "$HOME/AgentBC-Alpha"
+cd "$HOME/AgentBC-Alpha/agentbc-v1.0.4A-macos-local-alpha"
 shasum -a 256 -c SHA256SUMS
 ```
 
@@ -73,7 +73,7 @@ Do not install the bundle if either checksum command fails.
 ### Install A Manually Downloaded Bundle
 
 ```bash
-./install_local_alpha.sh ./agentbc-1.0.3a2-py3-none-any.whl
+./install_local_alpha.sh ./agentbc-1.0.4a1-py3-none-any.whl
 ```
 
 The installer creates an isolated environment, detects local executors,
