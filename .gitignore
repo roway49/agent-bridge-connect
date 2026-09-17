@@ -37,9 +37,12 @@ shaders/
 work/
 agentbc_tasks/
 
-# Internal development planning and evidence; never publish from a public branch.
+# Internal development planning and evidence live in the external private data
+# archive. These patterns are defense in depth;
+# scripts/check_repository_boundary.py is the authoritative root-file gate.
 AGENTBC_*_DEVELOPMENT_CHECKLIST.md
 AGENTBC_*_DEVELOPMENT_HANDBOOK.md
+AGENTBC_DUAL_MACHINE_GIT_WORKFLOW.md
 *_EVIDENCE.md
 *_IMPLEMENTATION_NOTES.md
 *-baseline.md

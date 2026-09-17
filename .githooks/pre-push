@@ -1,0 +1,67 @@
+#!/bin/sh
+set -eu
+
+remote_name=${1:-}
+remote_url=${2:-}
+zero=0000000000000000000000000000000000000000
+public_publisher=$(git config --bool --get agentbc.publicPublisher 2>/dev/null || printf 'false')
+private_integration=private
+private_integration=$private_integration/integration
+public_repository=false
+
+case "$remote_url" in
+  https://github.com/roway49/agent-bridge-connect.git|git@github.com:roway49/agent-bridge-connect.git|ssh://git@github.com/roway49/agent-bridge-connect.git)
+    public_repository=true
+    ;;
+esac
+
+python3 scripts/check_repository_boundary.py --source working-tree
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [ "$local_sha" = "$zero" ]; then
+    echo "protected_ref_deletion_blocked: remote ref deletion is disabled." >&2
+    exit 1
+  fi
+
+  if [ "$local_sha" != "$zero" ]; then
+    python3 scripts/check_repository_boundary.py --source revision --revision "$local_sha"
+  fi
+
+  if [ "$public_repository" = "true" ]; then
+    python3 scripts/check_public_release.py --revision "$local_sha"
+    case "$remote_ref" in
+      refs/heads/main|refs/tags/*)
+        echo "public_direct_update_blocked: main and tags must be updated after PR checks." >&2
+        exit 1
+        ;;
+      refs/heads/release/*)
+        if [ "$public_publisher" != "true" ]; then
+          echo "public_publish_host_blocked: this checkout is not an approved public publisher." >&2
+          echo "Set agentbc.publicPublisher=true only on the owner-controlled release host." >&2
+          exit 1
+        fi
+        ;;
+      *)
+        echo "public_direct_update_blocked: only release/* PR branches may be pushed." >&2
+        exit 1
+        ;;
+    esac
+  elif [ "$remote_name" = "origin" ]; then
+    case "$remote_ref" in
+      "refs/heads/$private_integration"|refs/heads/agent/*)
+        ;;
+      *)
+        echo "private_push_blocked: only the integration branch and agent/* may be pushed to origin." >&2
+        exit 1
+        ;;
+    esac
+  else
+    echo "unknown_push_remote_blocked: remote is not an approved private or public destination." >&2
+    exit 1
+  fi
+
+  if [ "$remote_sha" != "$zero" ] && ! git merge-base --is-ancestor "$remote_sha" "$local_sha"; then
+    echo "non_fast_forward_push_blocked: remote history must not be rewritten." >&2
+    exit 1
+  fi
+done

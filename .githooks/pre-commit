@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+python3 scripts/check_repository_boundary.py --source working-tree
+python3 scripts/check_repository_boundary.py --source index

@@ -1,0 +1,20 @@
+# Repository-root structure and release-boundary controls require owner review.
+/.gitignore @roway49
+/CHANGELOG.md @roway49
+/CONTRIBUTING.md @roway49
+/LICENSE @roway49
+/README.md @roway49
+/README_ZH.md @roway49
+/SECURITY.md @roway49
+/pyproject.toml @roway49
+/uv.lock @roway49
+
+/.github/CODEOWNERS @roway49
+/.github/repository-root-files.txt @roway49
+/.github/workflows/release-check.yml @roway49
+/.githooks/pre-commit @roway49
+/.githooks/pre-push @roway49
+/scripts/check_repository_boundary.py @roway49
+/scripts/check_public_release.py @roway49
+/docs/RELEASE_PROCESS.md @roway49
+/docs/RELEASE_PROCESS_ZH.md @roway49

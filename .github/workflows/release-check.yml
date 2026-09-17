@@ -28,6 +28,12 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Verify repository root boundary
+        run: python scripts/check_repository_boundary.py --source revision --revision HEAD
+
+      - name: Verify public release boundary
+        run: python scripts/check_public_release.py --revision HEAD
+
       - name: Install release tooling
         run: |
           python -m pip install --upgrade pip
@@ -35,10 +41,6 @@ jobs:
             "build==1.5.0" \
             "ruff==0.15.22" \
             "twine==6.2.0"
-          python -m pip install -e ".[claude]"
-
-      - name: Verify public release boundary
-        run: python scripts/check_public_release.py
 
       - name: Run static checks
         run: |

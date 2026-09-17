@@ -1,0 +1,11 @@
+# Exact repository-root file set. Directories are intentionally unrestricted.
+# Any structural change to this list requires roway49 review through a PR.
+.gitignore
+CHANGELOG.md
+CONTRIBUTING.md
+LICENSE
+README.md
+README_ZH.md
+SECURITY.md
+pyproject.toml
+uv.lock
