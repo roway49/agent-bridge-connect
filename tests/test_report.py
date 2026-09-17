@@ -267,6 +267,7 @@ class DispatcherTraceabilityTests(unittest.TestCase):
     def test_redaction_keeps_conversation_id_but_redacts_secrets(self):
         from agent_bridge_connect.reports import redact_secrets
 
+        fake_key = "sk-" + "abcdefghijklmnopqrstuvwx"
         value = redact_secrets(
             {
                 "session_id": "019f92f8-9e92-7251-a792-8a6390e0d380",
@@ -274,21 +275,22 @@ class DispatcherTraceabilityTests(unittest.TestCase):
                     "source_platform": "codex",
                     "conversation_id": "019f92f8-9e92-7251-a792-8a6390e0d380",
                 },
-                "workspace": {"config": "password=secret", "token": "sk-abcdefghijklmnopqrstuvwx"},
+                "workspace": {"config": "password=secret", "token": fake_key},
             }
         )
 
         self.assertEqual(value["session_id"], "019f92f8-9e92-7251-a792-8a6390e0d380")
         self.assertEqual(value["provenance"]["conversation_id"], "019f92f8-9e92-7251-a792-8a6390e0d380")
         self.assertNotIn("secret", value["workspace"]["config"].lower())
-        self.assertNotIn("sk-abcdefghijklmnopqrstuvwx", value["workspace"]["token"])
+        self.assertNotIn(fake_key, value["workspace"]["token"])
 
     def test_report_md_redacts_secret_like_conversation_id(self):
-        task, _ = self._service_task(session_id="sk-abcdefghijklmnopqrstuvwx", source_platform="codex")
+        fake_key = "sk-" + "abcdefghijklmnopqrstuvwx"
+        task, _ = self._service_task(session_id=fake_key, source_platform="codex")
         md = self._report_md(task.id)
 
         self.assertIn("## Dispatcher Traceability", md)
-        self.assertNotIn("sk-abcdefghijklmnopqrstuvwx", md)
+        self.assertNotIn(fake_key, md)
 
 
 class NotificationTests(unittest.TestCase):

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import platform as platform_module
+import shutil
 import sys
 import types
 import unittest
@@ -43,7 +44,7 @@ from agent_bridge_connect.protocol import ABCError
 
 MATRIX = Path("tests/fixtures/executor_runtime/matrix")
 WITHDRAWN_VERSIONS = ("2.1.226", "2.1.233")
-LIVE_PROBE_DIR = MATRIX / "claude" / "live_probe_2026-08-28"
+CAPTURED_CLI_DIR = MATRIX / "claude" / "captured_cli_2.1.247"
 
 
 class ClaudeControlPathCapabilityTests(unittest.TestCase):
@@ -89,13 +90,13 @@ class ClaudeControlPathCapabilityTests(unittest.TestCase):
             )
         )
         self.assertFalse(probe_claude_permission_prompt_tool(None))
-        captured = (LIVE_PROBE_DIR / "help.txt").read_text(encoding="utf-8")
+        captured = (CAPTURED_CLI_DIR / "help.txt").read_text(encoding="utf-8")
         self.assertIn("Usage: claude", captured)
         self.assertNotIn(CLAUDE_PERMISSION_PROMPT_TOOL_FLAG, captured)
 
     def test_live_probed_fixture_records_transport_unsupported(self) -> None:
         fixture = json.loads(
-            (LIVE_PROBE_DIR / "permission_control.json").read_text(encoding="utf-8")
+            (CAPTURED_CLI_DIR / "permission_control.json").read_text(encoding="utf-8")
         )
         self.assertTrue(fixture["captured_live"])
         self.assertFalse(fixture["probe"]["help_contains_permission_prompt_tool"])
@@ -162,13 +163,13 @@ class ClaudeControlFixtureTests(unittest.TestCase):
                 self.assertNotIn("sk-", text)
                 self.assertNotIn("token", text.lower())
                 self.assertNotIn("api_key", text.lower())
-        probe_text = (LIVE_PROBE_DIR / "permission_control.json").read_text(
+        probe_text = (CAPTURED_CLI_DIR / "permission_control.json").read_text(
             encoding="utf-8"
         )
         self.assertNotIn("sk-", probe_text)
         self.assertNotIn("token", probe_text.lower())
         self.assertNotIn("api_key", probe_text.lower())
-        help_text = (LIVE_PROBE_DIR / "help.txt").read_text(encoding="utf-8")
+        help_text = (CAPTURED_CLI_DIR / "help.txt").read_text(encoding="utf-8")
         self.assertNotIn("sk-", help_text)
         self.assertNotIn("bearer ", help_text.lower())
 
@@ -188,7 +189,7 @@ class ClaudeControlFixtureTests(unittest.TestCase):
         # The live probe is executor-level evidence, not a matrix version:
         # it proves the installed binary has no AgentBC control path and
         # adds no capability to the matrix.
-        live = manifest["executors"]["claude"]["live_probe_e52m003"]
+        live = manifest["executors"]["claude"]["captured_cli_2_1_247"]
         self.assertTrue(live["live_capture"])
         self.assertFalse(live["help_contains_permission_prompt_tool"])
         self.assertEqual(live["decision"], PERMISSION_TRANSPORT_UNSUPPORTED)
@@ -240,9 +241,10 @@ class ClaudeSdkEnvironmentGateTests(unittest.TestCase):
             self.skipTest("claude-agent-sdk is not installed in this env")
         if sys.platform != "darwin" or platform_module.machine() != "arm64":
             self.skipTest("probed tuple is macOS arm64 only")
-        facts = assert_claude_sdk_environment(
-            "/Users/wangroway/.local/share/claude/versions/2.1.247"
-        )
+        claude_cli = shutil.which("claude")
+        if not claude_cli:
+            self.skipTest("claude CLI is not installed in this env")
+        facts = assert_claude_sdk_environment(str(Path(claude_cli).resolve()))
         self.assertTrue(facts["sdk_version"])
         self.assertEqual(facts["protocol"], "sdk.can_use_tool")
         self.assertEqual(facts["platform"], "macOS arm64")

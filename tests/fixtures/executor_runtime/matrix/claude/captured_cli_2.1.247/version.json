@@ -4,5 +4,5 @@
   "parsed": "2.1.247",
   "surface": "version_probe",
   "captured_host_date": "2026-08-28",
-  "origin": "E52M-003 live probe of the production host binary via official `claude --version`."
+  "origin": "Sanitized capture of the official `claude --version` surface."
 }

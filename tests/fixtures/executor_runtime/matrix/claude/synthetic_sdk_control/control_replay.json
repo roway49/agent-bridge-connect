@@ -15,7 +15,7 @@
             "description": "Write probe-allow to allow.txt"
           },
           "tool": "Bash",
-          "tool_use_id": "call_016b84c90ea847088e536e19"
+          "tool_use_id": "call_555555555555555555555555"
         },
         {
           "input": {
@@ -23,7 +23,7 @@
             "description": "Write probe-deny to deny.txt"
           },
           "tool": "Bash",
-          "tool_use_id": "call_6a491be1ff6844fba8ec1b47"
+          "tool_use_id": "call_666666666666666666666666"
         }
       ]
     },
@@ -38,9 +38,9 @@
     "same_client_session_continued": {
       "ok": true,
       "session_ids": [
-        "a1838531-e3e9-4b05-b41c-1118646bdd23",
-        "a1838531-e3e9-4b05-b41c-1118646bdd23",
-        "a1838531-e3e9-4b05-b41c-1118646bdd23"
+        "00000000-0000-4000-8000-000000000004",
+        "00000000-0000-4000-8000-000000000004",
+        "00000000-0000-4000-8000-000000000004"
       ],
       "single_session_all_phases": true,
       "tail_reply": "ALIVE"
@@ -56,12 +56,12 @@
         "description"
       ],
       "tool": "Bash",
-      "tool_use_id": "call_016b84c90ea847088e536e19"
+      "tool_use_id": "call_555555555555555555555555"
     },
     {
       "event": "result_allow_phase",
       "is_error": false,
-      "session_id": "a1838531-e3e9-4b05-b41c-1118646bdd23"
+      "session_id": "00000000-0000-4000-8000-000000000004"
     },
     {
       "event": "can_use_tool",
@@ -70,15 +70,15 @@
         "description"
       ],
       "tool": "Bash",
-      "tool_use_id": "call_6a491be1ff6844fba8ec1b47"
+      "tool_use_id": "call_666666666666666666666666"
     },
     {
       "event": "result_deny_phase",
-      "session_id": "a1838531-e3e9-4b05-b41c-1118646bdd23"
+      "session_id": "00000000-0000-4000-8000-000000000004"
     }
   ],
   "probe": "PERM-104-002-sliceA-repeat",
-  "probe_rerun": "QJXH-001 2026-08-30 (isolated venv /tmp/claude-sdk-probe, same pinned tuple)",
+  "probe_rerun": "synthetic replay of the pinned protocol tuple",
   "sdk_package": "claude-agent-sdk==0.2.142",
   "sdk_version": "0.2.142",
   "verdict": "pass"

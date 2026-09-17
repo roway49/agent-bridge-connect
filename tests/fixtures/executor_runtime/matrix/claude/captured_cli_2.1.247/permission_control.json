@@ -1,6 +1,6 @@
 {
   "captured_live": true,
-  "origin": "E52M-003 live probe of the production host binary. Captured via official `claude --version` and `claude --help` on 2026-08-28; full help text saved alongside as help.txt (home paths redacted).",
+  "origin": "Sanitized capture of the official `claude --version` and `claude --help` surfaces; full help text is stored alongside with host paths removed.",
   "surface": "permission_control",
   "probe": {
     "installed_version": "2.1.247",

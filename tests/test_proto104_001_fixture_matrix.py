@@ -85,12 +85,12 @@ class ManifestIntegrityTests(unittest.TestCase):
                     set(manifest["executors"][executor]["versions"]), versions
                 )
 
-    def test_e52m003_live_probe_is_executor_level_evidence(self) -> None:
-        # The live probe of the installed production binary is recorded as
-        # executor-level evidence, not a matrix version: it adds no
+    def test_captured_cli_is_executor_level_evidence(self) -> None:
+        # The sanitized CLI capture is recorded as executor-level evidence,
+        # not a matrix version: it adds no
         # capability and must never satisfy version surface requirements.
         manifest = load_manifest()
-        probe = manifest["executors"]["claude"]["live_probe_e52m003"]
+        probe = manifest["executors"]["claude"]["captured_cli_2_1_247"]
         self.assertTrue(probe["live_capture"])
         self.assertFalse(probe["help_contains_permission_prompt_tool"])
         self.assertIsNone(probe["stdio_control_live_capture"])

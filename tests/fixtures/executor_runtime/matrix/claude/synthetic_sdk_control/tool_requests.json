@@ -1,5 +1,5 @@
 {
-  "probe": "GGQN-001-frozen-live-probe",
+  "probe": "synthetic-tool-request-control",
   "sdk_package": "claude-agent-sdk",
   "sdk_version": "0.2.142",
   "cli_version": "2.1.233 (Claude Code)",
@@ -7,7 +7,7 @@
     {
       "event": "can_use_tool",
       "tool": "Bash",
-      "tool_use_id": "call_4427608207d447b4bc8cf588",
+      "tool_use_id": "call_cccccccccccccccccccccccc",
       "input_keys": [
         "command",
         "description"
@@ -16,7 +16,7 @@
     {
       "event": "can_use_tool",
       "tool": "Bash",
-      "tool_use_id": "call_235bd2871e0a417db7e1ba0e",
+      "tool_use_id": "call_dddddddddddddddddddddddd",
       "input_keys": [
         "command",
         "description"

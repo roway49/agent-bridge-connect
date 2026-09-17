@@ -84,14 +84,14 @@ class FrozenLiveProbeEvidenceTests(unittest.TestCase):
         / "executor_runtime"
         / "matrix"
         / "claude"
-        / "live_probe_sdk_2026-08-29"
-        / "probe_evidence_ggqn_2026-08-30.json"
+        / "synthetic_sdk_control"
+        / "tool_requests.json"
     )
 
     def test_ggqn_rerun_evidence_records_pass_on_pinned_tuple(self) -> None:
         import json
 
-        self.assertTrue(self.EVIDENCE.is_file(), "GGQN live-probe evidence missing")
+        self.assertTrue(self.EVIDENCE.is_file(), "T2A7 live-probe evidence missing")
         data = json.loads(self.EVIDENCE.read_text(encoding="utf-8"))
         self.assertEqual(data["verdict"], "pass")
         self.assertEqual(data["sdk_version"], "0.2.142")
@@ -108,8 +108,8 @@ class FrozenLiveProbeEvidenceTests(unittest.TestCase):
         )
 
 
-class Ggqn002RuntimeProbeEvidenceTests(unittest.TestCase):
-    """GGQN-002 runtime-closure live probe stays pinned on the frozen tuple.
+class RuntimeProtocolFixtureTests(unittest.TestCase):
+    """The runtime-closure fixture stays pinned on the frozen tuple.
 
     The evidence is produced by the isolated probe of the exact pinned tuple
     driving the PRODUCTION session driver (``_run_session_coroutine``) with
@@ -125,14 +125,14 @@ class Ggqn002RuntimeProbeEvidenceTests(unittest.TestCase):
         / "executor_runtime"
         / "matrix"
         / "claude"
-        / "live_probe_sdk_2026-08-29"
-        / "probe_evidence_ggqn002_runtime_2026-08-30.json"
+        / "synthetic_sdk_control"
+        / "runtime_verification.json"
     )
 
     def test_ggqn002_runtime_probe_records_pass_on_pinned_tuple(self) -> None:
         import json
 
-        self.assertTrue(self.EVIDENCE.is_file(), "GGQN-002 runtime probe evidence missing")
+        self.assertTrue(self.EVIDENCE.is_file(), "runtime protocol fixture missing")
         data = json.loads(self.EVIDENCE.read_text(encoding="utf-8"))
         self.assertEqual(data["verdict"], "pass")
         self.assertEqual(data["sdk_version"], "0.2.142")

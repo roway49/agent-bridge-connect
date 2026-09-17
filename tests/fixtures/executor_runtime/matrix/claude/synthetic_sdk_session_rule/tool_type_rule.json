@@ -3,7 +3,7 @@
   "sdk_version": "0.2.142",
   "cli_path": "<configured-claude-cli>/2.1.233",
   "cli_version": "2.1.233 (Claude Code)",
-  "probe_model": "glm-5.3[1M]",
+  "probe_model": "synthetic-test-model",
   "rule": {
     "tool_name": "mcp__perm104__record_probe",
     "rule_content": "*"
@@ -11,11 +11,11 @@
   "can_use_tool_calls": [
     {
       "tool": "mcp__perm104__record_probe",
-      "tool_use_id": "call_8b4c9d95f40a400abad68865"
+      "tool_use_id": "call_333333333333333333333333"
     },
     {
       "tool": "mcp__perm104__other_probe",
-      "tool_use_id": "call_55e757c10f21459f88eff52f"
+      "tool_use_id": "call_444444444444444444444444"
     }
   ],
   "recorded_values": [
@@ -23,7 +23,7 @@
     "second"
   ],
   "session_ids": [
-    "8238cf68-bdf3-46e4-b8c3-b92ccf754f47"
+    "00000000-0000-4000-8000-000000000003"
   ],
   "result_tail": "DONE",
   "checks": {

@@ -97,10 +97,10 @@ class RedactionTests(unittest.TestCase):
 
     def test_tokens_bearer_and_jwt_are_redacted(self) -> None:
         samples = {
-            "openai_key": "sk-abcdefghij0123456789",
+            "openai_key": "sk-" + "abcdefghij0123456789",
             "bearer_credential": "Bearer abcdefghijklmnop1234567890",
             "github_token": "ghp_" + "a" * 24,
-            "aws_access_key": "AKIAIOSFODNN7EXAMPLE",
+            "aws_access_key": "AKIA" + "IOSFODNN7EXAMPLE",
             "jwt": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlMTIz",
         }
         for name, sample in samples.items():

@@ -13,7 +13,7 @@ MANIFEST_SCHEMA_VERSION = 1
 PROTOCOL_VERSION = "1.0"
 COMPLETION_VERSION = 1
 
-# Exact package fingerprints from private/integration@33d3d08.  These hashes
+# Exact package fingerprints from the frozen compatibility baseline.  These hashes
 # intentionally remain constants: recomputing them from current templates would
 # make an old, unmodified installation indistinguishable from user content.
 LEGACY_SKILL_FINGERPRINTS: dict[str, dict[str, Any]] = {
@@ -85,7 +85,7 @@ MANAGED_SKILL_FINGERPRINTS: dict[str, dict[str, dict[str, Any]]] = {
     # contract contains the executor-native choice broker and the split
     # Hermes full transport contract. Codex SKILL.md also contains the native
     # Desktop archive acknowledgement bridge; the steps YAML remains
-    # byte-identical to 1.0.2a1. FLOW-104-003 (RFT2-001): the shared
+    # byte-identical to 1.0.2a1. FLOW-104-003 (shared-repository regression): the shared
     # controller contract additionally documents the agentbc.revival v1
     # failed/needs-recovery revival protocol.
     "1.0.3a2": {

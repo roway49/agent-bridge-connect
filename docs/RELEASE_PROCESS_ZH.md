@@ -14,7 +14,12 @@ Python 包：    1.0.4a1
 ## 1. 冻结发布提交
 
 - 完成 CHANGELOG，将 `Unreleased` 替换为实际发布日期；
-- 要求发布分支干净且非 detached，逐文件审阅发布 diff；
+- 从当前公开 `main` 创建干净的 `release/*` 分支；私有 integration 提交及其任何祖先都不得成为
+  公开候选的父提交；
+- 审阅候选的完整文件树，不能只审阅最后一次 commit diff；
+- 在任何网络写入前执行
+  `python3 scripts/check_repository_boundary.py --source revision --revision HEAD` 与
+  `python3 scripts/check_public_release.py`，两项都必须通过；
 - 确认 `pyproject.toml` 与 `agent_bridge_connect.__version__` 都是 `1.0.4a1`；
 - 确认公开远端不存在 `v1.0.4A`，PyPI 也不存在 `agentbc==1.0.4a1` 文件。已发布标签和
   包文件不可覆盖。
@@ -60,14 +65,18 @@ workflow 不负责构建这些 macOS 资产。
 
 ## 4. 打标签并发布
 
-全部门禁通过后，在已审阅的发布提交上创建不可变 annotated tag，并校验 tag/version/commit：
+全部本地门禁通过后，只允许推送 `release/*` 候选分支，并创建目标为公开 `main` 的 PR。
+禁止直接 push `main`。PR 必须通过根目录边界、公开内容边界和完整发布矩阵，并取得仓库所有者
+审阅后才能合并：
 
 ```bash
-git tag -a v1.0.4A -m "AgentBC 1.0.4A"
-python3 scripts/build_provenance.py validate --tag v1.0.4A
-git push public <release-branch>
-git push public refs/tags/v1.0.4A
+git push public HEAD:refs/heads/release/v1.0.4A
+# 所有 required checks 和 owner review 通过后，在 GitHub 合并 PR。
 ```
+
+只有 PR 合入后，受保护的发布器才能在该公开合并提交上创建不可变 annotated tag
+`v1.0.4A`。开发机凭据不得直接 push `main` 或发布 tag。创建 draft Release 前必须再次校验
+最终 tag/version/commit 关系。
 
 使用对应 CHANGELOG 内容从 `v1.0.4A` 创建名为 `AgentBC 1.0.4A` 的 **draft GitHub Release**。
 发布前先上传并校验：

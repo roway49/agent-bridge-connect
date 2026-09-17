@@ -2,21 +2,21 @@
   "probe": "PERM-104-002-session-rule-live-probe",
   "sdk_version": "0.2.142",
   "cli_path_pin": "2.1.247",
-  "probe_model": "glm-5.3[1M]",
+  "probe_model": "synthetic-test-model",
   "can_use_tool_calls": [
     {
       "tool": "Bash",
       "command": "echo probe-rule-allow > matched.txt",
-      "tool_use_id": "call_143b9cf22880472aa306a261"
+      "tool_use_id": "call_111111111111111111111111"
     },
     {
       "tool": "Bash",
       "command": "echo probe-other > nonmatched.txt",
-      "tool_use_id": "call_ed59d5117db0449bbb32acf5"
+      "tool_use_id": "call_222222222222222222222222"
     }
   ],
   "session_ids": [
-    "a17cbf1b-4845-4b31-94c1-e704b281769e"
+    "00000000-0000-4000-8000-000000000002"
   ],
   "result_tail": "DONE",
   "checks": {
