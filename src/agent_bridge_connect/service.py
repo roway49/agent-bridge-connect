@@ -4104,7 +4104,7 @@ def _normalize_step(step: dict[str, Any], index: int) -> dict[str, Any]:
             "task_create_error",
             f"step {index} must define a non-empty description or action",
         )
-    # FLOW-104-001 / transport correction schema correction: canonical new tasks carry
+    # FLOW-104-001 / GGQN-001 schema correction: canonical new tasks carry
     # integer step ids only.  A string id (e.g. ``"1"``) used to pass task
     # creation and then fail the matching final callback with
     # ``completion_marker_task_steps_invalid`` after the whole run had

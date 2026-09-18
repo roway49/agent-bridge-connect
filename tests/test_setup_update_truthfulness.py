@@ -27,7 +27,7 @@ from agent_bridge_connect.skill_packages import (
 def _frozen_102a1_files(platform: str) -> dict[str, bytes]:
     """Reconstruct the genuine 1.0.2a1 skill files (hash-verified).
 
-    PERM-104-002 T2A3-001: the current package is newer and its controller
+    PERM-104-002 9ZEV-001: the current package is newer and its controller
     contract changed after 1.0.2a1. Those contract bytes are preserved as a fixture;
     byte-identical files come from the current package.
     """

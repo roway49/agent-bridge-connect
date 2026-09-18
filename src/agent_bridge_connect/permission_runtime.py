@@ -989,7 +989,7 @@ def reconcile_block_success(
 ) -> bool:
     """Reconcile an approved block with its structured PostToolUse success.
 
-    PERM-104-002 (native approval baseline baseline): an approved native request whose exact
+    PERM-104-002 (ZF5R-001 baseline): an approved native request whose exact
     structured PostToolUse success executed must record
     ``execution_result="succeeded"`` in the block ledger; otherwise the next
     identical action converges to ``permission_escalation_ineffective`` even

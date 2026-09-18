@@ -237,7 +237,7 @@ class TaskListTests(unittest.TestCase):
 
 
 class StepIdSchemaRegressionTests(unittest.TestCase):
-    """PERM-104-002 / FLOW-104-001 correction (T2A7-001): string step ids
+    """PERM-104-002 / FLOW-104-001 correction (GGQN-001): string step ids
     used to pass task creation and later fail the matching final callback
     with ``completion_marker_task_steps_invalid`` after the whole run had
     executed.  Canonical new tasks require integer ids and invalid input

@@ -1,7 +1,7 @@
 """PERM-104-001 deterministic regression tests for Hermes ACP long runs.
 
-T2AF-001 (executor run ``hermes-T2AF-001-46b34d3d`` then
-``hermes-T2AF-001-1eb6432e``) proved two independent Hermes ACP defects:
+TJBS-001 (executor run ``hermes-TJBS-001-46b34d3d`` then
+``hermes-TJBS-001-1eb6432e``) proved two independent Hermes ACP defects:
 
 * a healthy turn was killed as ``hermes_acp_transport_failed`` because the
   transport bounded every receive by the 30s per-RPC handshake timeout while a
@@ -50,7 +50,7 @@ FAKE_SERVER = (
 )
 SESSION_ID = "acp-session-fake-1"
 OTHER_SESSION_ID = "acp-session-other-1"
-TASK_ID = "T2A2-001"
+TASK_ID = "59QH-001"
 
 
 def _marker_line() -> str:
@@ -169,7 +169,7 @@ class HermesAcpLongIntervalTests(_AcpBoardBase):
     """A silent model/tool interval inside a healthy turn is not a failure."""
 
     def test_turn_survives_a_silent_interval_longer_than_the_rpc_timeout(self) -> None:
-        # rpc_timeout_s=0.3 is the exact bound that killed T2AF-001 run 1; the
+        # rpc_timeout_s=0.3 is the exact bound that killed TJBS-001 run 1; the
         # fake stays silent for 1.2s in the middle of the turn.
         outcome = self._run_turn("long_interval", silence_s=1.2, rpc_timeout_s=0.3)
         self.assertNotIn("error", outcome, outcome.get("error"))
@@ -424,10 +424,6 @@ class HermesAcpTerminalResultTests(_AcpBoardBase):
             hermes_executor_module,
             "_HERMES_ACP_HEARTBEAT_INTERVAL_S",
             0.01,
-        ), mock.patch.object(
-            hermes_executor_module.time,
-            "monotonic",
-            return_value=100.0,
         ):
             heartbeat = _RunLeaseHeartbeat(executor, "acp-run-2")
             first = lease.last_heartbeat_at
@@ -468,7 +464,7 @@ class HermesSessionDeleteContractTests(unittest.TestCase):
         )
 
     def test_acp_receipt_identifier_is_accepted(self) -> None:
-        # The exact identifier T2AF-001 bound and then failed to delete.
+        # The exact identifier TJBS-001 bound and then failed to delete.
         self.assertEqual(
             _hermes_session_delete_identifier_error(
                 "18a3e156-6aae-4286-b504-4276f90fc5b2"

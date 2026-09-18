@@ -1,4 +1,4 @@
-"""PERM-104-002 production routing and temporary-full lifecycle (T2A7-001).
+"""PERM-104-002 production routing and temporary-full lifecycle (GGQN-001).
 
 Covers the corrected production contract:
 
@@ -41,7 +41,7 @@ from agent_bridge_connect.permission_grants import (
 from agent_bridge_connect.permission_modes import build_permission_record
 from agent_bridge_connect.service import TaskService
 
-RUN_ID = "claude-T2A7-001-route"
+RUN_ID = "claude-GGQN-001-route"
 
 
 def _fake_binary(directory: str, version: str = "2.1.233 (Claude Code)") -> Path:
@@ -77,7 +77,7 @@ class ProductionRoutingTests(unittest.TestCase):
     def test_temporary_grant_routes_to_control(self) -> None:
         grant = build_permission_grant(
             executor="claude",
-            task_id="T2A7-001",
+            task_id="GGQN-001",
             input_id="input-1",
             session_id=str(uuid.uuid4()),
             source_run_id="run-source",
@@ -121,7 +121,7 @@ class ProductionRoutingTests(unittest.TestCase):
             ):
                 with self.subTest(source=permission["selection_source"]):
                     packet = {
-                        "task_id": "T2A7-001",
+                        "task_id": "GGQN-001",
                         "steps": [{"id": 1, "description": "one"}],
                         "workspace": {"project_root": temporary, "root": temporary},
                         "extensions": {"agentbc.permission": dict(permission)},
@@ -203,7 +203,7 @@ class TemporaryFullSessionModeTests(unittest.TestCase):
             executor._transport = mock.MagicMock()
             grant = build_permission_grant(
                 executor="claude",
-                task_id="T2A7-001",
+                task_id="GGQN-001",
                 input_id="input-1",
                 session_id=str(uuid.uuid4()),
                 source_run_id="run-source",
@@ -259,13 +259,13 @@ class TemporaryFullSessionModeTests(unittest.TestCase):
 
             transport = ClaudeSDKControlTransport(
                 plane=mock.MagicMock(),
-                task_id="T2A7-001",
+                task_id="GGQN-001",
                 run_id=RUN_ID,
                 session_id="",
             )
             grant = build_permission_grant(
                 executor="claude",
-                task_id="T2A7-001",
+                task_id="GGQN-001",
                 input_id="input-1",
                 session_id=str(uuid.uuid4()),
                 source_run_id="run-source",
@@ -317,7 +317,7 @@ class TemporaryFullSessionModeTests(unittest.TestCase):
 
             transport = ClaudeSDKControlTransport(
                 plane=mock.MagicMock(),
-                task_id="T2A7-001",
+                task_id="GGQN-001",
                 run_id=RUN_ID,
                 session_id="",
             )
@@ -336,7 +336,7 @@ class TemporaryFullGrantLifecycleTests(unittest.TestCase):
     def _grant(self) -> dict:
         return build_permission_grant(
             executor="claude",
-            task_id="T2A7-001",
+            task_id="GGQN-001",
             input_id="input-1",
             session_id=str(uuid.uuid4()),
             source_run_id="run-source",
@@ -347,7 +347,7 @@ class TemporaryFullGrantLifecycleTests(unittest.TestCase):
         session_id = str(grant["binding"]["session_id"])
         source_run_id = str(grant["binding"]["source_run_id"])
         return {
-            "task_id": "T2A7-001",
+            "task_id": "GGQN-001",
             "assignee": "claude",
             "status": "running",
             "extensions": {
@@ -375,7 +375,7 @@ class TemporaryFullGrantLifecycleTests(unittest.TestCase):
 
     def _task_with_grant(self, grant: dict) -> dict:
         return {
-            "task_id": "T2A7-001",
+            "task_id": "GGQN-001",
             "assignee": "claude",
             "status": "running",
             "extensions": {
@@ -421,7 +421,7 @@ class TemporaryFullGrantLifecycleTests(unittest.TestCase):
 
         transport = ClaudeSDKControlTransport(
             plane=mock.MagicMock(),
-            task_id="T2A7-001",
+            task_id="GGQN-001",
             run_id=RUN_ID,
             session_id="",
             grant_revoke_callback=_revoke,
@@ -441,7 +441,7 @@ class TemporaryFullGrantLifecycleTests(unittest.TestCase):
     def test_revoke_without_durable_callback_fails_closed(self) -> None:
         transport = ClaudeSDKControlTransport(
             plane=mock.MagicMock(),
-            task_id="T2A7-001",
+            task_id="GGQN-001",
             run_id=RUN_ID,
             session_id="",
         )
@@ -465,7 +465,7 @@ class TemporaryFullGrantLifecycleTests(unittest.TestCase):
 
                 transport = ClaudeSDKControlTransport(
                     plane=mock.MagicMock(),
-                    task_id="T2A7-001",
+                    task_id="GGQN-001",
                     run_id=RUN_ID,
                     session_id="",
                     grant_revoke_callback=_revoke,
@@ -529,7 +529,7 @@ class TemporaryFullGrantLifecycleTests(unittest.TestCase):
     def test_attach_rejects_non_consumed_grant(self) -> None:
         transport = ClaudeSDKControlTransport(
             plane=mock.MagicMock(),
-            task_id="T2A7-001",
+            task_id="GGQN-001",
             run_id=RUN_ID,
             session_id="",
         )

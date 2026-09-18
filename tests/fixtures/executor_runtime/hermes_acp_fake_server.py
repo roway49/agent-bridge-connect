@@ -243,26 +243,26 @@ def main(argv: list[str]) -> int:
             if mode == "resume_direct":
                 # Resume path with no permission request at all.
                 _send(_session_update(SESSION_ID, "resumed and finished\n"), log)
-                _send(_session_update(SESSION_ID, _marker("T2A2-001")), log)
+                _send(_session_update(SESSION_ID, _marker("59QH-001")), log)
                 _send(_prompt_reply(request_id), log)
                 continue
             if mode == "long_interval":
                 _send(_session_update(SESSION_ID, "starting the long tool call"), log)
                 time.sleep(silence_s)
                 _send(_session_update(SESSION_ID, "tool call finished"), log)
-                _send(_session_update(SESSION_ID, _marker("T2A2-001")), log)
+                _send(_session_update(SESSION_ID, _marker("59QH-001")), log)
                 _send(_prompt_reply(request_id), log)
                 continue
             if mode == "split_frames":
                 for chunk in ("Step1 wrote the artifact.\n", "Step2 byte-verified it.\n", "Step3 finishing unattended.\n"):
                     _send(_session_update(SESSION_ID, chunk), log)
-                _send(_session_update(SESSION_ID, _marker("T2A2-001")), log)
+                _send(_session_update(SESSION_ID, _marker("59QH-001")), log)
                 _send(_prompt_reply(request_id), log)
                 continue
             if mode == "truncated_marker":
                 # The marker line is split across two frames mid-line, so a
                 # client that truncates or re-frames partial reads loses it.
-                body = "working.\n" + _marker("T2A2-001")
+                body = "working.\n" + _marker("59QH-001")
                 cut = body.index("step_results")
                 _write_raw(_frame(_session_update(SESSION_ID, body[:cut])))
                 time.sleep(0.05)
@@ -274,13 +274,13 @@ def main(argv: list[str]) -> int:
                 _send(_prompt_reply(request_id), log)
                 continue
             if mode == "duplicate_marker":
-                marker = _marker("T2A2-001")
+                marker = _marker("59QH-001")
                 _send(_session_update(SESSION_ID, marker + "\n" + marker), log)
                 _send(_prompt_reply(request_id), log)
                 continue
             if mode == "unrelated_session_update":
                 _send(_session_update(SESSION_ID, "stale answer from another session", session=OTHER_SESSION_ID), log)
-                _send(_session_update(SESSION_ID, _marker("T2A2-001")), log)
+                _send(_session_update(SESSION_ID, _marker("59QH-001")), log)
                 _send(_prompt_reply(request_id), log)
                 continue
             if mode in {"happy", "resume", "unsupported_options", "wrong_session_permission"}:

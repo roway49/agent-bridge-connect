@@ -684,7 +684,7 @@ class ClaudeExecutor(CLIExecutorBase):
         # Runner-managed task selects the SDK protocol transport and the
         # environment gate mechanically checks the required interface;
         # transport — explicit/inherited full and temporary-full runs never
-        # fall back to the ordinary raw CLI path (transport correction correction).
+        # fall back to the ordinary raw CLI path (GGQN-001 correction).
         if task_packet.get("runner_authorization_required") is True:
             try:
                 control_path = select_claude_control_path(
@@ -780,13 +780,13 @@ class ClaudeExecutor(CLIExecutorBase):
 
         prompt = _build_prompt(task_packet)
 
-        # PERM-104-002 (transport correction): the approval identity binds the
+        # PERM-104-002 (GGQN-001): the approval identity binds the
         # authoritative escalation domain and host profile digest from the
         # task/runtime capability context, so the ControlPlane convergence
         # ledger records the exact blocking source for every SDK approval.
         control_context = self._claude_control_capability_context(task_packet)
 
-        # runtime verification: durable temporary-full revocation.  The transport's
+        # GGQN-002: durable temporary-full revocation.  The transport's
         # terminal-state revocation lands through the TaskService store
         # (reload + revoke + write); a failed durable write raises instead of
         # being swallowed, so the run fails closed.
@@ -815,7 +815,7 @@ class ClaudeExecutor(CLIExecutorBase):
             transition_receipt_callback=None,
         )
         if self._full_is_declared_base(permission):
-            # runtime verification: explicit full and inherited full run bypassPermissions
+            # GGQN-002: explicit full and inherited full run bypassPermissions
             # — there is no can_use_tool request to anchor on.  The run
             # verifies under the DECLARED authorization of the pre-authorized
             # full base (never an invented approval).
@@ -1183,7 +1183,7 @@ class ClaudeExecutor(CLIExecutorBase):
     def _full_is_declared_base(self, permission: dict[str, Any]) -> bool:
         """Return whether this run's full base is explicit or inherited.
 
-        runtime verification: only the two pre-authorized concrete ``full`` bases verify
+        GGQN-002: only the two pre-authorized concrete ``full`` bases verify
         under the declared-run anchor.  A safe/inherit base never declares a
         full-run authorization, and a temporary full declares its anchor via
         the consumed grant in :meth:`start_control` instead.
@@ -1223,7 +1223,7 @@ class ClaudeExecutor(CLIExecutorBase):
     ) -> dict[str, str]:
         """Return the authoritative escalation domain and host profile digest.
 
-        PERM-104-002 (transport correction): the SDK approval identity must carry the
+        PERM-104-002 (GGQN-001): the SDK approval identity must carry the
         exact blocking-source domain and the host containment digest from
         the authoritative task/runtime capability context — never from
         callback prose, stderr, or exit status.  A Runner-attached
@@ -1276,7 +1276,7 @@ class ClaudeExecutor(CLIExecutorBase):
     ) -> Callable[[str, dict[str, Any]], dict[str, Any]]:
         """Return the authoritative runtime verification callback.
 
-        PERM-104-002 (runtime verification): the durable ``agentbc.permission_runtime``
+        PERM-104-002 (GGQN-002): the durable ``agentbc.permission_runtime``
         record reaches ``verified`` ONLY through the exact structured
         PostToolUse success event selected by the transport itself
         (``select_verification_event``) — the same official SDK session and
@@ -1325,7 +1325,7 @@ class ClaudeExecutor(CLIExecutorBase):
                 return outcome
             # A structured ResultMessage also binds the official session id:
             # a run whose terminal result names a different session proves
-            # nothing about this session's capability (runtime verification cross-run).
+            # nothing about this session's capability (GGQN-002 cross-run).
             result_session = str(result_payload.get("session_id") or "").strip()
             if (
                 str(session_id or "").strip()
@@ -1358,7 +1358,7 @@ class ClaudeExecutor(CLIExecutorBase):
                     outcome["reason"] = "claude_sdk_post_tool_use_event_rejected"
                     return outcome
                 outcome["tool_use_id"] = str(structured_event.get("tool_use_id") or "")
-                # PERM-104-002 (native approval baseline): reconcile the approved action with
+                # PERM-104-002 (ZF5R-001): reconcile the approved action with
                 # its exact structured PostToolUse result.  The ledger entry
                 # recorded at decision time moves to execution_result=
                 # "succeeded" so the next identical action is NOT converged
@@ -1456,7 +1456,7 @@ class ClaudeExecutor(CLIExecutorBase):
     ) -> Any:
         """Build official ClaudeAgentOptions for the validated protocol.
 
-        Frozen semantics (PERM-104-002, corrected in transport correction): safe/inherit
+        Frozen semantics (PERM-104-002, corrected in GGQN-001): safe/inherit
         bases keep the SDK default mode so ``can_use_tool`` fires for
         ask-path actions; explicit and inherited concrete ``full`` start
         ``bypassPermissions`` via the frozen flag→mode mapping.  A trusted
@@ -1512,7 +1512,7 @@ class ClaudeExecutor(CLIExecutorBase):
                 task_id,
                 board_root=board_root,
             )
-            # runtime verification: bind the hook log to the official session BEFORE the
+            # GGQN-002: bind the hook log to the official session BEFORE the
             # prompt so PostToolUse evidence is fail-closed to this exact
             # session (an unbound log can never verify).  The same structured
             # events are captured on the transport for duplicate/failure/
@@ -1606,7 +1606,7 @@ class ClaudeExecutor(CLIExecutorBase):
         )
         command.extend(claude_path_capability_args(capability))
         if self.supports_permission_prompt_tool():
-            # PERM-104-002 (compatibility review): the only official protocol
+            # PERM-104-002 (E52M-003 review fix): the only official protocol
             # value for ``--permission-prompt-tool`` is a real MCP server
             # entrypoint that AgentBC has captured and canary-verified.  A
             # self-authored shell command spec is not the official protocol;

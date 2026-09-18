@@ -16,5 +16,3 @@
 /.githooks/pre-push @roway49
 /scripts/check_repository_boundary.py @roway49
 /scripts/check_public_release.py @roway49
-/docs/RELEASE_PROCESS.md @roway49
-/docs/RELEASE_PROCESS_ZH.md @roway49

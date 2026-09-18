@@ -75,7 +75,7 @@ def _elapsed(seconds: int) -> str:
 def _reservation(
     operation: str = REVIVAL_OPERATION_RETRY,
     *,
-    source_task_id: str = "T2AC-001",
+    source_task_id: str = "RFT2-001",
     source_attempt_id: str = "run-1",
     steps: list[dict[str, Any]] | None = None,
     now: str = T0,
@@ -108,7 +108,7 @@ def _passing_facts(**overrides: Any) -> dict[str, Any]:
         "report_state": "readable",
         "failure_kind": "hermes_acp_transport_failed",
         "failure_layer": "transport",
-        "source_task_id": "T2AC-001",
+        "source_task_id": "RFT2-001",
         "source_attempt_id": "run-1",
     }
     facts.update(overrides)
@@ -123,7 +123,7 @@ class RevivalReservationTests(unittest.TestCase):
         self.assertRegex(record["revival_id"], r"^REV-[0-9a-f]{32}$")
         self.assertEqual(record["state"], "reserved")
         self.assertEqual(record["operation"], REVIVAL_OPERATION_RETRY)
-        self.assertEqual(record["source_task_id"], "T2AC-001")
+        self.assertEqual(record["source_task_id"], "RFT2-001")
         self.assertEqual(record["source_attempt_id"], "run-1")
         self.assertEqual(record["target_task_id"], "")
         self.assertEqual(record["cleanup_scope"], REVIVAL_RETRY_CLEANUP_SCOPE)
@@ -138,7 +138,7 @@ class RevivalReservationTests(unittest.TestCase):
         with self.assertRaises(ABCError) as ctx:
             build_revival_reservation(
                 operation=REVIVAL_OPERATION_RETRY,
-                source_task_id="T2AC-001",
+                source_task_id="RFT2-001",
                 steps=[{"id": 1, "status": "failed"}],
                 target_task_id="OTHER-001",
                 now=T0,
@@ -215,7 +215,7 @@ class RevivalReservationTests(unittest.TestCase):
 
     def test_public_view_is_field_fixed_and_path_free(self) -> None:
         record = _reservation()
-        record["path_plan_digest"] = revival_path_plan_digest({"task_code": "T2AC"})
+        record["path_plan_digest"] = revival_path_plan_digest({"task_code": "RFT2"})
         view = revival_public_view(record)
         self.assertEqual(set(view), set(REVIVAL_RECORD_FIELDS))
         blob = json.dumps(view)
@@ -246,9 +246,9 @@ class RevivalReservationTests(unittest.TestCase):
         self.assertEqual(candidate["operation"], REVIVAL_OPERATION_HANDOFF)
 
     def test_intent_fingerprint_is_deterministic_and_scope_bounded(self) -> None:
-        first = revival_intent_fingerprint("retry", "T2AC-001", "run-1")
-        second = revival_intent_fingerprint("retry", "T2AC-001", "run-1")
-        third = revival_intent_fingerprint("retry", "T2AC-002", "run-1")
+        first = revival_intent_fingerprint("retry", "RFT2-001", "run-1")
+        second = revival_intent_fingerprint("retry", "RFT2-001", "run-1")
+        third = revival_intent_fingerprint("retry", "RFT2-002", "run-1")
         self.assertEqual(first, second)
         self.assertNotEqual(first, third)
         self.assertTrue(first.startswith("sha256:"))
@@ -269,11 +269,11 @@ class RevivalReservationTests(unittest.TestCase):
             commit_revival_reservation(handoff, now=_elapsed(2))
         bound = commit_revival_reservation(
             handoff,
-            target_task_id="T2AC-002",
+            target_task_id="RFT2-002",
             target_attempt_id="run-2",
             now=_elapsed(2),
         )
-        self.assertEqual(bound["target_task_id"], "T2AC-002")
+        self.assertEqual(bound["target_task_id"], "RFT2-002")
         self.assertEqual(bound["target_attempt_id"], "run-2")
         released = release_revival_reservation(record, now=_elapsed(3))
         self.assertEqual(released["state"], "released")
@@ -300,14 +300,14 @@ class RevivalDigestTests(unittest.TestCase):
         self.assertNotEqual(digest, revival_digest("payload2"))
 
     def test_path_plan_and_policy_digests_are_deterministic(self) -> None:
-        workspace = {"task_code": "T2AC", "iteration": "001"}
+        workspace = {"task_code": "RFT2", "iteration": "001"}
         self.assertEqual(
             revival_path_plan_digest(workspace),
             revival_path_plan_digest(dict(workspace)),
         )
         self.assertNotEqual(
             revival_path_plan_digest(workspace),
-            revival_path_plan_digest({"task_code": "T2AC", "iteration": "002"}),
+            revival_path_plan_digest({"task_code": "RFT2", "iteration": "002"}),
         )
         policy = revival_policy_digest({"agentbc.permission": {"effective_mode": "full"}})
         self.assertRegex(policy, r"^sha256:[0-9a-f]{64}$")
@@ -369,10 +369,10 @@ class RevivalFactsTests(unittest.TestCase):
             "report_root": "/tmp/r",
             "task_file": task_file,
             "report_file": report_file,
-            "task_code": "T2AC",
+            "task_code": "RFT2",
             "iteration": "001",
             "task_date": "2026-09-09",
-            "executor_project_root": "/tmp/agentbc/tasks/artifacts/2026-09-09/T2AC/T2AC-001/claude",
+            "executor_project_root": "/tmp/agentbc/tasks/artifacts/2026-09-09/RFT2/RFT2-001/claude",
         }
 
     def _failed_task(self, **overrides: Any) -> dict[str, Any]:
@@ -406,7 +406,7 @@ class RevivalFactsTests(unittest.TestCase):
             },
         )
         task = {
-            "id": "T2AC-001",
+            "id": "RFT2-001",
             "status": "failed",
             "errors": [
                 {
@@ -421,7 +421,7 @@ class RevivalFactsTests(unittest.TestCase):
             ],
             "workspace": self._workspace(),
             "extensions": {
-                "agentbc.lineage": {"task_code": "T2AC", "iteration_index": 1},
+                "agentbc.lineage": {"task_code": "RFT2", "iteration_index": 1},
                 "agentbc.session": {
                     "retain": False,
                     "session_id": "s-1",
@@ -452,7 +452,7 @@ class RevivalFactsTests(unittest.TestCase):
         self.assertEqual(facts["failure_layer"], "transport")
 
     def test_defaults_fail_closed(self) -> None:
-        facts = revival.revival_facts_from_task({"id": "T2AC-001", "status": "failed"})
+        facts = revival.revival_facts_from_task({"id": "RFT2-001", "status": "failed"})
         self.assertFalse(facts["is_chain_head"])
         self.assertEqual(facts["lease_state"], "")
         self.assertFalse(facts["requirements_readable"])

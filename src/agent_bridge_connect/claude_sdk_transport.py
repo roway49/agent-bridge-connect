@@ -30,7 +30,7 @@ Fail-closed guarantees (PERM-104-002):
 * when the transport dies while a request is pending, the request is
   invalidated on the control plane and can never be reused after restart.
 
-runtime verification runtime-verification contract:
+GGQN-002 runtime-verification contract:
 
 * the durable ``agentbc.permission_runtime`` ``verified`` transition is
   driven ONLY by an exact structured ``PostToolUse`` success event from the
@@ -49,7 +49,7 @@ runtime verification runtime-verification contract:
   callback prose, stderr, exit status, and a bare ``ResultMessage`` are
   never success evidence on their own.
 
-runtime verification durable temporary-full revocation:
+GGQN-002 durable temporary-full revocation:
 
 * ``_revoke_consumed_grant`` lands through the bound durable callback (the
   executor's TaskService store write) exactly once at terminal state;
@@ -265,7 +265,7 @@ class ClaudeSDKControlTransport:
                 from agent_bridge_connect.permission_runtime import host_profile_digest
 
                 self.host_profile_digest = host_profile_digest()
-        # PERM-104-002 (runtime verification): the durable revocation path for consumed
+        # PERM-104-002 (GGQN-002): the durable revocation path for consumed
         # temporary-full grants.  Production binds the TaskService store
         # callback; without it a consumed grant cannot be durably revoked and
         # :meth:`_revoke_consumed_grant` fails closed with a stable error.
@@ -299,7 +299,7 @@ class ClaudeSDKControlTransport:
         # PERM-104-002 temporary-full lifecycle: the grant envelope consumed
         # for this run, revoked durably on terminal/crash/handoff/reassign.
         self._consumed_grant: dict[str, Any] | None = None
-        # PERM-104-002 (runtime verification): structured PostToolUse success events
+        # PERM-104-002 (GGQN-002): structured PostToolUse success events
         # captured on this exact SDK session/run.  Each entry carries the
         # native tool_use_id, the official session id, the tool name, and the
         # monotonic arrival order; verification is driven from these events,
@@ -930,7 +930,7 @@ class ClaudeSDKControlTransport:
             decision = str(response.get("decision") or "").strip().lower()
             if decision == "accept":
                 # Approve authorizes only the original action: the official
-                # allow MUST carry the untouched original input.  runtime verification:
+                # allow MUST carry the untouched original input.  GGQN-002:
                 # the exact approved tool_use_id becomes this run's
                 # verification anchor — the only identity whose structured
                 # PostToolUse success may verify the runtime receipt.
@@ -1174,7 +1174,7 @@ class ClaudeSDKControlTransport:
     ) -> None:
         """Declare the run-level authorization this run may verify under.
 
-        runtime verification: explicit full and inherited full run with
+        GGQN-002: explicit full and inherited full run with
         ``bypassPermissions`` and therefore never produce a ``can_use_tool``
         approval request.  Their verification anchor is the DECLARED action
         identity of the pre-authorized run (Runner dispatch
@@ -1210,7 +1210,7 @@ class ClaudeSDKControlTransport:
     ) -> dict[str, Any] | None:
         """Select the exact PostToolUse success event backing verification.
 
-        runtime verification verification contract — the selected event must be, in the
+        GGQN-002 verification contract — the selected event must be, in the
         same transport session and run window:
 
         * a ``PostToolUse`` success (never ``PostToolUseFailure``, never
@@ -1351,7 +1351,7 @@ class ClaudeSDKControlTransport:
                 "Only a consumed one-shot grant may back a temporary full run.",
             )
         self._consumed_grant = dict(grant)
-        # runtime verification: temporary full has no can_use_tool request (bypass
+        # GGQN-002: temporary full has no can_use_tool request (bypass
         # permissions), so the run verifies under the declared-run anchor
         # backed by the durable consumed-grant binding (grant + target run).
         self.declare_run_authorization(mode="declared_run")
@@ -1359,7 +1359,7 @@ class ClaudeSDKControlTransport:
     def _revoke_consumed_grant(self, code: str) -> None:
         """Durably revoke the consumed temporary-full grant exactly once.
 
-        runtime verification: the in-memory envelope alone is never mutated as evidence.
+        GGQN-002: the in-memory envelope alone is never mutated as evidence.
         Revocation lands through the bound durable callback (the executor's
         TaskService store write) and the returned revoked envelope replaces
         the mirrored copy.  Without a bound callback — or when the durable

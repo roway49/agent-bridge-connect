@@ -251,7 +251,6 @@ and executor-native approval controls for defense in depth.
 
 - [Quick Start](docs/QUICK_START.md) / [快速开始](docs/QUICK_START_ZH.md)
 - [User Guide](docs/USER_GUIDE.md) / [用户指南](docs/USER_GUIDE_ZH.md)
-- [Release Process](docs/RELEASE_PROCESS.md) / [发布流程](docs/RELEASE_PROCESS_ZH.md)
 - [Feature Show](docs/FEATURE_SHOW.md) / [功能展示](docs/FEATURE_SHOW_ZH.md)
 - [Examples](docs/Example.md) / [演示示例](docs/Example_ZH.md)
 - [Feature Preview](docs/PREVIEW.md) / [后续功能预告](docs/PREVIEW_ZH.md)

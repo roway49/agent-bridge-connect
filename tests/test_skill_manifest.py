@@ -162,7 +162,7 @@ class SkillManifestTests(unittest.TestCase):
         """The historical 1.0.3a2 managed-package fingerprint is frozen."""
         fingerprints = MANAGED_SKILL_FINGERPRINTS["1.0.3a2"]
         self.assertEqual(set(fingerprints), {"codex", "claude", "hermes"})
-        # FLOW-104-003 (T2AC-001): the shared controller contract documents
+        # FLOW-104-003 (RFT2-001): the shared controller contract documents
         # the agentbc.revival v1 failed/needs-recovery revival protocol.
         self.assertEqual(
             fingerprints["codex"]["files"]["references/controller-contract.md"],

@@ -462,7 +462,7 @@ class InputResponseLifecycleTests(unittest.TestCase):
         self.assertEqual(current.errors[-1]["code"], "input_deadline_expired")
         self.assertEqual(load_lease(self.task.id, self.board).state, RunLeaseState.CLOSED)
     def test_expiry_maintenance_keeps_delivery_receipt_ownership_isolated(self) -> None:
-        """T2AM-002: maintenance never duplicates or misroutes a notification.
+        """YBNW-002: maintenance never duplicates or misroutes a notification.
 
         A deadline expiry that stays ``needs_recovery`` is still a task-end
         outcome, so its dialog is owned by the same durable receipt and is

@@ -1,6 +1,6 @@
 """PERM-104-003: a waiting v3 task elevation outranks a terminal Hermes poll.
 
-Regression coverage for T2AJ-001.  The recorded failure timeline is:
+Regression coverage for Y7SW-001.  The recorded failure timeline is:
 
 * ``2026-09-06T14:49:54.215654Z`` the Hermes ACP adapter persisted one
   waiting v3 task-elevation input for official session
@@ -62,7 +62,7 @@ FAKE_SESSION_ID = "acp-session-fake-1"
 
 
 def _permission_frame(request_id: int = 0, tool_call_id: str = "perm-check-1") -> dict:
-    """The exact canonical ACP shape recorded by T2AJ-001."""
+    """The exact canonical ACP shape recorded by Y7SW-001."""
     return {
         "jsonrpc": "2.0",
         "id": request_id,
@@ -89,7 +89,7 @@ class _ElevationThenTerminalTransport:
     """Fake ACP transport that persists one elevation, then dies.
 
     ``prompt`` raises :class:`HermesAcpElevationRequired` after the adapter
-    durably persisted the waiting input - exactly the T2AJ ordering - and the
+    durably persisted the waiting input - exactly the Y7SW ordering - and the
     injected ``after_elevation`` hook lets a test make the run also look
     terminal (a real transport close, an empty final text or a stopReason)
     before the worker polls again.
@@ -152,7 +152,7 @@ class _ElevationThenTerminalTransport:
 class _TerminalHermesExecutor:
     """Fake Hermes executor whose poll is already terminal.
 
-    This is the worker's view of the T2AJ race: by the time the worker polls,
+    This is the worker's view of the Y7SW race: by the time the worker polls,
     the ACP turn has ended and the executor reports a terminal failure even
     though the durable v3 elevation input is waiting.
 
@@ -242,7 +242,7 @@ class _TerminalHermesExecutor:
 
 
 def _terminal_failure_result(session_id: str = FAKE_SESSION_ID) -> PollResult:
-    """The poll the T2AJ worker actually saw: no callback, run over."""
+    """The poll the Y7SW worker actually saw: no callback, run over."""
     return PollResult(
         status="failed",
         progress={"events_seen": 4},
@@ -304,7 +304,7 @@ class _WorkerHarness:
 
     def create_task(self) -> str:
         task = self.service.create_task(
-            "T2AJ-001 race reproduction",
+            "Y7SW-001 race reproduction",
             "hermes",
             [{"id": 1, "description": "delete the elevation probe file"}],
             customer_dir=True,
@@ -439,10 +439,10 @@ class InputTerminalArbitrationTests(unittest.TestCase):
         self.assertNotIn("worker_run_id", execution)
         self.assertNotIn("executor_run_id", execution)
 
-    # -- the T2AJ-001 race -------------------------------------------------
+    # -- the Y7SW-001 race -------------------------------------------------
 
     def test_waiting_elevation_outlives_completion_marker_missing(self) -> None:
-        """The exact T2AJ-001 race: waiting input beats completion_marker_missing."""
+        """The exact Y7SW-001 race: waiting input beats completion_marker_missing."""
         harness = self.harness
         task_id = harness.create_task()
         executor = _TerminalHermesExecutor(_terminal_failure_result(), harness)

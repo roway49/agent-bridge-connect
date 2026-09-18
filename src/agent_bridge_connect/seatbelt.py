@@ -57,7 +57,7 @@ TASK_TEMP_DIR_NAME = "temp"
 def task_temp_root(record_root: str | Path, task_id: str) -> Path:
     """Return the exact task-scoped temp root for one task/iteration.
 
-    PERM-104-002 compatibility review: the profile no longer grants
+    PERM-104-002 review fix (E52M-003): the profile no longer grants
     ``/private/tmp`` or ``/var/folders``.  Scratch space is the canonical
     ``<record_root>/<task_code>/<iteration>/temp`` directory of the current
     task only; the Runner creates it, exports it as ``TMPDIR`` for the
@@ -363,7 +363,7 @@ def build_seatbelt_profile(
     rules win in sandbox-exec, so the narrow ref allows follow the broad
     refs/worktrees denials.
 
-    PERM-104-002 compatibility review: the previous profile allowed
+    PERM-104-002 review fix (E52M-003): the previous profile allowed
     ``file-write*`` for the entire ``/private/tmp`` and ``/var/folders``
     staging trees.  Those are world-writable areas shared with every other
     process on the host, so a contained worker could plant or rewrite any
@@ -401,7 +401,7 @@ def build_seatbelt_profile(
         # deny default blocks device writes and breaks every subprocess.
         '(allow file-write* (literal "/dev/null"))',
         '(allow file-write* (literal "/dev/dtracehelper"))',
-        # compatibility review: no /private/tmp and no /var/folders writes.
+        # E52M-003 review fix: no /private/tmp and no /var/folders writes.
         # World-staging trees are shared with every other process; the
         # only scratch surface is the current task's canonical temp root
         # (part of ``writable_roots``) with TMPDIR pinned to it.
@@ -486,7 +486,7 @@ def cleanup_stale_seatbelt_profiles(
 ) -> list[str]:
     """Delete only provably stale task-scoped ``.sb`` profiles.
 
-    PERM-104-002 compatibility review: the previous
+    PERM-104-002 review fix (E52M-003): the previous
     ``cleanup_seatbelt_profiles`` deleted **every** ``task-*.sb`` in the
     directory.  Called after ``launch_with_seatbelt`` (as the Runner did),
     it deleted the just-created profile of the launch in progress, and

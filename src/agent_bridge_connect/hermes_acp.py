@@ -229,7 +229,7 @@ _HERMES_ACP_START_TIMEOUT_S = 60.0
 
 # PERM-104-001: a healthy Hermes turn is NOT bounded by the per-RPC handshake
 # timeout.  A single model call or tool call can stay silent on the ACP stream
-# far longer than 30s (the long-running Hermes regression timed out
+# far longer than 30s (TJBS-001 run ``hermes-TJBS-001-46b34d3d`` timed out
 # after a 45.1s model call and a tool execution that emitted no frame).  The
 # transport therefore separates three independent bounds:
 #
@@ -247,7 +247,7 @@ _HERMES_ACP_START_TIMEOUT_S = 60.0
 HERMES_ACP_RECEIVE_TIMEOUT_S = 900.0
 
 # Bounded assistant-text budget for one turn.  The budget is large enough for a
-# full Hermes answer (the long-running regression answer plus its marker was ~1.3 KB) and,
+# full Hermes answer (TJBS-001's real answer plus its marker was ~1.3 KB) and,
 # when it is ever exceeded, the head AND the tail are both preserved so the
 # terminal marker line can never be truncated away again.
 HERMES_ACP_MESSAGE_MAX_BYTES = 1_048_576

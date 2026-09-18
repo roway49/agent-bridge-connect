@@ -160,7 +160,7 @@ def claude_ephemeral_path_capability(
             "Claude Artifact root must be separate from its ephemeral project",
         )
 
-    # PERM-104-002 (compatibility review): when the task's project root is a
+    # PERM-104-002 (E52M-003 review fix): when the task's project root is a
     # linked worktree, the inner sandbox mirrors the outer Seatbelt
     # capability under the joint-constraint contract:
     #
@@ -199,7 +199,7 @@ def claude_ephemeral_path_capability(
     # File-tool deny rules cover Claude's built-in Write/Edit tools via the
     # absolute // permission-rule syntax.  The deliverable/ephemeral roots
     # deny the file tools by prior PERM-103-007 policy; metadata denies are
-    # the compatibility hardening.  Git subprocesses are not affected by these
+    # the E52M-003 addition.  Git subprocesses are not affected by these
     # rules - they are bounded by the joint outer Seatbelt + inner sandbox
     # filesystem constraint instead.
     file_tool_denies = [
@@ -229,7 +229,7 @@ def claude_ephemeral_path_capability(
             # boundary and must not silently auto-approve Bash actions.
             "autoAllowBashIfSandboxed": False,
             "filesystem": {
-                # Compatibility: allowWrite is the frozen task roots plus, for a
+                # E52M-003: allowWrite is the frozen task roots plus, for a
                 # linked worktree, the controlled Git metadata.  The outer
                 # Seatbelt profile narrows the metadata surface to the exact
                 # current-branch ref/lock/reflog and common objects, so the

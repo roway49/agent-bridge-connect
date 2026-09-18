@@ -921,7 +921,7 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
         coordinator = SessionCleanupCoordinator(
             self.board,
             desktop_archive_broker=AcknowledgedCodexDesktopArchiveBroker(
-                task_id="T2AK-001",
+                task_id="Y9JS-001",
                 executor_run_id="run-1",
                 session_id=child_session_id,
             ),
@@ -930,7 +930,7 @@ class CoordinatorAuxiliaryTestCase(unittest.TestCase):
         self.assertTrue(
             coordinator._can_replace_failed_desktop_route(  # noqa: SLF001
                 receipt,
-                task_id="T2AK-001",
+                task_id="Y9JS-001",
                 executor_run_id="run-1",
                 session_id=child_session_id,
             )

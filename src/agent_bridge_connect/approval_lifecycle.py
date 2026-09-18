@@ -282,7 +282,7 @@ class ApprovalLifecycleMixin:
     ) -> dict[str, Any] | None:
         """Durably revoke a consumed grant bound to one executor run.
 
-        runtime verification: the transport-lifecycle revocation path.  Reloads the task
+        GGQN-002: the transport-lifecycle revocation path.  Reloads the task
         through the TaskService store, verifies the persisted grant is the
         exact consumed grant backing ``target_run_id`` (same ``grant_id`` and
         ``binding.target_run_id`` when ``expected_grant`` is supplied),
@@ -302,7 +302,7 @@ class ApprovalLifecycleMixin:
             # The caller mirrors the exact grant envelope the Runner consumed
             # for this run.  Both the grant id AND the target-run binding
             # must match the persisted envelope, so a transport holding a
-            # grant bound to a different run can never revoke it (runtime verification
+            # grant bound to a different run can never revoke it (GGQN-002
             # fail-closed wrong-identity rejection).
             expected_id = str((expected_grant or {}).get("grant_id") or "")
             if expected_id and str(persisted.get("grant_id") or "") != expected_id:

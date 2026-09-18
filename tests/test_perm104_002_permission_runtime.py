@@ -72,8 +72,8 @@ PROFILE_DIGEST = "sha256:" + "1" * 64
 
 def _base_record(**overrides: str) -> dict:
     values = {
-        "task_id": "T2A6-001",
-        "chain_head_id": "T2A6-001",
+        "task_id": "E52M-001",
+        "chain_head_id": "E52M-001",
         "executor": "hermes",
         "executor_run_id": "worker-run-1",
         "session_id": "",
@@ -93,8 +93,8 @@ class PermissionRuntimeRecordTests(unittest.TestCase):
         self.assertEqual(record["version"], PERMISSION_RUNTIME_VERSION)
         self.assertEqual(record["mode"], "full")
         self.assertEqual(record["state"]["status"], "prepared")
-        self.assertEqual(record["binding"]["task_id"], "T2A6-001")
-        self.assertEqual(record["binding"]["chain_head_id"], "T2A6-001")
+        self.assertEqual(record["binding"]["task_id"], "E52M-001")
+        self.assertEqual(record["binding"]["chain_head_id"], "E52M-001")
         self.assertEqual(record["binding"]["permission_source"], "explicit_task")
         self.assertEqual(record["scope"]["path_plan_digest"], PLAN_DIGEST)
         self.assertEqual(record["scope"]["host_profile_digest"], PROFILE_DIGEST)
@@ -218,8 +218,8 @@ class PermissionRuntimeRecordTests(unittest.TestCase):
     def test_envelope_rejects_sensitive_material(self) -> None:
         with self.assertRaises(ABCError) as raised:
             build_permission_runtime_record(
-                task_id="T2A6-001",
-                chain_head_id="T2A6-001",
+                task_id="E52M-001",
+                chain_head_id="E52M-001",
                 executor="hermes",
                 executor_run_id="worker-run-1",
                 session_id="",
@@ -354,7 +354,7 @@ class PermissionRuntimeDigestTests(unittest.TestCase):
             ),
         )
         block = block_fingerprint(
-            task_id="T2A6-001",
+            task_id="E52M-001",
             session_id="sess-1",
             action_fingerprint_value=action,
             domain="host_containment",
@@ -376,7 +376,7 @@ class PermissionRuntimeLedgerTests(unittest.TestCase):
             executor="hermes", session_id="sess-1", operation="git-commit"
         )
         fingerprint = block_fingerprint(
-            task_id="T2A6-001",
+            task_id="E52M-001",
             session_id="sess-1",
             action_fingerprint_value=action,
             domain="host_containment",
@@ -385,7 +385,7 @@ class PermissionRuntimeLedgerTests(unittest.TestCase):
         remember_block_outcome(
             self.ledger,
             fingerprint=fingerprint,
-            task_id="T2A6-001",
+            task_id="E52M-001",
             session_id="sess-1",
             action_fingerprint_value=action,
             domain="host_containment",
@@ -405,7 +405,7 @@ class PermissionRuntimeLedgerTests(unittest.TestCase):
             replay_blocked_after_approval(
                 self.ledger,
                 fingerprint=entry["fingerprint"],
-                task_id="T2A6-001",
+                task_id="E52M-001",
                 session_id="sess-1",
                 action_fingerprint_value=entry["action_fingerprint"],
                 domain="host_containment",
@@ -417,7 +417,7 @@ class PermissionRuntimeLedgerTests(unittest.TestCase):
             replay_blocked_after_approval(
                 self.ledger,
                 fingerprint=entry["fingerprint"],
-                task_id="T2A6-001",
+                task_id="E52M-001",
                 session_id="sess-1",
                 action_fingerprint_value=entry["action_fingerprint"],
                 domain="host_containment",
@@ -431,7 +431,7 @@ class PermissionRuntimeLedgerTests(unittest.TestCase):
             replay_blocked_after_approval(
                 self.ledger,
                 fingerprint=entry["fingerprint"],
-                task_id="T2A6-001",
+                task_id="E52M-001",
                 session_id="sess-1",
                 action_fingerprint_value=entry["action_fingerprint"],
                 domain="host_containment",
@@ -445,7 +445,7 @@ class PermissionRuntimeLedgerTests(unittest.TestCase):
             replay_blocked_after_approval(
                 self.ledger,
                 fingerprint=entry["fingerprint"],
-                task_id="T2A6-001",
+                task_id="E52M-001",
                 session_id="sess-1",
                 action_fingerprint_value=entry["action_fingerprint"],
                 domain="host_containment",
@@ -463,7 +463,7 @@ class PermissionRuntimeLedgerTests(unittest.TestCase):
             replay_blocked_after_approval(
                 self.ledger,
                 fingerprint=entry["fingerprint"],
-                task_id="T2A6-001",
+                task_id="E52M-001",
                 session_id="sess-1",
                 action_fingerprint_value=entry["action_fingerprint"],
                 domain="runner_pathplan",
@@ -480,7 +480,7 @@ class PermissionRuntimeLedgerTests(unittest.TestCase):
         replay = replay_blocked_after_approval(
             reloaded,
             fingerprint=entry["fingerprint"],
-            task_id="T2A6-001",
+            task_id="E52M-001",
             session_id="sess-1",
             action_fingerprint_value=entry["action_fingerprint"],
             domain="host_containment",
@@ -507,7 +507,7 @@ class PermissionRuntimeConvergenceTests(unittest.TestCase):
             executor="hermes", session_id="sess-1", operation="git-commit"
         )
         fingerprint = block_fingerprint(
-            task_id="T2A6-001",
+            task_id="E52M-001",
             session_id="sess-1",
             action_fingerprint_value=action,
             domain="host_containment",
@@ -516,7 +516,7 @@ class PermissionRuntimeConvergenceTests(unittest.TestCase):
         record_block_decision(
             self.root,
             fingerprint=fingerprint,
-            task_id="T2A6-001",
+            task_id="E52M-001",
             session_id="sess-1",
             action_fingerprint_value=action,
             domain="host_containment",
@@ -525,7 +525,7 @@ class PermissionRuntimeConvergenceTests(unittest.TestCase):
         )
         code = converge_approved_block(
             self.root,
-            task_id="T2A6-001",
+            task_id="E52M-001",
             session_id="sess-1",
             executor="hermes",
             operation="git-commit",
@@ -542,7 +542,7 @@ class PermissionRuntimeConvergenceTests(unittest.TestCase):
         self.assertIsNone(
             converge_approved_block(
                 self.root,
-                task_id="T2A6-001",
+                task_id="E52M-001",
                 session_id="sess-1",
                 executor="hermes",
                 operation="git-commit",
@@ -758,7 +758,7 @@ class PermissionRuntimeHermesCanaryTests(unittest.TestCase):
 
         grant = build_permission_grant(
             executor="hermes",
-            task_id="T2A6-001",
+            task_id="E52M-001",
             input_id="input-1",
             session_id="sess-1",
             source_run_id="run-1",
@@ -771,7 +771,7 @@ class PermissionRuntimeHermesCanaryTests(unittest.TestCase):
             ),
         }
         resolved = resolve_effective_permission(
-            {"task_id": "T2A6-001", "extensions": extensions},
+            {"task_id": "E52M-001", "extensions": extensions},
             "hermes",
             "run-2",
         )
@@ -928,7 +928,7 @@ class DispatchContainmentTests(unittest.TestCase):
         if not seatbelt_available():
             self.skipTest("sandbox-exec unavailable")
         state = self._runner({})
-        task_temp = self.root / "record" / "temp" / "T2A6-003"
+        task_temp = self.root / "record" / "temp" / "E52M-003"
         containment = {
             "writable_roots": [str(self.project), str(task_temp)],
             "writable_files": [],
@@ -970,7 +970,7 @@ class DispatchContainmentTests(unittest.TestCase):
 
 
 class VerificationClosureTests(unittest.TestCase):
-    """T2A6-003 review fix 3: verified comes only from the structured success
+    """E52M-003 review fix 3: verified comes only from the structured success
     receipt; verification failure never leaves a completed task."""
 
     def test_verify_requires_structured_success_inputs(self) -> None:
@@ -1015,7 +1015,7 @@ class VerificationClosureTests(unittest.TestCase):
 
 
 class ClaudeWorkerTransportGateTests(unittest.TestCase):
-    """T2A6-003 review fix 4: the production worker fails closed with
+    """E52M-003 review fix 4: the production worker fails closed with
     permission_transport_unsupported; it never launches a fabricated
     broker command under an official flag."""
 
@@ -1030,7 +1030,7 @@ class ClaudeWorkerTransportGateTests(unittest.TestCase):
             fake.chmod(fake.stat().st_mode | 0o100)
             executor = ClaudeExecutor(command=str(fake), transport="direct")
             packet = {
-                "task_id": "T2A6-003",
+                "task_id": "E52M-003",
                 "steps": [{"id": 1, "description": "one"}],
                 "workspace": {"project_root": str(workspace), "root": str(workspace)},
                 "extensions": {
@@ -1058,7 +1058,7 @@ class ClaudeWorkerTransportGateTests(unittest.TestCase):
 
         grant = build_permission_grant(
             executor="claude",
-            task_id="T2A6-003",
+            task_id="E52M-003",
             input_id="input-1",
             session_id="session-1",
             source_run_id="run-source",
@@ -1089,7 +1089,7 @@ class ClaudeWorkerTransportGateTests(unittest.TestCase):
             executor = ClaudeExecutor(command=str(fake), transport="direct")
             executor._version = "2.1.247 (Claude Code)"
             packet = {
-                "task_id": "T2A6-003",
+                "task_id": "E52M-003",
                 "steps": [{"id": 1, "description": "one"}],
                 "workspace": {"project_root": str(workspace), "root": str(workspace)},
                 "extensions": {},
@@ -1122,7 +1122,7 @@ class ClaudeWorkerTransportGateTests(unittest.TestCase):
                         "prompt",
                         Path(temporary),
                         {
-                            "task_id": "T2A6-003",
+                            "task_id": "E52M-003",
                             "extensions": {},
                             "workspace": {},
                         },

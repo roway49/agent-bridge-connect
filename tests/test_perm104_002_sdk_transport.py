@@ -36,7 +36,7 @@ from agent_bridge_connect.session import control_root_for_task
 from agent_bridge_connect.executors.claude import ClaudeExecutor
 from agent_bridge_connect.service import TaskService
 
-RUN_ID = "claude-T2A7-001-run1"
+RUN_ID = "claude-GGQN-001-run1"
 
 
 def _kind_handle(pending: dict, kind: str) -> str:
@@ -398,7 +398,7 @@ class ClaudeExecutorSdkSemanticsTests(unittest.TestCase):
 
 
 class ClaudeSdkRuntimeVerifierTests(unittest.TestCase):
-    """PERM-104-002 correction (T2A7-001): the executor's runtime verifier
+    """PERM-104-002 correction (GGQN-001): the executor's runtime verifier
     transitions the durable agentbc.permission_runtime record to verified
     ONLY on structured PostToolUse success for the exact approved
     tool_use_id plus a structured non-error ResultMessage.  PreToolUse
@@ -446,8 +446,8 @@ class ClaudeSdkRuntimeVerifierTests(unittest.TestCase):
         )
 
         return build_permission_runtime_record(
-            task_id="T2A7-001",
-            chain_head_id="T2A7-001",
+            task_id="GGQN-001",
+            chain_head_id="GGQN-001",
             executor="claude",
             executor_run_id=RUN_ID,
             session_id=self.session_id,
@@ -505,7 +505,7 @@ class ClaudeSdkRuntimeVerifierTests(unittest.TestCase):
             self._packet(task_id), RUN_ID, {"session_id": self.session_id}
         )
         control_root = control_root_for_task(task_id, board_root=self.board)
-        # T2A7-002: the hook log is bound to the official session before the
+        # GGQN-002: the hook log is bound to the official session before the
         # prompt; an unbound log never verifies a session-bound run.
         bind_hook_log_session(control_root, self.session_id)
         # Without any hook record the run cannot verify.
@@ -547,7 +547,7 @@ class ClaudeSdkRuntimeVerifierTests(unittest.TestCase):
         self.assertEqual(persisted["state"]["status"], "verified")
 
     def test_unbound_or_foreign_hook_log_never_verifies(self) -> None:
-        """T2A7-002: verification is fail-closed to the bound session log."""
+        """GGQN-002: verification is fail-closed to the bound session log."""
         from agent_bridge_connect.claude_sdk_hooks import (
             append_hook_record,
             bind_hook_log_session,

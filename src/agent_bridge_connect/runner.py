@@ -2283,7 +2283,7 @@ class RunnerState:
                     profile_dir,
                 )
                 if task_temp_root_text or runner_ipc_channel:
-                    # compatibility review: /private/tmp and /var/folders are no
+                    # E52M-003 review fix: /private/tmp and /var/folders are no
                     # longer writable.  The contained worker stages scratch data
                     # in its canonical task-scoped temp root via TMPDIR.
                     environment = dict(os.environ)

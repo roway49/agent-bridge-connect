@@ -111,8 +111,8 @@ class ClaudeSameSessionElevationTransportTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name).resolve()
-        self.task_id = "T2AD-001"
-        self.run_id = "claude-T2AD-run"
+        self.task_id = "RM7A-001"
+        self.run_id = "claude-RM7A-run"
         self.session_id = str(uuid.uuid4())
         self.plane = ApprovalControlPlane(
             self.root / ".agentbc-control" / self.task_id,

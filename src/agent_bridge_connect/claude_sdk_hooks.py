@@ -5,7 +5,7 @@ hook events.  AgentBC feeds them into a task-scoped hook-event log so the
 ``agentbc.permission_runtime`` receipt can be verified only by structured
 ``PostToolUse`` success — never by callback text, stderr, or exit status.
 
-runtime verification: the official SDK 0.2.142 hook callback receives the raw wire dict
+GGQN-002: the official SDK 0.2.142 hook callback receives the raw wire dict
 (no ``session_id`` on tool-lifecycle events), so inputs may be dicts or
 attribute objects and the log is bound to the official session out-of-band
 (``bind_hook_log_session``) before the prompt.  Verification via
@@ -258,7 +258,7 @@ def has_structured_post_tool_use_success(
 ) -> bool:
     """Return whether the hook log proves structured PostToolUse success.
 
-    PERM-104-002 (runtime verification): the ``agentbc.permission_runtime`` verify step
+    PERM-104-002 (GGQN-002): the ``agentbc.permission_runtime`` verify step
     accepts only this structured evidence — never callback text, stderr, or
     exit status.  Fail closed: when an official session id is supplied it
     must match the session bound to the log and stamped on the record, so a

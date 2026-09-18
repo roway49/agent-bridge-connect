@@ -54,7 +54,7 @@ class NativeApprovalFailClosedTests(unittest.TestCase):
     def test_native_prompt_has_no_compatibility_full_contradiction(self) -> None:
         prompt = _build_prompt(
             {
-                "task_id": "T2AB-001",
+                "task_id": "RAXT-001",
                 "steps": [{"id": 1, "description": "run the native canary"}],
                 "workspace": {
                     "root": str(self.root),
@@ -76,7 +76,7 @@ class NativeApprovalFailClosedTests(unittest.TestCase):
             valid=True,
             callback={
                 "version": 1,
-                "task_id": "T2AB-001",
+                "task_id": "RAXT-001",
                 "final_state": "input_required",
                 "summary": "model asks for full",
                 "input": {
@@ -105,7 +105,7 @@ class NativeApprovalFailClosedTests(unittest.TestCase):
     def test_codex_native_prompt_has_no_compatibility_full_contradiction(self) -> None:
         prompt = _build_codex_prompt(
             {
-                "task_id": "T2A4-001",
+                "task_id": "CMF2-001",
                 "steps": [{"id": 1, "description": "repair the worker"}],
                 "workspace": {
                     "root": str(self.root),
@@ -124,7 +124,7 @@ class NativeApprovalFailClosedTests(unittest.TestCase):
         session_id = "22222222-2222-4222-8222-222222222222"
         plane = ApprovalControlPlane(
             self.root / "control",
-            task_id="T2AB-001",
+            task_id="RAXT-001",
             executor_run_id="claude-raxt-run",
             session_id=session_id,
             executor="claude",
@@ -431,7 +431,7 @@ class NativeApprovalFailClosedContinuationTests(unittest.TestCase):
         executor = ClaudeExecutor(command=str(fake), transport="direct")
         executor._version = "2.1.233 (Claude Code)"
         packet = {
-            "task_id": "T2AB-001",
+            "task_id": "RAXT-001",
             "assignee": "claude",
             "steps": [{"id": 1, "description": "run the native canary"}],
             "workspace": {
@@ -475,7 +475,7 @@ class NativeApprovalFailClosedContinuationTests(unittest.TestCase):
         session_id = "33333333-3333-4333-8333-333333333333"
         plane = ApprovalControlPlane(
             self.root / "identity-control",
-            task_id="T2AB-001",
+            task_id="RAXT-001",
             executor_run_id="claude-raxt-run",
             session_id=session_id,
             executor="claude",
@@ -490,7 +490,7 @@ class NativeApprovalFailClosedContinuationTests(unittest.TestCase):
                     "persistence": "persistent",
                     "source": "stderr_receipt",
                 },
-                expected_task_id="T2AB-001",
+                expected_task_id="RAXT-001",
                 expected_executor_run_id="claude-raxt-run",
                 expected_session_id=session_id,
                 expected_resumed=False,

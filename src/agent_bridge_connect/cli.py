@@ -2402,7 +2402,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 execution_session=execution_session,
             )
             _handoff_terminal_delivery(service, task.id)
-            # PERM-104-002 (compatibility review): ``verified`` may only come
+            # PERM-104-002 (E52M-003 review fix): ``verified`` may only come
             # from the structured success receipt of the declared target
             # action - a valid agent callback finalized by Core plus the
             # validated official session receipt.  ``poll.status ==
@@ -2495,7 +2495,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                         session_id=session_id,
                     )
             except ABCError as closure_exc:
-                # Compatibility: a failed closure is never swallowed.  Persist the
+                # E52M-003: a failed closure is never swallowed.  Persist the
                 # blocked state when the record is still writable and fail
                 # the completed task closed below.
                 try:

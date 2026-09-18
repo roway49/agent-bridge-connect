@@ -84,7 +84,7 @@ class CliTests(unittest.TestCase):
     def test_desktop_archive_ack_accepts_runner_status_success(self) -> None:
         result = {
             "ok": True,
-            "task_id": "T2AH-001",
+            "task_id": "VE9X-001",
             "session_id": "01a081be-3e15-7f93-9b1c-2fb032b6c279",
             "status": "succeeded",
         }
@@ -97,7 +97,7 @@ class CliTests(unittest.TestCase):
                     [
                         "session",
                         "acknowledge-desktop-archive",
-                        "T2AH-001",
+                        "VE9X-001",
                         "--session-id",
                         "01a081be-3e15-7f93-9b1c-2fb032b6c279",
                     ]
@@ -108,7 +108,7 @@ class CliTests(unittest.TestCase):
     def test_desktop_archive_ack_rejects_nonterminal_status(self) -> None:
         result = {
             "ok": True,
-            "task_id": "T2AH-001",
+            "task_id": "VE9X-001",
             "session_id": "01a081be-3e15-7f93-9b1c-2fb032b6c279",
             "status": "waiting_for_desktop",
         }
@@ -121,7 +121,7 @@ class CliTests(unittest.TestCase):
                     [
                         "session",
                         "acknowledge-desktop-archive",
-                        "T2AH-001",
+                        "VE9X-001",
                         "--session-id",
                         "01a081be-3e15-7f93-9b1c-2fb032b6c279",
                     ]

@@ -55,7 +55,7 @@ CODEX_DESKTOP_VERIFICATION_UNAVAILABLE_CODE = (
 )
 
 # SESSION-104-001 stable archive codes.  ``target missing`` also covers the
-# ordering regression ordering finding: deleting first and archiving afterwards returns
+# SQKX-001 ordering finding: deleting first and archiving afterwards returns
 # a target-not-found style error, which is exactly why archive must run first.
 CODEX_SESSION_ARCHIVE_FAILED_CODE = "codex_session_archive_failed"
 CODEX_SESSION_ARCHIVE_INVALID_ID_CODE = "codex_session_archive_invalid_session_id"
@@ -197,7 +197,7 @@ def _is_not_found(message: dict[str, Any]) -> bool:
 def _archive_error_is_target_missing(message: dict[str, Any]) -> bool:
     """Return True when an archive error names the exact target as missing.
 
-    ordering regression evidence: delete followed by archive returns a target-not-found
+    SQKX-001 evidence: delete followed by archive returns a target-not-found
     error for the deleted thread.  The same error on a fresh archive means
     the exact UUID no longer exists, so the archive precondition cannot be
     established and the cleanup must fail closed before any delete call.
@@ -260,7 +260,7 @@ class CodexSessionCleanupClient:
            supplied by the original Executor connection, which avoids Codex's
            active-writer rejection, or requested here for legacy callers.
            ``thread/archived`` notifications are advisory. No acknowledgement
-           means zero ``thread/delete`` calls are ever sent. ordering regression proved
+           means zero ``thread/delete`` calls are ever sent. SQKX-001 proved
            the reverse order is unusable: deleting first and archiving
            afterwards returns target-not-found.
         2. connection A: ``thread/delete`` with a mandatory RPC

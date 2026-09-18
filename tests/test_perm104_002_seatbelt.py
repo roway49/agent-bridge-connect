@@ -358,7 +358,7 @@ class SeatbeltProfileTests(unittest.TestCase):
 
 
 class StaleProfileSweepTests(unittest.TestCase):
-    """T2A6-003 review fix: the stale sweep must run BEFORE the new profile
+    """E52M-003 review fix: the stale sweep must run BEFORE the new profile
     is created and must never delete an active profile - including the
     profile of the launch in progress and of concurrently running workers."""
 
@@ -396,7 +396,7 @@ class StaleProfileSweepTests(unittest.TestCase):
         self.assertTrue(keep_me.exists())
 
     def test_launch_then_sweep_never_deletes_the_new_profile(self) -> None:
-        # The T2A6-003 bug shape: create -> sweep-all deleted the profile
+        # The E52M-003 bug shape: create -> sweep-all deleted the profile
         # the launch had just written, so sandbox-exec could not start.
         directory = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: cleanup_seatbelt_profiles(directory))
@@ -464,11 +464,11 @@ class StaleProfileSweepTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary).resolve()
             task_root = base / "task"
-            reports = base / "reports" / "T2A6"
+            reports = base / "reports" / "E52M"
             task_root.mkdir()
             reports.mkdir(parents=True)
-            current = reports / "T2A6-003-report.md"
-            sibling = reports / "T2A6-002-report.md"
+            current = reports / "E52M-003-report.md"
+            sibling = reports / "E52M-002-report.md"
             profile_text = build_seatbelt_profile(
                 writable_roots=[task_root],
                 writable_files=[current],
@@ -580,10 +580,10 @@ class StaleProfileSweepTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             record_root = Path(temporary).resolve() / "record"
-            one = task_temp_root(record_root, "T2A6-003")
-            two = task_temp_root(record_root, "T2A6-004")
-            self.assertEqual(one, record_root / "temp" / "T2A6-003")
-            self.assertEqual(two, record_root / "temp" / "T2A6-004")
+            one = task_temp_root(record_root, "E52M-003")
+            two = task_temp_root(record_root, "E52M-004")
+            self.assertEqual(one, record_root / "temp" / "E52M-003")
+            self.assertEqual(two, record_root / "temp" / "E52M-004")
             self.assertNotEqual(one, two)
             # Profile allows the task's own temp but not the sibling's.
             one.mkdir(parents=True)
@@ -611,18 +611,18 @@ class CanonicalTaskRootsTests(unittest.TestCase):
                 "artifact_root": str(project / "artifacts"),
                 "report_root": str(base / "report"),
                 "agentbc_root": str(base / "workspace"),
-                "task_code": "T2A6",
+                "task_code": "E52M",
                 "iteration": "002",
                 "task_date": "2026-08-28",
-                "task_id": "T2A6-002",
+                "task_id": "E52M-002",
                 "report_file": str(
                     base
                     / "workspace"
                     / "tasks"
                     / "report"
                     / "2026-08-28"
-                    / "T2A6"
-                    / "T2A6-002-report.md"
+                    / "E52M"
+                    / "E52M-002-report.md"
                 ),
             }
             roots = canonical_task_roots(workspace)
@@ -634,7 +634,7 @@ class CanonicalTaskRootsTests(unittest.TestCase):
             # directory is not.
             self.assertNotIn(str(base / "workspace"), texts)
             self.assertIn(
-                str(base / "workspace" / "record" / "T2A6" / "002"), texts
+                str(base / "workspace" / "record" / "E52M" / "002"), texts
             )
             self.assertNotIn(
                 str(
@@ -643,7 +643,7 @@ class CanonicalTaskRootsTests(unittest.TestCase):
                     / "tasks"
                     / "report"
                     / "2026-08-28"
-                    / "T2A6"
+                    / "E52M"
                 ),
                 texts,
             )
@@ -657,8 +657,8 @@ class CanonicalTaskRootsTests(unittest.TestCase):
                         / "tasks"
                         / "report"
                         / "2026-08-28"
-                        / "T2A6"
-                        / "T2A6-002-report.md"
+                        / "E52M"
+                        / "E52M-002-report.md"
                     )
                 },
             )
@@ -667,9 +667,9 @@ class CanonicalTaskRootsTests(unittest.TestCase):
     def test_report_file_is_literal_not_shared_report_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary).resolve()
-            report_file = base / "reports" / "T2A6" / "T2A6-003-report.md"
+            report_file = base / "reports" / "E52M" / "E52M-003-report.md"
             profile = build_seatbelt_profile(
-                writable_roots=[base / "record" / "T2A6" / "003"],
+                writable_roots=[base / "record" / "E52M" / "003"],
                 writable_files=[report_file],
             )
             self.assertIn(
@@ -682,13 +682,13 @@ class CanonicalTaskRootsTests(unittest.TestCase):
     def test_internal_task_dir_overrides_record_derivation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary).resolve()
-            internal = base / "record" / "T2A6" / "003"
+            internal = base / "record" / "E52M" / "003"
             internal.mkdir(parents=True)
             workspace = {
                 "project_root": str(base / "project"),
                 "agentbc_root": str(base / "workspace"),
                 "internal_task_dir": str(internal),
-                "task_code": "T2A6",
+                "task_code": "E52M",
                 "iteration": "003",
             }
             roots = canonical_task_roots(workspace)
@@ -702,9 +702,9 @@ class CanonicalTaskRootsTests(unittest.TestCase):
     def test_control_and_temp_dirs_enter_containment_when_named(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary).resolve()
-            control = base / "board" / ".agentbc-control" / "T2A6-002"
+            control = base / "board" / ".agentbc-control" / "E52M-002"
             control.mkdir(parents=True)
-            temp = base / "record" / "T2A6" / "002" / "temp"
+            temp = base / "record" / "E52M" / "002" / "temp"
             temp.mkdir(parents=True)
             workspace = {
                 "project_root": str(base / "project"),

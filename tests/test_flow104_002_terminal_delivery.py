@@ -72,7 +72,7 @@ class _Stub:
 class TerminalDeliveryReceiptTests(unittest.TestCase):
     def setUp(self) -> None:
         self.receipt = build_terminal_delivery_receipt(
-            "T2AM-001",
+            "YBNW-001",
             terminal_state="completed",
             terminal_event="task.finalized",
             committed_at=T0,
@@ -80,7 +80,7 @@ class TerminalDeliveryReceiptTests(unittest.TestCase):
 
     def test_receipt_has_one_stable_identity_and_frozen_terminal_facts(self) -> None:
         again = build_terminal_delivery_receipt(
-            "T2AM-001",
+            "YBNW-001",
             terminal_state="completed",
             terminal_event="task.finalized",
             committed_at=T0,
@@ -267,7 +267,7 @@ def reserved_backoff(receipt: dict, stage: str = "record") -> int:
 class TerminalDeliveryBoardSetup(unittest.TestCase):
     """Shared temporary board and receipt builders.
 
-    Splitting the fixture out keeps T2AM-002's production-routing tests from
+    Splitting the fixture out keeps YBNW-002's production-routing tests from
     re-running every ``TerminalDeliveryBoardTests`` case as a subclass.
     """
 
@@ -623,12 +623,12 @@ class TerminalDeliveryBoardTests(TerminalDeliveryBoardSetup):
 class LegacyTerminalRecordImportTests(unittest.TestCase):
     def test_existing_report_satisfies_report_stage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            report = Path(tmp) / "T2AM-001-report.md"
+            report = Path(tmp) / "YBNW-001-report.md"
             report.write_text("# legacy\n", encoding="utf-8")
             imported = import_legacy_terminal_delivery(
                 None,
                 task={
-                    "id": "T2AM-001",
+                    "id": "YBNW-001",
                     "status": "completed",
                     "updated_at": T0,
                     "workspace": {"report_file": str(report)},
@@ -643,7 +643,7 @@ class LegacyTerminalRecordImportTests(unittest.TestCase):
         imported = import_legacy_terminal_delivery(
             None,
             task={
-                "id": "T2AM-001",
+                "id": "YBNW-001",
                 "status": "completed",
                 "updated_at": T0,
                 "workspace": {"report_file": ""},
@@ -663,7 +663,7 @@ class LegacyTerminalRecordImportTests(unittest.TestCase):
     def test_historical_ui_delivery_is_never_replayed(self) -> None:
         imported = import_legacy_terminal_delivery(
             None,
-            task={"id": "T2AM-001", "status": "failed", "updated_at": T0},
+            task={"id": "YBNW-001", "status": "failed", "updated_at": T0},
         )
         for stage in ("file_notification", "ui_notification"):
             self.assertEqual(imported["stages"][stage]["state"], "not_applicable")
@@ -673,7 +673,7 @@ class LegacyTerminalRecordImportTests(unittest.TestCase):
 
     def test_real_receipt_is_returned_unchanged(self) -> None:
         receipt = build_terminal_delivery_receipt(
-            "T2AM-001",
+            "YBNW-001",
             terminal_state="completed",
             terminal_event="task.finalized",
             committed_at=T0,
@@ -827,7 +827,7 @@ class FlowContractTests(unittest.TestCase):
 
 
 class ProductionRoutingTests(TerminalDeliveryBoardSetup):
-    """T2AM-002: production terminal side effects are receipt-owned.
+    """YBNW-002: production terminal side effects are receipt-owned.
 
     Before this correction the Runner, Core completion and the worker CLI all
     called ``write_report_files`` / ``notify_terminal`` directly, so the receipt's

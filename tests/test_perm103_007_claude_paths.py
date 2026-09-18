@@ -86,7 +86,7 @@ class Perm103007ClaudePathCapabilityTests(unittest.TestCase):
                 self.assertEqual(command.count("--add-dir"), 1)
                 settings_text = command[command.index("--settings") + 1]
                 settings = json.loads(settings_text)
-                # PERM-104-002 (T2A6-003): allowWrite is the frozen task root
+                # PERM-104-002 (E52M-003): allowWrite is the frozen task root
                 # plus the ephemeral project root (plus controlled Git
                 # metadata for a linked worktree); denyWrite stays empty and
                 # must never repeat an allowWrite path - the previous

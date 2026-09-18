@@ -79,7 +79,7 @@ _HERMES_CLEANUP_TIMEOUT_S = 60
 # are legitimately bound receipts, so both are accepted and nothing else:
 #   * ACP ``session/new`` / ``session/load`` -> a UUID
 #     (``acp_adapter/session.py``: ``str(uuid.uuid4())``), which is the shape the
-#     Hermes ACP stderr receipt binds.  the long-running regression bound
+#     Hermes ACP stderr receipt binds.  TJBS-001 bound
 #     ``18a3e156-6aae-4286-b504-4276f90fc5b2`` and then cleanup rejected that
 #     exact receipt with ``hermes_session_delete_invalid_session_id`` because
 #     the old check accepted only the CLI token form.

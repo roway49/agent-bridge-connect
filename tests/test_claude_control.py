@@ -167,7 +167,7 @@ class ClaudeControlCommandTests(unittest.TestCase):
     def test_control_command_never_fabricates_a_prompt_tool_broker(
         self, supports: mock.Mock
     ) -> None:
-        # T2A6-003: even when the live probe claims --permission-prompt-tool
+        # E52M-003: even when the live probe claims --permission-prompt-tool
         # exists, the control command must NOT embed a self-authored broker
         # shell command; the transport fails closed instead.
         supports.return_value = True

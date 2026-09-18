@@ -108,7 +108,7 @@ def _request(**overrides: object) -> SessionCleanupRequest:
     values: dict[str, object] = {
         "executor": "codex",
         "session_id": SESSION_ID,
-        "task_id": "T2A5-001",
+        "task_id": "E299-001",
         "executor_run_id": "run-e299",
         "strategy": "official_session_archive_then_delete",
         "receipt_source": "jsonl_thread_started",
@@ -122,7 +122,7 @@ def _request(**overrides: object) -> SessionCleanupRequest:
 class DesktopRouteTests(unittest.TestCase):
     def test_native_control_plane_ack_is_exactly_bound(self) -> None:
         broker = AcknowledgedCodexDesktopArchiveBroker(
-            task_id="T2A5-001",
+            task_id="E299-001",
             executor_run_id="run-e299",
             session_id=SESSION_ID,
         )
@@ -135,7 +135,7 @@ class DesktopRouteTests(unittest.TestCase):
 
     def test_native_ack_accepts_cleared_terminal_activity_pointer(self) -> None:
         broker = AcknowledgedCodexDesktopArchiveBroker(
-            task_id="T2A5-001",
+            task_id="E299-001",
             executor_run_id="",
             session_id=SESSION_ID,
             binding_executor_run_id="run-e299",

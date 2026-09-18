@@ -1,4 +1,4 @@
-"""PERM-104-002 production runtime wiring (T2A7-002).
+"""PERM-104-002 production runtime wiring (GGQN-002).
 
 Drives the REAL transport session path — ``run_controlled`` through a fake
 official SDK client with the executor's actual hook feed and the transport's
@@ -62,7 +62,7 @@ from agent_bridge_connect.permission_runtime import (
 from agent_bridge_connect.service import TaskService
 from agent_bridge_connect.session import control_root_for_task
 
-RUN_ID = "claude-T2A7-002-wire"
+RUN_ID = "claude-GGQN-002-wire"
 SESSION_ID = "22222222-2222-4222-8222-222222222222"
 
 
@@ -217,7 +217,7 @@ class _Harness:
         )
 
 
-def _plane(root: Path, task_id: str = "T2A8-002", *, with_receipt: bool = True) -> ApprovalControlPlane:
+def _plane(root: Path, task_id: str = "GGQW-002", *, with_receipt: bool = True) -> ApprovalControlPlane:
     plane = ApprovalControlPlane(
         root / ".agentbc-control" / task_id,
         task_id=task_id,
@@ -338,7 +338,7 @@ async def _respond_when_pending(
 ) -> dict:
     """Wait for the real ControlPlane request and propagate response errors.
 
-    T2A7-002 originally used detached daemon threads here.  An exception in
+    GGQN-002 originally used detached daemon threads here.  An exception in
     ``respond_approval`` therefore printed a traceback while unittest still
     reported success.  Running the blocking response through ``to_thread``
     and awaiting the task makes every control-plane failure fail the test.
@@ -790,7 +790,7 @@ class ProductionSessionWiringTests(unittest.TestCase):
     def test_temporary_full_session_scoped_setmode_and_durable_revoke(self) -> None:
         grant = build_permission_grant(
             executor="claude",
-            task_id="T2A8-002",
+            task_id="GGQW-002",
             input_id="input-1",
             session_id=str(uuid.uuid4()),
             source_run_id="run-source",
@@ -856,7 +856,7 @@ class DurableGrantLifecycleTests(unittest.TestCase):
         self.root = Path(self._tmp.name).resolve()
         self.grant = build_permission_grant(
             executor="claude",
-            task_id="T2A8-002",
+            task_id="GGQW-002",
             input_id="input-1",
             session_id=str(uuid.uuid4()),
             source_run_id="run-source",

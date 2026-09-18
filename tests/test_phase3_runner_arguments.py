@@ -170,7 +170,7 @@ class Phase3RunnerArgumentTests(unittest.TestCase):
         task_id = packet["task_id"]
         raw = TaskService(self.board).store.read_task(task_id)
         session = raw["extensions"][SESSION_EXTENSION_KEY]
-        run_id = "hermes-T2AG-001-first"
+        run_id = "hermes-TT4V-001-first"
         session.update(
             {
                 "run_ids": [run_id],

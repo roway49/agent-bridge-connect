@@ -158,7 +158,7 @@ def _request(**overrides: object) -> SessionCleanupRequest:
     values: dict[str, object] = {
         "executor": "codex",
         "session_id": SESSION_ID,
-        "task_id": "T2A9-001",
+        "task_id": "QEEY-001",
         "strategy": ARCHIVE_THEN_DELETE,
         "receipt_source": "jsonl_thread_started",
         "official_receipt_bound": True,
@@ -419,7 +419,7 @@ class ArchiveThenDeleteOrderTests(unittest.TestCase):
         self.assertEqual(result.commands["delete"]["status"], "not_requested")
 
     def test_archive_target_missing_fails_closed_before_delete(self) -> None:
-        # T2AE-001: delete followed by archive returns target-not-found.  The
+        # SQKX-001: delete followed by archive returns target-not-found.  The
         # same error on a fresh archive proves the exact thread is gone, so
         # the precondition cannot be established and delete must not run.
         first = _action_transport(
@@ -952,7 +952,7 @@ class PrimaryAuxiliaryIsolationTests(unittest.TestCase):
         entry = {
             "version": 1,
             "aux_id": "a" * 32,
-            "owner_task_id": "T2A9-001",
+            "owner_task_id": "QEEY-001",
             "owner_run_id": "run-1",
             "parent_executor": "codex",
             "parent_session_id": SESSION_ID,

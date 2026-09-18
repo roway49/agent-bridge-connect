@@ -586,7 +586,7 @@ class Phase6RunnerAdapterAuthorizationTests(unittest.TestCase):
                         return_value=completed,
                     )
                 elif executor_name == "claude":
-                    # PERM-104-002 correction (T2A7-001): a granted full run
+                    # PERM-104-002 correction (GGQN-001): a granted full run
                     # routes through the official SDK control transport; the
                     # raw CLI full argv branch no longer exists.  Prove the
                     # authorized command carries the same frozen executor
