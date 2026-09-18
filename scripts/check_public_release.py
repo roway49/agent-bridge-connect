@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Fail closed when a release candidate contains internal-only material."""
+"""Fail closed when a public release candidate contains internal material."""
 
 from __future__ import annotations
 
+import argparse
 import fnmatch
 import re
 import subprocess
@@ -15,6 +16,7 @@ SELF = "scripts/check_public_release.py"
 FORBIDDEN_PATHS = (
     "AGENTBC_*_DEVELOPMENT_CHECKLIST.md",
     "AGENTBC_*_DEVELOPMENT_HANDBOOK.md",
+    "AGENTBC_DUAL_MACHINE_GIT_WORKFLOW.md",
     "*_EVIDENCE.md",
     "*_IMPLEMENTATION_NOTES.md",
     "*-baseline.md",
@@ -38,9 +40,12 @@ FORBIDDEN_CONTENT = (
 )
 
 
-def tracked_files() -> list[str]:
+def tracked_files(revision: str | None = None) -> list[str]:
+    command = ["git", "ls-files", "-z"]
+    if revision:
+        command = ["git", "ls-tree", "-r", "-z", "--name-only", revision]
     result = subprocess.run(
-        ["git", "ls-files", "-z"],
+        command,
         cwd=ROOT,
         check=True,
         capture_output=True,
@@ -48,15 +53,34 @@ def tracked_files() -> list[str]:
     return [item.decode("utf-8") for item in result.stdout.split(b"\0") if item]
 
 
+def payload_for(relative: str, revision: str | None = None) -> bytes:
+    if revision is None:
+        return (ROOT / relative).read_bytes()
+    result = subprocess.run(
+        ["git", "show", f"{revision}:{relative}"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    )
+    return result.stdout
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--revision")
+    return parser.parse_args()
+
+
 def main() -> int:
+    args = parse_args()
     problems: list[str] = []
-    for relative in tracked_files():
+    for relative in tracked_files(args.revision):
         if any(fnmatch.fnmatch(relative, pattern) for pattern in FORBIDDEN_PATHS):
             problems.append(f"forbidden public path: {relative}")
             continue
         if relative == SELF:
             continue
-        payload = (ROOT / relative).read_bytes()
+        payload = payload_for(relative, args.revision)
         if b"\0" in payload:
             continue
         text = payload.decode("utf-8", errors="replace")
@@ -68,7 +92,8 @@ def main() -> int:
         for problem in sorted(problems):
             print(f"- {problem}")
         return 1
-    print("public release boundary: ok")
+    source = f"revision {args.revision}" if args.revision else "index"
+    print(f"public release boundary ({source}): ok")
     return 0
 
 

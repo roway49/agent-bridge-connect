@@ -15,8 +15,13 @@ Python package: 1.0.4a1
 ## 1. Freeze The Release Commit
 
 - Finish the changelog entry and replace `Unreleased` with the publication date.
-- Require a clean, attached release branch and review every file in the release diff.
-- Run `python3 scripts/check_public_release.py`; it must pass before any public push.
+- Create a clean `release/*` branch from the current public `main`; a private
+  integration commit or any of its ancestors must never become the public
+  candidate's parent.
+- Review the complete candidate tree, not only the last commit diff.
+- Run `python3 scripts/check_repository_boundary.py --source revision --revision HEAD`
+  and `python3 scripts/check_public_release.py --revision HEAD`; both must pass before any
+  network write.
 - Confirm `pyproject.toml` and `agent_bridge_connect.__version__` both contain
   `1.0.4a1`.
 - Confirm the public remote has no existing `v1.0.4A` tag and PyPI has no
@@ -68,15 +73,20 @@ workflow does not build these macOS assets.
 
 ## 4. Tag And Publish
 
-After every gate passes, create the immutable annotated tag on the reviewed
-release commit and validate the tag/version/commit relationship:
+After every local gate passes, push only the `release/*` candidate branch and
+open a pull request targeting public `main`. Direct pushes to `main` are
+forbidden. The PR must pass the required repository-root, public-boundary, and
+release-matrix checks and receive owner approval before merge:
 
 ```bash
-git tag -a v1.0.4A -m "AgentBC 1.0.4A"
-python3 scripts/build_provenance.py validate --tag v1.0.4A
-git push public <release-branch>
-git push public refs/tags/v1.0.4A
+git push public HEAD:refs/heads/release/v1.0.4A
+# Open and merge the PR after all required checks and owner review.
 ```
+
+Only after the PR merge may the protected release publisher create the
+immutable annotated `v1.0.4A` tag at that exact merged public commit. Developer
+credentials must not push `main` or release tags. Validate the final
+tag/version/commit relationship before creating the draft Release.
 
 Create a **draft** GitHub Release named `AgentBC 1.0.4A` from `v1.0.4A` using the matching changelog
 section. Upload and verify these four macOS assets before publication:
