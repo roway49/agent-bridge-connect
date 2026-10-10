@@ -10,6 +10,7 @@ shared :mod:`agent_bridge_connect.revival` protocol.
 from __future__ import annotations
 
 import copy
+import json
 import os
 import shutil
 import threading
@@ -51,6 +52,7 @@ from .path_model import validate_path_plan_workspace
 from .permission_elevation import PERMISSION_ELEVATION_EXTENSION_KEY
 from .permission_modes import PERMISSION_EXTENSION_KEY
 from .protocol import ABCError
+from .executor_registry import assert_executor_action_supported
 from .run_lease import RunLeaseState, close_lease, load_lease
 from .session import (
     RECOVERY_FILE,
@@ -136,6 +138,29 @@ def _attempt_session_cleanup_ready(
     return state in _RESOLVED_CLEANUP_STATES
 
 
+def _recovery_session_parked(task: Any, session: dict[str, Any]) -> bool:
+    """Recognize an official archive receipt, never a synthetic cleanup success."""
+    from .execution_policy import validate_session_snapshot
+
+    cleanup = session.get("cleanup") or {}
+    if not (
+        task.status == "needs_recovery"
+        and session.get("session_state") == "needs_recovery"
+        and cleanup.get("state") == "not_requested"
+        and session.get("executor") == "codex"
+        and session.get("official_receipt_bound") is True
+        and session.get("receipt_source") == "jsonl_thread_started"
+        and session.get("archive_acknowledged") is True
+        and not validate_session_snapshot(session)
+    ):
+        return False
+    try:
+        checked_at = datetime.fromisoformat(str(session.get("archive_checked_at", "")).replace("Z", "+00:00"))
+        return checked_at.tzinfo is not None
+    except ValueError:
+        return False
+
+
 class FailedTaskRetryFlow:
     """Perform one serialized retry reservation and cleanup transaction."""
 
@@ -145,6 +170,7 @@ class FailedTaskRetryFlow:
     def preflight(self, task_id: str) -> dict[str, Any]:
         try:
             task = self.service.get_task(task_id)
+            assert_executor_action_supported(task.assignee, "retry")
         except ABCError as exc:
             return {
                 "ok": False,
@@ -236,7 +262,8 @@ class FailedTaskRetryFlow:
         if isinstance(session, dict):
             cleanup = session.get("cleanup")
             cleanup_state = str(cleanup.get("state") or "") if isinstance(cleanup, dict) else ""
-            if cleanup_state in _UNSTABLE_CLEANUP_STATES or cleanup_state not in _STABLE_CLEANUP_STATES:
+            parked = _recovery_session_parked(task, session)
+            if not parked and (cleanup_state in _UNSTABLE_CLEANUP_STATES or cleanup_state not in _STABLE_CLEANUP_STATES):
                 errors.append(
                     _error(
                         REVIVAL_SESSION_CLEANUP_UNSTABLE,
@@ -255,9 +282,9 @@ class FailedTaskRetryFlow:
                 )
             # SESSION-104-001-R2: a Codex retry must not rotate the live
             # session projection until the existing cleanup coordinator has
-            # resolved that exact attempt.  The coordinator remains unchanged;
-            # retry only waits at its task-chain boundary.
-            if not _attempt_session_cleanup_ready(
+            # resolved that exact attempt, or recovery has officially parked
+            # its session. Never synthesize a destructive cleanup receipt.
+            if not parked and not _attempt_session_cleanup_ready(
                 executor=session.get("executor") or task.assignee,
                 retain=session.get("retain"),
                 session_id=session.get("session_id"),
@@ -787,6 +814,7 @@ class _RetryCleanupTransaction:
             if archived.exists():
                 os.replace(archived, source)
         if self.session_archive_root is not None:
+            (self.session_archive_root / "cleanup-binding.json").unlink(missing_ok=True)
             try:
                 self.session_archive_root.rmdir()
                 self.session_archive_root.parent.rmdir()
@@ -804,8 +832,6 @@ class _RetryCleanupTransaction:
             for name in _SESSION_ACTIVE_STATE_FILES
             if (control_root / name).exists()
         ]
-        if not active:
-            return
         archive_root = (
             control_root
             / "attempts"
@@ -819,6 +845,25 @@ class _RetryCleanupTransaction:
         archive_root.mkdir(parents=True, exist_ok=False, mode=0o700)
         self.session_archive_root = archive_root
         try:
+            extensions = self.task.extensions or {}
+            binding = {
+                "version": 1,
+                "task_id": self.task.id,
+                "attempt_index": self.source_attempt_index,
+                "revival_id": self.record["revival_id"],
+                "execution": extensions.get("agentbc.execution"),
+                "session": extensions.get(SESSION_EXTENSION_KEY),
+                "auxiliary_sessions": extensions.get(AUXILIARY_EXTENSION_KEY),
+            }
+            # Persist exact evidence before rotating the live projection. Never
+            # promote unresolved historical cleanup to succeeded.
+            path = archive_root / "cleanup-binding.json"
+            with path.open("x", encoding="utf-8") as stream:
+                os.chmod(path, 0o600)
+                json.dump(binding, stream, ensure_ascii=False, indent=2)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
             for source in active:
                 archived = archive_root / source.name
                 os.replace(source, archived)
@@ -828,6 +873,7 @@ class _RetryCleanupTransaction:
                 if archived.exists():
                     os.replace(archived, source)
             self.session_state_moves.clear()
+            (archive_root / "cleanup-binding.json").unlink(missing_ok=True)
             try:
                 archive_root.rmdir()
                 archive_root.parent.rmdir()

@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -103,7 +104,7 @@ _AGENT_DEFINITIONS = [
         "binary": "opencode",
         "display": "OpenCode",
         "capability_level": "L0",
-        "supported_executor": False,
+        "supported_executor": True,
     },
     {
         "name": "cursor",
@@ -319,6 +320,7 @@ def run_show() -> dict[str, Any]:
     return {
         "ok": True,
         "mode": "show",
+        "webui": config.get("webui", {"preferred_view": "webui", "autostart": False}),
         "agents": agents,
         "config_path": str(config_path),
         "workspace_root": workspace_root,
@@ -382,7 +384,11 @@ def run_setup(
         interactive=interactive,
     )
 
+    from .web_service import Service, select_settings
+    webui_settings = select_settings(config, interactive=interactive)
+
     def apply_setup(latest: dict[str, Any]) -> None:
+        latest["webui"] = webui_settings
         latest.setdefault("workspace_root", str(_default_workspace_root()))
         latest.setdefault("board_root", str(_effective_workspace_root(latest) / "record"))
         if permission_touched:
@@ -451,13 +457,38 @@ def run_setup(
             "path": str(_claude_skill_path()),
         }
 
+    webui_result = {"configured": webui_settings, "applied": False}
+    if interactive:
+        try:
+            if webui_settings["preferred_view"] == "webui":
+                # Setup owns initialization; read-only start/serve never creates data roots.
+                (Path(workspace_root) / "tasks" / "report").mkdir(parents=True, exist_ok=True)
+            webui_result.update(Service(config_path).configure(), applied=True)
+        except Exception as exc:
+            webui_result["error"] = getattr(exc, "code", "webui_service_configuration_failed")
+    if webui_settings["preferred_view"] == "webui":
+        port = webui_settings.get("port")
+        print(f"WebUI address: http://127.0.0.1:{port}/" if port else "WebUI address: not configured; run interactive setup to assign a port.")
+        print(f"WebUI fixed port: {port}" if port else "WebUI fixed port: not configured")
+        if "error" in webui_result:
+            print(f"WebUI service configuration failed: {webui_result['error']}")
+        elif not interactive:
+            print("WebUI service: unchanged (non-interactive setup).")
+        else:
+            print("WebUI service: running." if webui_result.get("running") else "WebUI service: stopped; the port is not listening.")
+        print("Run `agentbc webui start` to start or reuse the service and open an authenticated browser link.")
+        print("Use `agentbc webui close` to stop it, or `agentbc webui status` to check its state.")
+    else:
+        print("Task list style: Terminal. Run `agentbc task list` to view tasks.")
+
     alias = _configure_alias(interactive)
     agents = scan_all_agents()
     codex = discover_codex()
     capabilities = probe_codex()
     return {
-        "ok": True,
+        "ok": "error" not in webui_result,
         "mode": "setup",
+        "webui": webui_result,
         "config_path": str(config_path),
         "config_written": config_written,
         "workspace_root": workspace_root,
@@ -565,7 +596,14 @@ def run_clean(interactive: bool = True) -> dict[str, Any]:
     }
 
 
-def run_uninstall(
+def run_uninstall(*, interactive: bool = True, remove_records: bool | None = None,
+                  remove_artifacts: bool | None = None) -> dict[str, Any]:
+    from .installation_native import uninstall
+    return uninstall(_run_uninstall_payload, interactive=interactive,
+                     remove_records=remove_records, remove_artifacts=remove_artifacts)
+
+
+def _run_uninstall_payload(
     *,
     interactive: bool = True,
     remove_records: bool | None = None,
@@ -598,6 +636,10 @@ def run_uninstall(
     removed: list[str] = []
     preserved: list[str] = []
     skip_runner = os.environ.get("AGENTBC_UNINSTALL_SKIP_RUNNER") == "1"
+    from .web_service import Service
+    webui_service = Service(_config_path())
+    webui_service.login(False)
+    webui_service.close()
     _stop_owned_runner(removed)
 
     hermes_result = uninstall_hermes_skill(interactive=False, force=True, all_profiles=True)
@@ -1084,7 +1126,18 @@ def _scan_agent(definition: dict[str, Any], enabled: set[str]) -> dict[str, Any]
         capabilities = probe_claude()
     elif name == "opencode":
         discovery = discover_opencode()
-        capabilities = {}
+        capabilities = {
+            "basic_execution": True,
+            "full_lifecycle": False,
+            "transport": "cli-json",
+            "permission_modes": ["inherit", "full"],
+            "resume": False,
+            "input_required": False,
+            "retry": False,
+            "handoff": False,
+            "session_cleanup": False,
+            "limitations": ["Basic dispatch/execution only; real-platform acceptance pending."],
+        }
     else:
         discovery = discover_command(binary, env_var=_env_var_for(binary))
         discovery = {**discovery, "version": _version_for(discovery)}
@@ -1155,6 +1208,7 @@ def _default_config(
     sandbox_modes = list(capabilities.get("sandbox_modes") or [])
     sandbox = "workspace-write" if "workspace-write" in sandbox_modes else ""
     return {
+        "webui": {"preferred_view": "webui", "autostart": False},
         "board_root": str(_default_workspace_root() / "record"),
         "workspace_root": str(_default_workspace_root()),
         "permission_mode": DEFAULT_PERMISSION_MODE,
@@ -1191,6 +1245,11 @@ def _executor_config_for(agent: dict[str, Any]) -> dict[str, Any]:
         "capability_level": agent["capability_level"],
         "version": agent["version"],
     }
+    if agent["name"] == "opencode":
+        result["limitations"] = [
+            "Basic dispatch/execution only; full lifecycle is not certified.",
+            "Supports inherit/full; safe, resume, approval continuation, retry and handoff are unsupported.",
+        ]
     if agent["name"] == "hermes":
         # Hermes native permission requests exist only on the documented ACP
         # session transport.  The legacy ``hermes chat`` Runner path cannot
@@ -1240,6 +1299,8 @@ def resolve_hermes_default_max_turns(command: str) -> tuple[int, str]:
             [command, "config", "path"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=_HERMES_CONFIG_TIMEOUT_S,
             check=False,
         )
@@ -1853,7 +1914,18 @@ def _hermes_skill_path() -> Path:
 
 def _active_hermes_home() -> Path:
     hermes_home = os.environ.get("HERMES_HOME")
-    return Path(hermes_home).expanduser() if hermes_home else Path.home() / ".hermes"
+    if hermes_home:
+        return Path(hermes_home).expanduser()
+    traditional = Path.home() / ".hermes"
+    # Prefer an existing traditional profile. Windows native Hermes can instead
+    # keep its active configuration under LocalAppData without HERMES_HOME.
+    if sys.platform == "win32" and not any((traditional / name).is_file() for name in ("config.yaml", ".env")):
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            candidate = Path(local) / "hermes"
+            if any((candidate / name).is_file() for name in ("config.yaml", ".env")):
+                return candidate
+    return traditional
 
 
 def _hermes_base_home() -> Path:
@@ -2011,6 +2083,8 @@ def _run_command(path: Path, *arguments: str) -> subprocess.CompletedProcess[str
             [str(path), *arguments],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=_COMMAND_TIMEOUT_S,
         )

@@ -1,4 +1,4 @@
-"""Task-scoped native-full permission elevation.
+r"""Task-scoped native-full permission elevation.
 
 This module is the durable v1 capability which replaces the old one-shot
 ``agentbc.permission_grant`` write path for new approvals.  It intentionally

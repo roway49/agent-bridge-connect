@@ -20,9 +20,7 @@ from typing import Any
 from .effective_permissions import is_temporary_permission, resolve_effective_permission
 from .control import ApprovalControlPlane, ControlPlaneError
 from .handoff_recovery import is_handoff_recovery_source
-from .claude_path_capability import (
-    assert_claude_path_capability_command,
-)
+from .claude_path_capability import assert_claude_path_capability_command
 from .execution_policy import (
     RESOURCE_EXTENSION_KEY,
     SESSION_EXTENSION_KEY,
@@ -55,8 +53,7 @@ from .permission_transport import (
 )
 from .session import SessionRecoveryRequired, control_root_for_task
 
-# ARCH-104-001 Slice B facade: names that moved to runner_contract/runner_ipc
-# stay importable from agent_bridge_connect.runner; ``as`` marks re-exports.
+# Preserve the ARCH-104 facade; explicit aliases mark compatibility re-exports.
 from .runner_contract import (
     MAX_OUTPUT_BYTES,
     MAX_REQUEST_BYTES as MAX_REQUEST_BYTES,
@@ -394,15 +391,17 @@ def stop_runner_background(
     timeout_s: float = 5.0,
 ) -> dict[str, Any]:
     """Stop every verified AgentBC Runner process serving one spool."""
-    legacy = cleanup_legacy_runner_launch_agent()
+    spool = Path(spool_root or default_runner_spool()).expanduser()
+    # An environment-selected spool is not the shared ~/.abc/runner state.
+    standard_spool = Path("/tmp") / f"agentbc-runner-v2-{os.getuid()}"
+    shared_spool = spool.resolve() == standard_spool.resolve()
+    legacy = cleanup_legacy_runner_launch_agent() if shared_spool else {"ok": True, "status": "not_applicable"}
     if not legacy.get("ok"):
         return legacy
-
-    spool = Path(spool_root or default_runner_spool()).expanduser()
     state = Path(state_root or default_runner_root()).expanduser()
     stable_pid_path = state / "runner.pid"
     spool_pid_path = spool / "runner.pid"
-    include_stable_pid = state_root is not None or spool.resolve() == default_runner_spool().resolve()
+    include_stable_pid = state_root is not None or shared_spool
     pid_paths = tuple(dict.fromkeys((stable_pid_path, spool_pid_path) if include_stable_pid else (spool_pid_path,)))
     recorded_pids = {pid for pid in (_read_runner_pid(path) for path in pid_paths) if pid is not None and _pid_is_alive(pid)}
     verified_pids = set(_discover_runner_pids(spool))
@@ -422,7 +421,7 @@ def stop_runner_background(
             verified_pids.add(health_pid)
 
     for pid in recorded_pids:
-        if _pid_matches_runner_spool(pid, spool) or _pid_matches_runner_state(pid, state):
+        if _pid_matches_runner_spool(pid, spool):
             verified_pids.add(pid)
 
     if not verified_pids:
@@ -455,7 +454,7 @@ def stop_runner_background(
             "stopped_pids": stopped,
             "remaining_pids": remaining,
         }
-    for path in dict.fromkeys((*pid_paths, stable_pid_path)):
+    for path in pid_paths:
         pid = _read_runner_pid(path)
         if pid is None or pid in stopped or not _pid_is_alive(pid):
             path.unlink(missing_ok=True)
@@ -673,11 +672,22 @@ def _snapshot_descendant_pids(root_pid: int) -> list[int]:
             check=False,
         )
     except OSError:
-        return []
-    if result.returncode != 0:
-        return []
+        result = None
+    if result is None or result.returncode != 0:
+        # Minimal Linux images need not ship procps. Read the kernel parent
+        # relation instead of treating an unavailable ps as an empty tree.
+        lines = []
+        for entry in Path("/proc").glob("[0-9]*/stat"):
+            try:
+                stat = entry.read_text()
+                fields = stat[stat.rindex(")") + 2:].split()
+                lines.append(f"{int(entry.parent.name)} {int(fields[1])}")
+            except (OSError, ValueError, IndexError):
+                continue  # A process may exit while the snapshot is read.
+    else:
+        lines = result.stdout.splitlines()
     children: dict[int, list[int]] = {}
-    for line in result.stdout.splitlines():
+    for line in lines:
         fields = line.split()
         if len(fields) != 2:
             continue
@@ -1509,6 +1519,7 @@ class RunnerState:
                         task_id,
                         str(request.get("input_id") or ""),
                         response_type=response_type,
+                        message=str(request.get("message") or ""),
                     )
                 elif permission_option:
                     result = service.respond_to_input(
@@ -1934,11 +1945,9 @@ class RunnerState:
             target,
             request.get("message"),
             branch=bool(request.get("branch", False)),
-            session_id=request.get("session_id"),
-            source_platform=request.get("source_platform"),
-            images=request.get("images"),
-            files=request.get("files"),
-            permission_mode=request.get("permission_mode"),
+            **{key: request.get(key) for key in (
+                "session_id", "source_platform", "images", "files", "permission_mode", "steps",
+            )},
         )
         return self._atomic_dispatch_task(service, task, config, request)
 
@@ -2084,6 +2093,20 @@ class RunnerState:
     ) -> None:
         from .config import get_executor_config, load_config
 
+        if executor == "opencode":
+            from .executor_registry import get_executor
+
+            loaded = config if config is not None else load_config(config_path)
+            try:
+                adapter = get_executor(executor, get_executor_config(loaded, executor))
+            except (ABCError, TypeError, ValueError) as exc:
+                raise RunnerError(f"opencode_config_invalid: {exc}") from exc
+            actual = getattr(adapter, "agent_bin", None)
+            if actual is None:
+                raise RunnerError("opencode_binary_unavailable: configure command or AGENTBC_OPENCODE_BIN")
+            if actual.resolve() != self.allowed_executables.get(executor):
+                raise RunnerError("runner_config_stale: OpenCode command changed; restart Runner.")
+            return
         if self.executable_sources.get(executor) not in {"config", "explicit"}:
             return
         loaded = config if config is not None else load_config(config_path)
@@ -2283,7 +2306,7 @@ class RunnerState:
                     profile_dir,
                 )
                 if task_temp_root_text or runner_ipc_channel:
-                    # E52M-003 review fix: /private/tmp and /var/folders are no
+                    # compatibility review: /private/tmp and /var/folders are no
                     # longer writable.  The contained worker stages scratch data
                     # in its canonical task-scoped temp root via TMPDIR.
                     environment = dict(os.environ)
@@ -2399,7 +2422,22 @@ class RunnerState:
         with self.lock:
             record = self.runs.get(run_id)
             if record is None:
-                raise RunnerError(f"unknown runner run: {run_id}")
+                # Read-only history after a Runner restart, never adopt a PID.
+                if not re.fullmatch(r'[A-Za-z0-9_-]+', str(run_id)):
+                    raise RunnerError('invalid runner run ID')
+                directory = self.state_root / 'runs' / run_id
+                try:
+                    paths = [directory / name for name in ('run.json', 'stdout.log', 'stderr.log')]
+                    if any(path.is_symlink() for path in [directory, *paths]) or not directory.resolve().is_relative_to((self.state_root / 'runs').resolve()):
+                        raise ValueError('untrusted history path')
+                    record = json.loads(paths[0].read_text())
+                    if record.get('run_id') != run_id or record.get('status') not in TERMINAL_STATES:
+                        raise ValueError('history is not terminal')
+                    for stream in ('stdout', 'stderr'):
+                        record[stream + '_path'] = str(directory / (stream + '.log'))
+                    return self._public_record(record)
+                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    raise RunnerError(f'unknown runner run: {run_id}') from exc
             return self._public_record(record)
 
     def cancel(self, run_id: str) -> dict[str, Any]:
@@ -3128,11 +3166,8 @@ class RunnerState:
         returncode = process.wait()
         stdout_file.close()
         stderr_file.close()
-        # PERM-104-002: the task-scoped Seatbelt profile outlives the worker
-        # by design only while the run is active.  Once the process exits
-        # (normally, cancelled, crashed), the Runner deletes the profile so
-        # no stale containment template, grant, worker or lock survives a
-        # crash/restart cycle.
+        # PERM-104-002: remove the task-scoped Seatbelt profile on every exit
+        # so containment state cannot survive the worker or a restart.
         with self.lock:
             record = self.runs[run_id]
             record["returncode"] = returncode
@@ -3386,7 +3421,7 @@ def create_runner_service(
     allowed: dict[str, Path] = {}
     sources: dict[str, str] = {}
     loaded_config = config if config is not None else load_config()
-    for name, cmd in (("hermes", hermes_command), ("codex", codex_command), ("claude", None)):
+    for name, cmd in (("hermes", hermes_command), ("codex", codex_command), ("claude", None), ("opencode", None)):
         if cmd is not None:
             resolved = _resolve_runner_executable(name, str(cmd), "explicit")
         else:
@@ -3404,11 +3439,11 @@ def create_runner_service(
     roots = [Path(root) for root in allowed_roots] if allowed_roots is not None else resolve_runner_allowed_roots(loaded_config)
     state = RunnerState(
         Path(state_root or default_runner_root()),
-        roots,
-        allowed,
-        sources,
-        enable_task_dashboard=True,
+        roots, allowed, sources, enable_task_dashboard=True,
     )
+    board = Path(loaded_config.get('board_root') or '~/Documents/AgentBC/workspace/record').expanduser().resolve()
+    if any(_is_within(board, root.expanduser().resolve()) for root in roots):
+        state.known_boards.add(board)
     spool = Path(spool_root or default_runner_spool())
     token = Path(token_path or (spool / "token"))
     return RunnerService(spool, token, state, interval_s=interval_s)

@@ -1,0 +1,29 @@
+{
+  "date": "2026-09-30",
+  "host": "win-desktop",
+  "windows": "11 Pro 23H2 build 22631.6199",
+  "docker_desktop": "4.93.0",
+  "engine": "29.8.1",
+  "compose": "5.5.1",
+  "wsl": "3.0.1",
+  "installation": "I:\\docker\\app",
+  "data_disks": [
+    "I:\\docker\\wsl\\disk\\docker_data.vhdx",
+    "I:\\docker\\wsl\\main\\ext4.vhdx"
+  ],
+  "hypervisor_present": true,
+  "context": "desktop-linux",
+  "platform": "linux/amd64",
+  "smoke": {
+    "image_id": "sha256:d1a8d0a4eeb63aff09f5f34d4d80505e0ba81905f36158cc3970d8e07179e59e",
+    "source": "official hello-world pulled on Mac and imported offline",
+    "exit_code": 0,
+    "container_removed": true
+  },
+  "remaining": [
+    "Docker Hub direct connection timed out on Windows",
+    "SSH logon cannot access default Windows credential helper; anonymous isolated config with helper excluded worked up to registry connection",
+    "AgentBC Windows installation and four executor acceptance not yet implemented/validated"
+  ],
+  "autostart_setting": false
+}

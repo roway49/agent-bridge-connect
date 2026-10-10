@@ -1,0 +1,694 @@
+{
+  "resolved_task_id": "7R42-001",
+  "resolution_mode": "explicit_id",
+  "active_candidates": [],
+  "has_active_task": false,
+  "message": "Resolved explicit task id: 7R42-001",
+  "current_task": {
+    "extensions": {
+      "agentbc.provenance": {
+        "source_platform": "codex",
+        "conversation_id": "01a0b730-adce-7911-ae63-a9fc6b915580"
+      },
+      "agentbc.lineage": {
+        "parent_task_id": null,
+        "base_task_id": "7R42-001",
+        "chain_root_task_id": "7R42-001",
+        "iteration_index": 1,
+        "task_code": "7R42",
+        "task_date": "2026-10-10",
+        "agentbc_root": "/data/workspace",
+        "base_workspace_root": "/data/workspace/tasks/artifacts/2026-10-10/7R42",
+        "base_artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-10/7R42",
+        "branch_mode": "linear",
+        "chain_id": "7R42",
+        "chain_token": "7R42",
+        "chain_dir": "7R42",
+        "chain_task_id": "001",
+        "chain_output_dir": "/data/workspace/tasks/report/2026-10-10/7R42"
+      },
+      "agentbc.execution": {
+        "internal_status": "failed",
+        "worker_run_id": "runner-worker-87bfd31e2a37",
+        "dispatch_status": "accepted",
+        "worker_pid": 37749,
+        "monitor_status": "disabled",
+        "lease_state": "active",
+        "executor_run_id": "codex-7R42-001-32ac74e2",
+        "run_intervals": [
+          {
+            "run_id": "codex-7R42-001-32ac74e2",
+            "executor_id": "codex",
+            "attempt_index": 0,
+            "started_at": "2026-10-10T07:30:17.304984Z",
+            "ended_at": "2026-10-10T07:30:17.304984Z",
+            "duration_s": 0.0,
+            "state": "closed"
+          }
+        ]
+      },
+      "agentbc.permission": {
+        "version": 2,
+        "configured_mode": "inherit",
+        "inherited_mode": null,
+        "task_override": null,
+        "requested_mode": "inherit",
+        "effective_mode": "inherit",
+        "selection_source": "configured_default",
+        "selection_strategy": "inherit",
+        "resolved_base_mode": "native",
+        "resolution_state": "runtime",
+        "approval_policy": "on_block",
+        "scope": "task",
+        "mapping": {
+          "codex": {
+            "transport": "app-server",
+            "capability_id": "codex.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "codex",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          },
+          "claude": {
+            "transport": "cli",
+            "capability_id": "claude.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "claude",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          },
+          "hermes": {
+            "transport": "hermes-acp",
+            "capability_id": "hermes.acp.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "hermes",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          }
+        },
+        "permission_args": []
+      },
+      "agentbc.permission_protocol": {
+        "version": 3,
+        "scope": "task_elevation",
+        "mode": "full",
+        "decisions": [
+          "approve_full",
+          "deny"
+        ]
+      },
+      "agentbc.session": {
+        "version": 1,
+        "executor": "codex",
+        "retain": false,
+        "session_id": "01a124b8-498a-7783-ab75-580c54e71c00",
+        "session_state": "terminal",
+        "project_mode": "none",
+        "run_ids": [
+          "codex-7R42-001-32ac74e2"
+        ],
+        "run_resume_facts": {
+          "codex-7R42-001-32ac74e2": false
+        },
+        "resume_count": 0,
+        "cleanup": {
+          "capability": "supported",
+          "state": "succeeded",
+          "attempts": 1,
+          "error_code": "",
+          "retryable": false,
+          "version": 5,
+          "strategy": "container_session_archive_then_delete",
+          "phase": "delete_acknowledged",
+          "verification": {
+            "cli": {
+              "status": "absent",
+              "checked_at": "2026-10-10T07:32:29.317062Z"
+            },
+            "desktop_backend": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-10T07:32:29.074802Z"
+            },
+            "desktop_live": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-10T07:32:29.074802Z"
+            },
+            "desktop": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-10T07:32:29.074802Z"
+            }
+          },
+          "commands": {
+            "desktop_archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-10T07:32:29.074802Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "app_server_archive": {
+              "status": "acknowledged",
+              "checked_at": "2026-10-10T07:31:19.512003Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "delete": {
+              "status": "acknowledged",
+              "checked_at": "2026-10-10T07:32:29.317062Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-10T07:32:29.074802Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            }
+          }
+        },
+        "created_at": "2026-10-10T07:30:17.206666Z",
+        "receipt_source": "jsonl_thread_started",
+        "official_receipt_bound": true,
+        "archive_acknowledged": true,
+        "archive_checked_at": "2026-10-10T07:31:19.512003Z"
+      },
+      "agentbc.codex.collaboration_spawn": {
+        "version": 1,
+        "enabled": true
+      },
+      "agentbc.terminal_delivery": {
+        "version": 1,
+        "delivery_id": "e5b947ea-da09-4fc1-8364-e1b294c4069c",
+        "terminal_state": "failed",
+        "terminal_event": "task.failed",
+        "committed_at": "2026-10-10T07:31:19.831542Z",
+        "stages": {
+          "report": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "record": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "index": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "file_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "ui_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          }
+        },
+        "updated_at": "2026-10-10T07:31:21.774506Z"
+      }
+    },
+    "id": "7R42-001",
+    "title": "E4 Codex官方一父一子执行探针",
+    "status": "failed",
+    "assignee": "codex",
+    "steps": [
+      {
+        "id": 1,
+        "description": "执行 AgentBC E4 官方原生子代理最小验收。必须使用本次 Codex 会话实际提供的原生 spawn_agent 工具，恰好创建一个子代理，禁止模拟、嵌套子代理或通过 shell/另起 CLI/AgentBC task create 替代。子代理指令严格为：Return exactly CHILD_E4_CODEX_OK. Do not modify files, run shell commands, or spawn another agent. 如支持名称，使用 e4_codex_child；不覆盖模型或权限。保存真实工具返回的 receiver/agent ID，通过官方 wait 工具等待该精确子代理终态，等待超时只能继续等待同一 ID，最多总计120秒，不得创建替代子代理。验证真实终态回复恰好 CHILD_E4_CODEX_OK 后，父任务输出 PARENT_E4_CODEX_OK，记录本步骤完成并输出当前真实任务唯一有效 AGENTBC_FINAL_CALLBACK。不要手工关闭、归档、删除子会话，由 AgentBC 管理官方清理。不要读取凭据、联网搜索、修改配置或业务文件。若原生工具不可用、receiver缺失、子代理失败或结果不符，明确报告具体阻塞，禁止伪造子结果、父标记或成功callback。最终摘要包含真实子ID与工具完成结果，供控制器与官方事件核对。",
+        "record": "steps/01.json",
+        "status": "pending"
+      }
+    ],
+    "created_by": "codex",
+    "created_at": "2026-10-10T07:30:17.206666Z",
+    "updated_at": "2026-10-10T07:31:19.831542Z",
+    "intervention": {
+      "paused": false,
+      "pause_reason": null,
+      "latest_correction_id": null
+    },
+    "errors": [
+      {
+        "code": "completion_marker_state_invalid",
+        "message": "Unsupported final marker state: needs_recovery",
+        "details": {
+          "executor": "codex",
+          "result": {
+            "events_seen": 288,
+            "event_types": [
+              "configWarning",
+              "remoteControl/status/changed",
+              "session_started",
+              "thread/started",
+              "mcpServer/startupStatus/updated",
+              "thread/settings/updated",
+              "thread/status/changed",
+              "turn/started"
+            ],
+            "summary": "已恰好创建一个原生子代理，工具返回标识 `/root/e4_codex_child`。`list_agents` 确认其终态为 completed，回复恰好为 `CHILD_E4_CODEX_OK`。 阻塞：工具未提供 receiver/agent ID，且 `wait_agent` 不支持指定 ID，本次等待返回超时。因此无法完成严格验收，未记录步骤完成或输出父成功标记。",
+            "returncode": 0,
+            "execution_session": {
+              "version": 1,
+              "executor": "codex",
+              "session_id": "01a124b8-498a-7783-ab75-580c54e71c00",
+              "resumed": false,
+              "persistence": "persistent",
+              "source": "jsonl_thread_started",
+              "archive_acknowledged": true,
+              "archive_checked_at": "2026-10-10T07:31:19.512003Z"
+            },
+            "agent_callback": null,
+            "marker_valid": false,
+            "marker_seen": true,
+            "failure": {
+              "kind": "completion_marker_state_invalid",
+              "layer": "flow_contract",
+              "message": "Unsupported final marker state: needs_recovery",
+              "retryable": false
+            },
+            "extensions": {
+              "executor": {
+                "codex": {
+                  "agent_bin": "/opt/agentbc/bin/codex",
+                  "agent_bin_source": "extra_path",
+                  "capability_level": 2,
+                  "last_run_id": null,
+                  "app_server_capability": {
+                    "transport": "app-server",
+                    "ok": true,
+                    "version": "codex-cli 0.153.4",
+                    "version_parsed": [
+                      0,
+                      153,
+                      4
+                    ],
+                    "protocol_version": 2,
+                    "evidence": [
+                      "protocol_surface_default_compatible",
+                      "schema_methods_verified"
+                    ]
+                  },
+                  "collaboration_spawn": {
+                    "enabled": true,
+                    "version": "0.153.4",
+                    "reason": "",
+                    "fixture_ok": false,
+                    "live_ok": true
+                  }
+                }
+              }
+            },
+            "control_events": {
+              "events_seen": 2,
+              "event_types": [
+                "session_started",
+                "turn_completed"
+              ],
+              "selected": [
+                {
+                  "created_at": "2026-10-10T07:30:19.737651Z",
+                  "event_type": "session_started",
+                  "executor": "codex",
+                  "executor_run_id": "codex-7R42-001-32ac74e2",
+                  "session_id": "01a124b8-498a-7783-ab75-580c54e71c00"
+                },
+                {
+                  "created_at": "2026-10-10T07:31:19.491186Z",
+                  "event_type": "turn_completed",
+                  "executor": "codex",
+                  "executor_run_id": "codex-7R42-001-32ac74e2",
+                  "session_id": "01a124b8-498a-7783-ab75-580c54e71c00"
+                }
+              ]
+            }
+          },
+          "progress": {
+            "events_seen": 288,
+            "control_root": "/data/workspace/record/.agentbc-control/7R42-001"
+          }
+        },
+        "created_at": "2026-10-10T07:31:19.831542Z"
+      }
+    ],
+    "workspace": {
+      "customer_dir": false,
+      "customer_path": "",
+      "project_root": "/data/workspace/tasks/artifacts/2026-10-10/7R42",
+      "default_path": "/data/workspace/tasks/artifacts/2026-10-10/7R42",
+      "agentbc_root": "/data/workspace",
+      "root": "/data/workspace/tasks/artifacts/2026-10-10/7R42",
+      "artifact_root": "/data/workspace/tasks/artifacts/2026-10-10/7R42",
+      "artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-10/7R42",
+      "report_root": "/data/workspace/tasks/report/2026-10-10/7R42",
+      "task_file": "/data/workspace/tasks/report/2026-10-10/7R42/7R42-001-task.md",
+      "report_file": "/data/workspace/tasks/report/2026-10-10/7R42/7R42-001-report.md",
+      "output_dir": "/data/workspace/tasks/report/2026-10-10/7R42",
+      "task_code": "7R42",
+      "iteration": "001",
+      "task_date": "2026-10-10",
+      "chain_id": "7R42",
+      "chain_token": "7R42",
+      "chain_dir": "7R42",
+      "chain_task_id": "001",
+      "chain_output_dir": "/data/workspace/tasks/report/2026-10-10/7R42",
+      "internal_task_dir": "/data/workspace/record/7R42/001"
+    },
+    "report": null,
+    "session_id": "01a0b730-adce-7911-ae63-a9fc6b915580",
+    "revival": {
+      "version": 1,
+      "eligible": true,
+      "allowed_next_actions": [
+        "retry",
+        "handoff"
+      ],
+      "recommended_action": "retry",
+      "error_codes": [],
+      "warnings": [],
+      "reservation": null,
+      "replay_revival_id": ""
+    },
+    "health": {
+      "state": "failed",
+      "color": "red",
+      "stale_after_s": 300,
+      "long_stale_after_s": 600,
+      "startup_grace_s": 10,
+      "temp_file": "/data/workspace/record/7R42/001/.7R42-001.run.temp",
+      "run_log": "/data/workspace/record/7R42/001/7R42-001-run.log",
+      "last_progress_at": "",
+      "last_progress_age_s": null,
+      "run_lease_state": "",
+      "run_lease_pid": null,
+      "runner_alive": null,
+      "message": "",
+      "source": ""
+    },
+    "execution_policy": {
+      "version": 1,
+      "resources": null,
+      "session": {
+        "retain": false,
+        "session_id": "01a124b8-498a-7783-ab75-580c54e71c00",
+        "session_state": "terminal",
+        "project_mode": "none",
+        "cleanup": {
+          "capability": "supported",
+          "state": "succeeded",
+          "attempts": 1,
+          "error_code": "",
+          "retryable": false,
+          "version": 5,
+          "strategy": "container_session_archive_then_delete",
+          "phase": "delete_acknowledged",
+          "verification": {
+            "cli": {
+              "status": "absent",
+              "checked_at": "2026-10-10T07:32:29.317062Z"
+            },
+            "desktop_backend": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-10T07:32:29.074802Z"
+            },
+            "desktop_live": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-10T07:32:29.074802Z"
+            },
+            "desktop": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-10T07:32:29.074802Z"
+            }
+          },
+          "commands": {
+            "desktop_archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-10T07:32:29.074802Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "app_server_archive": {
+              "status": "acknowledged",
+              "checked_at": "2026-10-10T07:31:19.512003Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "delete": {
+              "status": "acknowledged",
+              "checked_at": "2026-10-10T07:32:29.317062Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-10T07:32:29.074802Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            }
+          }
+        }
+      },
+      "permission_grant": null,
+      "auxiliary_sessions": [],
+      "auxiliary_aggregate": {
+        "state": "blocked",
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      },
+      "terminal_delivery": {
+        "version": 1,
+        "delivery_id": "e5b947ea-da09-4fc1-8364-e1b294c4069c",
+        "terminal_state": "failed",
+        "terminal_event": "task.failed",
+        "committed_at": "2026-10-10T07:31:19.831542Z",
+        "stages": {
+          "report": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "record": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "index": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "file_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "ui_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          }
+        },
+        "updated_at": "2026-10-10T07:31:21.774506Z"
+      },
+      "delivery_health": {
+        "state": "succeeded",
+        "delivery_id": "e5b947ea-da09-4fc1-8364-e1b294c4069c",
+        "stages_total": 5,
+        "stages_succeeded": 5,
+        "stages_outstanding": 0,
+        "stages_retry_wait": 0,
+        "stages_in_progress": 0,
+        "outstanding_stages": [],
+        "attempts_total": 5,
+        "error_codes": [],
+        "healthy": true,
+        "updated_at": "2026-10-10T07:31:21.774506Z"
+      },
+      "progress": null
+    },
+    "chain_root_task_id": "7R42-001",
+    "head_task_ids": [
+      "7R42-001"
+    ],
+    "is_chain_head": true,
+    "chain_anomalies": [],
+    "parent_task_id": null,
+    "base_task_id": "7R42-001",
+    "iteration_index": 1,
+    "branch_mode": "linear",
+    "task_code": "7R42",
+    "iteration": "001",
+    "task_date": "2026-10-10",
+    "chain_task_id": "001",
+    "has_final_callback": false,
+    "report_ready": true,
+    "run_lease_state": "closed",
+    "execution": {
+      "internal_status": "failed",
+      "worker_run_id": "runner-worker-87bfd31e2a37",
+      "dispatch_status": "accepted",
+      "worker_pid": 37749,
+      "monitor_status": "disabled",
+      "lease_state": "closed",
+      "executor_run_id": "codex-7R42-001-32ac74e2",
+      "run_intervals": [
+        {
+          "run_id": "codex-7R42-001-32ac74e2",
+          "executor_id": "codex",
+          "attempt_index": 0,
+          "started_at": "2026-10-10T07:30:17.304984Z",
+          "ended_at": "2026-10-10T07:30:17.304984Z",
+          "duration_s": 0.0,
+          "state": "closed"
+        }
+      ],
+      "executor_id": "codex",
+      "started_at": "2026-10-10T07:30:17.304984Z",
+      "last_heartbeat_at": "2026-10-10T07:30:17.304984Z",
+      "runner_status": "failed",
+      "pid": 37749,
+      "output_truncated": false
+    },
+    "timing": {
+      "task_id": "7R42-001",
+      "wall_duration_s": 62.625,
+      "execution_duration_s": null,
+      "last_run_duration_s": null,
+      "attempt_index": 0,
+      "attempt_started_at": "",
+      "attempt_wall_duration_s": null,
+      "attempt_execution_duration_s": null,
+      "attempt_run_count": 1,
+      "attempt_run_intervals": [],
+      "waiting_duration_s": 0.0,
+      "evidence_quality": "authoritative",
+      "execution_duration_known": false,
+      "run_count": 1,
+      "run_intervals": [],
+      "lease_state": "closed"
+    },
+    "debug": {
+      "execution": {
+        "internal_status": "failed",
+        "worker_run_id": "runner-worker-87bfd31e2a37",
+        "dispatch_status": "accepted",
+        "worker_pid": 37749,
+        "monitor_status": "disabled",
+        "lease_state": "closed",
+        "executor_run_id": "codex-7R42-001-32ac74e2",
+        "run_intervals": [
+          {
+            "run_id": "codex-7R42-001-32ac74e2",
+            "executor_id": "codex",
+            "attempt_index": 0,
+            "started_at": "2026-10-10T07:30:17.304984Z",
+            "ended_at": "2026-10-10T07:30:17.304984Z",
+            "duration_s": 0.0,
+            "state": "closed"
+          }
+        ],
+        "executor_id": "codex",
+        "started_at": "2026-10-10T07:30:17.304984Z",
+        "last_heartbeat_at": "2026-10-10T07:30:17.304984Z",
+        "runner_status": "failed",
+        "pid": 37749,
+        "output_truncated": false
+      },
+      "timing": {
+        "task_id": "7R42-001",
+        "wall_duration_s": 62.625,
+        "execution_duration_s": null,
+        "last_run_duration_s": null,
+        "attempt_index": 0,
+        "attempt_started_at": "",
+        "attempt_wall_duration_s": null,
+        "attempt_execution_duration_s": null,
+        "attempt_run_count": 1,
+        "attempt_run_intervals": [],
+        "waiting_duration_s": 0.0,
+        "evidence_quality": "authoritative",
+        "execution_duration_known": false,
+        "run_count": 1,
+        "run_intervals": [],
+        "lease_state": "closed"
+      },
+      "permission": {
+        "version": 2,
+        "configured_mode": "inherit",
+        "inherited_mode": null,
+        "task_override": null,
+        "requested_mode": "inherit",
+        "effective_mode": "inherit",
+        "selection_source": "configured_default",
+        "selection_strategy": "inherit",
+        "resolved_base_mode": "native",
+        "resolution_state": "runtime",
+        "approval_policy": "on_block",
+        "scope": "task",
+        "mapping": {
+          "codex": {
+            "transport": "app-server",
+            "capability_id": "codex.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "codex",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          },
+          "claude": {
+            "transport": "cli",
+            "capability_id": "claude.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "claude",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          },
+          "hermes": {
+            "transport": "hermes-acp",
+            "capability_id": "hermes.acp.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "hermes",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          }
+        },
+        "permission_args": []
+      }
+    }
+  }
+}

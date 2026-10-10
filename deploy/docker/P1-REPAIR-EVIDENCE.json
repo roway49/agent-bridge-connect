@@ -1,0 +1,63 @@
+{
+  "date": "2026-09-29",
+  "scope": "P1 container cleanup and task logs",
+  "candidate": "r7-final",
+  "image_id": "sha256:f23980b08fc6acbb87a5cf7220cf52ff7abdc5a93f95457314674c5e0d8144b8",
+  "archive_sha256": "ac172171a2a49a33db364c4a732555887a3b417aed81782f1699115be3055665",
+  "python_tests": {
+    "count": 2278,
+    "seconds": 98.131,
+    "result": "OK"
+  },
+  "frontend_tests": 18,
+  "official_cleanup": {
+    "state": "succeeded",
+    "error": "",
+    "commands": {
+      "desktop_archive": {
+        "status": "not_applicable",
+        "checked_at": "2026-09-29T14:22:21.439030Z",
+        "request_digest": "",
+        "route_digest": "",
+        "app_instance_digest": ""
+      },
+      "app_server_archive": {
+        "status": "acknowledged",
+        "checked_at": "2026-09-29T14:22:21.468683Z",
+        "request_digest": "",
+        "route_digest": "",
+        "app_instance_digest": ""
+      },
+      "delete": {
+        "status": "acknowledged",
+        "checked_at": "2026-09-29T14:22:21.578549Z",
+        "request_digest": "",
+        "route_digest": "",
+        "app_instance_digest": ""
+      }
+    },
+    "verification": {
+      "desktop_backend": {
+        "status": "not_applicable",
+        "checked_at": "2026-09-29T14:22:21.439030Z"
+      },
+      "desktop_live": {
+        "status": "not_applicable",
+        "checked_at": "2026-09-29T14:22:21.439030Z"
+      },
+      "cli": {
+        "status": "absent",
+        "checked_at": "2026-09-29T14:22:21.578549Z"
+      }
+    }
+  },
+  "probe_scope": {
+    "network": "none",
+    "host_mounts": false,
+    "user_credentials": false,
+    "model_calls": false
+  },
+  "installed_replacement": false,
+  "existing_task_cleanup_verified": false,
+  "four_executor_acceptance": false
+}

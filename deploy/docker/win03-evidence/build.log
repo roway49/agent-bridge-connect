@@ -1,0 +1,319 @@
+Building wheel...
+
+added 18 packages in 538ms
+
+8 packages are looking for funding
+  run `npm fund` for details
+
+> agentbc-webui@0.0.0 build
+> tsc --noEmit && vite build
+
+vite v8.3.0 building client environment for production...
+transforming...
+✓ 9 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                  0.45 kB │ gzip: 0.31 kB
+dist/assets/index-CYvBz219.css   1.55 kB │ gzip: 0.69 kB
+dist/assets/index-DmeCSzP4.js   15.53 kB │ gzip: 6.21 kB
+
+✓ built in 272ms
+running bdist_wheel
+running build
+running build_py
+copying src/agent_bridge_connect/windows_desktop.py -> build/lib/agent_bridge_connect
+running egg_info
+writing src/agentbc.egg-info/PKG-INFO
+writing dependency_links to src/agentbc.egg-info/dependency_links.txt
+writing entry points to src/agentbc.egg-info/entry_points.txt
+writing requirements to src/agentbc.egg-info/requires.txt
+writing top-level names to src/agentbc.egg-info/top_level.txt
+reading manifest file 'src/agentbc.egg-info/SOURCES.txt'
+adding license file 'LICENSE'
+writing manifest file 'src/agentbc.egg-info/SOURCES.txt'
+copying src/agent_bridge_connect/assets/webui/index.html -> build/lib/agent_bridge_connect/assets/webui
+copying src/agent_bridge_connect/assets/webui/favicon.svg -> build/lib/agent_bridge_connect/assets/webui
+copying src/agent_bridge_connect/assets/webui/assets/index-DmeCSzP4.js -> build/lib/agent_bridge_connect/assets/webui/assets
+copying src/agent_bridge_connect/assets/webui/assets/index-CYvBz219.css -> build/lib/agent_bridge_connect/assets/webui/assets
+installing to build/bdist.macosx-11.0-arm64/wheel
+running install
+running install_lib
+creating build/bdist.macosx-11.0-arm64/wheel
+creating build/bdist.macosx-11.0-arm64/wheel/agent_bridge_connect
+copying build/lib/agent_bridge_connect/update.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/permission_registry.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/permission_runtime.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/control_transport.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+creating build/bdist.macosx-11.0-arm64/wheel/agent_bridge_connect/protocol_fixtures
+creating build/bdist.macosx-11.0-arm64/wheel/agent_bridge_connect/protocol_fixtures/codex
+creating build/bdist.macosx-11.0-arm64/wheel/agent_bridge_connect/protocol_fixtures/codex/0.150.1
+copying build/lib/agent_bridge_connect/protocol_fixtures/codex/0.150.1/app_server_schema.json -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/protocol_fixtures/codex/0.150.1
+copying build/lib/agent_bridge_connect/web_service.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/service.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/task_index.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/retry_flow.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/progress_receipts.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/docker_install_supervisor.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/task.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/web_catalogue.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/runner.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/runner_contract.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/web_gateway.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/task_completion.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/media.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/terminal_delivery.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/permission_grants.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/approval_timing.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/approval_protocol.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/config.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/desktop_dialog.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/docker_profiles.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/task_store.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/permission_modes.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/run_lease.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/e2e_session_supervisor.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/container_session_cleanup.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/task_health.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/claude_path_capability.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/task_board.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/docker_approval_bridge.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/docker_install_update.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/control_runtime.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/host_platform.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/installation.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/codex_session_cleanup.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/docker_terminal_delivery.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/docker_install_bundle.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/protocol.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/control.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/docker_setup_guidance.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/path_provider.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/session.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/installation_native.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/docker_install_runtime.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/__init__.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/terminal_delivery_coordinator.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/seatbelt.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/approval_lifecycle.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/docker_runner_entry.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/effective_permissions.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/state_machine.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/hermes_acp.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/docker_webui.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/record_management.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/auxiliary_sessions.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/docker_setup_native.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/web_snapshot.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/windows_dialog.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/setup.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/prompt_contract.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/docker_install_setup.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/_build_info.json -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/cli.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/executor_registry.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+creating build/bdist.macosx-11.0-arm64/wheel/agent_bridge_connect/executors
+copying build/lib/agent_bridge_connect/executors/codex.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/executors
+copying build/lib/agent_bridge_connect/executors/claude.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/executors
+copying build/lib/agent_bridge_connect/executors/shell.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/executors
+copying build/lib/agent_bridge_connect/executors/__init__.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/executors
+copying build/lib/agent_bridge_connect/executors/hermes.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/executors
+copying build/lib/agent_bridge_connect/executors/opencode.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/executors
+copying build/lib/agent_bridge_connect/executors/base.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/executors
+copying build/lib/agent_bridge_connect/executors/mock.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/executors
+copying build/lib/agent_bridge_connect/claude_elevation.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/docker_host.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/revival.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/reports.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/claude_sdk_transport.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/approval.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/input_manifest.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/docker_install_recovery.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/docker_terminal_bridge.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/permission_transport.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/session_tool_rules.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/notifications.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+creating build/bdist.macosx-11.0-arm64/wheel/agent_bridge_connect/notifiers
+copying build/lib/agent_bridge_connect/notifiers/dialog.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/notifiers
+copying build/lib/agent_bridge_connect/notifiers/__init__.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/notifiers
+copying build/lib/agent_bridge_connect/notifiers/file.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/notifiers
+creating build/bdist.macosx-11.0-arm64/wheel/agent_bridge_connect/skills
+copying build/lib/agent_bridge_connect/skills/codex_openai.yaml -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/skills
+creating build/bdist.macosx-11.0-arm64/wheel/agent_bridge_connect/skills/references
+copying build/lib/agent_bridge_connect/skills/references/controller-contract.md -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/skills/references
+copying build/lib/agent_bridge_connect/skills/references/agentbc-steps-yaml.md -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/skills/references
+copying build/lib/agent_bridge_connect/skills/codex_skill.md -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/skills
+copying build/lib/agent_bridge_connect/skills/claude_skill.md -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/skills
+copying build/lib/agent_bridge_connect/skills/hermes_skill.md -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/skills
+copying build/lib/agent_bridge_connect/execution_policy.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/windows_desktop.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/doctor_collectors.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/permission_failures.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/execution_contract.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/timing_view.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/docker_install_maintenance.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/migration.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/codex_app_server.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/permission_elevation.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+creating build/bdist.macosx-11.0-arm64/wheel/agent_bridge_connect/assets
+copying build/lib/agent_bridge_connect/assets/codex_desktop_relay.mjs -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/assets
+creating build/bdist.macosx-11.0-arm64/wheel/agent_bridge_connect/assets/webui
+copying build/lib/agent_bridge_connect/assets/webui/index.html -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/assets/webui
+creating build/bdist.macosx-11.0-arm64/wheel/agent_bridge_connect/assets/webui/assets
+copying build/lib/agent_bridge_connect/assets/webui/assets/index-DmeCSzP4.js -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/assets/webui/assets
+copying build/lib/agent_bridge_connect/assets/webui/assets/index-CYvBz219.css -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/assets/webui/assets
+copying build/lib/agent_bridge_connect/assets/webui/favicon.svg -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect/assets/webui
+copying build/lib/agent_bridge_connect/docker_install.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/skill_packages.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/doctor.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/terminal_states.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/__main__.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/handoff_recovery.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/runner_ipc.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/claude_sdk_hooks.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/task_id.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/path_model.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/session_cleanup.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/codex_desktop_archive.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/mcp_server.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/schema.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+copying build/lib/agent_bridge_connect/adapters.py -> build/bdist.macosx-11.0-arm64/wheel/./agent_bridge_connect
+running install_egg_info
+Copying src/agentbc.egg-info to build/bdist.macosx-11.0-arm64/wheel/./agentbc-1.0.4a1-py3.11.egg-info
+running install_scripts
+creating build/bdist.macosx-11.0-arm64/wheel/agentbc-1.0.4a1.dist-info/WHEEL
+creating '/private/tmp/agentbc-win03-final/.tmp-5pl614ao/agentbc-1.0.4a1-py3-none-any.whl' and adding 'build/bdist.macosx-11.0-arm64/wheel' to it
+adding 'agent_bridge_connect/__init__.py'
+adding 'agent_bridge_connect/__main__.py'
+adding 'agent_bridge_connect/_build_info.json'
+adding 'agent_bridge_connect/adapters.py'
+adding 'agent_bridge_connect/approval.py'
+adding 'agent_bridge_connect/approval_lifecycle.py'
+adding 'agent_bridge_connect/approval_protocol.py'
+adding 'agent_bridge_connect/approval_timing.py'
+adding 'agent_bridge_connect/auxiliary_sessions.py'
+adding 'agent_bridge_connect/claude_elevation.py'
+adding 'agent_bridge_connect/claude_path_capability.py'
+adding 'agent_bridge_connect/claude_sdk_hooks.py'
+adding 'agent_bridge_connect/claude_sdk_transport.py'
+adding 'agent_bridge_connect/cli.py'
+adding 'agent_bridge_connect/codex_app_server.py'
+adding 'agent_bridge_connect/codex_desktop_archive.py'
+adding 'agent_bridge_connect/codex_session_cleanup.py'
+adding 'agent_bridge_connect/config.py'
+adding 'agent_bridge_connect/container_session_cleanup.py'
+adding 'agent_bridge_connect/control.py'
+adding 'agent_bridge_connect/control_runtime.py'
+adding 'agent_bridge_connect/control_transport.py'
+adding 'agent_bridge_connect/desktop_dialog.py'
+adding 'agent_bridge_connect/docker_approval_bridge.py'
+adding 'agent_bridge_connect/docker_host.py'
+adding 'agent_bridge_connect/docker_install.py'
+adding 'agent_bridge_connect/docker_install_bundle.py'
+adding 'agent_bridge_connect/docker_install_maintenance.py'
+adding 'agent_bridge_connect/docker_install_recovery.py'
+adding 'agent_bridge_connect/docker_install_runtime.py'
+adding 'agent_bridge_connect/docker_install_setup.py'
+adding 'agent_bridge_connect/docker_install_supervisor.py'
+adding 'agent_bridge_connect/docker_install_update.py'
+adding 'agent_bridge_connect/docker_profiles.py'
+adding 'agent_bridge_connect/docker_runner_entry.py'
+adding 'agent_bridge_connect/docker_setup_guidance.py'
+adding 'agent_bridge_connect/docker_setup_native.py'
+adding 'agent_bridge_connect/docker_terminal_bridge.py'
+adding 'agent_bridge_connect/docker_terminal_delivery.py'
+adding 'agent_bridge_connect/docker_webui.py'
+adding 'agent_bridge_connect/doctor.py'
+adding 'agent_bridge_connect/doctor_collectors.py'
+adding 'agent_bridge_connect/e2e_session_supervisor.py'
+adding 'agent_bridge_connect/effective_permissions.py'
+adding 'agent_bridge_connect/execution_contract.py'
+adding 'agent_bridge_connect/execution_policy.py'
+adding 'agent_bridge_connect/executor_registry.py'
+adding 'agent_bridge_connect/handoff_recovery.py'
+adding 'agent_bridge_connect/hermes_acp.py'
+adding 'agent_bridge_connect/host_platform.py'
+adding 'agent_bridge_connect/input_manifest.py'
+adding 'agent_bridge_connect/installation.py'
+adding 'agent_bridge_connect/installation_native.py'
+adding 'agent_bridge_connect/mcp_server.py'
+adding 'agent_bridge_connect/media.py'
+adding 'agent_bridge_connect/migration.py'
+adding 'agent_bridge_connect/notifications.py'
+adding 'agent_bridge_connect/path_model.py'
+adding 'agent_bridge_connect/path_provider.py'
+adding 'agent_bridge_connect/permission_elevation.py'
+adding 'agent_bridge_connect/permission_failures.py'
+adding 'agent_bridge_connect/permission_grants.py'
+adding 'agent_bridge_connect/permission_modes.py'
+adding 'agent_bridge_connect/permission_registry.py'
+adding 'agent_bridge_connect/permission_runtime.py'
+adding 'agent_bridge_connect/permission_transport.py'
+adding 'agent_bridge_connect/progress_receipts.py'
+adding 'agent_bridge_connect/prompt_contract.py'
+adding 'agent_bridge_connect/protocol.py'
+adding 'agent_bridge_connect/record_management.py'
+adding 'agent_bridge_connect/reports.py'
+adding 'agent_bridge_connect/retry_flow.py'
+adding 'agent_bridge_connect/revival.py'
+adding 'agent_bridge_connect/run_lease.py'
+adding 'agent_bridge_connect/runner.py'
+adding 'agent_bridge_connect/runner_contract.py'
+adding 'agent_bridge_connect/runner_ipc.py'
+adding 'agent_bridge_connect/schema.py'
+adding 'agent_bridge_connect/seatbelt.py'
+adding 'agent_bridge_connect/service.py'
+adding 'agent_bridge_connect/session.py'
+adding 'agent_bridge_connect/session_cleanup.py'
+adding 'agent_bridge_connect/session_tool_rules.py'
+adding 'agent_bridge_connect/setup.py'
+adding 'agent_bridge_connect/skill_packages.py'
+adding 'agent_bridge_connect/state_machine.py'
+adding 'agent_bridge_connect/task.py'
+adding 'agent_bridge_connect/task_board.py'
+adding 'agent_bridge_connect/task_completion.py'
+adding 'agent_bridge_connect/task_health.py'
+adding 'agent_bridge_connect/task_id.py'
+adding 'agent_bridge_connect/task_index.py'
+adding 'agent_bridge_connect/task_store.py'
+adding 'agent_bridge_connect/terminal_delivery.py'
+adding 'agent_bridge_connect/terminal_delivery_coordinator.py'
+adding 'agent_bridge_connect/terminal_states.py'
+adding 'agent_bridge_connect/timing_view.py'
+adding 'agent_bridge_connect/update.py'
+adding 'agent_bridge_connect/web_catalogue.py'
+adding 'agent_bridge_connect/web_gateway.py'
+adding 'agent_bridge_connect/web_service.py'
+adding 'agent_bridge_connect/web_snapshot.py'
+adding 'agent_bridge_connect/windows_desktop.py'
+adding 'agent_bridge_connect/windows_dialog.py'
+adding 'agent_bridge_connect/assets/codex_desktop_relay.mjs'
+adding 'agent_bridge_connect/assets/webui/favicon.svg'
+adding 'agent_bridge_connect/assets/webui/index.html'
+adding 'agent_bridge_connect/assets/webui/assets/index-CYvBz219.css'
+adding 'agent_bridge_connect/assets/webui/assets/index-DmeCSzP4.js'
+adding 'agent_bridge_connect/executors/__init__.py'
+adding 'agent_bridge_connect/executors/base.py'
+adding 'agent_bridge_connect/executors/claude.py'
+adding 'agent_bridge_connect/executors/codex.py'
+adding 'agent_bridge_connect/executors/hermes.py'
+adding 'agent_bridge_connect/executors/mock.py'
+adding 'agent_bridge_connect/executors/opencode.py'
+adding 'agent_bridge_connect/executors/shell.py'
+adding 'agent_bridge_connect/notifiers/__init__.py'
+adding 'agent_bridge_connect/notifiers/dialog.py'
+adding 'agent_bridge_connect/notifiers/file.py'
+adding 'agent_bridge_connect/protocol_fixtures/codex/0.150.1/app_server_schema.json'
+adding 'agent_bridge_connect/skills/claude_skill.md'
+adding 'agent_bridge_connect/skills/codex_openai.yaml'
+adding 'agent_bridge_connect/skills/codex_skill.md'
+adding 'agent_bridge_connect/skills/hermes_skill.md'
+adding 'agent_bridge_connect/skills/references/agentbc-steps-yaml.md'
+adding 'agent_bridge_connect/skills/references/controller-contract.md'
+adding 'agentbc-1.0.4a1.dist-info/licenses/LICENSE'
+adding 'agentbc-1.0.4a1.dist-info/METADATA'
+adding 'agentbc-1.0.4a1.dist-info/WHEEL'
+adding 'agentbc-1.0.4a1.dist-info/entry_points.txt'
+adding 'agentbc-1.0.4a1.dist-info/top_level.txt'
+adding 'agentbc-1.0.4a1.dist-info/RECORD'
+removing build/bdist.macosx-11.0-arm64/wheel
+Successfully built /private/tmp/agentbc-win03-final/agentbc-1.0.4a1-py3-none-any.whl

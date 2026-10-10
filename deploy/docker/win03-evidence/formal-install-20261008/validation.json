@@ -1,0 +1,25 @@
+{
+  "date": "2026-10-08",
+  "python_full": {
+    "tests": 2323,
+    "seconds": 502.756,
+    "result": "OK"
+  },
+  "focused_installer_desktop": {
+    "tests": 102,
+    "result": "OK"
+  },
+  "frontend_tests": 18,
+  "typecheck_build": "passed during final wheel build",
+  "ruff": "0.15.22 passed",
+  "test_structure": {
+    "files": 75,
+    "lines": 40041,
+    "result": "passed"
+  },
+  "repository_boundary": "passed",
+  "diff_check": "passed",
+  "manual_install_uninstall": "pending",
+  "preview_replaced": false,
+  "mac_replaced": false
+}

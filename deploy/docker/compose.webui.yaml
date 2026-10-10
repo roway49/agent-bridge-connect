@@ -1,0 +1,41 @@
+# Merge with compose.yaml; reuse its data volume and the same mainline image.
+services:
+  webui:
+    image: ${AGENTBC_WEBUI_IMAGE:?Set the mainline image digest}
+    user: "1000:1000"
+    entrypoint: ["agentbc", "webui", "serve"]
+    command:
+      - --root
+      - /data/workspace/record
+      - --report-root
+      - /data/workspace/tasks/report
+      - --port
+      - "8080"
+      - --listen-host
+      - 0.0.0.0
+      - --public-origin
+      - http://127.0.0.1:${AGENTBC_WEBUI_PORT:?Set the saved fixed port}
+      - --launch-file
+      - /run/webui/launch-url
+    ports:
+      - "127.0.0.1:${AGENTBC_WEBUI_PORT}:8080"
+    volumes:
+      - data:/data/workspace:ro
+    tmpfs:
+      - /run/webui:mode=0700,uid=1000,gid=1000
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    restart: ${AGENTBC_WEBUI_RESTART:-no}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "from pathlib import Path; from urllib.request import Request,urlopen; from urllib.parse import urlsplit; u=urlsplit(Path('/run/webui/launch-url').read_text().strip()); urlopen(Request('http://127.0.0.1:8080/',headers={'Host':u.netloc}),timeout=2).read(1)"
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    profiles: [webui]

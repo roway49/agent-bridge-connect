@@ -1,0 +1,28 @@
+{
+  "task_id": "KS4C-001",
+  "verdict": "E4 Codex single native parent-child accepted",
+  "codex_version": "0.153.4",
+  "parent_session_id": "01a124d5-172b-7520-9f3b-9375d3e7a359",
+  "child_session_id": "01a124d5-3509-7fb1-a86b-b9e20ac6028e",
+  "child_delete_at": "2026-10-10T08:05:57.069386Z",
+  "parent_archive_at": "2026-10-10T08:05:57.144738Z",
+  "parent_delete_at": "2026-10-10T08:05:57.364529Z",
+  "image_id": "sha256:1d3ea5b15b19677b47a9535e084b5ac8c10f69da409f74af79518b894758d7b0",
+  "bundle_sha256": "ecb33eb7cfaff341d932bcb42b52b4ebb22b53b05b50a20ed3570f4fed29bf65",
+  "tests": {
+    "count": 127,
+    "seconds": 14.996,
+    "result": "passed"
+  },
+  "scope_exclusions": [
+    "E5 release-wide regression",
+    "multi-level or multi-executor child matrix",
+    "historical failed cleanup receipts remain unchanged"
+  ],
+  "installed_source_sha256": "9bc0b5b14b9df0a4e64aeb08d476a68966143559d9a527089bd2dc75ad26a300",
+  "installed_source_matches_worktree": true,
+  "worker_exit_verified": {
+    "pid": 1031,
+    "present": false
+  }
+}

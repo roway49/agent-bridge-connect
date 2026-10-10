@@ -1,0 +1,89 @@
+{
+  "image_id": "sha256:4acf4c483e90be7ea7dd31324f4dfaab5ff1f6c05b2ec26c5006c7ef54a6ffce",
+  "stages": [
+    {
+      "name": "baseline",
+      "installed": false,
+      "workspace_files": 2,
+      "permission_mode": "inherit"
+    },
+    {
+      "name": "install-1",
+      "exit_code": 0
+    },
+    {
+      "name": "first-installed",
+      "installation_id": "b587cdbe20774ec99ff21fb7700d126e",
+      "port": 21181,
+      "doctor_exit": 0,
+      "desktop": "ready",
+      "runner": "healthy",
+      "webui": "healthy",
+      "task_status_exit": 1
+    },
+    {
+      "name": "duplicate-install-refused",
+      "exit_code": 2,
+      "existing_unchanged": true
+    },
+    {
+      "name": "repeat-setup",
+      "exit_code": 0
+    },
+    {
+      "name": "repeat-installed",
+      "installation_id": "b587cdbe20774ec99ff21fb7700d126e",
+      "port": 21181,
+      "doctor_exit": 0,
+      "desktop": "ready",
+      "runner": "healthy",
+      "webui": "healthy",
+      "task_status_exit": 1
+    },
+    {
+      "name": "first-webui",
+      "http": 200,
+      "port_unchanged": true,
+      "close_did_not_revive": true
+    },
+    {
+      "name": "uninstall-verified",
+      "exit_code": 0,
+      "batch_error": false,
+      "services_removed": true,
+      "desktop_task_removed": true,
+      "port_released": true,
+      "history_and_backup_verified": true,
+      "backup": "C:\\Users\\developer\\.agentbc-install\\backups\\20261008-215133-b587cdbe"
+    },
+    {
+      "name": "install-2",
+      "exit_code": 0
+    },
+    {
+      "name": "second-installed",
+      "installation_id": "4f8b600f1f0a4dcf8fc72564aa659e9d",
+      "port": 32353,
+      "doctor_exit": 0,
+      "desktop": "ready",
+      "runner": "healthy",
+      "webui": "healthy",
+      "task_status_exit": 1
+    },
+    {
+      "name": "second-webui",
+      "http": 200,
+      "port_unchanged": true,
+      "close_did_not_revive": true
+    },
+    {
+      "name": "roundtrip-passed",
+      "old_history_preserved": true,
+      "new_workspace_clean": true,
+      "original_ai_files_unchanged": true,
+      "final_installation_id": "4f8b600f1f0a4dcf8fc72564aa659e9d",
+      "final_port": 32353
+    }
+  ],
+  "result": "passed"
+}

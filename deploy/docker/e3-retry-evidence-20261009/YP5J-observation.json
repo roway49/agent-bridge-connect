@@ -1,0 +1,45 @@
+{
+  "task": "YP5J-001",
+  "approval": {
+    "version": 3,
+    "scope": "task_elevation",
+    "kind": "permission",
+    "executor": "codex",
+    "operation": "command",
+    "elevation_mode": "full",
+    "requested_permission": "full",
+    "summary": "Command execution approval requested",
+    "summary_truncated": false,
+    "state": "answered",
+    "source": "task_elevation",
+    "path_plan_digest": "",
+    "containment_profile_digest": "",
+    "created_at": "2026-10-09T15:01:18.864711Z",
+    "cardinality": {
+      "permission_requests": 1,
+      "notifications": 1,
+      "human_decisions": 1,
+      "elevation_receipts": 1,
+      "full_continuations": 1
+    },
+    "authority": {
+      "executor": "codex",
+      "protocol": "codex_app_server",
+      "protocol_version": 2,
+      "method": "item/commandExecution/requestApproval"
+    },
+    "native_event": "codex_app_server.item/commandExecution/requestApproval",
+    "request_fingerprint": "fp-ceaf072816c610c5db3e9c7d1e8cd3c6f3621317",
+    "reason_summary": "Command execution approval requested",
+    "decision": "approve_full",
+    "decision_source": "user",
+    "decided_at": "2026-10-09T15:01:25.922165Z",
+    "full_continuations": 1
+  },
+  "session_id": "01a1212e-9272-7562-8366-e573b28c0d1f",
+  "close": {
+    "old_worker_present": false,
+    "matching_processes": [],
+    "task_record_exists": false
+  }
+}

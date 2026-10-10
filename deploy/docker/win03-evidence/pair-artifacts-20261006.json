@@ -1,0 +1,12 @@
+{
+  "RQP6-001": {
+    "exact_match": true,
+    "bytes": 23,
+    "sha256": "7664ce299d85721b052d1fef83a000a769c0e209cdb6808120be46c235c3a576"
+  },
+  "6DZG-001": {
+    "exact_match": true,
+    "bytes": 24,
+    "sha256": "a44afe14291b213bfa29028743c6f3f5e6ce6dacf4f36b6f1c0e21e373e35431"
+  }
+}

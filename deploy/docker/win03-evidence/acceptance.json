@@ -1,0 +1,52 @@
+{
+  "date": "2026-10-02",
+  "status": "partial_manual_and_cleanup_blocked",
+  "candidate_host_wheel": {
+    "path": "/private/tmp/agentbc-win03-final/agentbc-1.0.4a1-py3-none-any.whl",
+    "sha256": "6d682fe0b53e37da210d28cb73c83618438632fb62c3e57ed3b7c61c893776e8",
+    "deployed": true
+  },
+  "installed_host_wheel_sha256": "6d682fe0b53e37da210d28cb73c83618438632fb62c3e57ed3b7c61c893776e8",
+  "image_id": "sha256:87a3ea3ab38549712e1cbc773e14c9943bdba9a3c191773be3b9ce47ab6751b7",
+  "container_id": "3c45134db766dbb933dfbb458237abb8609b5f27783601a45ccc32643e3d9df8",
+  "DPZE-001": {
+    "business_rerun": false,
+    "delivery_id": "6d024f60-97a9-4408-a251-dda14ef96c72",
+    "ui_notification": "succeeded",
+    "cleanup": "failed",
+    "cleanup_error": "container_session_scope_invalid",
+    "session_id": "01a0f81a-ada6-74e0-8456-a780adfcfc13"
+  },
+  "DYTE-001": {
+    "status": "failed",
+    "input_id": "input-bbbe12be7f2d419185c9f3a16eeb7404",
+    "run_id": "codex-DYTE-001-22b5c441",
+    "session_id": "01a0f840-0fba-7803-be84-948de21038d7",
+    "approval_version": 3,
+    "human_choice": null,
+    "deadline": "2026-10-01T16:21:05.808540Z",
+    "decision_source": "timeout",
+    "lease": "closed",
+    "ui_notification": "succeeded",
+    "notification_attempts": 1,
+    "cleanup": "failed",
+    "cleanup_error": "container_session_scope_invalid"
+  },
+  "mac_installation_changed": false,
+  "tests": {
+    "python": {
+      "count": 2301,
+      "seconds": 443.462,
+      "result": "OK"
+    },
+    "frontend": {
+      "count": 18,
+      "result": "pass"
+    },
+    "typecheck_build": "pass",
+    "ruff": "pass",
+    "test_structure": "75 files, pass",
+    "repository_boundary": "pass"
+  },
+  "desktop_state": "ready"
+}

@@ -29,6 +29,17 @@ class CLIExecutorBase(ExecutorPort):
         self._control_planes: dict[str, ApprovalControlPlane] = {}
         self._task_packets: dict[str, dict[str, Any]] = {}
 
+    def _bind_live_session(self, task_packet: dict, run_id: str, receipt: dict) -> None:
+        """Bind only an adapter-issued receipt, while the managed run is live."""
+        from agent_bridge_connect.service import TaskService
+
+        board = (task_packet.get("task_board") or {}).get("root")
+        service = TaskService(board, config={"_runner_worker": True})
+        task_id = str(task_packet["task_id"])
+        service.record_executor_run_started(task_id, run_id)
+        service.update_execution_metadata(task_id, {"executor_run_id": run_id})
+        service.record_executor_session_started(task_id, run_id, receipt)
+
     def poll(self, run_id: str) -> PollResult:
         return self._runs.get(
             run_id,
@@ -95,6 +106,7 @@ class CLIExecutorBase(ExecutorPort):
             session_id=expected or "",
             executor=str(task_packet.get("assignee") or "codex"),
             expected_session_id=expected,
+            approval_timeout_s=getattr(self, "approval_timeout_s", 300.0),
             create=create,
         )
         self._control_planes[run_id] = plane
@@ -193,3 +205,78 @@ class CLIExecutorBase(ExecutorPort):
         if lease is None:
             return
         close_lease(lease, self._lease_roots[run_id])
+
+
+def run_with_stdout_receipts(command, *, cwd, input, timeout, on_line, interrupt_on_sigterm=False):
+    """Drain CLI output continuously so official receipts precede progress calls.
+
+    File-backed stdin/stderr avoid pipe deadlocks. Binding errors terminate the
+    child and propagate; they must never become a fabricated successful receipt.
+    """
+    import subprocess
+    import tempfile
+    import threading
+
+    import signal
+    import time
+
+    chunks = []
+    errors = []
+    interrupted = threading.Event()
+    previous = None
+    with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stdin, tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as stderr:
+        stdin.write(input or "")
+        stdin.seek(0)
+        with subprocess.Popen(command, cwd=cwd, stdin=stdin, stdout=subprocess.PIPE,
+                              stderr=stderr, text=True, encoding="utf-8", errors="replace",
+                              start_new_session=interrupt_on_sigterm) as process:
+            def drain():
+                try:
+                    for line in process.stdout:
+                        chunks.append(line)
+                        on_line(line)
+                except Exception as exc:
+                    errors.append(exc)
+                    process.kill()
+
+            reader = threading.Thread(target=drain, daemon=True)
+            if interrupt_on_sigterm:
+                previous = signal.signal(signal.SIGTERM, lambda *_: interrupted.set())
+            reader.start()
+            timed_out = False
+            try:
+                if interrupt_on_sigterm:
+                    deadline = time.monotonic() + timeout
+                    while process.poll() is None and not interrupted.is_set():
+                        if time.monotonic() >= deadline:
+                            raise subprocess.TimeoutExpired(command, timeout)
+                        time.sleep(0.05)
+                    if interrupted.is_set() and process.poll() is None:
+                        os.killpg(process.pid, signal.SIGTERM)
+                        try:
+                            process.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(process.pid, signal.SIGKILL)
+                            process.wait()
+                else:
+                    process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                process.kill()
+                process.wait()
+            finally:
+                if previous is not None:
+                    signal.signal(signal.SIGTERM, previous)
+            reader.join(timeout=5)
+            if reader.is_alive():
+                raise OSError("executor stdout reader did not stop")
+            stderr.seek(0)
+            error_output = stderr.read()
+            output = "".join(chunks)
+            if errors:
+                raise errors[0]
+            if timed_out:
+                raise subprocess.TimeoutExpired(command, timeout, output=output, stderr=error_output)
+            result = subprocess.CompletedProcess(command, process.returncode, output, error_output)
+            result.agentbc_interrupted = interrupted.is_set()
+            return result

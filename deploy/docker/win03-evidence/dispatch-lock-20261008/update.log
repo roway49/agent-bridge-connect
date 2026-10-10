@@ -1,0 +1,11 @@
+Processing i:\docker\verification\win-formal-20261008-dispatch-lock5\output\agentbc-1.0.4a1-docker-windows-amd64\agentbc-1.0.4a1-py3-none-any.whl
+Installing collected packages: agentbc
+Successfully installed agentbc-1.0.4a1
+Processing i:\docker\verification\win-formal-20261008-dispatch-lock5\output\agentbc-1.0.4a1-docker-windows-amd64\agentbc-1.0.4a1-py3-none-any.whl
+Installing collected packages: agentbc
+Successfully installed agentbc-1.0.4a1
+Codex Skill: installed; linked to Docker agentbc.
+Claude Skill: installed; linked to Docker agentbc.
+Hermes Skill: installed; linked to Docker agentbc.
+Docker update completed; installation type unchanged.
+{"exit_code": 0, "same_installation": true, "settings_preserved": true, "port": 32487, "image": "sha256:b06a35dcfd204cecfd7c8e247d510599907c4fca9347cc748089c2465b86e4f0"}

@@ -1,0 +1,224 @@
+{
+  "id": "AETB-002",
+  "status": "completed",
+  "has_final_callback": true,
+  "run_lease_state": "closed",
+  "steps": [
+    {
+      "id": 1,
+      "description": "在本任务分配的artifact root创建e2-baseline.txt，内容严格为AGENTBC_E2_BASELINE_OK加一个换行，读回验证。仅操作此任务目录，不改配置、不联网、不创建子任务。完成后先记录步骤1的authoritative progress，不重复执行已继承为done的步骤。",
+      "status": "done",
+      "origin_task_id": "AETB-001",
+      "origin_step_id": 1,
+      "origin_status": "done",
+      "locked": true,
+      "record": "steps/01.json",
+      "result": {
+        "status": "done",
+        "executor_result": {
+          "id": 1,
+          "status": "done"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "description": "这是明确授权的受控中断测试。在artifact root创建e2-interrupt-ready.txt，内容严格为AGENTBC_E2_INTERRUPT_READY加一个换行。用一次前台Python命令等待同目录的e2-release.txt，最多900秒，每2秒检查一次；期间不要提前完成步骤2、不要输出完成callback、不要自行创建release文件或调用任务恢复/取消。控制器将核对身份后中断本任务worker。若后续显式handoff恢复且release文件已存在，则直接继续；读回e2-baseline.txt确认仍为AGENTBC_E2_BASELINE_OK加换行，创建e2-recovered.txt内容为AGENTBC_E2_RECOVERED_OK加换行，验证并记录步骤2进度，最后输出正常AGENTBC_FINAL_CALLBACK。若等待超时且release仍不存在，停止并如实报告未完成，不伪造成功；不修改其他文件、源任务报告或进度。",
+      "status": "done",
+      "origin_task_id": "AETB-001",
+      "origin_step_id": 2,
+      "origin_status": "pending",
+      "record": "steps/02.json",
+      "result": {
+        "status": "done",
+        "executor_result": {
+          "id": 2,
+          "status": "done"
+        },
+        "progress_receipt": {
+          "version": 1,
+          "sequence": 1,
+          "evidence_source": "agent_cli"
+        }
+      }
+    }
+  ],
+  "execution_policy": {
+    "version": 1,
+    "resources": null,
+    "session": {
+      "retain": false,
+      "session_id": "01a12120-9639-7002-b5c3-a774d35850b2",
+      "session_state": "terminal",
+      "project_mode": "none",
+      "cleanup": {
+        "capability": "supported",
+        "state": "succeeded",
+        "attempts": 1,
+        "error_code": "",
+        "retryable": false,
+        "version": 5,
+        "strategy": "container_session_archive_then_delete",
+        "phase": "delete_acknowledged",
+        "verification": {
+          "cli": {
+            "status": "absent",
+            "checked_at": "2026-10-09T14:47:07.677645Z"
+          },
+          "desktop_backend": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T14:47:07.373904Z"
+          },
+          "desktop_live": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T14:47:07.373904Z"
+          },
+          "desktop": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T14:47:07.373904Z"
+          }
+        },
+        "commands": {
+          "desktop_archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T14:47:07.373904Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "app_server_archive": {
+            "status": "acknowledged",
+            "checked_at": "2026-10-09T14:47:07.471291Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "delete": {
+            "status": "acknowledged",
+            "checked_at": "2026-10-09T14:47:07.677645Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T14:47:07.373904Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          }
+        }
+      }
+    },
+    "permission_grant": null,
+    "auxiliary_sessions": [],
+    "auxiliary_aggregate": {
+      "state": "blocked",
+      "total": 0,
+      "resolved": 0,
+      "unresolved": 0
+    },
+    "terminal_delivery": {
+      "version": 1,
+      "delivery_id": "b3279d01-9765-4cc5-a21d-99161108ad28",
+      "terminal_state": "completed",
+      "terminal_event": "task.finalized",
+      "committed_at": "2026-10-09T14:46:40.537772Z",
+      "stages": {
+        "report": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "record": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "index": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "file_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "ui_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        }
+      },
+      "updated_at": "2026-10-09T14:46:42.989699Z"
+    },
+    "delivery_health": {
+      "state": "succeeded",
+      "delivery_id": "b3279d01-9765-4cc5-a21d-99161108ad28",
+      "stages_total": 5,
+      "stages_succeeded": 5,
+      "stages_outstanding": 0,
+      "stages_retry_wait": 0,
+      "stages_in_progress": 0,
+      "outstanding_stages": [],
+      "attempts_total": 5,
+      "error_codes": [],
+      "healthy": true,
+      "updated_at": "2026-10-09T14:46:42.989699Z"
+    },
+    "progress": {
+      "version": 1,
+      "attempt_index": 0,
+      "latest_sequence": 1,
+      "confirmed_step_ids": [
+        2
+      ],
+      "confirmed_count": 1,
+      "evidence_quality": "authoritative",
+      "updated_at": "2026-10-09T14:46:31.139172Z"
+    }
+  },
+  "execution": {
+    "internal_status": "completed",
+    "lease_state": "closed",
+    "run_intervals": [
+      {
+        "run_id": "codex-AETB-002-31bb4adf",
+        "executor_id": "codex",
+        "attempt_index": 0,
+        "started_at": "2026-10-09T14:45:43.722326Z",
+        "ended_at": "2026-10-09T14:45:43.722326Z",
+        "duration_s": 0.0,
+        "state": "suspended"
+      },
+      {
+        "run_id": "codex-AETB-002-c2d924db",
+        "executor_id": "codex",
+        "attempt_index": 0,
+        "started_at": "2026-10-09T14:46:14.012260Z",
+        "ended_at": "2026-10-09T14:46:40.534703Z",
+        "duration_s": 26.522,
+        "state": "closed"
+      }
+    ],
+    "waiting_since": "2026-10-09T14:46:06.359681Z",
+    "permission_elevation_mode": "full",
+    "permission_elevation_source": "task_elevation",
+    "permission_elevation_state": "verified",
+    "log_worker_run_id": "runner-worker-b615994b203a",
+    "resuming_at": "2026-10-09T14:46:13.899458Z",
+    "worker_run_id": "runner-worker-7200c52c0085",
+    "dispatch_status": "accepted",
+    "worker_pid": 1090,
+    "monitor_status": "disabled",
+    "permission_runtime_state": "retired",
+    "executor_run_id": "codex-AETB-002-c2d924db",
+    "executor_id": "codex",
+    "started_at": "2026-10-09T14:46:14.012260Z",
+    "last_heartbeat_at": "2026-10-09T14:46:40.534703Z",
+    "runner_status": "completed",
+    "pid": 1090,
+    "output_truncated": false
+  }
+}

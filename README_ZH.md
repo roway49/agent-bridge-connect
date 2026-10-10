@@ -9,7 +9,10 @@ AgentBC 是一个本地优先的任务控制系统，用于协调本机 Agent �
 > Public Alpha：请在启用版本控制的开发项目中使用 AgentBC，并在接受改动前
 > 审查 Agent 的输出。
 
-当前版本：**1.0.4A**（Python 包版本为 `1.0.4a1`）。
+待发布版本：**1.0.5A**（Python 包版本为 `1.0.5a1`）。
+
+> 1.0.5A 开发候选的 Docker 安装、平台验收和执行修复见[开发状态](docs/DEVELOPMENT_STATUS.md)。本次发布提案包版本为 `1.0.5a1`；历史验收候选为 `1.0.4a1`，须同时核对构建身份和 SHA256。
+
 
 - 仓库与版本发布：[GitHub](https://github.com/roway49/agent-bridge-connect)
 - Python 包：[agentbc](https://pypi.org/project/agentbc/)
@@ -49,15 +52,15 @@ AgentBC 是一个本地优先的任务控制系统，用于协调本机 Agent �
 
 ```bash
 curl -fsSL \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.4A/install-agentbc-alpha.sh \
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.5A/install-agentbc-alpha.sh \
   | sh -s -- \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.4A
+  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.5A
 ```
 
 也可以通过 PyPI 或Homebrew进行包管理安装：
 
 ```bash
-python3 -m pip install agentbc==1.0.4a1
+python3 -m pip install agentbc==1.0.5a1
 brew install roway49/agentbc/agentbc
 brew install agentbc
 agentbc setup

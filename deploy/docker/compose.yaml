@@ -1,0 +1,30 @@
+# Mac-first OpenCode slice; not the all-executor release image yet.
+services:
+  runner:
+    image: ${AGENTBC_IMAGE:-agentbc:mac-opencode-dev}
+    platform: linux/arm64
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      target: opencode
+    init: true
+    user: "1000:1000"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - config:/home/agentbc/.abc
+      - data:/data/workspace
+      - runtime:/home/agentbc/.local
+      - type: bind
+        source: ${AGENTBC_PROJECT:?Set an existing dedicated test project directory}
+        target: /project
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /run/agentbc:uid=1000,gid=1000,mode=0700
+    stop_grace_period: 30s
+    restart: "no"
+volumes:
+  config:
+  data:
+  runtime:

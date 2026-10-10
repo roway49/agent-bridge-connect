@@ -1,0 +1,103 @@
+{
+  "date": "2026-09-29",
+  "candidate": {
+    "version": "1.0.4a1",
+    "image_id": "sha256:fefbb089a87144599274cf1d329218ec7c08a53ca0583438fd9eb1f6892f8474",
+    "archive_sha256": "6138a4b2b5012e63cca0a228cb8ec3af85adf9c85f79000a2df4e66850f6e125",
+    "source_build": {
+      "schema_version": 1,
+      "package_version": "1.0.4a1",
+      "commit_sha": "eb1558272cdb21cd0f589977bed9c932b7d47af8",
+      "source_tree_sha256": "9ff25988aaf570dbbdc89c458589c58df893c21bc686014c33955de08b4f6171",
+      "build_source": "local",
+      "built_at_utc": "2026-09-23T15:02:07Z"
+    }
+  },
+  "business_probe_image": "sha256:ad22f87b420659cec71510364e4e38646fb548c0bd4cfd2985dea6fba6727bb0",
+  "business_probe_is_final_candidate": false,
+  "tasks": [
+    {
+      "task_id": "DM4G-001",
+      "executor": "hermes",
+      "status": "failed",
+      "lease_state": "closed",
+      "callback_valid": false,
+      "report_exists": true,
+      "report_sha256": "a1e821890f5e5a5efd40de342961dcd64d33e4f4c4543c179b3df15d409d8d8d",
+      "artifact_sha256": {},
+      "approval_state": {
+        "status": "answered"
+      }
+    },
+    {
+      "task_id": "PRY7-001",
+      "executor": "opencode",
+      "status": "completed",
+      "lease_state": "closed",
+      "callback_valid": true,
+      "report_exists": true,
+      "report_sha256": "8a13fd1d2596a2fa4ae62484e8f34a81b44e4e95e53cfda4b3691df09de94078",
+      "artifact_sha256": {
+        "install-opencode.txt": "f7706b07df7bb10bcd68e16e4100bb88d79185ac61fd70adfd1244937f1686a4"
+      },
+      "approval_state": null
+    },
+    {
+      "task_id": "TW8C-001",
+      "executor": "codex",
+      "status": "failed",
+      "lease_state": "closed",
+      "callback_valid": false,
+      "report_exists": true,
+      "report_sha256": "e2dfd4c7970eddea8bac29f7d6d75cd8d8b4c3039b226ba0ed8f88f95ca9c036",
+      "artifact_sha256": {},
+      "approval_state": {
+        "status": "answered"
+      }
+    },
+    {
+      "task_id": "V5CV-001",
+      "executor": "claude",
+      "status": "failed",
+      "lease_state": "closed",
+      "callback_valid": false,
+      "report_exists": true,
+      "report_sha256": "af10545603c9fd2dcee0f79c53253b2457b9b541878a939cb5f24cf2cd1a94c0",
+      "artifact_sha256": {},
+      "approval_state": {
+        "status": "answered"
+      }
+    }
+  ],
+  "manual_acceptance": "pending",
+  "production_native_changed": false,
+  "interrupted_update_recovery": "passed after injected exit 77; restored installed identity via offline bundle rollback",
+  "four_layer_regression": {
+    "tests": 2263,
+    "duration_s": 577.158,
+    "result": "OK",
+    "environment": "normal; no headless override"
+  },
+  "final_candidate_installation_checks": [
+    "offline update passed",
+    "duplicate Runner rejected by kernel lock",
+    "abnormal exit restart passed",
+    "unexpected container ID refused and explicit setup rebind passed",
+    "WebUI read-only hashes and mtimes unchanged",
+    "CLI version outside source cwd and without Node PATH passed",
+    "fresh installation from bundled wheel outside source directory passed",
+    "fresh task workspace empty; no previous task state imported"
+  ],
+  "frontend": {
+    "tests": 18,
+    "typecheck": "passed",
+    "build": "passed"
+  },
+  "gates": {
+    "repository_boundary_working_tree": "passed",
+    "public_release_boundary_index": "passed",
+    "test_structure": "75 files; budget unchanged",
+    "ruff_changed_modules": "passed",
+    "git_diff_check": "passed"
+  }
+}

@@ -1,0 +1,13 @@
+host,platform,executor,image_digest,task_id,run_id,revision,artifact_sha256,report,lease,result
+macos,linux/arm64,codex,sha256:2e0ed2e2b07e7ae84c4539bf68250dc0b99ba54d564802fc2161be0cbeb70d75,T735-001,,,ccdc2194c3dbb7ba3975b71c1ca3c8ac35342a625d626c70e88048d5506ee0cb,deploy/docker/REBOOT-ACCEPTANCE-20260930.json,closed,internal-pass-1.05a;historical-candidate;E5-pending
+macos,linux/arm64,claude,sha256:2e0ed2e2b07e7ae84c4539bf68250dc0b99ba54d564802fc2161be0cbeb70d75,JDQ9-001,,,ccdc2194c3dbb7ba3975b71c1ca3c8ac35342a625d626c70e88048d5506ee0cb,deploy/docker/REBOOT-ACCEPTANCE-20260930.json,closed,internal-pass-1.05a;historical-candidate;E5-pending
+macos,linux/arm64,hermes,sha256:2e0ed2e2b07e7ae84c4539bf68250dc0b99ba54d564802fc2161be0cbeb70d75,TZDS-001,,,ccdc2194c3dbb7ba3975b71c1ca3c8ac35342a625d626c70e88048d5506ee0cb,deploy/docker/REBOOT-ACCEPTANCE-20260930.json,closed,internal-pass-1.05a;historical-candidate;E5-pending
+macos,linux/arm64,opencode,sha256:2e0ed2e2b07e7ae84c4539bf68250dc0b99ba54d564802fc2161be0cbeb70d75,8VB3-001,,,ccdc2194c3dbb7ba3975b71c1ca3c8ac35342a625d626c70e88048d5506ee0cb,deploy/docker/REBOOT-ACCEPTANCE-20260930.json,closed,internal-pass-1.05a;historical-candidate;E5-pending
+linux,linux/amd64,codex,,,,,,,,host-deferred-1.06a;1.05a-virtual-environment-only
+linux,linux/amd64,claude,,,,,,,,host-deferred-1.06a;1.05a-virtual-environment-only
+linux,linux/amd64,hermes,,,,,,,,host-deferred-1.06a;1.05a-virtual-environment-only
+linux,linux/amd64,opencode,,,,,,,,host-deferred-1.06a;1.05a-virtual-environment-only
+windows-wsl2,linux/amd64,codex,sha256:6dd46dd741c7ed0e55653a448242a6d547bfde55a4ca5ba4332a8d30bc438a08,WA6H-001,codex-WA6H-001-4f07467a,,,deploy/docker/win03-evidence/config-import-20261009/README.md,closed,technical-pass-1.05a
+windows-wsl2,linux/amd64,claude,sha256:6dd46dd741c7ed0e55653a448242a6d547bfde55a4ca5ba4332a8d30bc438a08,CTQ9-001,claude-CTQ9-001-d6db60f3,,6db76577f8027d8aedd5ea4d8b6304846318400781ebbb4f14fed251ce82868a,deploy/docker/win03-evidence/config-import-20261009/README.md,closed,technical-pass-1.05a
+windows-wsl2,linux/amd64,hermes,sha256:6dd46dd741c7ed0e55653a448242a6d547bfde55a4ca5ba4332a8d30bc438a08,C4NW-001,hermes-C4NW-001-f37ade20,,,deploy/docker/win03-evidence/config-import-20261009/README.md,closed,technical-pass-1.05a
+windows-wsl2,linux/amd64,opencode,,,,,,,,deferred-1.06a

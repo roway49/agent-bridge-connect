@@ -1,0 +1,8 @@
+{
+  "ok": true,
+  "installation_type": "docker",
+  "backup": "C:\\Users\\developer\\.agentbc-install\\backups\\20261008-215133-b587cdbe",
+  "data_retained": true,
+  "image_retained": true,
+  "credentials_retained": false
+}

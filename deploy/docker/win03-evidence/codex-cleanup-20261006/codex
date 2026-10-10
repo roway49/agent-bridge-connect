@@ -1,0 +1,3 @@
+#!/bin/sh
+# Preserve the preview's existing isolated HOME and authentication store.
+exec /opt/cli/bin/codex "$@"

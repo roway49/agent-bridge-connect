@@ -192,6 +192,13 @@ def _strict_codex_success_result(
             checked,
             checked_commands or normalize_cleanup_commands(None),
         )
+    from .container_session_cleanup import STRATEGY, proof_valid
+    if result.strategy == STRATEGY:
+        if proof_valid(checked, checked_commands or {}):
+            return result, checked, checked_commands
+        return (SessionCleanupResult('failed', 'supported', STRATEGY,
+                'container_session_absence_unverified', False, verification=checked, commands=checked_commands),
+                checked, checked_commands or {})
     cli_status = checked["cli"]["status"]
     backend_status = checked["desktop_backend"]["status"]
     live_status = checked["desktop_live"]["status"]
@@ -261,6 +268,7 @@ class SessionCleanupCoordinator:
         Executor call, or returns a zero-side-effect skip.  When the task
         registers auxiliary sessions, the primary ``agentbc.session`` is
         processed first, then every auxiliary session deepest/newest first;
+        container Codex families instead require descendants to succeed first;
         auxiliary attempts continue even when the primary pass fails.
         """
         task_id = str(task_id or "").strip()
@@ -274,6 +282,19 @@ class SessionCleanupCoordinator:
             if task is None:
                 return self._result(task_id, "skipped", ["task_read_failed"])
             task_id = str(task.get("id") or task.get("task_id") or task_id)
+            # A recovery notification does not authorize destructive cleanup,
+            # including auxiliary sessions or replay of a pending cleanup.
+            if str(task.get("status") or "").strip().lower() == "needs_recovery":
+                return self._result(task_id, "skipped", ["recovery_session_preserved"])
+            from .container_session_cleanup import enabled as container_cleanup_enabled
+
+            if container_cleanup_enabled() and (self._authoritative_session(task) or {}).get("executor") == "codex":
+                try:
+                    entries = read_auxiliary_ledger(task.get("extensions") or {}).get("sessions") or []
+                except ABCError:
+                    return self._result(task_id, "skipped", ["auxiliary_ledger_invalid"])
+                if not (self._authoritative_session(task) or {}).get("retain") and any(entry.get("executor") == "codex" for entry in entries):
+                    return self._request_container_family(task, entries, occurred_at, force_retry=force_retry)
             primary = self._request_primary(task, occurred_at, force_retry=force_retry)
             if primary.get("status") == "skipped":
                 # The shared terminal/report/notification/RunLease gates are not
@@ -281,6 +302,37 @@ class SessionCleanupCoordinator:
                 # skip without touching the auxiliary ledger.
                 return primary
             return self._request_auxiliary(task, primary, occurred_at, force_retry=force_retry)
+
+    def _request_container_family(self, task, entries, occurred_at, *, force_retry=False):
+        """Protect registered descendants before deleting a container Codex parent.
+
+        A parent deletion can invalidate descendant storage. Never use subsequent
+        absence as a substitute for the child's own archive/delete receipts.
+        """
+        task_id = str(task.get("id") or task.get("task_id") or "")
+        blockers = self._gates(task)
+        if blockers:
+            return self._result(task_id, "skipped", blockers)
+        results = []
+        for entry in self._auxiliary_depth_order(self._primary_session_id(task), entries):
+            # Retention and unsupported cleanup cannot authorize ancestor deletion.
+            if entry.get("retain") is True:
+                return self._auxiliary_aggregate(
+                    self._result(task_id, "skipped", ["descendant_retained"]),
+                    results + [{"status": "skipped", "actioned": False,
+                                "blockers": ["descendant_retained"], "receipt": None}], task_id)
+            result = self._auxiliary_cleanup_pass(task, entry, occurred_at, force_retry=force_retry)
+            results.append(result)
+            if (result.get("receipt") or {}).get("state") != "succeeded":
+                return self._auxiliary_aggregate(
+                    self._result(task_id, "skipped", ["descendant_cleanup_unconfirmed"]),
+                    results, task_id)
+        # Auxiliary persistence changes the same record. Reload before primary writes.
+        fresh = self._read_task(task_id)
+        if fresh is None:
+            return self._result(task_id, "skipped", ["task_read_failed"])
+        primary = self._request_primary(fresh, occurred_at, force_retry=force_retry)
+        return self._auxiliary_aggregate(primary, results, task_id)
 
     def _request_primary(
         self,
@@ -322,10 +374,11 @@ class SessionCleanupCoordinator:
                 executor_run_id=str(execution.get("executor_run_id") or ""),
                 session_id=str(session.get("session_id") or ""),
             )
-            if not receipt["retryable"] and not authoritative_ack:
+            repaired_scope = self._container_scope_repaired(session, receipt)
+            if not receipt["retryable"] and not authoritative_ack and not repaired_scope:
                 return self._result(task_id, "final", [], receipt=receipt)
             if (
-                not authoritative_ack
+                not authoritative_ack and not repaired_scope
                 and (
                     not receipt["next_attempt_at"]
                     or not _is_iso_utc(receipt["next_attempt_at"])
@@ -333,7 +386,7 @@ class SessionCleanupCoordinator:
             ):
                 return self._result(task_id, "waiting", [], receipt=receipt)
             if (
-                not authoritative_ack
+                not authoritative_ack and not repaired_scope
                 and not force_retry
                 and _parse_utc(occurred_at) < _parse_utc(receipt["next_attempt_at"])
             ):
@@ -348,6 +401,7 @@ class SessionCleanupCoordinator:
                 session,
                 occurred_at,
                 authoritative_archive_ack=authoritative_ack,
+                repaired_container_scope=repaired_scope,
             )
             self._persist_receipt(task, pending, "retry", occurred_at)
             if self._codex_waiting_for_desktop(session):
@@ -754,7 +808,7 @@ class SessionCleanupCoordinator:
                 "failed",
                 occurred_at,
                 capability=current["capability"] or "supported",
-                strategy=current["strategy"] or self._auxiliary_request_strategy(entry),
+                strategy=_sanitize_strategy(result.strategy) or current["strategy"] or self._auxiliary_request_strategy(entry),
                 error_code=_sanitize_error_code(result.error_code),
                 retryable=retryable,
                 next_attempt_at=next_attempt_at,
@@ -830,6 +884,9 @@ class SessionCleanupCoordinator:
 
     @staticmethod
     def _auxiliary_request_strategy(entry: dict[str, Any]) -> str:
+        from .container_session_cleanup import STRATEGY, enabled
+        if entry.get('executor') == 'codex' and not entry.get('retain') and enabled():
+            return STRATEGY
         return auxiliary_cleanup_strategy(entry)
 
     def _auxiliary_depth_order(
@@ -955,6 +1012,7 @@ class SessionCleanupCoordinator:
         occurred_at: str,
         *,
         authoritative_archive_ack: bool = False,
+        repaired_container_scope: bool = False,
     ) -> dict[str, Any]:
         request = self._build_request(task, session)
         return self._transition(
@@ -970,7 +1028,25 @@ class SessionCleanupCoordinator:
                 else "official_session_delete"
             ),
             authoritative_archive_ack=authoritative_archive_ack,
+            repaired_container_scope=repaired_container_scope,
         )
+
+    def _container_scope_repaired(self, session, receipt) -> bool:
+        """Retry only a pre-RPC scope failure after the managed launcher is repaired."""
+        from .container_session_cleanup import STRATEGY, enabled
+        if (not enabled() or session.get("executor") != "codex"
+                or session.get("official_receipt_bound") is not True
+                or receipt.get("strategy") != STRATEGY
+                or not (receipt.get("error_code") == "container_session_scope_invalid"
+                    or (receipt.get("error_code") == "codex_session_archive_failed"
+                        and session.get("archive_acknowledged") is True
+                        and _is_iso_utc(session.get("archive_checked_at", ""))))
+                or receipt["attempts"] >= MAX_SESSION_CLEANUP_ATTEMPTS):
+            return False
+        try:
+            return str(self._resolve_port("codex").agent_bin) == "/opt/agentbc/bin/codex"
+        except Exception:
+            return False
 
     def _can_replace_failed_desktop_route(
         self,
@@ -1065,6 +1141,9 @@ class SessionCleanupCoordinator:
         session = self._authoritative_session(task)
         if session is None:
             return self._result(task_id, "skipped", ["session_receipt_invalid"], receipt=pending)
+        blockers = self._gates(task)
+        if blockers:
+            return self._result(task_id, "skipped", blockers, receipt=pending)
         request = self._build_request(task, session)
         try:
             port = self._resolve_port(session["executor"])
@@ -1156,7 +1235,7 @@ class SessionCleanupCoordinator:
                 task=task,
                 occurred_at=occurred_at,
                 capability=current["capability"] or "supported",
-                strategy=current["strategy"] or pending["strategy"],
+                strategy=_sanitize_strategy(result.strategy) or current["strategy"] or pending["strategy"],
                 error_code=_sanitize_error_code(result.error_code),
                 retryable=retryable,
                 next_attempt_at=next_attempt_at,
@@ -1181,6 +1260,9 @@ class SessionCleanupCoordinator:
 
     def _codex_waiting_for_desktop(self, session_or_entry: dict[str, Any]) -> bool:
         if str(session_or_entry.get("executor") or "").strip().lower() != "codex":
+            return False
+        from .container_session_cleanup import enabled
+        if enabled():
             return False
         broker = self._desktop_archive_broker
         if broker is None:
@@ -1231,6 +1313,9 @@ class SessionCleanupCoordinator:
         if executor == "claude" and project_mode == "ephemeral":
             return "claude_project_purge"
         if executor == "codex":
+            from .container_session_cleanup import STRATEGY, enabled
+            if enabled():
+                return STRATEGY
             # SESSION-104-001: official Codex cleanup always archives first.
             return "official_session_archive_then_delete"
         return "official_session_delete"

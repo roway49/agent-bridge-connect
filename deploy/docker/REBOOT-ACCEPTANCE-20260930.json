@@ -1,0 +1,72 @@
+{
+  "date": "2026-09-30",
+  "candidate": "r11",
+  "image_id": "sha256:2e0ed2e2b07e7ae84c4539bf68250dc0b99ba54d564802fc2161be0cbeb70d75",
+  "user_confirmed_restart_and_ui": true,
+  "tasks": {
+    "T735-001": {
+      "executor": "codex",
+      "status": "completed",
+      "callback_valid": true,
+      "lease": "closed",
+      "report_sha256": "6647c809c630093f0dba1441739d1712fc86e2be2f56213b27c1669d151cceb3",
+      "artifact_bytes": 23,
+      "artifact_sha256": "ccdc2194c3dbb7ba3975b71c1ca3c8ac35342a625d626c70e88048d5506ee0cb",
+      "ui": {
+        "state": "succeeded",
+        "attempts": 1,
+        "last_error_code": ""
+      },
+      "approval_source": "user",
+      "cleanup": "succeeded"
+    },
+    "JDQ9-001": {
+      "executor": "claude",
+      "status": "completed",
+      "callback_valid": true,
+      "lease": "closed",
+      "report_sha256": "ee85df67d40f19d617de7c87d7306d67b4fd3080436af0d71e91447dc814ef88",
+      "artifact_bytes": 23,
+      "artifact_sha256": "ccdc2194c3dbb7ba3975b71c1ca3c8ac35342a625d626c70e88048d5506ee0cb",
+      "ui": {
+        "state": "succeeded",
+        "attempts": 1,
+        "last_error_code": ""
+      },
+      "approval_source": "user",
+      "cleanup": "succeeded"
+    },
+    "TZDS-001": {
+      "executor": "hermes",
+      "status": "completed",
+      "callback_valid": true,
+      "lease": "closed",
+      "report_sha256": "97a630f83884341058a3e02f58c7547c5f3ab9d41a12d53f883f23901fee2e06",
+      "artifact_bytes": 23,
+      "artifact_sha256": "ccdc2194c3dbb7ba3975b71c1ca3c8ac35342a625d626c70e88048d5506ee0cb",
+      "ui": {
+        "state": "succeeded",
+        "attempts": 1,
+        "last_error_code": ""
+      },
+      "approval_source": "user",
+      "cleanup": "succeeded"
+    },
+    "8VB3-001": {
+      "executor": "opencode",
+      "status": "completed",
+      "callback_valid": true,
+      "lease": "closed",
+      "report_sha256": "55b7e8a2684582544fe3b5bfa972dd28eeec2a46fc3b5e33beac6e305eb29bee",
+      "artifact_bytes": 23,
+      "artifact_sha256": "ccdc2194c3dbb7ba3975b71c1ca3c8ac35342a625d626c70e88048d5506ee0cb",
+      "ui": {
+        "state": "succeeded",
+        "attempts": 1,
+        "last_error_code": ""
+      },
+      "approval_source": "not_requested",
+      "cleanup": "not_supported_in_scope"
+    }
+  }
+}

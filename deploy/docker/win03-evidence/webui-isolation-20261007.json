@@ -1,0 +1,5 @@
+{
+  "webui_failure_does_not_exit_bridge": true,
+  "doctor_warns": true,
+  "webui_recovers_without_bridge_restart": true
+}

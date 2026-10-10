@@ -815,6 +815,7 @@ def run_delivery_stages(
         if getattr(outcome, "deferred", False):
             # This process does not own the stage; leave it pending for the
             # owner (Runner) without consuming an attempt or recording an error.
+            working['stages'][stage] = copy.deepcopy(entry)
             results.append({"stage": stage, "status": "deferred", "error_code": ""})
             continue
         if outcome.ok:

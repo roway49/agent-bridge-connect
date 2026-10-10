@@ -1,10 +1,11 @@
 [build-system]
 requires = ["setuptools>=77"]
-build-backend = "setuptools.build_meta"
+build-backend = "build_backend"
+backend-path = ["scripts"]
 
 [project]
 name = "agentbc"
-version = "1.0.4a1"
+version = "1.0.5a1"
 description = "Local-first task control plane for coordinating Codex, Claude Code, and Hermes."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -37,6 +38,8 @@ where = ["src"]
 [tool.setuptools.package-data]
 agent_bridge_connect = [
     "assets/*.mjs",
+    "assets/webui/*",
+    "assets/webui/assets/*",
     "skills/*.md",
     "skills/*.yaml",
     "skills/references/*.md",

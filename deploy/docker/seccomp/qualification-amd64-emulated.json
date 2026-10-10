@@ -1,0 +1,25 @@
+{
+  "control_network_reachable": true,
+  "cases": {
+    "read-only": {
+      "exit": 101,
+      "stderr": "\nthread 'main' (1) panicked at linux-sandbox/src/linux_run_main.rs:239:13:\nerror applying Linux sandbox restrictions: Sandbox(SeccompInstall(Seccomp(Os { code: 22, kind: InvalidInput, message: \"Invalid argument\" })))\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+      "stdout": ""
+    },
+    "workspace-write": {
+      "exit": 101,
+      "stderr": "\nthread 'main' (1) panicked at linux-sandbox/src/linux_run_main.rs:239:13:\nerror applying Linux sandbox restrictions: Sandbox(SeccompInstall(Seccomp(Os { code: 22, kind: InvalidInput, message: \"Invalid argument\" })))\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+      "stdout": ""
+    }
+  },
+  "outside_unchanged": true,
+  "container_exit": 0,
+  "container_stderr": "",
+  "failures": [
+    "read-only: command failed",
+    "workspace-write: command failed"
+  ],
+  "platform": "linux/amd64",
+  "image": "docker.io/library/python:3.11.15-slim-bookworm@sha256:d29f48a31a8b408ed19272ca1e7b10ebae13b240a27e862d3d4217c528e2e0c3",
+  "profile_sha256": "292e8331d916a43109c4088cfa23feed512b7a939af622e2b4cf839f8a11540c"
+}

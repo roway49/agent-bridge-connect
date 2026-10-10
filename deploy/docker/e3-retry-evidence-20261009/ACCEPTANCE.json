@@ -1,0 +1,89 @@
+{
+  "result": "passed",
+  "scope": "E3 execution retry and cleanup; not E4 native child-agent or E5 release regression",
+  "installed_image": "sha256:fe0f9441b5d7156fabbc91bf91a1f9758d27ce57ed1bfcb1f902af7e39be280e",
+  "bundle_sha256": "0afdcb9feff5ba2471f538a2da87745a437cbd49c16b61294dc21d3600be5a60",
+  "consecutive_retry_task": "PTBQ-001",
+  "human_deny_retry_close_task": "EKPN-001",
+  "close_session": {
+    "version": 1,
+    "executor": "codex",
+    "retain": false,
+    "session_id": "01a12166-1a1f-7dc1-b583-c1fe65d00579",
+    "session_state": "terminal",
+    "project_mode": "none",
+    "project_path": "",
+    "run_ids": [
+      "codex-EKPN-001-9ff51ca9",
+      "codex-EKPN-001-7ee0e6ef"
+    ],
+    "run_resume_facts": {
+      "codex-EKPN-001-9ff51ca9": false,
+      "codex-EKPN-001-7ee0e6ef": true
+    },
+    "resume_count": 1,
+    "cleanup": {
+      "version": 5,
+      "capability": "supported",
+      "strategy": "container_session_archive_then_delete",
+      "state": "succeeded",
+      "attempts": 1,
+      "requested_at": "2026-10-09T16:03:54.613225Z",
+      "last_attempt_at": "2026-10-09T16:03:54.613225Z",
+      "next_attempt_at": "",
+      "completed_at": "2026-10-09T16:03:54.613225Z",
+      "error_code": "",
+      "retryable": false,
+      "verification": {
+        "cli": {
+          "status": "absent",
+          "checked_at": "2026-10-09T16:03:54.840771Z"
+        },
+        "desktop_backend": {
+          "status": "not_applicable",
+          "checked_at": "2026-10-09T16:03:54.619807Z"
+        },
+        "desktop_live": {
+          "status": "not_applicable",
+          "checked_at": "2026-10-09T16:03:54.619807Z"
+        }
+      },
+      "commands": {
+        "desktop_archive": {
+          "status": "not_applicable",
+          "checked_at": "2026-10-09T16:03:54.619807Z",
+          "request_digest": "",
+          "route_digest": "",
+          "app_instance_digest": ""
+        },
+        "app_server_archive": {
+          "status": "acknowledged",
+          "checked_at": "2026-10-09T16:03:13.520189Z",
+          "request_digest": "",
+          "route_digest": "",
+          "app_instance_digest": ""
+        },
+        "delete": {
+          "status": "acknowledged",
+          "checked_at": "2026-10-09T16:03:54.840771Z",
+          "request_digest": "",
+          "route_digest": "",
+          "app_instance_digest": ""
+        }
+      }
+    },
+    "created_at": "2026-10-09T16:01:41.458532Z",
+    "receipt_source": "jsonl_thread_started",
+    "official_receipt_bound": true,
+    "archive_acknowledged": true,
+    "archive_checked_at": "2026-10-09T16:03:13.520189Z"
+  },
+  "lease": "closed",
+  "all_descendants_stopped_before_purge": true,
+  "regression": {
+    "tests": 465,
+    "seconds": 26.688,
+    "result": "OK"
+  },
+  "historical_failure": "V9G6 archive failure remains preserved; no fabricated repair receipt. FKTR prior orphan manually stopped by verified pidfd; neither is counted as passing."
+}

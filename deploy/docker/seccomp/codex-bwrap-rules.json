@@ -1,0 +1,177 @@
+[
+  {
+    "names": [
+      "clone"
+    ],
+    "action": "SCMP_ACT_ALLOW",
+    "args": [
+      {
+        "index": 0,
+        "value": 2013397009,
+        "op": "SCMP_CMP_EQ"
+      }
+    ]
+  },
+  {
+    "names": [
+      "mount"
+    ],
+    "action": "SCMP_ACT_ALLOW",
+    "args": [
+      {
+        "index": 3,
+        "value": 573440,
+        "op": "SCMP_CMP_EQ"
+      }
+    ]
+  },
+  {
+    "names": [
+      "mount"
+    ],
+    "action": "SCMP_ACT_ALLOW",
+    "args": [
+      {
+        "index": 3,
+        "value": 6,
+        "op": "SCMP_CMP_EQ"
+      }
+    ]
+  },
+  {
+    "names": [
+      "mount"
+    ],
+    "action": "SCMP_ACT_ALLOW",
+    "args": [
+      {
+        "index": 3,
+        "value": 3236810752,
+        "op": "SCMP_CMP_EQ"
+      }
+    ]
+  },
+  {
+    "names": [
+      "pivot_root"
+    ],
+    "action": "SCMP_ACT_ALLOW"
+  },
+  {
+    "names": [
+      "mount"
+    ],
+    "action": "SCMP_ACT_ALLOW",
+    "args": [
+      {
+        "index": 3,
+        "value": 53248,
+        "op": "SCMP_CMP_EQ"
+      }
+    ]
+  },
+  {
+    "names": [
+      "mount"
+    ],
+    "action": "SCMP_ACT_ALLOW",
+    "args": [
+      {
+        "index": 3,
+        "value": 10,
+        "op": "SCMP_CMP_EQ"
+      }
+    ]
+  },
+  {
+    "names": [
+      "mount"
+    ],
+    "action": "SCMP_ACT_ALLOW",
+    "args": [
+      {
+        "index": 3,
+        "value": 2134055,
+        "op": "SCMP_CMP_EQ"
+      }
+    ]
+  },
+  {
+    "names": [
+      "mount"
+    ],
+    "action": "SCMP_ACT_ALLOW",
+    "args": [
+      {
+        "index": 3,
+        "value": 14,
+        "op": "SCMP_CMP_EQ"
+      }
+    ]
+  },
+  {
+    "names": [
+      "mount"
+    ],
+    "action": "SCMP_ACT_ALLOW",
+    "args": [
+      {
+        "index": 3,
+        "value": 2134063,
+        "op": "SCMP_CMP_EQ"
+      }
+    ]
+  },
+  {
+    "names": [
+      "mount"
+    ],
+    "action": "SCMP_ACT_ALLOW",
+    "args": [
+      {
+        "index": 3,
+        "value": 36903,
+        "op": "SCMP_CMP_EQ"
+      }
+    ]
+  },
+  {
+    "names": [
+      "mount"
+    ],
+    "action": "SCMP_ACT_ALLOW",
+    "args": [
+      {
+        "index": 3,
+        "value": 311296,
+        "op": "SCMP_CMP_EQ"
+      }
+    ]
+  },
+  {
+    "names": [
+      "umount2"
+    ],
+    "action": "SCMP_ACT_ALLOW",
+    "args": [
+      {
+        "index": 1,
+        "value": 2,
+        "op": "SCMP_CMP_EQ"
+      }
+    ]
+  },
+  {
+    "names": [
+      "unshare"
+    ],
+    "action": "SCMP_ACT_ALLOW",
+    "args": [
+      {
+        "index": 0,
+        "value": 268435456,
+        "op": "SCMP_CMP_EQ"
+      }
+    ]
+  }
+]

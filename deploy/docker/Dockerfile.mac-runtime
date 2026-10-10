@@ -1,0 +1,20 @@
+# Local arm64 acceptance assembly, NOT a public/reproducible release recipe.
+# Named contexts contain only the previously verified Linux runtimes/source.
+ARG BASE_IMAGE=agentbc:mac-opencode-dev
+FROM ${BASE_IMAGE}
+USER root
+COPY --from=sdk-runtime / /probe/sdk-arm64/
+COPY --from=hermes-runtime / /probe/hermes-arm64/
+COPY --from=hermes-source / /probe/hermes-source/
+COPY --from=codex-runtime / /opt/codex/
+COPY --from=claude-runtime /claude /opt/claude/claude
+COPY deploy/docker/runtime_launcher.py /opt/agentbc/runtime_launcher.py
+RUN cp -a /usr/local/lib/python3.11/site-packages/agent_bridge_connect /probe/sdk-arm64/lib/python3.11/site-packages/ \
+ && mkdir -p /opt/agentbc/bin /profiles/codex /profiles/claude /profiles/hermes /profiles/opencode \
+ && chmod 755 /opt/agentbc/runtime_launcher.py \
+ && for name in codex claude hermes opencode; do cp /opt/agentbc/runtime_launcher.py /opt/agentbc/bin/$name; done \
+ && printf '#!/bin/sh\nexec /probe/sdk-arm64/bin/python -m agent_bridge_connect.cli "$@"\n' > /usr/local/bin/agentbc \
+ && chmod 755 /usr/local/bin/agentbc \
+ && chown -R 1000:1000 /profiles
+ENV PATH=/opt/agentbc/bin:/probe/sdk-arm64/bin:/usr/local/bin:/usr/bin:/bin
+USER 1000:1000

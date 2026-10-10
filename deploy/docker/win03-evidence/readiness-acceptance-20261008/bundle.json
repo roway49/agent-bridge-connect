@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "type": "docker",
+  "platform": "windows-amd64",
+  "data_schema": 1,
+  "managed_runner_entry": true,
+  "windows_install_contract": 1,
+  "available_executors": [
+    "codex",
+    "claude",
+    "hermes"
+  ],
+  "runtime_versions": {
+    "codex": "codex-cli 0.153.4",
+    "claude": "2.1.247 (Claude Code)",
+    "hermes": "Hermes Agent v0.20.6 (2026.8.27)\nInstall directory: /probe/hermes-source\nInstall method: unknown\nPython: 3.11.15\nOpenAI SDK: 2.24.0"
+  },
+  "version": "1.0.4a1",
+  "image_id": "sha256:d80818543fd748fe4dad1cce1a6847353c901c46027d0e0edb284ddd272b3e8c",
+  "wheel": "agentbc-1.0.4a1-py3-none-any.whl",
+  "source_build": {
+    "schema_version": 1,
+    "package_version": "1.0.4a1",
+    "commit_sha": "ffdb9386e0514bd71bb947217a0085ec8ac33737",
+    "source_tree_sha256": "06028142156004dae0b93c2159f4cdf35d1408dddc2e0fcfd9c7afca348ab58f",
+    "build_source": "local",
+    "built_at_utc": "2026-10-08T12:52:04Z"
+  },
+  "source_commit": "ffdb9386e0514bd71bb947217a0085ec8ac33737",
+  "files": {
+    "agentbc-1.0.4a1-py3-none-any.whl": "836cf36463ce8bc8f9d6f79dff57c3092977b19eaa58d5a6e77026f1ac6b1cd9",
+    "image.tar": "56d6cbbe9ef87fcb948c6d4f1229599d21c722b69127a580914ecd6be876a834",
+    "install_docker.ps1": "5d02e08bed57ba73a1ed9f8219e19ffa539234770166eaea540dc6b97b112360",
+    "install_docker.py": "e6d1e32239e0d0a0f459e4a81ce6f925b5b8c38096537f474670ac5275bddd93",
+    "recover_docker.ps1": "f5c2109a93e01e2e356501ce6c295b91ccddcc3d9a30d12ce868e0150f191cf8",
+    "recover_docker.py": "413110d4b43a9b09746fc25c93b9d0d6927273ee4fb0f09fdc8a947e9d2dccc8",
+    "runtime-lock.json": "f0a0d7ddf90ebe117f6e9425b582387297d0c564041fcd8cd31c8e7f13642fa3",
+    "runtime_launcher.py": "8b47c6b55737965189bc1f9b2735d55b4b5bfe207a86b3da4474c23d49f4a975",
+    "seccomp.json": "292e8331d916a43109c4088cfa23feed512b7a939af622e2b4cf839f8a11540c",
+    "WINDOWS-INSTALLATION.md": "7275b8b26562d2931b67449c01e55dd23dcd91ae21adefb5a15e820bb2ef0131"
+  }
+}

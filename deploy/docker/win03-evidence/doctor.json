@@ -1,0 +1,19 @@
+{
+  "installation_type": "docker-preview",
+  "container_id": "3c45134db766dbb933dfbb458237abb8609b5f27783601a45ccc32643e3d9df8",
+  "approval_delivery": "desktop",
+  "desktop": {
+    "pid": 25312,
+    "sid": "S-1-5-21-3774179316-1493029025-1910149102-1001",
+    "session_id": 1,
+    "logon_id": "1404429",
+    "created": 134353454540096534,
+    "installation_id": "preview-7f75a92abbf0df86e408",
+    "container_id": "3c45134db766dbb933dfbb458237abb8609b5f27783601a45ccc32643e3d9df8",
+    "instance_key": "9e15c45ed9634cab8e413fdbdd57469d",
+    "state": "ready",
+    "reason": "",
+    "heartbeat": 1790871896.8900187,
+    "updated_at": "2026-10-01T16:24:56.890018+00:00"
+  }
+}

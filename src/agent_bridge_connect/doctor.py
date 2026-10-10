@@ -221,8 +221,10 @@ def build_doctor_report(
         blockers_checks=blockers_checks,
     )
     status = _overall_status(checks)
+    from .installation import installation_view
     return {
         "schema_version": SCHEMA_VERSION,
+        "installation": installation_view(),
         "status": status,
         "exit_code": EXIT_CODE_BY_STATUS[status],
         "package": package,
@@ -242,6 +244,7 @@ def render_doctor_text(report: dict[str, Any]) -> str:
     """Render text strictly from the same public data returned as JSON."""
     lines = [
         f"AgentBC doctor: {str(report.get('status') or 'unknown').upper()}",
+        f"installation_type: {_text_value(report.get('installation', {}).get('type'))}",
     ]
     if "schema_version" in report:
         lines.append(f"schema_version: {report['schema_version']}")
@@ -460,22 +463,13 @@ def _build_checks(
         *executors_checks,
         *permission_runtime_checks,
     ]
-    if cleanup["warnings"]:
-        checks.append(
-            {
-                "id": "session.cleanup",
-                "status": "warning",
-                "message": (f"{cleanup['warnings']} executor session cleanup warning(s) require attention."),
-            }
-        )
-    else:
-        checks.append(
-            {
-                "id": "session.cleanup",
-                "status": "healthy",
-                "message": "No executor session cleanup warnings were found.",
-            }
-        )
+    warnings = cleanup["warnings"]
+    checks.append({
+        "id": "session.cleanup",
+        "status": "warning" if warnings else "healthy",
+        "message": (f"{warnings} executor session cleanup warning(s) require attention."
+                    if warnings else "No executor session cleanup warnings were found."),
+    })
     checks.extend(blockers_checks)
     checks.sort(key=lambda item: item["id"])
     return checks

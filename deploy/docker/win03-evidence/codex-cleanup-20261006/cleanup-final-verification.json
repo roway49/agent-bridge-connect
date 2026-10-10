@@ -1,0 +1,65 @@
+{
+  "RQP6-001": {
+    "cleanup": "succeeded",
+    "attempts": 2,
+    "unchanged_business_and_delivery": true
+  },
+  "DPZE-001": {
+    "cleanup": "succeeded",
+    "attempts": 3,
+    "unchanged_business_and_delivery": true
+  },
+  "DYTE-001": {
+    "cleanup": "succeeded",
+    "attempts": 2,
+    "unchanged_business_and_delivery": true
+  },
+  "runner": {
+    "ok": true,
+    "status": "ready",
+    "pid": 7,
+    "python_executable": "/usr/local/bin/python3.11",
+    "module_path": "/probe/sdk-amd64/lib/python3.11/site-packages/agent_bridge_connect/__init__.py",
+    "executors": [
+      "claude",
+      "codex",
+      "hermes"
+    ],
+    "executor_commands": {
+      "claude": {
+        "path": "/opt/agentbc/bin/claude",
+        "source": "config"
+      },
+      "codex": {
+        "path": "/opt/agentbc/bin/codex",
+        "source": "config"
+      },
+      "hermes": {
+        "path": "/opt/agentbc/bin/hermes",
+        "source": "config"
+      }
+    },
+    "path_policy": {
+      "agent_input": "customer_path",
+      "default_customer_path": "default path",
+      "authorization": "runner_task_scoped"
+    },
+    "atomic_dispatch": true,
+    "desktop_archive_route": {
+      "status": "unavailable",
+      "capability": "unavailable",
+      "route_digest": "",
+      "app_instance_digest": ""
+    }
+  },
+  "webui": {
+    "running": true,
+    "port": 50757,
+    "origin": "http://127.0.0.1:50757",
+    "restart_policy": "no",
+    "health": "healthy",
+    "error": ""
+  },
+  "codex_artifact_sha256": "7664ce299d85721b052d1fef83a000a769c0e209cdb6808120be46c235c3a576",
+  "desktop": "ready"
+}

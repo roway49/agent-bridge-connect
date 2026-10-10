@@ -1,0 +1,718 @@
+{
+  "resolved_task_id": "FKTR-001",
+  "resolution_mode": "explicit_id",
+  "active_candidates": [],
+  "has_active_task": false,
+  "message": "Resolved explicit task id: FKTR-001",
+  "current_task": {
+    "extensions": {
+      "agentbc.provenance": {
+        "source_platform": "codex",
+        "conversation_id": "01a0b730-adce-7911-ae63-a9fc6b915580"
+      },
+      "agentbc.lineage": {
+        "parent_task_id": null,
+        "base_task_id": "FKTR-001",
+        "chain_root_task_id": "FKTR-001",
+        "iteration_index": 1,
+        "task_code": "FKTR",
+        "task_date": "2026-10-09",
+        "agentbc_root": "/data/workspace",
+        "base_workspace_root": "/data/workspace/tasks/artifacts/2026-10-09/FKTR",
+        "base_artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-09/FKTR",
+        "branch_mode": "linear",
+        "chain_id": "FKTR",
+        "chain_token": "FKTR",
+        "chain_dir": "FKTR",
+        "chain_task_id": "001",
+        "chain_output_dir": "/data/workspace/tasks/report/2026-10-09/FKTR"
+      },
+      "agentbc.execution": {
+        "internal_status": "failed",
+        "lease_state": "closed",
+        "run_intervals": [
+          {
+            "run_id": "codex-FKTR-001-229fc663",
+            "executor_id": "codex",
+            "attempt_index": 0,
+            "started_at": "2026-10-09T15:49:32.442094Z",
+            "ended_at": "2026-10-09T15:49:32.442094Z",
+            "duration_s": 0.0,
+            "state": "suspended"
+          }
+        ],
+        "waiting_since": "2026-10-09T15:49:46.800077Z",
+        "permission_elevation_mode": "full",
+        "permission_elevation_source": "task_elevation",
+        "permission_elevation_state": "prepared",
+        "log_worker_run_id": "runner-worker-111cd3afdb95"
+      },
+      "agentbc.permission": {
+        "version": 2,
+        "configured_mode": "inherit",
+        "inherited_mode": null,
+        "task_override": null,
+        "requested_mode": "inherit",
+        "effective_mode": "inherit",
+        "selection_source": "configured_default",
+        "selection_strategy": "inherit",
+        "resolved_base_mode": "native",
+        "resolution_state": "runtime",
+        "approval_policy": "on_block",
+        "scope": "task",
+        "mapping": {
+          "codex": {
+            "transport": "app-server",
+            "capability_id": "codex.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "codex",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          },
+          "claude": {
+            "transport": "cli",
+            "capability_id": "claude.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "claude",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          },
+          "hermes": {
+            "transport": "hermes-acp",
+            "capability_id": "hermes.acp.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "hermes",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          }
+        },
+        "permission_args": []
+      },
+      "agentbc.permission_protocol": {
+        "version": 3,
+        "scope": "task_elevation",
+        "mode": "full",
+        "decisions": [
+          "approve_full",
+          "deny"
+        ]
+      },
+      "agentbc.session": {
+        "version": 1,
+        "executor": "codex",
+        "retain": false,
+        "session_id": "01a1215a-f969-7dc1-83e0-2965080c8dce",
+        "session_state": "terminal",
+        "project_mode": "none",
+        "run_ids": [
+          "codex-FKTR-001-229fc663"
+        ],
+        "run_resume_facts": {
+          "codex-FKTR-001-229fc663": false
+        },
+        "resume_count": 0,
+        "cleanup": {
+          "capability": "unknown",
+          "state": "not_requested",
+          "attempts": 0,
+          "error_code": "",
+          "retryable": false,
+          "version": 5,
+          "strategy": "none",
+          "phase": "waiting_for_cleanup",
+          "verification": {
+            "cli": {
+              "status": "unknown",
+              "checked_at": ""
+            },
+            "desktop_backend": {
+              "status": "unknown",
+              "checked_at": ""
+            },
+            "desktop_live": {
+              "status": "unknown",
+              "checked_at": ""
+            },
+            "desktop": {
+              "status": "unknown",
+              "checked_at": ""
+            }
+          },
+          "commands": {
+            "desktop_archive": {
+              "status": "not_requested",
+              "checked_at": "",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "app_server_archive": {
+              "status": "not_requested",
+              "checked_at": "",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "delete": {
+              "status": "not_requested",
+              "checked_at": "",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "archive": {
+              "status": "not_requested",
+              "checked_at": "",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            }
+          }
+        },
+        "created_at": "2026-10-09T15:49:32.335072Z",
+        "receipt_source": "jsonl_thread_started",
+        "official_receipt_bound": true
+      },
+      "agentbc.approval": {
+        "version": 3,
+        "scope": "task_elevation",
+        "kind": "permission",
+        "executor": "codex",
+        "operation": "command",
+        "elevation_mode": "full",
+        "requested_permission": "full",
+        "summary": "Command execution approval requested",
+        "summary_truncated": false,
+        "state": "answered",
+        "source": "task_elevation",
+        "path_plan_digest": "",
+        "containment_profile_digest": "",
+        "created_at": "2026-10-09T15:49:46.799660Z",
+        "cardinality": {
+          "permission_requests": 1,
+          "notifications": 1,
+          "human_decisions": 1,
+          "elevation_receipts": 1,
+          "full_continuations": 0
+        },
+        "authority": {
+          "executor": "codex",
+          "protocol": "codex_app_server",
+          "protocol_version": 2,
+          "method": "item/commandExecution/requestApproval"
+        },
+        "native_event": "codex_app_server.item/commandExecution/requestApproval",
+        "request_fingerprint": "fp-705ed04279f59a0970a1591a42dfad33606914c2",
+        "reason_summary": "Command execution approval requested",
+        "decision": "deny",
+        "decision_source": "user",
+        "decided_at": "2026-10-09T15:50:59.936329Z"
+      },
+      "agentbc.permission_elevation": {
+        "version": 1,
+        "mode": "full",
+        "source": "task_elevation",
+        "requested_permission": "full",
+        "state": "denied",
+        "path_plan_digest": "",
+        "containment_profile_digest": "",
+        "cardinality": {
+          "permission_requests": 1,
+          "notifications": 1,
+          "human_decisions": 1,
+          "elevation_receipts": 1,
+          "full_continuations": 0
+        },
+        "authority": {
+          "executor": "codex",
+          "protocol": "codex_app_server",
+          "protocol_version": 2,
+          "method": "item/commandExecution/requestApproval"
+        },
+        "native_event": "codex_app_server.item/commandExecution/requestApproval",
+        "request_fingerprint": "fp-705ed04279f59a0970a1591a42dfad33606914c2",
+        "created_at": "2026-10-09T15:49:46.799970Z",
+        "decision": "deny",
+        "decision_source": "user",
+        "decided_at": "2026-10-09T15:50:59.936329Z"
+      },
+      "agentbc.input": {
+        "input_id": "input-bceb440c76bd48359e8294fa37c611a9",
+        "executor_run_id": "codex-FKTR-001-229fc663",
+        "blocked_step_id": 1,
+        "type": "permission",
+        "scope": "task_elevation",
+        "approval_version": 3,
+        "elevation_mode": "full",
+        "requested_permission": "full",
+        "session_id": "01a1215a-f969-7dc1-83e0-2965080c8dce",
+        "request_id": "0",
+        "request_fingerprint": "fp-705ed04279f59a0970a1591a42dfad33606914c2",
+        "operation": "command",
+        "summary": "Command execution approval requested",
+        "reason_summary": "Command execution approval requested",
+        "summary_truncated": false,
+        "path_plan_digest": "",
+        "containment_profile_digest": "",
+        "authority": {
+          "executor": "codex",
+          "method": "item/commandExecution/requestApproval",
+          "protocol": "codex_app_server",
+          "protocol_version": 2
+        },
+        "native_event": "codex_app_server.item/commandExecution/requestApproval",
+        "tool_name": "",
+        "tool_use_id": "",
+        "action_fingerprint": "",
+        "escalation_domain": "",
+        "control_path": "",
+        "preflight": {
+          "status": "retired",
+          "mode": "full"
+        },
+        "created_at": "2026-10-09T15:49:46.800077Z",
+        "deadline_at": "2026-10-09T15:54:46.698368Z",
+        "approval_max_time_s": 300.0,
+        "status": "answered",
+        "responded_at": "2026-10-09T15:50:59.936329Z",
+        "response": {
+          "type": "deny",
+          "summary": "deny",
+          "source": "user"
+        }
+      },
+      "agentbc.terminal_delivery": {
+        "version": 1,
+        "delivery_id": "37bbc1f1-8e82-41c8-87a3-bcdeeb7ca955",
+        "terminal_state": "failed",
+        "terminal_event": "task.failed",
+        "committed_at": "2026-10-09T15:50:59.938303Z",
+        "stages": {
+          "report": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "record": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "index": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "file_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "ui_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          }
+        },
+        "updated_at": "2026-10-09T15:51:00.573310Z"
+      }
+    },
+    "id": "FKTR-001",
+    "title": "E3真实拒绝重试关闭完整复验",
+    "status": "failed",
+    "assignee": "codex",
+    "steps": [
+      {
+        "id": 1,
+        "description": "这是AgentBC E3拒绝审批、retry与close的受控验收。在本任务分配的artifact root，用Python创建e3-ready.txt，内容严格为AGENTBC_E3_READY加一个换行，读回验证。遵循真实权限请求，拒绝后不得改用其他工具绕过、不得自行retry或修改权限。获准完成时记录步骤1 authoritative progress。仅操作本任务目录，不联网、不创建子任务、不修改配置。",
+        "record": "steps/01.json",
+        "status": "blocked"
+      },
+      {
+        "id": 2,
+        "description": "用一次前台Python命令等待本任务目录的e3-release.txt，最多900秒、每2秒检查一次。控制器将在此期间验证关闭任务，禁止自行创建release文件、提前完成步骤或输出成功callback，禁止调用任务控制命令。若被终止则停止；若900秒超时则如实报告未完成。只有控制器创建release后才写e3-done.txt，内容AGENTBC_E3_DONE加一个换行，读回验证、记录步骤2并输出真实最终callback。",
+        "record": "steps/02.json",
+        "status": "pending"
+      }
+    ],
+    "created_by": "codex",
+    "created_at": "2026-10-09T15:49:32.335072Z",
+    "updated_at": "2026-10-09T15:50:59.938303Z",
+    "intervention": {
+      "paused": false,
+      "pause_reason": null,
+      "latest_correction_id": null
+    },
+    "errors": [
+      {
+        "code": "permission_denied_by_user",
+        "message": "User denied full task elevation",
+        "details": {
+          "failure": {
+            "kind": "permission_denied_by_user",
+            "layer": "permission",
+            "message": "User denied full task elevation",
+            "retryable": false
+          },
+          "input_id": "input-bceb440c76bd48359e8294fa37c611a9",
+          "executor": "codex",
+          "permission_elevation_mode": "full"
+        },
+        "created_at": "2026-10-09T15:50:59.938303Z"
+      }
+    ],
+    "workspace": {
+      "customer_dir": false,
+      "customer_path": "",
+      "project_root": "/data/workspace/tasks/artifacts/2026-10-09/FKTR",
+      "default_path": "/data/workspace/tasks/artifacts/2026-10-09/FKTR",
+      "agentbc_root": "/data/workspace",
+      "root": "/data/workspace/tasks/artifacts/2026-10-09/FKTR",
+      "artifact_root": "/data/workspace/tasks/artifacts/2026-10-09/FKTR",
+      "artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-09/FKTR",
+      "report_root": "/data/workspace/tasks/report/2026-10-09/FKTR",
+      "task_file": "/data/workspace/tasks/report/2026-10-09/FKTR/FKTR-001-task.md",
+      "report_file": "/data/workspace/tasks/report/2026-10-09/FKTR/FKTR-001-report.md",
+      "output_dir": "/data/workspace/tasks/report/2026-10-09/FKTR",
+      "task_code": "FKTR",
+      "iteration": "001",
+      "task_date": "2026-10-09",
+      "chain_id": "FKTR",
+      "chain_token": "FKTR",
+      "chain_dir": "FKTR",
+      "chain_task_id": "001",
+      "chain_output_dir": "/data/workspace/tasks/report/2026-10-09/FKTR",
+      "internal_task_dir": "/data/workspace/record/FKTR/001"
+    },
+    "report": null,
+    "session_id": "01a0b730-adce-7911-ae63-a9fc6b915580",
+    "revival": {
+      "version": 1,
+      "eligible": false,
+      "allowed_next_actions": [],
+      "recommended_action": "",
+      "error_codes": [
+        "revival_session_cleanup_unstable"
+      ],
+      "warnings": [],
+      "reservation": null,
+      "replay_revival_id": ""
+    },
+    "health": {
+      "state": "failed",
+      "color": "red",
+      "stale_after_s": 300,
+      "long_stale_after_s": 600,
+      "startup_grace_s": 10,
+      "temp_file": "/data/workspace/record/FKTR/001/.FKTR-001.run.temp",
+      "run_log": "/data/workspace/record/FKTR/001/FKTR-001-run.log",
+      "last_progress_at": "",
+      "last_progress_age_s": null,
+      "run_lease_state": "",
+      "run_lease_pid": null,
+      "runner_alive": null,
+      "message": "",
+      "source": ""
+    },
+    "execution_policy": {
+      "version": 1,
+      "resources": null,
+      "session": {
+        "retain": false,
+        "session_id": "01a1215a-f969-7dc1-83e0-2965080c8dce",
+        "session_state": "terminal",
+        "project_mode": "none",
+        "cleanup": {
+          "capability": "unknown",
+          "state": "not_requested",
+          "attempts": 0,
+          "error_code": "",
+          "retryable": false,
+          "version": 5,
+          "strategy": "none",
+          "phase": "waiting_for_cleanup",
+          "verification": {
+            "cli": {
+              "status": "unknown",
+              "checked_at": ""
+            },
+            "desktop_backend": {
+              "status": "unknown",
+              "checked_at": ""
+            },
+            "desktop_live": {
+              "status": "unknown",
+              "checked_at": ""
+            },
+            "desktop": {
+              "status": "unknown",
+              "checked_at": ""
+            }
+          },
+          "commands": {
+            "desktop_archive": {
+              "status": "not_requested",
+              "checked_at": "",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "app_server_archive": {
+              "status": "not_requested",
+              "checked_at": "",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "delete": {
+              "status": "not_requested",
+              "checked_at": "",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "archive": {
+              "status": "not_requested",
+              "checked_at": "",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            }
+          }
+        }
+      },
+      "permission_grant": null,
+      "auxiliary_sessions": [],
+      "auxiliary_aggregate": {
+        "state": "blocked",
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      },
+      "terminal_delivery": {
+        "version": 1,
+        "delivery_id": "37bbc1f1-8e82-41c8-87a3-bcdeeb7ca955",
+        "terminal_state": "failed",
+        "terminal_event": "task.failed",
+        "committed_at": "2026-10-09T15:50:59.938303Z",
+        "stages": {
+          "report": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "record": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "index": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "file_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "ui_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          }
+        },
+        "updated_at": "2026-10-09T15:51:00.573310Z"
+      },
+      "delivery_health": {
+        "state": "succeeded",
+        "delivery_id": "37bbc1f1-8e82-41c8-87a3-bcdeeb7ca955",
+        "stages_total": 5,
+        "stages_succeeded": 5,
+        "stages_outstanding": 0,
+        "stages_retry_wait": 0,
+        "stages_in_progress": 0,
+        "outstanding_stages": [],
+        "attempts_total": 5,
+        "error_codes": [],
+        "healthy": true,
+        "updated_at": "2026-10-09T15:51:00.573310Z"
+      },
+      "progress": null
+    },
+    "chain_root_task_id": "FKTR-001",
+    "head_task_ids": [
+      "FKTR-001"
+    ],
+    "is_chain_head": true,
+    "chain_anomalies": [],
+    "parent_task_id": null,
+    "base_task_id": "FKTR-001",
+    "iteration_index": 1,
+    "branch_mode": "linear",
+    "task_code": "FKTR",
+    "iteration": "001",
+    "task_date": "2026-10-09",
+    "chain_task_id": "001",
+    "has_final_callback": false,
+    "report_ready": true,
+    "run_lease_state": "closed",
+    "execution": {
+      "internal_status": "failed",
+      "lease_state": "closed",
+      "run_intervals": [
+        {
+          "run_id": "codex-FKTR-001-229fc663",
+          "executor_id": "codex",
+          "attempt_index": 0,
+          "started_at": "2026-10-09T15:49:32.442094Z",
+          "ended_at": "2026-10-09T15:49:32.442094Z",
+          "duration_s": 0.0,
+          "state": "suspended"
+        }
+      ],
+      "waiting_since": "2026-10-09T15:49:46.800077Z",
+      "permission_elevation_mode": "full",
+      "permission_elevation_source": "task_elevation",
+      "permission_elevation_state": "prepared",
+      "log_worker_run_id": "runner-worker-111cd3afdb95",
+      "executor_run_id": "codex-FKTR-001-229fc663",
+      "executor_id": "codex",
+      "started_at": "2026-10-09T15:49:32.442094Z",
+      "last_heartbeat_at": "2026-10-09T15:49:32.442094Z",
+      "runner_status": "completed",
+      "pid": 200,
+      "output_truncated": false
+    },
+    "timing": {
+      "task_id": "FKTR-001",
+      "wall_duration_s": 87.603,
+      "execution_duration_s": null,
+      "last_run_duration_s": null,
+      "attempt_index": 0,
+      "attempt_started_at": "",
+      "attempt_wall_duration_s": null,
+      "attempt_execution_duration_s": null,
+      "attempt_run_count": 1,
+      "attempt_run_intervals": [],
+      "waiting_duration_s": 73.136,
+      "evidence_quality": "authoritative",
+      "execution_duration_known": false,
+      "run_count": 1,
+      "run_intervals": [],
+      "lease_state": "closed"
+    },
+    "debug": {
+      "execution": {
+        "internal_status": "failed",
+        "lease_state": "closed",
+        "run_intervals": [
+          {
+            "run_id": "codex-FKTR-001-229fc663",
+            "executor_id": "codex",
+            "attempt_index": 0,
+            "started_at": "2026-10-09T15:49:32.442094Z",
+            "ended_at": "2026-10-09T15:49:32.442094Z",
+            "duration_s": 0.0,
+            "state": "suspended"
+          }
+        ],
+        "waiting_since": "2026-10-09T15:49:46.800077Z",
+        "permission_elevation_mode": "full",
+        "permission_elevation_source": "task_elevation",
+        "permission_elevation_state": "prepared",
+        "log_worker_run_id": "runner-worker-111cd3afdb95",
+        "executor_run_id": "codex-FKTR-001-229fc663",
+        "executor_id": "codex",
+        "started_at": "2026-10-09T15:49:32.442094Z",
+        "last_heartbeat_at": "2026-10-09T15:49:32.442094Z",
+        "runner_status": "completed",
+        "pid": 200,
+        "output_truncated": false
+      },
+      "timing": {
+        "task_id": "FKTR-001",
+        "wall_duration_s": 87.603,
+        "execution_duration_s": null,
+        "last_run_duration_s": null,
+        "attempt_index": 0,
+        "attempt_started_at": "",
+        "attempt_wall_duration_s": null,
+        "attempt_execution_duration_s": null,
+        "attempt_run_count": 1,
+        "attempt_run_intervals": [],
+        "waiting_duration_s": 73.136,
+        "evidence_quality": "authoritative",
+        "execution_duration_known": false,
+        "run_count": 1,
+        "run_intervals": [],
+        "lease_state": "closed"
+      },
+      "permission": {
+        "version": 2,
+        "configured_mode": "inherit",
+        "inherited_mode": null,
+        "task_override": null,
+        "requested_mode": "inherit",
+        "effective_mode": "inherit",
+        "selection_source": "configured_default",
+        "selection_strategy": "inherit",
+        "resolved_base_mode": "native",
+        "resolution_state": "runtime",
+        "approval_policy": "on_block",
+        "scope": "task",
+        "mapping": {
+          "codex": {
+            "transport": "app-server",
+            "capability_id": "codex.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "codex",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          },
+          "claude": {
+            "transport": "cli",
+            "capability_id": "claude.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "claude",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          },
+          "hermes": {
+            "transport": "hermes-acp",
+            "capability_id": "hermes.acp.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "hermes",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          }
+        },
+        "permission_args": []
+      }
+    }
+  }
+}

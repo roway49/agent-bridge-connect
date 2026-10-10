@@ -53,7 +53,7 @@ from .execution_policy import (
     validate_resource_snapshot,
     validate_session_snapshot,
 )
-from .executor_registry import get_executor
+from .executor_registry import assert_executor_action_supported, get_executor
 from .handoff_recovery import (
     HANDOFF_RECOVERY_EXTENSION_KEY,
     HANDOFF_RECOVERY_SOURCE_STATUSES,
@@ -117,6 +117,7 @@ from .permission_modes import (
     permission_record_from_extensions,
 )
 from .protocol import ABCError, PreflightResult, TaskModel, task_step_text
+from .task_steps import _load_steps_text, _normalize_step, validate_handoff_steps
 from .progress_receipts import (
     PROGRESS_EXTENSION_KEY,
     PROGRESS_RECEIPT_VERSION,
@@ -207,6 +208,7 @@ class TaskService(ApprovalLifecycleMixin):
         permission_mode: str | None = None,
         inherited_permission: dict[str, Any] | None = None,
         collaboration_spawn: bool = False,
+        handoff_context: dict[str, Any] | None = None,
     ) -> TaskModel:
         assert_maintenance_command_allowed(self, "create")
         title = title.strip()
@@ -301,6 +303,8 @@ class TaskService(ApprovalLifecycleMixin):
             resources=resources,
             session=executor_session,
         )
+        if handoff_context is not None:
+            extensions["agentbc.handoff_context"] = dict(handoff_context)
         if collaboration_spawn:
             if assignee != "codex":
                 raise ABCError(
@@ -442,8 +446,7 @@ class TaskService(ApprovalLifecycleMixin):
 
     def list_tasks(self, status: str | None = None, assignee: str | None = None) -> list[TaskModel]:
         tasks = [TaskModel.from_dict(data) for data in self.store.list_tasks(status=status, assignee=assignee)]
-        refreshed = self._refresh_active_tasks(tasks)
-        return sorted(refreshed, key=_task_sort_key)
+        return sorted(tasks, key=_task_sort_key)
 
     def list_task_summaries(
         self,
@@ -588,6 +591,8 @@ class TaskService(ApprovalLifecycleMixin):
         is_resuming = _normalize_status(task.status) == "running" and execution.get("internal_status") == "resuming"
         if _normalize_status(task.status) not in {"pending", "needs_recovery"} and not is_resuming:
             raise ABCError("invalid_transition", f"Cannot start task in state: {task.status}")
+        if is_resuming or _normalize_status(task.status) == "needs_recovery":
+            assert_executor_action_supported(executor_id, "resume" if is_resuming else "retry")
         source_status = "running" if is_resuming else "pending" if _normalize_status(task.status) == "pending" else "needs_recovery"
         validate_transition(source_status, "running")
         lease = self.store.acquire_lease(task_id, executor_id)
@@ -1270,6 +1275,8 @@ class TaskService(ApprovalLifecycleMixin):
         removed = [key for key in keys if key in execution]
         if not removed:
             return []
+        if execution.get('worker_run_id'):
+            execution['log_worker_run_id'] = execution['worker_run_id']
         for key in removed:
             execution.pop(key, None)
         extensions["agentbc.execution"] = execution
@@ -1785,6 +1792,7 @@ class TaskService(ApprovalLifecycleMixin):
 
         assert_maintenance_command_allowed(self, "respond")
         task = self.get_task(task_id)
+        assert_executor_action_supported(task.assignee, "respond")
         request = (task.extensions or {}).get("agentbc.input")
         if not isinstance(request, dict):
             raise ABCError("input_not_pending", f"Task {task.id} has no input request")
@@ -2018,7 +2026,9 @@ class TaskService(ApprovalLifecycleMixin):
         """Runner maintenance hook for durable 24-hour input deadlines."""
         current_at = _parse_timestamp(now or _utc_now())
         expired: list[dict[str, Any]] = []
-        for task in self.list_tasks(status="input_required"):
+        from .approval_timing import waiting_input_candidates
+
+        for task in waiting_input_candidates(self.list_tasks, self.board_root):
             request = (task.extensions or {}).get("agentbc.input")
             if not isinstance(request, dict) or request.get("status") != "waiting":
                 continue
@@ -2027,13 +2037,11 @@ class TaskService(ApprovalLifecycleMixin):
                 continue
             if request.get("type") == "permission":
                 expired_at = now or _utc_now()
+                was_failed = task.status == "failed"
                 if self._expire_permission_input(task, request, expired_at):
-                    expired.append(
-                        {
-                            "task_id": task.id,
-                            "input_id": request.get("input_id", ""),
-                        }
-                    )
+                    if was_failed:
+                        self._sync_terminal_report(task.id)
+                    expired.append({"task_id": task.id, "input_id": request.get("input_id", "")})
                 continue
             expired_request = dict(request)
             expired_request["status"] = "expired"
@@ -2180,6 +2188,20 @@ class TaskService(ApprovalLifecycleMixin):
 
         task = self.get_task(task_id)
         task_id = task.id
+        # Cooperative cancellation can finish an official archive before the
+        # worker observes the close intent. Preserve that receipt without
+        # reviving the cancelled task or publishing another terminal result.
+        if (
+            (_normalize_status(task.status) == "cancelled" or _has_close_intent(task))
+            and isinstance(execution_session, dict)
+            and execution_session.get("archive_acknowledged") is True
+        ):
+            session = (task.extensions or {}).get(SESSION_EXTENSION_KEY) or {}
+            run_ids = session.get("run_ids") or []
+            if not run_ids or executor_run_id != run_ids[-1]:
+                raise ABCError("executor_session_run_mismatch", "Late archive receipt must belong to the latest run")
+            self._apply_executor_session_result(task, executor_run_id, execution_session, "terminal")
+            self.store.write_task(task_id, _without_none(task.to_dict()))
         if _has_close_intent(task):
             return False
         normalized = _normalize_status(task.status)
@@ -2195,6 +2217,8 @@ class TaskService(ApprovalLifecycleMixin):
                 },
             )
             return False
+        if normalized in {"completed", "failed", "rejected"}:
+            return False  # A late infrastructure signal cannot replace a trusted terminal result.
         now = _utc_now()
         task.status = "needs_recovery"
         task.updated_at = now
@@ -2332,6 +2356,7 @@ class TaskService(ApprovalLifecycleMixin):
         from .task_health import cleanup_task_report_records
 
         task = self.get_task(task_id)
+        assert_executor_action_supported(task.assignee, "retry")
         if _normalize_status(task.status) not in {"needs_recovery", "failed", "cancelled"}:
             raise ABCError("invalid_transition", f"Cannot requeue task in state: {task.status}")
         lease = load_lease(task_id, self.board_root)
@@ -2411,6 +2436,7 @@ class TaskService(ApprovalLifecycleMixin):
 
     def resume_task(self, task_id: str) -> None:
         task = self.get_task(task_id)
+        assert_executor_action_supported(task.assignee, "resume")
         if not (task.intervention or {}).get("paused"):
             raise ABCError("invalid_intervention", f"Cannot resume task in state: {task.status}")
         task.intervention = dict(task.intervention or {})
@@ -2970,6 +2996,7 @@ class TaskService(ApprovalLifecycleMixin):
 
     def retry_step(self, task_id: str, step_id: int) -> None:
         task = self.get_task(task_id)
+        assert_executor_action_supported(task.assignee, "retry-step")
         if _normalize_status(task.status) not in {"running", "input_required", "needs_recovery"}:
             raise ABCError("invalid_intervention", f"Cannot retry step in state: {task.status}")
         _require_step(task, step_id)
@@ -2986,6 +3013,7 @@ class TaskService(ApprovalLifecycleMixin):
         """Retry one failed/needs-recovery current-chain head as a new attempt."""
         from .retry_flow import retry_failed_task
 
+        assert_executor_action_supported(self.get_task(task_id).assignee, "retry")
         return retry_failed_task(self, task_id)
 
     def retry_preflight(self, task_id: str) -> dict[str, Any]:
@@ -3002,6 +3030,8 @@ class TaskService(ApprovalLifecycleMixin):
             empty_code="invalid_intervention",
             empty_message="New executor is required",
         )
+        assert_executor_action_supported(task.assignee, "reassign")
+        assert_executor_action_supported(new_executor, "reassign")
         if _normalize_status(task.status) == "running" and not (task.intervention or {}).get("paused"):
             raise ABCError("task_leased", f"Cannot reassign working task: {task_id}")
         if _normalize_status(task.status) not in {"running", "needs_recovery", "cancelled"}:
@@ -3062,7 +3092,9 @@ class TaskService(ApprovalLifecycleMixin):
         files: list[str | Path] | None = None,
         session_id: str | None = None,
         permission_mode: str | None = None,
+        steps: list[dict[str, Any]] | None = None,
     ) -> TaskModel:
+        declared = validate_handoff_steps(steps) if steps is not None else None
         source = self.get_task(source_task_id)
         target_assignee = _normalize_executor_ref(
             target_assignee,
@@ -3070,6 +3102,8 @@ class TaskService(ApprovalLifecycleMixin):
             empty_code="handoff_error",
             empty_message="target assignee is required",
         )
+        assert_executor_action_supported(source.assignee, "handoff")
+        assert_executor_action_supported(target_assignee, "handoff")
         normalized_source_status = _normalize_status(source.status)
         if normalized_source_status == "input_required":
             request = (source.extensions or {}).get("agentbc.input")
@@ -3092,6 +3126,8 @@ class TaskService(ApprovalLifecycleMixin):
                 },
             )
         if is_handoff_recovery_source(normalized_source_status):
+            if declared is not None:
+                raise ABCError("handoff_recovery_steps_frozen", "Recovery handoff inherits its original steps; omit --steps")
             return self.handoff_failed_task(
                 source,
                 target_assignee,
@@ -3128,7 +3164,7 @@ class TaskService(ApprovalLifecycleMixin):
         handoff = self.create_task(
             title=f"Handoff from {source.id}: {source.title}",
             assignee=target_assignee,
-            steps=[{"id": 1, "description": description}],
+            steps=declared if declared is not None else [{"id": 1, "description": description}],
             session_id=session_id,
             source_platform=source_platform,
             customer_dir=bool(workspace.get("customer_dir")),
@@ -3138,6 +3174,7 @@ class TaskService(ApprovalLifecycleMixin):
             files=(files or []) if replace_inputs else inherited_files,
             permission_mode=permission_mode,
             inherited_permission=source_permission if permission_mode is None else None,
+            handoff_context={"source_task_id": source.id, "source_context": source_context, "message": message or ""} if declared is not None else None,
         )
         now = _utc_now()
         # PERM-104-002: a handoff supersedes the source run — the source
@@ -3184,6 +3221,8 @@ class TaskService(ApprovalLifecycleMixin):
         report are imported mechanically; the receiving Executor never chooses
         the recovery point.
         """
+        assert_executor_action_supported(source.assignee, "handoff")
+        assert_executor_action_supported(target_assignee, "handoff")
         now = _utc_now()
         if self.store.is_leased(source.id):
             raise ABCError(
@@ -3461,6 +3500,8 @@ class TaskService(ApprovalLifecycleMixin):
                 task.assignee,
                 get_executor_config(self.config, task.assignee),
             )
+            if task.assignee == "opencode" and getattr(executor, "agent_bin", None) is None:
+                errors.append("opencode_binary_unavailable: configure command or AGENTBC_OPENCODE_BIN")
             if permission["effective_mode"] != "full":
                 assert_executor_permission_supported(
                     task.assignee,
@@ -3476,20 +3517,6 @@ class TaskService(ApprovalLifecycleMixin):
             errors=errors,
             execution_policy=execution_policy_view(task.extensions),
         )
-
-    def _refresh_active_tasks(self, tasks: list[TaskModel]) -> list[TaskModel]:
-        from .run_lease import reconcile_task
-
-        refreshed: list[TaskModel] = []
-        for task in tasks:
-            if _is_running_status(task.status):
-                try:
-                    reconcile_task(task.id, self.board_root)
-                    task = self.get_task(task.id)
-                except (ABCError, PermissionError):
-                    pass
-            refreshed.append(task)
-        return refreshed
 
     def _validated_executor_session(
         self,
@@ -3978,6 +4005,7 @@ def handoff_task(
     files: list[str | Path] | None = None,
     session_id: str | None = None,
     permission_mode: str | None = None,
+    steps: list[dict[str, Any]] | None = None,
 ) -> TaskModel:
     return TaskService(board_root).handoff_task(
         source_task_id,
@@ -3989,6 +4017,7 @@ def handoff_task(
         images=images,
         files=files,
         permission_mode=permission_mode,
+        steps=steps,
     )
 
 
@@ -4004,12 +4033,12 @@ def notify(task_id: str, event_type: str, board_root: str | Path = DEFAULT_BOARD
     TaskService(board_root).notify(task_id, event_type)
 
 
-def load_steps(path: str | Path) -> list[dict[str, Any]]:
+def load_steps(path: str | Path, *, structured_handoff: bool = False) -> list[dict[str, Any]]:
     steps_file = Path(path).expanduser()
     if not steps_file.exists():
         raise ABCError("task_create_error", f"steps file not found: {steps_file}")
     text = steps_file.read_text(encoding="utf-8")
-    return _load_steps_text(text)
+    return _load_steps_text(text, structured_handoff=structured_handoff)
 
 
 def task_to_status(
@@ -4092,37 +4121,6 @@ def chain_resolution(
     board_root: str | Path = DEFAULT_BOARD_ROOT,
 ) -> dict[str, Any]:
     return TaskService(board_root).resolve_chain(task_id).to_dict()
-
-
-def _normalize_step(step: dict[str, Any], index: int) -> dict[str, Any]:
-    if not isinstance(step, dict):
-        raise ABCError("task_create_error", "each step must be a mapping")
-    normalized = dict(step)
-    description = task_step_text(normalized)
-    if not description:
-        raise ABCError(
-            "task_create_error",
-            f"step {index} must define a non-empty description or action",
-        )
-    # FLOW-104-001 / GGQN-001 schema correction: canonical new tasks carry
-    # integer step ids only.  A string id (e.g. ``"1"``) used to pass task
-    # creation and then fail the matching final callback with
-    # ``completion_marker_task_steps_invalid`` after the whole run had
-    # executed.  The mismatch now fails BEFORE dispatch with a stable
-    # ``task_create_error``; legacy tasks keep their stored ids (dual-read).
-    declared_id = normalized.get("id")
-    if declared_id is not None and (isinstance(declared_id, bool) or not isinstance(declared_id, int)):
-        raise ABCError(
-            "task_create_error",
-            f"step {index} id must be an integer (got {type(declared_id).__name__}); "
-            "string step ids are rejected before dispatch so the final "
-            "callback can never diverge from the declared steps",
-        )
-    if declared_id is None:
-        normalized["id"] = index
-    normalized["description"] = description
-    normalized.setdefault("record", f"steps/{index:02d}.json")
-    return normalized
 
 
 def _validate_resource_block_receipt(
@@ -4214,97 +4212,6 @@ def _require_step(task: TaskModel, step_id: int) -> None:
         raise ABCError("step_not_found", f"Step not found: {step_id}", {"task_id": task.id, "step_id": step_id})
 
 
-def _load_steps_text(text: str) -> list[dict[str, Any]]:
-    try:
-        import yaml  # type: ignore[import-untyped]
-    except ModuleNotFoundError:
-        yaml = None
-    if yaml is not None:
-        data = yaml.safe_load(text)
-        yaml_steps = data.get("steps") if isinstance(data, dict) else None
-        if not isinstance(yaml_steps, list):
-            raise ABCError("task_create_error", "steps file must contain a steps list")
-        return [_normalize_step(step, index) for index, step in enumerate(yaml_steps, 1)]
-
-    steps: list[dict[str, Any]] = []
-    current: dict[str, Any] | None = None
-    lines = text.splitlines()
-    index = 0
-    while index < len(lines):
-        raw_line = lines[index]
-        stripped = raw_line.strip()
-        if not stripped or stripped == "steps:":
-            index += 1
-            continue
-        if stripped.startswith("- "):
-            if current is not None:
-                steps.append(current)
-            current = {}
-            remainder = stripped[2:].strip()
-            if remainder:
-                if _is_block_scalar_key(remainder):
-                    key = remainder.split(":", 1)[0].strip()
-                    block, index = _collect_block_scalar(lines, index + 1, _indent(raw_line))
-                    current[key] = block
-                    continue
-                _parse_step_key_value(current, remainder)
-            index += 1
-            continue
-        if current is not None:
-            if _is_block_scalar_key(stripped):
-                key = stripped.split(":", 1)[0].strip()
-                block, index = _collect_block_scalar(lines, index + 1, _indent(raw_line))
-                current[key] = block
-                continue
-            _parse_step_key_value(current, stripped)
-        index += 1
-    if current is not None:
-        steps.append(current)
-    if not steps:
-        raise ABCError("task_create_error", "steps file must contain a steps list")
-    return steps
-
-
-def _parse_step_key_value(step: dict[str, Any], text: str) -> None:
-    if ":" not in text:
-        return
-    key, value = text.split(":", 1)
-    value = value.strip()
-    if value.startswith('"') and value.endswith('"'):
-        value = value[1:-1]
-    elif value.isdigit():
-        step[key.strip()] = int(value)
-        return
-    step[key.strip()] = value
-
-
-def _is_block_scalar_key(text: str) -> bool:
-    if ":" not in text:
-        return False
-    _, value = text.split(":", 1)
-    return value.strip() in {"|", "|-", "|+", ">", ">-", ">+"}
-
-
-def _collect_block_scalar(lines: list[str], start: int, parent_indent: int) -> tuple[str, int]:
-    collected: list[str] = []
-    index = start
-    while index < len(lines):
-        raw = lines[index]
-        stripped = raw.strip()
-        current_indent = _indent(raw)
-        if stripped.startswith("- ") and current_indent <= parent_indent:
-            break
-        if stripped and current_indent <= parent_indent:
-            break
-        collected.append(stripped)
-        index += 1
-    return "\n".join(collected).strip(), index
-
-
-def _indent(text: str) -> int:
-    return len(text) - len(text.lstrip(" "))
-
-
 def _normalize_executor_ref(
     value: str,
     *,
@@ -4381,6 +4288,9 @@ def _write_task_requirements(task: TaskModel, path: Path) -> None:
         lines.extend(["", "## Image Inputs", *[f"- `{image}`" for image in images]])
     if files:
         lines.extend(["", "## File Inputs", *[f"- `{item}`" for item in files]])
+    context = (task.extensions or {}).get("agentbc.handoff_context")
+    if isinstance(context, dict):
+        lines.extend(["", "## Handoff Context", str(context.get("source_context") or ""), str(context.get("message") or "")])
     lines.extend(["", "## Requirements"])
     for index, step in enumerate(task.steps, 1):
         lines.append(f"{index}. {task_step_text(step)}")

@@ -485,6 +485,7 @@ class ApprovalControlPlane:
                 "status": "pending",
                 "created_at": utc_now(),
                 "expires_at": time.time() + self.approval_timeout_s,
+                "approval_max_time_s": self.approval_timeout_s,
             }
             if domain:
                 pending["escalation_domain"] = domain
@@ -766,11 +767,16 @@ class ApprovalControlPlane:
 
     def wait_for_decision(self, request_id: str, timeout_s: float | None = None) -> dict[str, Any]:
         deadline = time.monotonic() + max(float(timeout_s if timeout_s is not None else self.approval_timeout_s), 0.1)
+        pending = self._state().get("pending_request") or {}
+        if pending.get("request_id") == str(request_id) and pending.get("expires_at"):
+            deadline = min(deadline, time.monotonic() + max(0.0, float(pending["expires_at"]) - time.time()))
         path = self._response_path(str(request_id))
-        while time.monotonic() < deadline:
+        while True:
             response = read_json(path)
             if isinstance(response, dict):
                 return response
+            if time.monotonic() >= deadline:
+                break
             state = self._state()
             pending = state.get("pending_request") if isinstance(state.get("pending_request"), dict) else {}
             if pending.get("request_id") == str(request_id) and pending.get("status") in {"invalidated", "expired"}:
@@ -782,6 +788,9 @@ class ApprovalControlPlane:
                 )
             time.sleep(0.02)
         with self._locked():
+            response = read_json(path)
+            if isinstance(response, dict):
+                return response
             state = self._state()
             pending = state.get("pending_request") if isinstance(state.get("pending_request"), dict) else {}
             if pending.get("request_id") == str(request_id) and pending.get("status") == "pending":

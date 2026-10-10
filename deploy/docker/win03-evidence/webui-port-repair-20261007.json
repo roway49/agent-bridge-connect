@@ -1,0 +1,11 @@
+{
+  "old_port": 50757,
+  "port": 36124,
+  "runner_container_unchanged": true,
+  "image_unchanged": true,
+  "start_close_start": true,
+  "/": 200,
+  "/api/v1/tasks": 200,
+  "/api/v1/tasks/DKRV-001/snapshot": 200,
+  "/api/v1/tasks/DKRV-001/report": 200
+}

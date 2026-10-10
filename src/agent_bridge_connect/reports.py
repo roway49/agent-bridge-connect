@@ -205,7 +205,7 @@ def generate_report(task_id: str, board_root: Path) -> dict[str, Any]:
         "marker_valid": marker_valid,
         "report_ready": report_ready,
         "flow_contract_satisfied": flow_contract_satisfied,
-        "failure_code": str(latest_error.get("code") or ""),
+        "failure_code": "" if public_status == "completed" else str(latest_error.get("code") or ""),
         "failed_steps": failed_steps,
         "blocked_steps": blocked_steps,
         "duration_s": execution_duration_s,

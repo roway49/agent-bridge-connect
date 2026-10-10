@@ -1,0 +1,8 @@
+# Merge after the future mainline Compose; only Runner needs nested tool sandboxes.
+# This is not a standalone service/image definition.
+services:
+  runner:
+    user: "${AGENTBC_UID:-1000}:${AGENTBC_GID:-1000}"
+    cap_drop: [ALL]
+    security_opt:
+      - seccomp=${AGENTBC_CODEX_SECCOMP:?Set absolute path to deploy/docker/seccomp/codex-bwrap.json}

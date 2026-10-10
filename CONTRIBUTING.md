@@ -51,9 +51,17 @@ PR that updates the manifest. Files below existing or new subdirectories may be
 added or removed normally. Private development plans, evidence, task reports,
 and internal handbooks must stay outside this repository.
 
-Public `main` is PR-only. Developer credentials must never push `main` or a
-release tag directly; release candidates use `release/*` branches and must pass
-the repository-root and public-release boundary checks before owner approval.
+The repository flow is:
+
+1. development happens on an `agent/*` branch;
+2. reviewed agent changes are committed to the private `integration` branch;
+3. for submission, create a temporary public branch named
+   `integration-<version>` from private `integration` and open its pull request
+   into the PR-only `main` branch;
+4. delete `integration-<version>` immediately after the pull request is merged.
+
+The public repository keeps no permanent development branch: only `main`
+remains after each pull request. Do not push directly to `main`.
 
 Use the private reporting process in [SECURITY.md](SECURITY.md) for
 vulnerabilities rather than a public issue.

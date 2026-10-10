@@ -94,6 +94,7 @@ class PromptPlatformExtras:
     summary_line: str = "After completing all steps, write a summary of what you did."
     extra_rules: tuple[str, ...] = ()
     native_permission_rule: str | None = None
+    progress_instructions: tuple[str, ...] | None = None
 
 
 def build_prompt_contract(
@@ -165,6 +166,10 @@ def build_prompt_contract(
         lines.extend(["", "Frozen file inputs:"])
         lines.extend(f"- {path}" for path in file_inputs)
         lines.append("Use these exact files as task inputs; do not attempt to reopen the original source paths.")
+    context = (task_packet.get("extensions") or {}).get("agentbc.handoff_context")
+    if isinstance(context, dict):
+        lines.extend(["", "Handoff context (not additional declared steps):",
+                      str(context.get("source_context") or ""), str(context.get("message") or ""), ""])
     lines.append("Steps:")
 
     resume_context = resumed_input_prompt_lines(task_packet)
@@ -195,8 +200,8 @@ def build_prompt_contract(
         [
             "",
             platform.summary_line,
-            PROGRESS_LEAD,
-            progress_command,
+            *(platform.progress_instructions if platform.progress_instructions is not None
+              else (PROGRESS_LEAD, progress_command)),
             "",
             MARKER_LEAD,
             (

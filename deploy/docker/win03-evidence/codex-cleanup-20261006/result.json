@@ -1,0 +1,755 @@
+{
+  "before": {
+    "RQP6-001": {
+      "status": "completed",
+      "session": {
+        "version": 1,
+        "executor": "codex",
+        "retain": false,
+        "session_id": "01a10d29-ab41-7dc0-b236-d6e6cf90dca9",
+        "session_state": "terminal",
+        "project_mode": "none",
+        "run_ids": [
+          "codex-RQP6-001-603b4e9a",
+          "codex-RQP6-001-61aecca1"
+        ],
+        "run_resume_facts": {
+          "codex-RQP6-001-603b4e9a": false,
+          "codex-RQP6-001-61aecca1": true
+        },
+        "resume_count": 1,
+        "cleanup": {
+          "capability": "supported",
+          "state": "succeeded",
+          "attempts": 2,
+          "error_code": "",
+          "retryable": false,
+          "version": 5,
+          "strategy": "container_session_archive_then_delete",
+          "phase": "delete_acknowledged",
+          "verification": {
+            "cli": {
+              "status": "absent",
+              "checked_at": "2026-10-06T15:24:30.181592Z"
+            },
+            "desktop_backend": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:29.556026Z"
+            },
+            "desktop_live": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:29.556026Z"
+            },
+            "desktop": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:29.556026Z"
+            }
+          },
+          "commands": {
+            "desktop_archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:29.556026Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "app_server_archive": {
+              "status": "acknowledged",
+              "checked_at": "2026-10-06T15:24:29.805445Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "delete": {
+              "status": "acknowledged",
+              "checked_at": "2026-10-06T15:24:30.181592Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:29.556026Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            }
+          }
+        },
+        "created_at": "2026-10-05T17:43:05.590645Z",
+        "receipt_source": "jsonl_thread_started",
+        "official_receipt_bound": true
+      },
+      "delivery": {
+        "version": 1,
+        "delivery_id": "c1d18a69-7455-4873-9b55-c645f4e99d2a",
+        "terminal_state": "completed",
+        "terminal_event": "task.finalized",
+        "committed_at": "2026-10-05T17:45:26.706061Z",
+        "stages": {
+          "report": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "record": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "index": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "file_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "ui_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          }
+        },
+        "updated_at": "2026-10-05T17:45:28.737646Z"
+      },
+      "has_final_callback": true,
+      "report_ready": true,
+      "run_lease_state": "closed"
+    },
+    "DPZE-001": {
+      "status": "completed",
+      "session": {
+        "version": 1,
+        "executor": "codex",
+        "retain": false,
+        "session_id": "01a0f81a-ada6-74e0-8456-a780adfcfc13",
+        "session_state": "terminal",
+        "project_mode": "none",
+        "run_ids": [
+          "codex-DPZE-001-35af38f8"
+        ],
+        "run_resume_facts": {
+          "codex-DPZE-001-35af38f8": false
+        },
+        "resume_count": 0,
+        "cleanup": {
+          "capability": "supported",
+          "state": "failed",
+          "attempts": 2,
+          "error_code": "codex_session_archive_failed",
+          "retryable": false,
+          "version": 5,
+          "strategy": "container_session_archive_then_delete",
+          "phase": "waiting_for_container_cleanup",
+          "verification": {
+            "cli": {
+              "status": "unknown",
+              "checked_at": "2026-10-06T15:24:30.958730Z"
+            },
+            "desktop_backend": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:30.958730Z"
+            },
+            "desktop_live": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:30.958730Z"
+            },
+            "desktop": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:30.958730Z"
+            }
+          },
+          "commands": {
+            "desktop_archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:30.958730Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "app_server_archive": {
+              "status": "failed",
+              "checked_at": "2026-10-06T15:24:31.080982Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "delete": {
+              "status": "not_requested",
+              "checked_at": "2026-10-06T15:24:31.080996Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:30.958730Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            }
+          }
+        },
+        "created_at": "2026-10-01T15:34:42.403275Z",
+        "receipt_source": "jsonl_thread_started",
+        "official_receipt_bound": true,
+        "archive_acknowledged": true,
+        "archive_checked_at": "2026-10-01T15:35:20.989401Z"
+      },
+      "delivery": {
+        "version": 1,
+        "delivery_id": "6d024f60-97a9-4408-a251-dda14ef96c72",
+        "terminal_state": "completed",
+        "terminal_event": "task.finalized",
+        "committed_at": "2026-10-01T15:35:20.977620Z",
+        "stages": {
+          "report": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "record": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "index": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "file_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "ui_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          }
+        },
+        "updated_at": "2026-10-01T16:03:40.424688Z"
+      },
+      "has_final_callback": true,
+      "report_ready": true,
+      "run_lease_state": "closed"
+    },
+    "DYTE-001": {
+      "status": "failed",
+      "session": {
+        "version": 1,
+        "executor": "codex",
+        "retain": false,
+        "session_id": "01a0f840-0fba-7803-be84-948de21038d7",
+        "session_state": "terminal",
+        "project_mode": "none",
+        "run_ids": [
+          "codex-DYTE-001-22b5c441"
+        ],
+        "run_resume_facts": {
+          "codex-DYTE-001-22b5c441": false
+        },
+        "resume_count": 0,
+        "cleanup": {
+          "capability": "supported",
+          "state": "succeeded",
+          "attempts": 2,
+          "error_code": "",
+          "retryable": false,
+          "version": 5,
+          "strategy": "container_session_archive_then_delete",
+          "phase": "delete_acknowledged",
+          "verification": {
+            "cli": {
+              "status": "absent",
+              "checked_at": "2026-10-06T15:24:30.901880Z"
+            },
+            "desktop_backend": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:30.444086Z"
+            },
+            "desktop_live": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:30.444086Z"
+            },
+            "desktop": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:30.444086Z"
+            }
+          },
+          "commands": {
+            "desktop_archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:30.444086Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "app_server_archive": {
+              "status": "acknowledged",
+              "checked_at": "2026-10-06T15:24:30.592872Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "delete": {
+              "status": "acknowledged",
+              "checked_at": "2026-10-06T15:24:30.901880Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:30.444086Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            }
+          }
+        },
+        "created_at": "2026-10-01T16:15:32.278848Z",
+        "receipt_source": "jsonl_thread_started",
+        "official_receipt_bound": true
+      },
+      "delivery": {
+        "version": 1,
+        "delivery_id": "7e3c060e-624c-4b53-918d-384c1523a798",
+        "terminal_state": "failed",
+        "terminal_event": "task.failed",
+        "committed_at": "2026-10-01T16:21:05.776196Z",
+        "stages": {
+          "report": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "record": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "index": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "file_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "ui_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          }
+        },
+        "updated_at": "2026-10-01T16:21:09.379896Z"
+      },
+      "has_final_callback": false,
+      "report_ready": true,
+      "run_lease_state": "closed"
+    }
+  },
+  "image_id": "sha256:c766be667762b124b3e0bd892a9a139b0c7f2efce4a1e483f594214a9866fd9a",
+  "runner": {
+    "ok": true,
+    "status": "ready",
+    "pid": 7,
+    "python_executable": "/usr/local/bin/python3.11",
+    "module_path": "/probe/sdk-amd64/lib/python3.11/site-packages/agent_bridge_connect/__init__.py",
+    "executors": [
+      "claude",
+      "codex",
+      "hermes"
+    ],
+    "executor_commands": {
+      "claude": {
+        "path": "/opt/agentbc/bin/claude",
+        "source": "config"
+      },
+      "codex": {
+        "path": "/opt/agentbc/bin/codex",
+        "source": "config"
+      },
+      "hermes": {
+        "path": "/opt/agentbc/bin/hermes",
+        "source": "config"
+      }
+    },
+    "path_policy": {
+      "agent_input": "customer_path",
+      "default_customer_path": "default path",
+      "authorization": "runner_task_scoped"
+    },
+    "atomic_dispatch": true,
+    "desktop_archive_route": {
+      "status": "unavailable",
+      "capability": "unavailable",
+      "route_digest": "",
+      "app_instance_digest": ""
+    }
+  },
+  "after": {
+    "RQP6-001": {
+      "status": "completed",
+      "session": {
+        "version": 1,
+        "executor": "codex",
+        "retain": false,
+        "session_id": "01a10d29-ab41-7dc0-b236-d6e6cf90dca9",
+        "session_state": "terminal",
+        "project_mode": "none",
+        "run_ids": [
+          "codex-RQP6-001-603b4e9a",
+          "codex-RQP6-001-61aecca1"
+        ],
+        "run_resume_facts": {
+          "codex-RQP6-001-603b4e9a": false,
+          "codex-RQP6-001-61aecca1": true
+        },
+        "resume_count": 1,
+        "cleanup": {
+          "capability": "supported",
+          "state": "succeeded",
+          "attempts": 2,
+          "error_code": "",
+          "retryable": false,
+          "version": 5,
+          "strategy": "container_session_archive_then_delete",
+          "phase": "delete_acknowledged",
+          "verification": {
+            "cli": {
+              "status": "absent",
+              "checked_at": "2026-10-06T15:24:30.181592Z"
+            },
+            "desktop_backend": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:29.556026Z"
+            },
+            "desktop_live": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:29.556026Z"
+            },
+            "desktop": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:29.556026Z"
+            }
+          },
+          "commands": {
+            "desktop_archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:29.556026Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "app_server_archive": {
+              "status": "acknowledged",
+              "checked_at": "2026-10-06T15:24:29.805445Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "delete": {
+              "status": "acknowledged",
+              "checked_at": "2026-10-06T15:24:30.181592Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:29.556026Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            }
+          }
+        },
+        "created_at": "2026-10-05T17:43:05.590645Z",
+        "receipt_source": "jsonl_thread_started",
+        "official_receipt_bound": true
+      },
+      "delivery": {
+        "version": 1,
+        "delivery_id": "c1d18a69-7455-4873-9b55-c645f4e99d2a",
+        "terminal_state": "completed",
+        "terminal_event": "task.finalized",
+        "committed_at": "2026-10-05T17:45:26.706061Z",
+        "stages": {
+          "report": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "record": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "index": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "file_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "ui_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          }
+        },
+        "updated_at": "2026-10-05T17:45:28.737646Z"
+      },
+      "has_final_callback": true,
+      "report_ready": true,
+      "run_lease_state": "closed"
+    },
+    "DPZE-001": {
+      "status": "completed",
+      "session": {
+        "version": 1,
+        "executor": "codex",
+        "retain": false,
+        "session_id": "01a0f81a-ada6-74e0-8456-a780adfcfc13",
+        "session_state": "terminal",
+        "project_mode": "none",
+        "run_ids": [
+          "codex-DPZE-001-35af38f8"
+        ],
+        "run_resume_facts": {
+          "codex-DPZE-001-35af38f8": false
+        },
+        "resume_count": 0,
+        "cleanup": {
+          "capability": "supported",
+          "state": "succeeded",
+          "attempts": 3,
+          "error_code": "",
+          "retryable": false,
+          "version": 5,
+          "strategy": "container_session_archive_then_delete",
+          "phase": "delete_acknowledged",
+          "verification": {
+            "cli": {
+              "status": "absent",
+              "checked_at": "2026-10-06T15:27:33.166956Z"
+            },
+            "desktop_backend": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:27:32.781378Z"
+            },
+            "desktop_live": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:27:32.781378Z"
+            },
+            "desktop": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:27:32.781378Z"
+            }
+          },
+          "commands": {
+            "desktop_archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:27:32.781378Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "app_server_archive": {
+              "status": "acknowledged",
+              "checked_at": "2026-10-01T15:35:20.989401Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "delete": {
+              "status": "acknowledged",
+              "checked_at": "2026-10-06T15:27:33.166956Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:27:32.781378Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            }
+          }
+        },
+        "created_at": "2026-10-01T15:34:42.403275Z",
+        "receipt_source": "jsonl_thread_started",
+        "official_receipt_bound": true,
+        "archive_acknowledged": true,
+        "archive_checked_at": "2026-10-01T15:35:20.989401Z"
+      },
+      "delivery": {
+        "version": 1,
+        "delivery_id": "6d024f60-97a9-4408-a251-dda14ef96c72",
+        "terminal_state": "completed",
+        "terminal_event": "task.finalized",
+        "committed_at": "2026-10-01T15:35:20.977620Z",
+        "stages": {
+          "report": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "record": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "index": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "file_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "ui_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          }
+        },
+        "updated_at": "2026-10-01T16:03:40.424688Z"
+      },
+      "has_final_callback": true,
+      "report_ready": true,
+      "run_lease_state": "closed"
+    },
+    "DYTE-001": {
+      "status": "failed",
+      "session": {
+        "version": 1,
+        "executor": "codex",
+        "retain": false,
+        "session_id": "01a0f840-0fba-7803-be84-948de21038d7",
+        "session_state": "terminal",
+        "project_mode": "none",
+        "run_ids": [
+          "codex-DYTE-001-22b5c441"
+        ],
+        "run_resume_facts": {
+          "codex-DYTE-001-22b5c441": false
+        },
+        "resume_count": 0,
+        "cleanup": {
+          "capability": "supported",
+          "state": "succeeded",
+          "attempts": 2,
+          "error_code": "",
+          "retryable": false,
+          "version": 5,
+          "strategy": "container_session_archive_then_delete",
+          "phase": "delete_acknowledged",
+          "verification": {
+            "cli": {
+              "status": "absent",
+              "checked_at": "2026-10-06T15:24:30.901880Z"
+            },
+            "desktop_backend": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:30.444086Z"
+            },
+            "desktop_live": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:30.444086Z"
+            },
+            "desktop": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:30.444086Z"
+            }
+          },
+          "commands": {
+            "desktop_archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:30.444086Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "app_server_archive": {
+              "status": "acknowledged",
+              "checked_at": "2026-10-06T15:24:30.592872Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "delete": {
+              "status": "acknowledged",
+              "checked_at": "2026-10-06T15:24:30.901880Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-06T15:24:30.444086Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            }
+          }
+        },
+        "created_at": "2026-10-01T16:15:32.278848Z",
+        "receipt_source": "jsonl_thread_started",
+        "official_receipt_bound": true
+      },
+      "delivery": {
+        "version": 1,
+        "delivery_id": "7e3c060e-624c-4b53-918d-384c1523a798",
+        "terminal_state": "failed",
+        "terminal_event": "task.failed",
+        "committed_at": "2026-10-01T16:21:05.776196Z",
+        "stages": {
+          "report": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "record": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "index": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "file_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "ui_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          }
+        },
+        "updated_at": "2026-10-01T16:21:09.379896Z"
+      },
+      "has_final_callback": false,
+      "report_ready": true,
+      "run_lease_state": "closed"
+    }
+  }
+}

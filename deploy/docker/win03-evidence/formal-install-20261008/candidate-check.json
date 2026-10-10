@@ -1,0 +1,24 @@
+{
+  "sid_dacl_passed": true,
+  "conflict_exit": 2,
+  "conflict_message": "install_error: Another AgentBC entry exists at C:\\Users\\developer\\.local\\bin\\agentbc.cmd; uninstall it first",
+  "preview_files_unchanged": true,
+  "image_id": "sha256:89fa3f8833289f218487942b1cf4b1f73d1be2b95cb505664e751e754cca2051",
+  "runtime_versions": {
+    "codex": "codex-cli 0.153.4",
+    "claude": "2.1.247 (Claude Code)",
+    "hermes": "Hermes Agent v0.20.6 (2026.8.27)\nInstall directory: /probe/hermes-source\nInstall method: unknown\nPython: 3.11.15\nOpenAI SDK: 2.24.0"
+  },
+  "source_build": {
+    "schema_version": 1,
+    "package_version": "1.0.4a1",
+    "commit_sha": "ffdb9386e0514bd71bb947217a0085ec8ac33737",
+    "source_tree_sha256": "ab79afe8474b1600e839f58603d844da05ad8400a145c83665bc2f933ce771a9",
+    "build_source": "local",
+    "built_at_utc": "2026-10-08T04:18:16Z"
+  },
+  "wheel_sha256": "0dde47a4208b37f18ab701154b1494de817a414f365ded9b40dee7999b9bac17",
+  "archive": "D:\\agentbc-tests\\win-formal-20261008-final\\output\\agentbc-1.0.4a1-docker-windows-amd64.zip",
+  "archive_sha256": "91b0567bd1bf1658b1eb3a4dbc226e3dae0272889459d75257f6634c1bd80fa7",
+  "archive_bytes": 769631480
+}
