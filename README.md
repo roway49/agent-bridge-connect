@@ -10,9 +10,9 @@ gateway, one report contract, and one recovery model.
 > Public Alpha. Use AgentBC on development projects with version control and
 > review agent output before accepting changes.
 
-Release target (pending publication): **1.0.5A** (Python package version `1.0.5a1`).
+Current release: **1.0.5A** (Python package version `1.0.5a1`).
 
-> 1.0.5A development: Docker installation, platform acceptance and execution fixes are described in [development status](docs/DEVELOPMENT_STATUS.md). The release proposal uses package version `1.0.5a1`; historical candidates used `1.0.4a1`.
+> 1.0.5A development: Docker installation, platform acceptance and execution fixes are described in [development status](docs/DEVELOPMENT_STATUS.md). The published package version is `1.0.5a1`; historical candidates used `1.0.4a1`.
 
 
 - Repository and releases: [GitHub](https://github.com/roway49/agent-bridge-connect)
@@ -42,40 +42,73 @@ natural language, and name the executor:
 /agentbc Ask Codex (or any supported agent) to write a document summarizing AgentBC's features and use cases.
 ```
 
-## Requirements
+## Install And Start
 
-- macOS for the current desktop notification and task-list workflow;
-- Python 3.10 or newer;
-- at least one installed and authenticated executor: Codex, Claude Code, or Hermes.
+Use Python 3.10+ and an executor's existing login or API configuration. Docker installations also require a running Docker engine and Docker Compose.
+Native and Docker formal installations are mutually exclusive. Run `agentbc uninstall` before switching installation types.
 
-## Install And Verify
+### Docker Installation (Offline Bundle)
 
-One command downloads, verifies, installs, and configures AgentBC:
+Obtain the verified offline bundle for your platform, extract it, and open a terminal **inside the extracted directory**. PyPI/Homebrew install the Native CLI, not Docker images; the wheel/sdist in the current `v1.0.5A` Release are not Docker bundles.
 
-```bash
-curl -fsSL \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.5A/install-agentbc-alpha.sh \
-  | sh -s -- \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.5A
+**macOS arm64:**
+
+```sh
+sh ./install_docker.sh
 ```
 
-For a package-managed installation from PyPI and Homebrew:
+**Windows amd64 (PowerShell):**
 
-```bash
+```powershell
+py -3 .\install_docker.py
+```
+
+The installer opens setup to configure the workspace, executor connections, monitoring and skills. After installation, verify from a new terminal:
+
+```sh
+agentbc doctor
+agentbc runner status
+agentbc task list
+```
+
+Run `agentbc setup` to change configuration. Same-type offline updates use `agentbc update --bundle <extracted-new-bundle-directory>`.
+Mac Docker has passed internal acceptance; Windows Codex/Claude/Hermes have passed technical acceptance. Physical Linux host and Windows OpenCode acceptance remain deferred to 1.06a.
+See [Docker installation](deploy/docker/README.md) and [Windows installation and recovery](deploy/docker/WINDOWS-INSTALLATION.md).
+
+### Native Installation (Choose One)
+
+PyPI:
+
+```sh
 python3 -m pip install agentbc==1.0.5a1
+```
+
+Homebrew (macOS):
+
+```sh
+brew tap roway49/agentbc https://github.com/roway49/agent-bridge-connect.git
 brew install roway49/agentbc/agentbc
-brew install agentbc
-agentbc setup
 ```
 
-Update AgentBC
+Then run `agentbc setup` to connect existing executors and install skills.
 
-```shell
-agentbc update
+### Start WebUI
+
+Both Native and Docker installations use the installed host CLI. Select WebUI and configure its fixed port in setup, then run:
+
+```sh
+agentbc webui start
 ```
 
-Start with [Quick Start](docs/QUICK_START.md), then use the
-[User Guide](docs/USER_GUIDE.md) for task and Runner commands.
+This starts the background service, opens the browser and prints a private authenticated link. Setup assigns and saves the port; use the address printed by the command. Do not share links containing a token.
+
+```sh
+agentbc webui status   # Show service state and fixed port
+agentbc webui close    # Stop monitoring without cancelling tasks
+```
+
+Run `agentbc webui start` again whenever you need to reopen monitoring.
+Start with [Quick Start](docs/QUICK_START.md); see the [User Guide](docs/USER_GUIDE.md) for more commands.
 
 ## Architecture
 

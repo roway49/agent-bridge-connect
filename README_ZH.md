@@ -9,9 +9,9 @@ AgentBC 是一个本地优先的任务控制系统，用于协调本机 Agent �
 > Public Alpha：请在启用版本控制的开发项目中使用 AgentBC，并在接受改动前
 > 审查 Agent 的输出。
 
-待发布版本：**1.0.5A**（Python 包版本为 `1.0.5a1`）。
+当前版本：**1.0.5A**（Python 包版本为 `1.0.5a1`）。
 
-> 1.0.5A 开发候选的 Docker 安装、平台验收和执行修复见[开发状态](docs/DEVELOPMENT_STATUS.md)。本次发布提案包版本为 `1.0.5a1`；历史验收候选为 `1.0.4a1`，须同时核对构建身份和 SHA256。
+> 1.0.5A 开发候选的 Docker 安装、平台验收和执行修复见[开发状态](docs/DEVELOPMENT_STATUS.md)。当前发布包版本为 `1.0.5a1`；历史验收候选为 `1.0.4a1`，须同时核对构建身份和 SHA256。
 
 
 - 仓库与版本发布：[GitHub](https://github.com/roway49/agent-bridge-connect)
@@ -40,40 +40,73 @@ AgentBC 是一个本地优先的任务控制系统，用于协调本机 Agent �
 /agentbc 让 Codex（或任意受支持的 Agent）写一个文档，总结 AgentBC 的功能和用途。
 ```
 
-## 环境要求
+## 安装与启动
 
-- 当前桌面通知和 Task List 工作流需要 macOS；
-- Python 3.10 或更高版本；
-- 至少安装并登录一个执行器：Codex、Claude Code 或 Hermes。
+需要 Python 3.10+，以及执行器已有的登录态或 API 配置。Docker 版还需要已启动的 Docker 和可用的 Docker Compose。
+Native 与 Docker 正式安装二选一；切换前先执行 `agentbc uninstall`，再安装另一类型。
 
-## 部署并校验
+### Docker 安装（离线完整包）
 
-一行命令即可完成下载、校验、安装和配置：
+先取得对应平台的已验证离线完整包并解压，在**解压目录**打开终端。PyPI/Homebrew 安装的是 Native 版，不会安装 Docker 镜像；当前 `v1.0.5A` Release 的 wheel/sdist 也不是 Docker 完整包。
 
-```bash
-curl -fsSL \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.5A/install-agentbc-alpha.sh \
-  | sh -s -- \
-  https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.5A
+**macOS arm64：**
+
+```sh
+sh ./install_docker.sh
 ```
 
-也可以通过 PyPI 或Homebrew进行包管理安装：
+**Windows amd64（PowerShell）：**
 
-```bash
+```powershell
+py -3 .\install_docker.py
+```
+
+安装器会进入 setup，引导配置工作区、执行器连接、监控方式与 skills。安装后在新终端中检查：
+
+```sh
+agentbc doctor
+agentbc runner status
+agentbc task list
+```
+
+需要重新配置时运行 `agentbc setup`。同类型离线更新使用 `agentbc update --bundle <解压后的新包目录>`。
+Mac Docker 已通过内测，Windows Codex/Claude/Hermes 已通过技术验收；Linux 实际宿主和 Windows OpenCode 验收推迟至 1.06a。
+详见 [Docker 安装说明](deploy/docker/README.md)和 [Windows 安装与恢复](deploy/docker/WINDOWS-INSTALLATION.md)。
+
+### Native 安装（任选一种）
+
+PyPI：
+
+```sh
 python3 -m pip install agentbc==1.0.5a1
+```
+
+Homebrew（macOS）：
+
+```sh
+brew tap roway49/agentbc https://github.com/roway49/agent-bridge-connect.git
 brew install roway49/agentbc/agentbc
-brew install agentbc
-agentbc setup
 ```
 
-更新AgentBC：
+安装后运行 `agentbc setup`，连接已有执行器并安装 skills。
 
-```shell
-agentbc update
+### 启动 WebUI
+
+Native 和 Docker 版均使用安装后的宿主 CLI。先在 setup 中选择 WebUI 并配置固定端口，然后执行：
+
+```sh
+agentbc webui start
 ```
 
-请先阅读[快速开始](docs/QUICK_START_ZH.md)，任务与 Runner 命令详见
-[用户指南](docs/USER_GUIDE_ZH.md)。
+命令会启动后台服务、打开浏览器并打印带认证信息的私有链接。端口由 setup 分配并保存，以命令输出为准；请勿分享带 token 的链接。
+
+```sh
+agentbc webui status   # 查看状态及固定端口
+agentbc webui close    # 关闭监控服务，不取消业务任务
+```
+
+首次启动或关闭后再次查看监控，都可以运行 `agentbc webui start`。
+请先阅读[快速开始](docs/QUICK_START_ZH.md)，更多命令见[用户指南](docs/USER_GUIDE_ZH.md)。
 
 ## 架构
 
