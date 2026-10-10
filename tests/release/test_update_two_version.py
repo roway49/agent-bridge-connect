@@ -345,6 +345,22 @@ class CleanupAndRunnerTests(unittest.TestCase):
 
 
 class RealRunGateTests(unittest.TestCase):
+    def test_sdist_reuses_packaged_webui_without_node_and_rejects_missing_assets(self):
+        from scripts import build_backend
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "PKG-INFO").write_text("Name: agentbc\n")
+            assets = root / "src/agent_bridge_connect/assets/webui"
+            (assets / "assets").mkdir(parents=True)
+            (assets / "index.html").write_text("<html></html>")
+            script = assets / "assets/main.js"
+            script.write_text("export {}")
+            with _update_flow_mock.patch.object(build_backend, "ROOT", root), _update_flow_mock.patch.object(build_backend.subprocess, "run", side_effect=AssertionError("npm must not run")):
+                build_backend.prepare()
+                script.unlink()
+                with self.assertRaisesRegex(RuntimeError, "missing packaged WebUI"):
+                    build_backend.prepare()
+
     def test_real_run_requires_environment_gate(self) -> None:
         root = _isolated_root()
         self.addCleanup(shutil.rmtree, root, True)
