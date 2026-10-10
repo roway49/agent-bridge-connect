@@ -3,9 +3,9 @@ class Agentbc < Formula
 
   desc "Local-first task control plane for Codex, Claude Code, and Hermes"
   homepage "https://github.com/roway49/agent-bridge-connect"
-  url "https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.4A/agentbc-1.0.4a1.tar.gz"
-  version "1.0.4a1"
-  sha256 "6a295a6c9d31a028bba84a5db209d92224b5cf1a4f4d38906f3a1e1442b23e19"
+  url "https://github.com/roway49/agent-bridge-connect/releases/download/v1.0.5A/agentbc-1.0.5a1.tar.gz"
+  version "1.0.5a1"
+  sha256 "f82fdc1fdaacd231b01feb53a9c77a203f8ce0f158c48406311b37995f8365eb"
   license "MIT"
 
   depends_on "python"
@@ -30,7 +30,7 @@ class Agentbc < Formula
   end
 
   test do
-    assert_match "agentbc 1.0.4a1", shell_output("#{bin}/agentbc --version")
+    assert_match "agentbc 1.0.5a1", shell_output("#{bin}/agentbc --version")
     system bin/"agentbc", "--help"
   end
 end
