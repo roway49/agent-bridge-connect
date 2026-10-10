@@ -7,6 +7,7 @@ import mimetypes
 import secrets
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 from threading import BoundedSemaphore
 from urllib.parse import parse_qs, urlsplit
 
@@ -32,6 +33,12 @@ _CSP = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'se
 class WebServer(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 16
+
+    def server_bind(self):
+        # HTTPServer resolves an FQDN here. Numeric, allowlisted listeners need
+        # no DNS; an unavailable resolver must not delay local service startup.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
     def __init__(
         self,

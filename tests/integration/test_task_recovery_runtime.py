@@ -645,7 +645,10 @@ class WebGatewayTests(unittest.TestCase):
         self.assets = self.root / 'assets'
         self.assets.mkdir()
         (self.assets / 'index.html').write_text('<!doctype html><title>test</title>')
-        self.server = WebServer(self.provider, self.assets)
+        with mock.patch('socket.getfqdn', side_effect=AssertionError('startup must not resolve DNS')):
+            self.server = WebServer(self.provider, self.assets)
+        self.assertEqual(self.server.server_name, '127.0.0.1')
+        self.assertEqual(self.server.server_port, self.server.socket.getsockname()[1])
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': 0.01}, daemon=True)
         self.thread.start()
         self.addCleanup(self.stop_server)
