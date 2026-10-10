@@ -104,9 +104,19 @@ class RunnerStateTests(unittest.TestCase):
 
     def test_uncontained_spawn_exports_immutable_runner_task_binding(self):
         run_id = "runner-worker-flow103identity"
-        result = self.state._spawn_process(
-            "worker:hermes", ["/bin/sh", "-c", 'printf "%s|%s" "$AGENTBC_RUNNER_TASK_ID" "$AGENTBC_RUNNER_WORKER_ID"'], self.root, "runner-worker", run_id=run_id, containment=None, task_binding={"task_id": "FLOW-001", "board_root": str(self.root / "board"), "executor": "hermes"}
-        )
+        reconciled = threading.Event()
+        reconcile = self.state._reconcile_worker_exit
+        def finish(record):
+            try:
+                reconcile(record)
+            finally:
+                reconciled.set()
+        with mock.patch.object(self.state, "_reconcile_worker_exit", side_effect=finish):
+            result = self.state._spawn_process(
+                "worker:hermes", ["/bin/sh", "-c", 'printf "%s|%s" "$AGENTBC_RUNNER_TASK_ID" "$AGENTBC_RUNNER_WORKER_ID"'], self.root, "runner-worker", run_id=run_id, containment=None, task_binding={"task_id": "FLOW-001", "board_root": str(self.root / "board"), "executor": "hermes"}
+            )
+            # Process status becomes terminal before board reconciliation finishes.
+            self.assertTrue(reconciled.wait(3), "worker reconciliation did not finish")
         terminal = self._wait_terminal(result["run_id"])
         self.assertEqual(terminal["status"], "completed", terminal.get("stderr"))
         self.assertEqual(terminal["stdout"], f"FLOW-001|{run_id}")
