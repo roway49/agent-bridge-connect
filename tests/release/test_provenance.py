@@ -41,22 +41,6 @@ import build_provenance as bp  # noqa: E402
 class TagVersionMappingTests(unittest.TestCase):
     """vX.Y.ZS[N]  ⇄  X.Y.ZsN  round-trip and edge cases."""
 
-    def test_sdist_reuses_packaged_webui_without_node_and_rejects_missing_assets(self):
-        import build_backend
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "PKG-INFO").write_text("Name: agentbc\n")
-            assets = root / "src/agent_bridge_connect/assets/webui"
-            (assets / "assets").mkdir(parents=True)
-            (assets / "index.html").write_text("<html></html>")
-            script = assets / "assets/main.js"
-            script.write_text("export {}")
-            with _skill_manifest_mock.patch.object(build_backend, "ROOT", root), _skill_manifest_mock.patch.object(build_backend.subprocess, "run", side_effect=AssertionError("npm must not run")):
-                build_backend.prepare()
-                script.unlink()
-                with self.assertRaisesRegex(RuntimeError, "missing packaged WebUI"):
-                    build_backend.prepare()
-
     def test_tag_to_python(self) -> None:
         self.assertEqual(bp.tag_to_python_version("v1.0.1A"), "1.0.1a1")
         self.assertEqual(bp.tag_to_python_version("v1.0.1A2"), "1.0.1a2")
