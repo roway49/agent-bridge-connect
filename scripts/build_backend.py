@@ -11,6 +11,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def prepare():
+    target = ROOT / "src/agent_bridge_connect/assets/webui"
+    if (ROOT / "PKG-INFO").is_file():
+        # Published sdists carry the frontend built by the release pipeline.
+        # Installing them (including Homebrew) must not need Node or npm access.
+        if not (target / "index.html").is_file() or not list(
+            (target / "assets").glob("*.js")
+        ):
+            raise RuntimeError("Source distribution is missing packaged WebUI assets")
+        return
     frontend = ROOT / "webui"
     subprocess.run(["npm", "ci", "--ignore-scripts"], cwd=frontend, check=True)
     subprocess.run(["npm", "run", "build"], cwd=frontend, check=True)
@@ -19,7 +28,6 @@ def prepare():
         (assets / "assets").glob("*.js")
     ):
         raise RuntimeError("WebUI build did not produce complete assets")
-    target = ROOT / "src/agent_bridge_connect/assets/webui"
     if target.exists():
         shutil.rmtree(target)
     shutil.copytree(assets, target)
