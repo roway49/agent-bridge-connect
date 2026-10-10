@@ -58,9 +58,19 @@ ask_choice() {
   esac
 }
 
+# A managed installation must use its receipt-aware recovery path. Never let
+# the legacy fallback remove skills belonging to the other installation type.
+if [ -f "$HOME/.agentbc-install/installation.json" ] || [ -f "$HOME/.agentbc-docker/docker-host.json" ]; then
+  echo "Managed installation detected. Use agentbc uninstall or recover_docker.sh from the matching offline bundle." >&2
+  exit 2
+fi
 INSTALL_ROOT=${AGENTBC_ALPHA_HOME:-"$HOME/.agentbc-alpha"}
 BIN_DIR=${AGENTBC_BIN_DIR:-"$HOME/.local/bin"}
 CONFIG_PATH=${AGENTBC_CONFIG_PATH:-"$HOME/.abc/config.toml"}
+# Never leave an owned WebUI listening while removing its runtime.
+if [ -x "$INSTALL_ROOT/venv/bin/python" ] && "$INSTALL_ROOT/venv/bin/python" -c 'import agent_bridge_connect.web_service' 2>/dev/null; then
+  "$INSTALL_ROOT/venv/bin/python" -m agent_bridge_connect.web_service --config "$CONFIG_PATH" --uninstall
+fi
 DEFAULT_WORKSPACE_ROOT="$HOME/Documents/AgentBC/workspace"
 DEFAULT_BOARD_ROOT="$DEFAULT_WORKSPACE_ROOT/record"
 ACTIVE_HERMES_HOME=${HERMES_HOME:-"$HOME/.hermes"}

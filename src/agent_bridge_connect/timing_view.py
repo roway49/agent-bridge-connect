@@ -50,11 +50,14 @@ def build_timing_view(
     board_root: str | Path,
     *,
     now: str | None = None,
+    captured_inputs: tuple[Any, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Build the shared timing view for a task.
 
     ``task`` may be a ``TaskModel`` or a task JSON mapping. ``now`` overrides the
     wall-clock reference so deterministic fake-clock tests can assert exact values.
+    captured_inputs supplies a verified lease/intervention snapshot without any
+    live file reads, used by the bounded Web provider. Default callers are unchanged.
     """
     data = _task_data(task)
     task_id = str(data.get("id") or data.get("task_id") or "")
@@ -77,8 +80,9 @@ def build_timing_view(
         root,
         now,
         current_attempt_index=attempt_index,
+        captured_inputs=captured_inputs,
     )
-    excluded = _excluded_periods(data, extensions, root, reference, now)
+    excluded = _excluded_periods(data, extensions, root, reference, now, captured_inputs=captured_inputs)
     execution_duration_s, adjusted_intervals = _execution_duration(intervals, excluded)
     last_run_duration_s = _last_run_duration(adjusted_intervals)
     attempt_intervals = _current_attempt_intervals(
@@ -93,7 +97,7 @@ def build_timing_view(
     attempt_wall_duration_s = _duration_between(attempt_started_at, reference)
     waiting_duration_s = _waiting_duration(extensions, reference)
     evidence_quality = _evidence_quality(intervals)
-    lease = load_lease(task_id, root) if task_id else None
+    lease = captured_inputs[0] if captured_inputs is not None else (load_lease(task_id, root) if task_id else None)
 
     return {
         "task_id": task_id,
@@ -130,10 +134,11 @@ def _collected_intervals(
     now: str | None,
     *,
     current_attempt_index: int,
+    captured_inputs: tuple[Any, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
     """Ledger intervals plus the current on-disk lease, deduplicated by run id."""
     intervals = _ledger_intervals(extensions)
-    lease = load_lease(task_id, root) if task_id else None
+    lease = captured_inputs[0] if captured_inputs is not None else (load_lease(task_id, root) if task_id else None)
     if lease is not None:
         current = _interval_from_lease(
             lease,
@@ -233,6 +238,8 @@ def _excluded_periods(
     root: Path,
     reference: str | None,
     now: str | None,
+    *,
+    captured_inputs: tuple[Any, list[dict[str, Any]]] | None = None,
 ) -> list[tuple[datetime, datetime]]:
     """Non-execution periods that must never count toward execution duration."""
     periods: list[tuple[datetime, datetime]] = []
@@ -243,7 +250,7 @@ def _excluded_periods(
         stop = _parse_timestamp(str(stop_raw or "")) or end
         if start is not None and stop is not None and stop > start:
             periods.append((start, stop))
-    periods.extend(_pause_periods(data, root, now))
+    periods.extend(_pause_periods(data, root, now, captured_inputs=captured_inputs))
     return periods
 
 
@@ -251,11 +258,13 @@ def _pause_periods(
     data: dict[str, Any],
     root: Path,
     now: str | None,
+    *,
+    captured_inputs: tuple[Any, list[dict[str, Any]]] | None = None,
 ) -> list[tuple[datetime, datetime]]:
     """Pause spans derived from the interventions ledger."""
     task_id = str(data.get("id") or data.get("task_id") or "")
     try:
-        interventions = TaskStore(root).read_interventions(task_id) if task_id else []
+        interventions = captured_inputs[1] if captured_inputs is not None else (TaskStore(root).read_interventions(task_id) if task_id else [])
     except (OSError, ValueError):
         interventions = []
     sorted_items = sorted(

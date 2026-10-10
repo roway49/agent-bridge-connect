@@ -1,0 +1,25 @@
+{
+  "control_network_reachable": true,
+  "cases": {
+    "read-only": {
+      "exit": 1,
+      "stderr": "bwrap: Can't bind mount /oldroot/ on /newroot/: Unable to apply mount flags: remount \"/newroot/opt/cli\": Operation not permitted\n",
+      "stdout": ""
+    },
+    "workspace-write": {
+      "exit": 1,
+      "stderr": "bwrap: Can't bind mount /oldroot/ on /newroot/: Unable to apply mount flags: remount \"/newroot/opt/cli\": Operation not permitted\n",
+      "stdout": ""
+    }
+  },
+  "outside_unchanged": true,
+  "container_exit": 0,
+  "container_stderr": "",
+  "failures": [
+    "read-only: command failed",
+    "workspace-write: command failed"
+  ],
+  "platform": "linux/amd64",
+  "image": "sha256:77923445c077d8eb971b14b2b114a1d9cd4a87edb4c75654820ca4832ee8cb15",
+  "profile_sha256": "292e8331d916a43109c4088cfa23feed512b7a939af622e2b4cf839f8a11540c"
+}

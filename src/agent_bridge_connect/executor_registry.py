@@ -6,6 +6,7 @@ from .adapters import ExecutorPort
 
 
 BUILTIN_EXECUTORS = {
+    "opencode": "agent_bridge_connect.executors.opencode.OpenCodeExecutor",
     "mock": "agent_bridge_connect.executors.mock.MockExecutor",
     "shell": "agent_bridge_connect.executors.shell.ShellExecutor",
     "codex": "agent_bridge_connect.executors.codex.CodexExecutor",
@@ -14,6 +15,7 @@ BUILTIN_EXECUTORS = {
 }
 
 BUILTIN_EXECUTOR_RUNTIME_KEYS = {
+    "opencode": frozenset({"command", "model", "timeout_s"}),
     "mock": frozenset(),
     "shell": frozenset(),
     "codex": frozenset({"timeout_s", "command", "transport", "approval_timeout_s"}),
@@ -29,6 +31,7 @@ BUILTIN_EXECUTOR_RUNTIME_KEYS = {
             "transport",
             "runner_spool",
             "runner_token",
+            "approval_timeout_s",
         }
     ),
     "claude": frozenset(
@@ -51,11 +54,13 @@ BUILTIN_EXECUTOR_RUNTIME_KEYS = {
             "transport",
             "runner_spool",
             "runner_token",
+            "approval_timeout_s",
         }
     ),
 }
 
 BUILTIN_EXECUTOR_CONFIG_ONLY_KEYS = {
+    "opencode": frozenset(),
     "mock": frozenset(),
     "shell": frozenset(),
     "codex": frozenset(),
@@ -121,3 +126,17 @@ def get_executor(name: str, config: dict | None = None) -> ExecutorPort:
     if not isinstance(executor, ExecutorPort):
         raise TypeError(f"Executor does not implement ExecutorPort: {name}")
     return executor
+
+
+def assert_executor_action_supported(executor: str, action: str) -> None:
+    """Gate OpenCode's unimplemented lifecycle before any task mutation."""
+    if executor.strip().lower() == "opencode" and action in {
+        "resume", "respond", "retry", "retry-step", "handoff", "reassign",
+    }:
+        from .protocol import ABCError
+
+        raise ABCError(
+            "opencode_action_unsupported",
+            f"OpenCode supports fresh dispatch and execution only; {action} is not supported.",
+            {"executor": "opencode", "action": action},
+        )

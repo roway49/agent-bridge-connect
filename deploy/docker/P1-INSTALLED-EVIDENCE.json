@@ -1,0 +1,163 @@
+{
+  "candidate": "r9",
+  "installed": true,
+  "image_id": "sha256:01d240b4f7b16449fd5a269e3b8460b9f323f3dcce81a94f21af994eb4f9031b",
+  "python_tests": {
+    "count": 2278,
+    "seconds": 99.877,
+    "result": "OK"
+  },
+  "tasks": {
+    "WPMK-001": {
+      "status": "completed",
+      "lease": "closed",
+      "executor": "codex",
+      "session_id": "01a0ed6c-f543-75b2-bacf-dc29001710b5",
+      "retain": false,
+      "official_receipt_bound": true,
+      "cleanup": {
+        "capability": "supported",
+        "state": "succeeded",
+        "attempts": 1,
+        "error_code": "",
+        "retryable": false,
+        "version": 5,
+        "strategy": "container_session_archive_then_delete",
+        "phase": "delete_acknowledged",
+        "verification": {
+          "cli": {
+            "status": "absent",
+            "checked_at": "2026-09-29T15:20:57.326514Z"
+          },
+          "desktop_backend": {
+            "status": "not_applicable",
+            "checked_at": "2026-09-29T15:20:56.978311Z"
+          },
+          "desktop_live": {
+            "status": "not_applicable",
+            "checked_at": "2026-09-29T15:20:56.978311Z"
+          },
+          "desktop": {
+            "status": "not_applicable",
+            "checked_at": "2026-09-29T15:20:56.978311Z"
+          }
+        },
+        "commands": {
+          "desktop_archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-09-29T15:20:56.978311Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "app_server_archive": {
+            "status": "acknowledged",
+            "checked_at": "2026-09-29T15:20:57.091960Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "delete": {
+            "status": "acknowledged",
+            "checked_at": "2026-09-29T15:20:57.326514Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-09-29T15:20:56.978311Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          }
+        }
+      }
+    },
+    "43YY-001": {
+      "status": "failed",
+      "lease": "closed",
+      "executor": "codex",
+      "session_id": "01a0ed2d-7c11-79c2-8783-047c0f0aebc1",
+      "retain": false,
+      "official_receipt_bound": true,
+      "cleanup": {
+        "capability": "supported",
+        "state": "succeeded",
+        "attempts": 1,
+        "error_code": "",
+        "retryable": false,
+        "version": 5,
+        "strategy": "container_session_archive_then_delete",
+        "phase": "delete_acknowledged",
+        "verification": {
+          "cli": {
+            "status": "absent",
+            "checked_at": "2026-09-29T15:20:57.714231Z"
+          },
+          "desktop_backend": {
+            "status": "not_applicable",
+            "checked_at": "2026-09-29T15:20:57.339764Z"
+          },
+          "desktop_live": {
+            "status": "not_applicable",
+            "checked_at": "2026-09-29T15:20:57.339764Z"
+          },
+          "desktop": {
+            "status": "not_applicable",
+            "checked_at": "2026-09-29T15:20:57.339764Z"
+          }
+        },
+        "commands": {
+          "desktop_archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-09-29T15:20:57.339764Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "app_server_archive": {
+            "status": "acknowledged",
+            "checked_at": "2026-09-29T15:20:57.440916Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "delete": {
+            "status": "acknowledged",
+            "checked_at": "2026-09-29T15:20:57.714231Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-09-29T15:20:57.339764Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          }
+        }
+      }
+    }
+  },
+  "webui": {
+    "origin": "http://127.0.0.1:58013",
+    "static": 200,
+    "unauthenticated": 401,
+    "list_items": 5,
+    "snapshot": 200,
+    "report": 200,
+    "snapshot_keys": [
+      "captured_at",
+      "consistency",
+      "schema_version",
+      "snapshot_revision",
+      "source_id",
+      "task",
+      "text"
+    ]
+  },
+  "runner_restart_logs": "passed",
+  "model_calls": false
+}

@@ -1,0 +1,10 @@
+# Local runtime-cache assembly for four-executor acceptance.
+services:
+  runner:
+    image: agentbc:mac-four-dev
+    volumes:
+      - profiles:/profiles
+    security_opt:
+      - seccomp=${AGENTBC_CODEX_SECCOMP:?Set the absolute pinned sandbox profile path}
+volumes:
+  profiles:

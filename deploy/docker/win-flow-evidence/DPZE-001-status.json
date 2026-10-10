@@ -1,0 +1,605 @@
+{
+  "resolved_task_id": "DPZE-001",
+  "resolution_mode": "explicit_id",
+  "active_candidates": [],
+  "has_active_task": false,
+  "message": "Resolved explicit task id: DPZE-001",
+  "current_task": {
+    "extensions": {
+      "agentbc.provenance": {
+        "source_platform": "codex",
+        "conversation_id": null
+      },
+      "agentbc.lineage": {
+        "parent_task_id": null,
+        "base_task_id": "DPZE-001",
+        "chain_root_task_id": "DPZE-001",
+        "iteration_index": 1,
+        "task_code": "DPZE",
+        "task_date": "2026-10-01",
+        "agentbc_root": "/data/workspace",
+        "base_workspace_root": "/data/workspace/tasks/artifacts/2026-10-01/DPZE",
+        "base_artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-01/DPZE",
+        "branch_mode": "linear",
+        "chain_id": "DPZE",
+        "chain_token": "DPZE",
+        "chain_dir": "DPZE",
+        "chain_task_id": "001",
+        "chain_output_dir": "/data/workspace/tasks/report/2026-10-01/DPZE"
+      },
+      "agentbc.execution": {
+        "internal_status": "completed",
+        "worker_run_id": "runner-worker-9adf376d4469",
+        "dispatch_status": "accepted",
+        "worker_pid": 103,
+        "monitor_status": "disabled",
+        "lease_state": "active",
+        "executor_run_id": "codex-DPZE-001-35af38f8",
+        "run_intervals": [
+          {
+            "run_id": "codex-DPZE-001-35af38f8",
+            "executor_id": "codex",
+            "attempt_index": 0,
+            "started_at": "2026-10-01T15:34:42.667317Z",
+            "ended_at": "2026-10-01T15:34:42.667317Z",
+            "duration_s": 0.0,
+            "state": "closed"
+          }
+        ]
+      },
+      "agentbc.permission": {
+        "version": 2,
+        "configured_mode": "inherit",
+        "inherited_mode": null,
+        "task_override": null,
+        "requested_mode": "inherit",
+        "effective_mode": "inherit",
+        "selection_source": "configured_default",
+        "selection_strategy": "inherit",
+        "resolved_base_mode": "native",
+        "resolution_state": "runtime",
+        "approval_policy": "on_block",
+        "scope": "task",
+        "mapping": {
+          "codex": {
+            "transport": "app-server",
+            "capability_id": "codex.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "codex",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          },
+          "claude": {
+            "transport": "cli",
+            "capability_id": "claude.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "claude",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          },
+          "hermes": {
+            "transport": "hermes-acp",
+            "capability_id": "hermes.acp.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "hermes",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          }
+        },
+        "permission_args": []
+      },
+      "agentbc.permission_protocol": {
+        "version": 3,
+        "scope": "task_elevation",
+        "mode": "full",
+        "decisions": [
+          "approve_full",
+          "deny"
+        ]
+      },
+      "agentbc.session": {
+        "version": 1,
+        "executor": "codex",
+        "retain": false,
+        "session_id": "01a0f81a-ada6-74e0-8456-a780adfcfc13",
+        "session_state": "terminal",
+        "project_mode": "none",
+        "run_ids": [
+          "codex-DPZE-001-35af38f8"
+        ],
+        "run_resume_facts": {
+          "codex-DPZE-001-35af38f8": false
+        },
+        "resume_count": 0,
+        "cleanup": {
+          "capability": "unknown",
+          "state": "not_requested",
+          "attempts": 0,
+          "error_code": "",
+          "retryable": false,
+          "version": 5,
+          "strategy": "none",
+          "phase": "waiting_for_cleanup",
+          "verification": {
+            "cli": {
+              "status": "unknown",
+              "checked_at": ""
+            },
+            "desktop_backend": {
+              "status": "unknown",
+              "checked_at": ""
+            },
+            "desktop_live": {
+              "status": "unknown",
+              "checked_at": ""
+            },
+            "desktop": {
+              "status": "unknown",
+              "checked_at": ""
+            }
+          },
+          "commands": {
+            "desktop_archive": {
+              "status": "not_requested",
+              "checked_at": "",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "app_server_archive": {
+              "status": "not_requested",
+              "checked_at": "",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "delete": {
+              "status": "not_requested",
+              "checked_at": "",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "archive": {
+              "status": "not_requested",
+              "checked_at": "",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            }
+          }
+        },
+        "created_at": "2026-10-01T15:34:42.403275Z",
+        "receipt_source": "jsonl_thread_started",
+        "official_receipt_bound": true,
+        "archive_acknowledged": true,
+        "archive_checked_at": "2026-10-01T15:35:20.989401Z"
+      },
+      "agentbc.final_callback": {
+        "version": 1,
+        "task_id": "DPZE-001",
+        "final_state": "completed",
+        "report_file": "/data/workspace/tasks/report/2026-10-01/DPZE/DPZE-001-report.md",
+        "artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-01/DPZE",
+        "summary": "Completed the text-only Windows Docker minimal round trip.",
+        "executor_run_id": "codex-DPZE-001-35af38f8",
+        "finished_at": "2026-10-01T15:35:20.977620Z",
+        "source": "executor_final_marker",
+        "outcome": "flow_declared",
+        "exit_code": 0,
+        "step_results": [
+          {
+            "id": 1,
+            "status": "done"
+          }
+        ],
+        "marker_valid": true,
+        "completed_step_count": 1
+      },
+      "agentbc.terminal_delivery": {
+        "version": 1,
+        "delivery_id": "6d024f60-97a9-4408-a251-dda14ef96c72",
+        "terminal_state": "completed",
+        "terminal_event": "task.finalized",
+        "committed_at": "2026-10-01T15:35:20.977620Z",
+        "stages": {
+          "report": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "record": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "index": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "file_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "ui_notification": {
+            "state": "pending",
+            "attempts": 0,
+            "last_error_code": ""
+          }
+        },
+        "updated_at": "2026-10-01T15:35:56.992715Z"
+      }
+    },
+    "id": "DPZE-001",
+    "title": "Windows Docker minimal text round trip",
+    "status": "completed",
+    "assignee": "codex",
+    "steps": [
+      {
+        "id": 1,
+        "description": "Windows Docker minimal round-trip acceptance. Do not invoke tools, run commands, inspect files, change files, or browse. In your final answer state exactly WINDOWS_DOCKER_MIN_FLOW_OK as the result of this step, then provide the required AGENTBC_FINAL_CALLBACK for this actual task with step 1 done, using the callback format supplied by AgentBC. No intermediate tool-based progress is required for this text-only step.",
+        "record": "steps/01.json",
+        "status": "done",
+        "result": {
+          "status": "done",
+          "executor_result": {
+            "id": 1,
+            "status": "done"
+          }
+        }
+      }
+    ],
+    "created_by": "codex",
+    "created_at": "2026-10-01T15:34:42.403275Z",
+    "updated_at": "2026-10-01T15:35:20.977620Z",
+    "intervention": {
+      "paused": false,
+      "pause_reason": null,
+      "latest_correction_id": null
+    },
+    "errors": [],
+    "workspace": {
+      "customer_dir": false,
+      "customer_path": "",
+      "project_root": "/data/workspace/tasks/artifacts/2026-10-01/DPZE",
+      "default_path": "/data/workspace/tasks/artifacts/2026-10-01/DPZE",
+      "agentbc_root": "/data/workspace",
+      "root": "/data/workspace/tasks/artifacts/2026-10-01/DPZE",
+      "artifact_root": "/data/workspace/tasks/artifacts/2026-10-01/DPZE",
+      "artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-01/DPZE",
+      "report_root": "/data/workspace/tasks/report/2026-10-01/DPZE",
+      "task_file": "/data/workspace/tasks/report/2026-10-01/DPZE/DPZE-001-task.md",
+      "report_file": "/data/workspace/tasks/report/2026-10-01/DPZE/DPZE-001-report.md",
+      "output_dir": "/data/workspace/tasks/report/2026-10-01/DPZE",
+      "task_code": "DPZE",
+      "iteration": "001",
+      "task_date": "2026-10-01",
+      "chain_id": "DPZE",
+      "chain_token": "DPZE",
+      "chain_dir": "DPZE",
+      "chain_task_id": "001",
+      "chain_output_dir": "/data/workspace/tasks/report/2026-10-01/DPZE",
+      "internal_task_dir": "/data/workspace/record/DPZE/001"
+    },
+    "report": null,
+    "session_id": null,
+    "health": {
+      "state": "completed",
+      "color": "gray",
+      "stale_after_s": 300,
+      "long_stale_after_s": 600,
+      "startup_grace_s": 10,
+      "temp_file": "/data/workspace/record/DPZE/001/.DPZE-001.run.temp",
+      "run_log": "/data/workspace/record/DPZE/001/DPZE-001-run.log",
+      "last_progress_at": "",
+      "last_progress_age_s": null,
+      "run_lease_state": "",
+      "run_lease_pid": null,
+      "runner_alive": null,
+      "message": "",
+      "source": ""
+    },
+    "execution_policy": {
+      "version": 1,
+      "resources": null,
+      "session": {
+        "retain": false,
+        "session_id": "01a0f81a-ada6-74e0-8456-a780adfcfc13",
+        "session_state": "terminal",
+        "project_mode": "none",
+        "cleanup": {
+          "capability": "unknown",
+          "state": "not_requested",
+          "attempts": 0,
+          "error_code": "",
+          "retryable": false,
+          "version": 5,
+          "strategy": "none",
+          "phase": "waiting_for_cleanup",
+          "verification": {
+            "cli": {
+              "status": "unknown",
+              "checked_at": ""
+            },
+            "desktop_backend": {
+              "status": "unknown",
+              "checked_at": ""
+            },
+            "desktop_live": {
+              "status": "unknown",
+              "checked_at": ""
+            },
+            "desktop": {
+              "status": "unknown",
+              "checked_at": ""
+            }
+          },
+          "commands": {
+            "desktop_archive": {
+              "status": "not_requested",
+              "checked_at": "",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "app_server_archive": {
+              "status": "not_requested",
+              "checked_at": "",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "delete": {
+              "status": "not_requested",
+              "checked_at": "",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "archive": {
+              "status": "not_requested",
+              "checked_at": "",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            }
+          }
+        }
+      },
+      "permission_grant": null,
+      "auxiliary_sessions": [],
+      "auxiliary_aggregate": {
+        "state": "blocked",
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      },
+      "terminal_delivery": {
+        "version": 1,
+        "delivery_id": "6d024f60-97a9-4408-a251-dda14ef96c72",
+        "terminal_state": "completed",
+        "terminal_event": "task.finalized",
+        "committed_at": "2026-10-01T15:35:20.977620Z",
+        "stages": {
+          "report": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "record": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "index": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "file_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "ui_notification": {
+            "state": "pending",
+            "attempts": 0,
+            "last_error_code": ""
+          }
+        },
+        "updated_at": "2026-10-01T15:35:56.992715Z"
+      },
+      "delivery_health": {
+        "state": "pending",
+        "delivery_id": "6d024f60-97a9-4408-a251-dda14ef96c72",
+        "stages_total": 5,
+        "stages_succeeded": 4,
+        "stages_outstanding": 1,
+        "stages_retry_wait": 0,
+        "stages_in_progress": 0,
+        "outstanding_stages": [
+          "ui_notification"
+        ],
+        "attempts_total": 4,
+        "error_codes": [],
+        "healthy": false,
+        "updated_at": "2026-10-01T15:35:56.992715Z"
+      },
+      "progress": null
+    },
+    "chain_root_task_id": "DPZE-001",
+    "head_task_ids": [
+      "DPZE-001"
+    ],
+    "is_chain_head": true,
+    "chain_anomalies": [],
+    "parent_task_id": null,
+    "base_task_id": "DPZE-001",
+    "iteration_index": 1,
+    "branch_mode": "linear",
+    "task_code": "DPZE",
+    "iteration": "001",
+    "task_date": "2026-10-01",
+    "chain_task_id": "001",
+    "has_final_callback": true,
+    "report_ready": true,
+    "run_lease_state": "closed",
+    "execution": {
+      "internal_status": "completed",
+      "worker_run_id": "runner-worker-9adf376d4469",
+      "dispatch_status": "accepted",
+      "worker_pid": 103,
+      "monitor_status": "disabled",
+      "lease_state": "closed",
+      "executor_run_id": "codex-DPZE-001-35af38f8",
+      "run_intervals": [
+        {
+          "run_id": "codex-DPZE-001-35af38f8",
+          "executor_id": "codex",
+          "attempt_index": 0,
+          "started_at": "2026-10-01T15:34:42.667317Z",
+          "ended_at": "2026-10-01T15:34:42.667317Z",
+          "duration_s": 0.0,
+          "state": "closed"
+        }
+      ],
+      "executor_id": "codex",
+      "started_at": "2026-10-01T15:34:42.667317Z",
+      "last_heartbeat_at": "2026-10-01T15:34:42.667317Z",
+      "runner_status": "completed",
+      "pid": 103,
+      "output_truncated": false
+    },
+    "timing": {
+      "task_id": "DPZE-001",
+      "wall_duration_s": 38.574,
+      "execution_duration_s": null,
+      "last_run_duration_s": null,
+      "attempt_index": 0,
+      "attempt_started_at": "",
+      "attempt_wall_duration_s": null,
+      "attempt_execution_duration_s": null,
+      "attempt_run_count": 1,
+      "attempt_run_intervals": [],
+      "waiting_duration_s": 0.0,
+      "evidence_quality": "authoritative",
+      "execution_duration_known": false,
+      "run_count": 1,
+      "run_intervals": [],
+      "lease_state": "closed"
+    },
+    "debug": {
+      "execution": {
+        "internal_status": "completed",
+        "worker_run_id": "runner-worker-9adf376d4469",
+        "dispatch_status": "accepted",
+        "worker_pid": 103,
+        "monitor_status": "disabled",
+        "lease_state": "closed",
+        "executor_run_id": "codex-DPZE-001-35af38f8",
+        "run_intervals": [
+          {
+            "run_id": "codex-DPZE-001-35af38f8",
+            "executor_id": "codex",
+            "attempt_index": 0,
+            "started_at": "2026-10-01T15:34:42.667317Z",
+            "ended_at": "2026-10-01T15:34:42.667317Z",
+            "duration_s": 0.0,
+            "state": "closed"
+          }
+        ],
+        "executor_id": "codex",
+        "started_at": "2026-10-01T15:34:42.667317Z",
+        "last_heartbeat_at": "2026-10-01T15:34:42.667317Z",
+        "runner_status": "completed",
+        "pid": 103,
+        "output_truncated": false
+      },
+      "timing": {
+        "task_id": "DPZE-001",
+        "wall_duration_s": 38.574,
+        "execution_duration_s": null,
+        "last_run_duration_s": null,
+        "attempt_index": 0,
+        "attempt_started_at": "",
+        "attempt_wall_duration_s": null,
+        "attempt_execution_duration_s": null,
+        "attempt_run_count": 1,
+        "attempt_run_intervals": [],
+        "waiting_duration_s": 0.0,
+        "evidence_quality": "authoritative",
+        "execution_duration_known": false,
+        "run_count": 1,
+        "run_intervals": [],
+        "lease_state": "closed"
+      },
+      "permission": {
+        "version": 2,
+        "configured_mode": "inherit",
+        "inherited_mode": null,
+        "task_override": null,
+        "requested_mode": "inherit",
+        "effective_mode": "inherit",
+        "selection_source": "configured_default",
+        "selection_strategy": "inherit",
+        "resolved_base_mode": "native",
+        "resolution_state": "runtime",
+        "approval_policy": "on_block",
+        "scope": "task",
+        "mapping": {
+          "codex": {
+            "transport": "app-server",
+            "capability_id": "codex.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "codex",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          },
+          "claude": {
+            "transport": "cli",
+            "capability_id": "claude.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "claude",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          },
+          "hermes": {
+            "transport": "hermes-acp",
+            "capability_id": "hermes.acp.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "hermes",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          }
+        },
+        "permission_args": []
+      }
+    }
+  }
+}

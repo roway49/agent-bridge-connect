@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.0.5A - 2026-10-10
+
+Python package version: `1.0.5a1`.
+
+### Added
+
+- Offline Docker installation with managed host CLI, Dispatcher skills, configuration import, installation identity, and Native/Docker mutual exclusion.
+- Guided setup for existing API or login configurations, explicit project mounts, fixed WebUI ports, and background service preferences.
+- Windows interactive desktop approvals and completion notifications, including login/session recovery and 30-second completion-window dismissal.
+- Minimal read-only WebUI with task categories, terminal detail retention, report links, replaceable transport, and request cancellation/recovery.
+- OpenCode basic dispatch, execution, strict final callback and Core report support.
+- Structured multi-step handoff and native Codex parent/child execution with official identity binding and individual cleanup receipts.
+
+### Changed
+
+- Docker installations use the same host `agentbc` entrypoint for task, Runner, WebUI, setup, doctor, update and uninstall commands.
+- Cross-type switching requires uninstall and clean installation; same-type offline updates preserve managed identity and support failure recovery.
+- `agentbc approval max-time <seconds>` configures the maximum approval wait while respecting an earlier request deadline.
+- Tests are organized into unit, contract, integration and release layers with maintained architecture and repository gates.
+
+### Fixed
+
+- Installation readiness, Windows private-directory validation, configuration import, fixed-port WebUI recovery and cross-restart desktop binding.
+- Terminal delivery lock contention, interruption recovery eligibility, retry attempt binding and cancellation of detached worker descendants.
+- Codex native child event handling and container cleanup ordering: confirmed child cleanup precedes parent deletion; unresolved descendants block ancestor deletion.
+
+### Platform scope and known limits
+
+- Mac arm64 Docker has passed internal acceptance for four Executor basic flows. Windows amd64 Docker has passed technical acceptance for Codex, Claude and Hermes.
+- Physical Linux host acceptance and Windows OpenCode execution are deferred to 1.06a; container/virtual-environment results are not physical-host certification.
+- OpenCode native approval, pending-task duration correction, and live execution/conversation views remain deferred. Further GUI polish is outside this release scope.
+- Historical acceptance is tied to its recorded candidate identity. Publication and final release artifacts are gated by the release PR checks and final package validation; this changelog does not publish a release.
+
 ## 1.0.4A - 2026-09-17
 
 > Release candidate for Python package `1.0.4a1`. Publication remains gated

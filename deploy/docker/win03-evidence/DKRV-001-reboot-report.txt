@@ -1,0 +1,130 @@
+# Report: Windows codex post-reboot write-read verification
+
+## Summary
+- Task: `DKRV-001`
+- Status: `completed`
+- Agent declared state: `completed`
+- Marker valid: `yes`
+- Completed steps: `1/1`
+- Flow contract satisfied: `yes`
+- Terminal delivery: `succeeded`
+- Terminal delivery outstanding: `none`
+- Failure code: `none`
+- Failed steps: `none`
+- Blocked steps: `none`
+- Assignee: `codex`
+- Requested permission mode: `inherit`
+- Effective permission mode: `inherit`
+- Permission selection source: `configured_default`
+- Created: `2026-10-07 13:39:43 UTC`
+- Completed: `2026-10-07 13:42:01 UTC`
+- Duration: `35s`
+- Execution duration: `35s`
+- Last run duration: `35s`
+- Execution evidence: `authoritative`
+- Waiting duration: `1m 15s`
+- Wall duration: `2m 18s`
+- Run lease: `closed`
+- Last heartbeat age: `16m 40s`
+- Recovery: No recovery action is required.
+
+## Path Plan
+- Task code: `DKRV`
+- Iteration: `001`
+- Task date: `2026-10-07`
+- Customer directory: `False`
+- Customer path: `none`
+- Project root: `/data/workspace/tasks/artifacts/2026-10-07/DKRV`
+- Artifact root: `/data/workspace/tasks/artifacts/2026-10-07/DKRV`
+- Report directory: `/data/workspace/tasks/report/2026-10-07/DKRV`
+- Runtime record: `/data/workspace/record/DKRV/001`
+- Task brief: `/data/workspace/tasks/report/2026-10-07/DKRV/DKRV-001-task.md`
+- Report: `/data/workspace/tasks/report/2026-10-07/DKRV/DKRV-001-report.md`
+
+## Execution Policy
+- Resource: `none`
+- Effective limit: `none`
+- Configured limit: `none`
+- Exhaustion count: `none`
+- Last decision: `none`
+- Resource source: `none`
+- Resource frozen: `no`
+- Retain executor session: `no`
+- Executor session ID: `01a11697-78ed-7f60-965a-ed05b9b8488e`
+- Session state: `terminal`
+- Project mode: `none`
+- Cleanup capability: `supported`
+- Cleanup state: `succeeded`
+- Cleanup attempts: `1`
+- Cleanup error code: `none`
+- Cleanup retryable: `no`
+- Cleanup phase: `delete_acknowledged`
+- Cleanup strategy: `container_session_archive_then_delete`
+- CLI verification: `absent` checked_at=`2026-10-07T13:43:55.315662Z`
+- Desktop backend verification: `not_applicable` checked_at=`2026-10-07T13:43:54.819361Z`
+- Desktop live verification: `not_applicable` checked_at=`2026-10-07T13:43:54.819361Z`
+- Desktop verification (aggregate): `not_applicable` checked_at=`2026-10-07T13:43:54.819361Z`
+- Cleanup `desktop_archive` command: `not_applicable` checked_at=`2026-10-07T13:43:54.819361Z`
+- Cleanup `app_server_archive` command: `acknowledged` checked_at=`2026-10-07T13:43:54.964453Z`
+- Cleanup `delete` command: `acknowledged` checked_at=`2026-10-07T13:43:55.315662Z`
+
+### Task Elevation
+- Mode: `full`
+- Source: `task_elevation`
+- State: `verified`
+- Error code: `none`
+- Request cardinality: `1`
+- Notification cardinality: `1`
+- Human decision cardinality: `1`
+- Full continuation cardinality: `1`
+
+## Confirmed Progress
+- Evidence: `authoritative`
+- Attempt: `0`
+- Latest sequence: `1`
+- Confirmed steps: `1`
+- Updated: `2026-10-07T13:41:45.650494Z`
+- Parent task: `none`
+- Previous report: `none`
+- Current task: `DKRV-001`
+- Chain root task: `DKRV-001`
+- Base task: `DKRV-001`
+- Current chain heads: `DKRV-001`
+- Is chain head: `yes`
+- Branch mode: `linear`
+- Base workspace: `/data/workspace/tasks/artifacts/2026-10-07/DKRV`
+- Base artifacts: `/data/workspace/tasks/artifacts/2026-10-07/DKRV`
+- Iteration: `1`
+
+## Input Lifecycle
+- Input ID: `input-63f4ce6c6fcf4de1989acf9a715d968a`
+- Status: `answered`
+- Blocked step/type: `1` / `permission`
+- Summary: Command execution approval requested
+- Deadline: `2026-10-07T13:45:08.478201Z`
+
+## Steps
+1. [done] Windows Docker codex execution verification. In this task assigned artifact root only, create codex-verify.txt containing exactly WINDOWS_CODEX_VERIFY_OK, then read the same file back and verify its content. Keep existing inherited permissions. If approval is required, wait for the human and respect denial; do not bypass or change permissions. Do not access credentials, network tools, other projects, or settings. Report the actual outcome and required AGENTBC_FINAL_CALLBACK for this task; mark step 1 done only after successful write and read.
+
+## Artifacts
+- `codex-verify.txt`
+
+## Timeline
+- `2026-10-07 13:39:43 UTC` created
+- `2026-10-07 13:41:26 UTC` executor.session_run_started
+- `2026-10-07 13:41:45 UTC` task.progress_recorded
+- `2026-10-07 13:42:01 UTC` task.finalized
+- `2026-10-07 13:42:02 UTC` notification_delivery
+- `2026-10-07 13:42:02 UTC` task.permission_elevation_verified
+- `2026-10-07 13:43:12 UTC` notification_delivery
+
+## Dispatcher Traceability
+- Dispatcher platform: `codex`
+- Dispatcher conversation ID: `unavailable`
+
+## Duration
+- Execution duration: `35s`
+- Last run duration: `35s`
+- Execution evidence: `authoritative`
+- Waiting duration: `1m 15s`
+- Wall duration: `2m 18s`

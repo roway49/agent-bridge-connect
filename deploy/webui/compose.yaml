@@ -1,0 +1,42 @@
+# Merge with the Docker mainline Compose. This file does not build a second image.
+services:
+  webui:
+    image: ${AGENTBC_IMAGE:?Set the mainline image digest}
+    user: "${AGENTBC_UID:-1000}:${AGENTBC_GID:-1000}"
+    entrypoint: ["agentbc", "webui", "serve"]
+    command:
+      - --root
+      - /data/record
+      - --report-root
+      - /data/report
+      - --port
+      - "8080"
+      - --listen-host
+      - 0.0.0.0
+      - --public-origin
+      - http://127.0.0.1:${AGENTBC_WEBUI_PORT:?Set the saved fixed port}
+      - --launch-file
+      - /run/webui/launch-url
+    ports:
+      - "127.0.0.1:${AGENTBC_WEBUI_PORT}:8080"
+    volumes:
+      - type: bind
+        source: ${AGENTBC_RECORD_ROOT:?Set existing record root}
+        target: /data/record
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${AGENTBC_REPORT_ROOT:?Set existing report root}
+        target: /data/report
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /run/webui:mode=0700,uid=${AGENTBC_UID:-1000},gid=${AGENTBC_GID:-1000}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    restart: ${AGENTBC_WEBUI_RESTART:-no}
+    profiles: [webui]

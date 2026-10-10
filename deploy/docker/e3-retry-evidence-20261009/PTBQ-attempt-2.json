@@ -1,0 +1,1344 @@
+{
+  "extensions": {
+    "agentbc.provenance": {
+      "source_platform": "codex",
+      "conversation_id": "01a0b730-adce-7911-ae63-a9fc6b915580"
+    },
+    "agentbc.lineage": {
+      "parent_task_id": null,
+      "base_task_id": "PTBQ-001",
+      "chain_root_task_id": "PTBQ-001",
+      "iteration_index": 1,
+      "task_code": "PTBQ",
+      "task_date": "2026-10-09",
+      "agentbc_root": "/data/workspace",
+      "base_workspace_root": "/data/workspace/tasks/artifacts/2026-10-09/PTBQ",
+      "base_artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-09/PTBQ",
+      "branch_mode": "linear",
+      "chain_id": "PTBQ",
+      "chain_token": "PTBQ",
+      "chain_dir": "PTBQ",
+      "chain_task_id": "001",
+      "chain_output_dir": "/data/workspace/tasks/report/2026-10-09/PTBQ"
+    },
+    "agentbc.execution": {
+      "internal_status": "completed",
+      "lease_state": "active",
+      "run_intervals": [
+        {
+          "run_id": "codex-PTBQ-001-c24031db",
+          "executor_id": "codex",
+          "attempt_index": 0,
+          "started_at": "2026-10-09T15:15:02.807692Z",
+          "ended_at": "2026-10-09T15:15:02.807692Z",
+          "duration_s": 0.0,
+          "state": "suspended"
+        },
+        {
+          "run_id": "codex-PTBQ-001-d2062272",
+          "executor_id": "codex",
+          "attempt_index": 0,
+          "started_at": "2026-10-09T15:15:30.217255Z",
+          "ended_at": "2026-10-09T15:15:58.856041Z",
+          "duration_s": 28.639,
+          "state": "closed"
+        },
+        {
+          "run_id": "codex-PTBQ-001-d72835ba",
+          "executor_id": "codex",
+          "attempt_index": 1,
+          "started_at": "2026-10-09T15:17:12.329505Z",
+          "ended_at": "2026-10-09T15:17:12.329505Z",
+          "duration_s": 0.0,
+          "state": "suspended"
+        },
+        {
+          "run_id": "codex-PTBQ-001-fe3e5455",
+          "executor_id": "codex",
+          "attempt_index": 1,
+          "started_at": "2026-10-09T15:17:41.115285Z",
+          "ended_at": "2026-10-09T15:18:30.003332Z",
+          "duration_s": 48.888,
+          "state": "closed"
+        },
+        {
+          "run_id": "codex-PTBQ-001-31193e96",
+          "executor_id": "codex",
+          "attempt_index": 2,
+          "started_at": "2026-10-09T15:20:06.059910Z",
+          "ended_at": "2026-10-09T15:20:06.059910Z",
+          "duration_s": 0.0,
+          "state": "suspended"
+        },
+        {
+          "run_id": "codex-PTBQ-001-18f6f2df",
+          "executor_id": "codex",
+          "attempt_index": 2,
+          "started_at": "2026-10-09T15:20:30.346058Z",
+          "ended_at": "2026-10-09T15:21:02.433361Z",
+          "duration_s": 32.087,
+          "state": "closed"
+        }
+      ],
+      "permission_elevation_mode": "full",
+      "permission_elevation_source": "task_elevation",
+      "permission_elevation_state": "verified",
+      "log_worker_run_id": "runner-worker-b1474a05a8f2",
+      "resuming_at": "2026-10-09T15:20:30.236178Z",
+      "permission_runtime_state": "retired",
+      "attempt_index": 2,
+      "attempt_started_at": "2026-10-09T15:20:05.767372Z",
+      "waiting_since": "2026-10-09T15:20:24.433050Z",
+      "worker_run_id": "runner-worker-b68ee41d712d",
+      "dispatch_status": "accepted",
+      "worker_pid": 3948,
+      "monitor_status": "disabled",
+      "executor_run_id": "codex-PTBQ-001-18f6f2df"
+    },
+    "agentbc.permission": {
+      "version": 2,
+      "configured_mode": "inherit",
+      "inherited_mode": null,
+      "task_override": null,
+      "requested_mode": "inherit",
+      "effective_mode": "inherit",
+      "selection_source": "configured_default",
+      "selection_strategy": "inherit",
+      "resolved_base_mode": "native",
+      "resolution_state": "runtime",
+      "approval_policy": "on_block",
+      "scope": "task",
+      "mapping": {
+        "codex": {
+          "transport": "app-server",
+          "capability_id": "codex.inherit",
+          "args": [],
+          "env": {},
+          "decisions": null,
+          "overrides_native": false,
+          "executor": "codex",
+          "mode": "inherit",
+          "scope": "executor_subprocess",
+          "direct_args": []
+        },
+        "claude": {
+          "transport": "cli",
+          "capability_id": "claude.inherit",
+          "args": [],
+          "env": {},
+          "decisions": null,
+          "overrides_native": false,
+          "executor": "claude",
+          "mode": "inherit",
+          "scope": "executor_subprocess",
+          "direct_args": []
+        },
+        "hermes": {
+          "transport": "hermes-acp",
+          "capability_id": "hermes.acp.inherit",
+          "args": [],
+          "env": {},
+          "decisions": null,
+          "overrides_native": false,
+          "executor": "hermes",
+          "mode": "inherit",
+          "scope": "executor_subprocess",
+          "direct_args": []
+        }
+      },
+      "permission_args": []
+    },
+    "agentbc.permission_protocol": {
+      "version": 3,
+      "scope": "task_elevation",
+      "mode": "full",
+      "decisions": [
+        "approve_full",
+        "deny"
+      ]
+    },
+    "agentbc.session": {
+      "version": 1,
+      "executor": "codex",
+      "retain": false,
+      "session_id": "01a12140-0576-7081-b4db-6956f98bc932",
+      "session_state": "terminal",
+      "project_mode": "none",
+      "run_ids": [
+        "codex-PTBQ-001-31193e96",
+        "codex-PTBQ-001-18f6f2df"
+      ],
+      "run_resume_facts": {
+        "codex-PTBQ-001-31193e96": false,
+        "codex-PTBQ-001-18f6f2df": true
+      },
+      "resume_count": 1,
+      "cleanup": {
+        "capability": "supported",
+        "state": "succeeded",
+        "attempts": 1,
+        "error_code": "",
+        "retryable": false,
+        "version": 5,
+        "strategy": "container_session_archive_then_delete",
+        "phase": "delete_acknowledged",
+        "verification": {
+          "cli": {
+            "status": "absent",
+            "checked_at": "2026-10-09T15:21:19.677629Z"
+          },
+          "desktop_backend": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T15:21:19.392359Z"
+          },
+          "desktop_live": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T15:21:19.392359Z"
+          },
+          "desktop": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T15:21:19.392359Z"
+          }
+        },
+        "commands": {
+          "desktop_archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T15:21:19.392359Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "app_server_archive": {
+            "status": "acknowledged",
+            "checked_at": "2026-10-09T15:21:19.471155Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "delete": {
+            "status": "acknowledged",
+            "checked_at": "2026-10-09T15:21:19.677629Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T15:21:19.392359Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          }
+        }
+      },
+      "created_at": "2026-10-09T15:20:05.767372Z",
+      "receipt_source": "jsonl_thread_started",
+      "official_receipt_bound": true
+    },
+    "agentbc.approval": {
+      "version": 3,
+      "scope": "task_elevation",
+      "kind": "permission",
+      "executor": "codex",
+      "operation": "command",
+      "elevation_mode": "full",
+      "requested_permission": "full",
+      "summary": "Command execution approval requested",
+      "summary_truncated": false,
+      "state": "answered",
+      "source": "task_elevation",
+      "path_plan_digest": "",
+      "containment_profile_digest": "",
+      "created_at": "2026-10-09T15:20:24.432212Z",
+      "cardinality": {
+        "permission_requests": 1,
+        "notifications": 1,
+        "human_decisions": 1,
+        "elevation_receipts": 1,
+        "full_continuations": 1
+      },
+      "authority": {
+        "executor": "codex",
+        "protocol": "codex_app_server",
+        "protocol_version": 2,
+        "method": "item/commandExecution/requestApproval"
+      },
+      "native_event": "codex_app_server.item/commandExecution/requestApproval",
+      "request_fingerprint": "fp-5b4762028bfd18b85ade32e7cb726852e83edf57",
+      "reason_summary": "Command execution approval requested",
+      "decision": "approve_full",
+      "decision_source": "user",
+      "decided_at": "2026-10-09T15:20:30.236178Z",
+      "full_continuations": 1
+    },
+    "agentbc.revival": {
+      "version": 1,
+      "revival_id": "REV-66a17f9560f04ed9a79d33375a3dd2de",
+      "operation": "retry",
+      "state": "committed",
+      "created_at": "2026-10-09T15:20:05.763304Z",
+      "updated_at": "2026-10-09T15:20:05.767372Z",
+      "source_task_id": "PTBQ-001",
+      "source_attempt_id": "attempt-1",
+      "target_task_id": "",
+      "target_attempt_id": "attempt-2",
+      "source_report_digest": "sha256:35a936e0348b343516553b8bf0e02f488cf5cda66958caf1a8190b7f722ba408",
+      "source_requirements_digest": "sha256:3088186395d56d1df8091a6db5d01f33eb25407d52cf34706f487170bb9d87d4",
+      "path_plan_digest": "sha256:e40e2d305aeacb7ff4b767fc7d9b553510f9caec3dc95047ed0a30c4e51989a9",
+      "policy_digest": "sha256:72c165ef9b8d91b8459067f5ab0f28f0dc0a010e3135bce924d80dc085fc7874",
+      "cleanup_scope": "managed_default_artifacts",
+      "inherited_done_step_ids": [],
+      "resumed_step_ids": [
+        1
+      ],
+      "warnings": []
+    },
+    "agentbc.input_history": [
+      {
+        "input_id": "input-2a94e11d38ea4ecf8370a0fcaff0b355",
+        "executor_run_id": "codex-PTBQ-001-c24031db",
+        "blocked_step_id": 1,
+        "type": "permission",
+        "scope": "task_elevation",
+        "approval_version": 3,
+        "elevation_mode": "full",
+        "requested_permission": "full",
+        "session_id": "01a1213b-7117-7223-b776-5563bac10330",
+        "request_id": "0",
+        "request_fingerprint": "fp-6bed12f4abb4ba4f2bfdc9733b53b3d617b6fe84",
+        "operation": "command",
+        "summary": "Command execution approval requested",
+        "reason_summary": "Command execution approval requested",
+        "summary_truncated": false,
+        "path_plan_digest": "",
+        "containment_profile_digest": "",
+        "authority": {
+          "executor": "codex",
+          "method": "item/commandExecution/requestApproval",
+          "protocol": "codex_app_server",
+          "protocol_version": 2
+        },
+        "native_event": "codex_app_server.item/commandExecution/requestApproval",
+        "tool_name": "",
+        "tool_use_id": "",
+        "action_fingerprint": "",
+        "escalation_domain": "",
+        "control_path": "",
+        "preflight": {
+          "status": "retired",
+          "mode": "full"
+        },
+        "created_at": "2026-10-09T15:15:22.302982Z",
+        "deadline_at": "2026-10-09T15:20:21.819758Z",
+        "approval_max_time_s": 300.0,
+        "status": "revoked",
+        "responded_at": "2026-10-09T15:15:30.120220Z",
+        "response": {
+          "type": "approve_full",
+          "summary": "approve_full"
+        },
+        "revoked_at": "2026-10-09T15:17:12.109836Z",
+        "revoked_reason": "failed_task_retry"
+      },
+      {
+        "input_id": "input-dee5b899e533492da12d136496d7b060",
+        "executor_run_id": "codex-PTBQ-001-d72835ba",
+        "blocked_step_id": 1,
+        "type": "permission",
+        "scope": "task_elevation",
+        "approval_version": 3,
+        "elevation_mode": "full",
+        "requested_permission": "full",
+        "session_id": "01a1213d-5ed5-7931-ad30-3a9934962622",
+        "request_id": "0",
+        "request_fingerprint": "fp-7f2bad02e577d256e9c90e424b622c05e2d960b0",
+        "operation": "command",
+        "summary": "Command execution approval requested",
+        "reason_summary": "Command execution approval requested",
+        "summary_truncated": false,
+        "path_plan_digest": "",
+        "containment_profile_digest": "",
+        "authority": {
+          "executor": "codex",
+          "method": "item/commandExecution/requestApproval",
+          "protocol": "codex_app_server",
+          "protocol_version": 2
+        },
+        "native_event": "codex_app_server.item/commandExecution/requestApproval",
+        "tool_name": "",
+        "tool_use_id": "",
+        "action_fingerprint": "",
+        "escalation_domain": "",
+        "control_path": "",
+        "preflight": {
+          "status": "retired",
+          "mode": "full"
+        },
+        "created_at": "2026-10-09T15:17:34.701847Z",
+        "deadline_at": "2026-10-09T15:22:33.757115Z",
+        "approval_max_time_s": 300.0,
+        "status": "revoked",
+        "responded_at": "2026-10-09T15:17:41.017926Z",
+        "response": {
+          "type": "approve_full",
+          "summary": "approve_full"
+        },
+        "revoked_at": "2026-10-09T15:20:05.767372Z",
+        "revoked_reason": "failed_task_retry"
+      }
+    ],
+    "agentbc.permission_elevation": {
+      "version": 1,
+      "mode": "full",
+      "source": "task_elevation",
+      "requested_permission": "full",
+      "state": "verified",
+      "path_plan_digest": "",
+      "containment_profile_digest": "",
+      "cardinality": {
+        "permission_requests": 1,
+        "notifications": 1,
+        "human_decisions": 1,
+        "elevation_receipts": 1,
+        "full_continuations": 1
+      },
+      "authority": {
+        "executor": "codex",
+        "protocol": "codex_app_server",
+        "protocol_version": 2,
+        "method": "item/commandExecution/requestApproval"
+      },
+      "native_event": "codex_app_server.item/commandExecution/requestApproval",
+      "request_fingerprint": "fp-5b4762028bfd18b85ade32e7cb726852e83edf57",
+      "created_at": "2026-10-09T15:20:24.432826Z",
+      "decision": "approve_full",
+      "decision_source": "user",
+      "decided_at": "2026-10-09T15:20:30.236178Z"
+    },
+    "agentbc.input": {
+      "input_id": "input-204c71ff320b4d20a4157f4b0ecedbd3",
+      "executor_run_id": "codex-PTBQ-001-31193e96",
+      "blocked_step_id": 1,
+      "type": "permission",
+      "scope": "task_elevation",
+      "approval_version": 3,
+      "elevation_mode": "full",
+      "requested_permission": "full",
+      "session_id": "01a12140-0576-7081-b4db-6956f98bc932",
+      "request_id": "0",
+      "request_fingerprint": "fp-5b4762028bfd18b85ade32e7cb726852e83edf57",
+      "operation": "command",
+      "summary": "Command execution approval requested",
+      "reason_summary": "Command execution approval requested",
+      "summary_truncated": false,
+      "path_plan_digest": "",
+      "containment_profile_digest": "",
+      "authority": {
+        "executor": "codex",
+        "method": "item/commandExecution/requestApproval",
+        "protocol": "codex_app_server",
+        "protocol_version": 2
+      },
+      "native_event": "codex_app_server.item/commandExecution/requestApproval",
+      "tool_name": "",
+      "tool_use_id": "",
+      "action_fingerprint": "",
+      "escalation_domain": "",
+      "control_path": "",
+      "preflight": {
+        "status": "retired",
+        "mode": "full"
+      },
+      "created_at": "2026-10-09T15:20:24.433050Z",
+      "deadline_at": "2026-10-09T15:25:24.163404Z",
+      "approval_max_time_s": 300.0,
+      "status": "answered",
+      "responded_at": "2026-10-09T15:20:30.236178Z",
+      "response": {
+        "type": "approve_full",
+        "summary": "approve_full"
+      }
+    },
+    "agentbc.progress": {
+      "version": 1,
+      "attempt_index": 2,
+      "latest_sequence": 1,
+      "confirmed_step_ids": [
+        1
+      ],
+      "confirmed_count": 1,
+      "evidence_quality": "authoritative",
+      "updated_at": "2026-10-09T15:20:54.938452Z"
+    },
+    "agentbc.final_callback": {
+      "version": 1,
+      "task_id": "PTBQ-001",
+      "final_state": "completed",
+      "report_file": "/data/workspace/tasks/report/2026-10-09/PTBQ/PTBQ-001-report.md",
+      "artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-09/PTBQ",
+      "summary": "官方attempt_index=2；e3-attempt.txt与e3-success.txt已写入并读回验证，步骤1 authoritative progress已记录。",
+      "executor_run_id": "codex-PTBQ-001-18f6f2df",
+      "finished_at": "2026-10-09T15:21:02.436046Z",
+      "source": "executor_final_marker",
+      "outcome": "flow_declared",
+      "exit_code": 0,
+      "step_results": [
+        {
+          "id": 1,
+          "status": "done"
+        }
+      ],
+      "marker_valid": true,
+      "completed_step_count": 1
+    },
+    "agentbc.terminal_delivery": {
+      "version": 1,
+      "delivery_id": "8157f1b8-e124-404d-ac94-fa3c1c51e379",
+      "terminal_state": "completed",
+      "terminal_event": "task.finalized",
+      "committed_at": "2026-10-09T15:21:02.436046Z",
+      "stages": {
+        "report": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "record": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "index": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "file_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "ui_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        }
+      },
+      "updated_at": "2026-10-09T15:21:04.428585Z"
+    }
+  },
+  "id": "PTBQ-001",
+  "title": "E3 连续两次retry真实回执验证",
+  "status": "completed",
+  "assignee": "codex",
+  "steps": [
+    {
+      "id": 1,
+      "description": "这是E3连续两次retry的受控执行测试。通过已提供的本任务官方任务记录或agentbc task status读取本任务agentbc.execution.attempt_index；缺省为0，不能推测或修改该值。创建本任务artifact root中的e3-attempt.txt，写入真实attempt_index并读回。attempt_index为0或1时，明确按测试条件报告步骤failed、任务failed，输出合法AGENTBC_FINAL_CALLBACK，说明这是预期失败，用于控制器核验官方清理后再retry。attempt_index为2时，创建e3-success.txt内容严格为AGENTBC_E3_SUCCESS加一个换行，读回验证，记录步骤1 authoritative progress并输出合法completed最终callback。其他attempt值如实失败，不冒充成功。禁止自行retry、改任务记录、修改权限或配置、联网、创建子任务；只读自身任务状态，只写本任务artifact root，保持正常人工审批。",
+      "record": "steps/01.json",
+      "status": "done",
+      "result": {
+        "status": "done",
+        "executor_result": {
+          "id": 1,
+          "status": "done"
+        },
+        "progress_receipt": {
+          "version": 1,
+          "sequence": 1,
+          "evidence_source": "agent_cli"
+        }
+      }
+    }
+  ],
+  "created_by": "codex",
+  "created_at": "2026-10-09T15:15:02.707307Z",
+  "updated_at": "2026-10-09T15:21:02.656397Z",
+  "intervention": {
+    "latest_correction_id": null
+  },
+  "errors": [
+    {
+      "code": "completion_marker_state_invalid",
+      "message": "Unsupported final marker state: failed",
+      "details": {
+        "executor": "codex",
+        "result": {
+          "events_seen": 13,
+          "event_types": [
+            "thread.started",
+            "turn.started",
+            "item.completed",
+            "item.started",
+            "turn.completed"
+          ],
+          "summary": "官方状态中 `agentbc.execution.attempt_index` 缺省，按规则取 0。已写入 `e3-attempt.txt` 并读回验证为 `0\\n`。步骤及任务按测试条件预期失败，供控制器核验官方清理后再 retry；未自行 retry。",
+          "stderr_bytes": 0,
+          "returncode": 0,
+          "agent_callback": null,
+          "marker_valid": false,
+          "marker_seen": true,
+          "failure": {
+            "kind": "completion_marker_state_invalid",
+            "layer": "flow_contract",
+            "message": "Unsupported final marker state: failed",
+            "retryable": false
+          },
+          "execution_session": {
+            "version": 1,
+            "executor": "codex",
+            "session_id": "01a1213b-7117-7223-b776-5563bac10330",
+            "resumed": true,
+            "persistence": "persistent",
+            "source": "jsonl_thread_started"
+          },
+          "extensions": {
+            "executor": {
+              "codex": {
+                "agent_bin": "/opt/agentbc/bin/codex",
+                "agent_bin_source": "extra_path",
+                "capability_level": 2,
+                "last_run_id": "codex-PTBQ-001-d2062272",
+                "last_run": {
+                  "run_id": "codex-PTBQ-001-d2062272",
+                  "workspace": "/data/workspace/tasks/artifacts/2026-10-09/PTBQ",
+                  "permission": {
+                    "version": 2,
+                    "configured_mode": "inherit",
+                    "inherited_mode": null,
+                    "task_override": null,
+                    "requested_mode": "inherit",
+                    "effective_mode": "inherit",
+                    "selection_source": "configured_default",
+                    "selection_strategy": "inherit",
+                    "resolved_base_mode": "native",
+                    "resolution_state": "runtime",
+                    "approval_policy": "on_block",
+                    "scope": "task",
+                    "mapping": {
+                      "codex": {
+                        "transport": "app-server",
+                        "capability_id": "codex.inherit",
+                        "args": [],
+                        "env": {},
+                        "decisions": null,
+                        "overrides_native": false,
+                        "executor": "codex",
+                        "mode": "inherit",
+                        "scope": "executor_subprocess",
+                        "direct_args": []
+                      },
+                      "claude": {
+                        "transport": "cli",
+                        "capability_id": "claude.inherit",
+                        "args": [],
+                        "env": {},
+                        "decisions": null,
+                        "overrides_native": false,
+                        "executor": "claude",
+                        "mode": "inherit",
+                        "scope": "executor_subprocess",
+                        "direct_args": []
+                      },
+                      "hermes": {
+                        "transport": "hermes-acp",
+                        "capability_id": "hermes.acp.inherit",
+                        "args": [],
+                        "env": {},
+                        "decisions": null,
+                        "overrides_native": false,
+                        "executor": "hermes",
+                        "mode": "inherit",
+                        "scope": "executor_subprocess",
+                        "direct_args": []
+                      }
+                    },
+                    "permission_args": []
+                  },
+                  "writable_roots": [
+                    "/data/workspace/tasks/artifacts/2026-10-09/PTBQ",
+                    "/data/workspace/record"
+                  ],
+                  "events_seen": 13,
+                  "returncode": 0
+                }
+              }
+            }
+          }
+        },
+        "progress": {
+          "events_seen": 13
+        }
+      },
+      "created_at": "2026-10-09T15:15:58.864417Z"
+    },
+    {
+      "code": "completion_marker_state_invalid",
+      "message": "Unsupported final marker state: failed",
+      "details": {
+        "executor": "codex",
+        "result": {
+          "events_seen": 19,
+          "event_types": [
+            "thread.started",
+            "turn.started",
+            "item.completed",
+            "item.started",
+            "turn.completed"
+          ],
+          "summary": "官方 attempt_index 为 1，已将 `1\\n` 写入 e3-attempt.txt 并读回验证。步骤1及任务按测试条件预期失败，等待控制器核验清理后 retry；未自行 retry。 当前回执协议不支持 `final_state: failed`，因此无法同时满足“任务失败”和“合法回执”的要求；以下如实报告失败。",
+          "stderr_bytes": 0,
+          "returncode": 0,
+          "agent_callback": null,
+          "marker_valid": false,
+          "marker_seen": true,
+          "failure": {
+            "kind": "completion_marker_state_invalid",
+            "layer": "flow_contract",
+            "message": "Unsupported final marker state: failed",
+            "retryable": false
+          },
+          "execution_session": {
+            "version": 1,
+            "executor": "codex",
+            "session_id": "01a1213d-5ed5-7931-ad30-3a9934962622",
+            "resumed": true,
+            "persistence": "persistent",
+            "source": "jsonl_thread_started"
+          },
+          "extensions": {
+            "executor": {
+              "codex": {
+                "agent_bin": "/opt/agentbc/bin/codex",
+                "agent_bin_source": "extra_path",
+                "capability_level": 2,
+                "last_run_id": "codex-PTBQ-001-fe3e5455",
+                "last_run": {
+                  "run_id": "codex-PTBQ-001-fe3e5455",
+                  "workspace": "/data/workspace/tasks/artifacts/2026-10-09/PTBQ",
+                  "permission": {
+                    "version": 2,
+                    "configured_mode": "inherit",
+                    "inherited_mode": null,
+                    "task_override": null,
+                    "requested_mode": "inherit",
+                    "effective_mode": "inherit",
+                    "selection_source": "configured_default",
+                    "selection_strategy": "inherit",
+                    "resolved_base_mode": "native",
+                    "resolution_state": "runtime",
+                    "approval_policy": "on_block",
+                    "scope": "task",
+                    "mapping": {
+                      "codex": {
+                        "transport": "app-server",
+                        "capability_id": "codex.inherit",
+                        "args": [],
+                        "env": {},
+                        "decisions": null,
+                        "overrides_native": false,
+                        "executor": "codex",
+                        "mode": "inherit",
+                        "scope": "executor_subprocess",
+                        "direct_args": []
+                      },
+                      "claude": {
+                        "transport": "cli",
+                        "capability_id": "claude.inherit",
+                        "args": [],
+                        "env": {},
+                        "decisions": null,
+                        "overrides_native": false,
+                        "executor": "claude",
+                        "mode": "inherit",
+                        "scope": "executor_subprocess",
+                        "direct_args": []
+                      },
+                      "hermes": {
+                        "transport": "hermes-acp",
+                        "capability_id": "hermes.acp.inherit",
+                        "args": [],
+                        "env": {},
+                        "decisions": null,
+                        "overrides_native": false,
+                        "executor": "hermes",
+                        "mode": "inherit",
+                        "scope": "executor_subprocess",
+                        "direct_args": []
+                      }
+                    },
+                    "permission_args": []
+                  },
+                  "writable_roots": [
+                    "/data/workspace/tasks/artifacts/2026-10-09/PTBQ",
+                    "/data/workspace/record"
+                  ],
+                  "events_seen": 19,
+                  "returncode": 0
+                }
+              }
+            }
+          }
+        },
+        "progress": {
+          "events_seen": 19
+        }
+      },
+      "created_at": "2026-10-09T15:18:30.010779Z"
+    }
+  ],
+  "workspace": {
+    "customer_dir": false,
+    "customer_path": "",
+    "project_root": "/data/workspace/tasks/artifacts/2026-10-09/PTBQ",
+    "default_path": "/data/workspace/tasks/artifacts/2026-10-09/PTBQ",
+    "agentbc_root": "/data/workspace",
+    "root": "/data/workspace/tasks/artifacts/2026-10-09/PTBQ",
+    "artifact_root": "/data/workspace/tasks/artifacts/2026-10-09/PTBQ",
+    "artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-09/PTBQ",
+    "report_root": "/data/workspace/tasks/report/2026-10-09/PTBQ",
+    "task_file": "/data/workspace/tasks/report/2026-10-09/PTBQ/PTBQ-001-task.md",
+    "report_file": "/data/workspace/tasks/report/2026-10-09/PTBQ/PTBQ-001-report.md",
+    "output_dir": "/data/workspace/tasks/report/2026-10-09/PTBQ",
+    "task_code": "PTBQ",
+    "iteration": "001",
+    "task_date": "2026-10-09",
+    "chain_id": "PTBQ",
+    "chain_token": "PTBQ",
+    "chain_dir": "PTBQ",
+    "chain_task_id": "001",
+    "chain_output_dir": "/data/workspace/tasks/report/2026-10-09/PTBQ",
+    "internal_task_dir": "/data/workspace/record/PTBQ/001"
+  },
+  "report": null,
+  "session_id": "01a0b730-adce-7911-ae63-a9fc6b915580",
+  "revival": {
+    "version": 1,
+    "eligible": false,
+    "allowed_next_actions": [],
+    "recommended_action": "",
+    "error_codes": [
+      "revival_source_status_invalid"
+    ],
+    "warnings": [],
+    "reservation": {
+      "revival_id": "REV-66a17f9560f04ed9a79d33375a3dd2de",
+      "operation": "retry",
+      "state": "committed",
+      "created_at": "2026-10-09T15:20:05.763304Z"
+    },
+    "replay_revival_id": ""
+  },
+  "health": {
+    "state": "completed",
+    "color": "gray",
+    "stale_after_s": 300,
+    "long_stale_after_s": 600,
+    "startup_grace_s": 10,
+    "temp_file": "/data/workspace/record/PTBQ/001/.PTBQ-001.run.temp",
+    "run_log": "/data/workspace/record/PTBQ/001/PTBQ-001-run.log",
+    "last_progress_at": "",
+    "last_progress_age_s": null,
+    "run_lease_state": "",
+    "run_lease_pid": null,
+    "runner_alive": null,
+    "message": "",
+    "source": ""
+  },
+  "execution_policy": {
+    "version": 1,
+    "resources": null,
+    "session": {
+      "retain": false,
+      "session_id": "01a12140-0576-7081-b4db-6956f98bc932",
+      "session_state": "terminal",
+      "project_mode": "none",
+      "cleanup": {
+        "capability": "supported",
+        "state": "succeeded",
+        "attempts": 1,
+        "error_code": "",
+        "retryable": false,
+        "version": 5,
+        "strategy": "container_session_archive_then_delete",
+        "phase": "delete_acknowledged",
+        "verification": {
+          "cli": {
+            "status": "absent",
+            "checked_at": "2026-10-09T15:21:19.677629Z"
+          },
+          "desktop_backend": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T15:21:19.392359Z"
+          },
+          "desktop_live": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T15:21:19.392359Z"
+          },
+          "desktop": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T15:21:19.392359Z"
+          }
+        },
+        "commands": {
+          "desktop_archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T15:21:19.392359Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "app_server_archive": {
+            "status": "acknowledged",
+            "checked_at": "2026-10-09T15:21:19.471155Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "delete": {
+            "status": "acknowledged",
+            "checked_at": "2026-10-09T15:21:19.677629Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T15:21:19.392359Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          }
+        }
+      }
+    },
+    "permission_grant": null,
+    "auxiliary_sessions": [],
+    "auxiliary_aggregate": {
+      "state": "blocked",
+      "total": 0,
+      "resolved": 0,
+      "unresolved": 0
+    },
+    "terminal_delivery": {
+      "version": 1,
+      "delivery_id": "8157f1b8-e124-404d-ac94-fa3c1c51e379",
+      "terminal_state": "completed",
+      "terminal_event": "task.finalized",
+      "committed_at": "2026-10-09T15:21:02.436046Z",
+      "stages": {
+        "report": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "record": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "index": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "file_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "ui_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        }
+      },
+      "updated_at": "2026-10-09T15:21:04.428585Z"
+    },
+    "delivery_health": {
+      "state": "succeeded",
+      "delivery_id": "8157f1b8-e124-404d-ac94-fa3c1c51e379",
+      "stages_total": 5,
+      "stages_succeeded": 5,
+      "stages_outstanding": 0,
+      "stages_retry_wait": 0,
+      "stages_in_progress": 0,
+      "outstanding_stages": [],
+      "attempts_total": 5,
+      "error_codes": [],
+      "healthy": true,
+      "updated_at": "2026-10-09T15:21:04.428585Z"
+    },
+    "progress": {
+      "version": 1,
+      "attempt_index": 2,
+      "latest_sequence": 1,
+      "confirmed_step_ids": [
+        1
+      ],
+      "confirmed_count": 1,
+      "evidence_quality": "authoritative",
+      "updated_at": "2026-10-09T15:20:54.938452Z"
+    }
+  },
+  "chain_root_task_id": "PTBQ-001",
+  "head_task_ids": [
+    "PTBQ-001"
+  ],
+  "is_chain_head": true,
+  "chain_anomalies": [],
+  "parent_task_id": null,
+  "base_task_id": "PTBQ-001",
+  "iteration_index": 1,
+  "branch_mode": "linear",
+  "task_code": "PTBQ",
+  "iteration": "001",
+  "task_date": "2026-10-09",
+  "chain_task_id": "001",
+  "has_final_callback": true,
+  "report_ready": true,
+  "run_lease_state": "closed",
+  "execution": {
+    "internal_status": "completed",
+    "lease_state": "closed",
+    "run_intervals": [
+      {
+        "run_id": "codex-PTBQ-001-c24031db",
+        "executor_id": "codex",
+        "attempt_index": 0,
+        "started_at": "2026-10-09T15:15:02.807692Z",
+        "ended_at": "2026-10-09T15:15:02.807692Z",
+        "duration_s": 0.0,
+        "state": "suspended"
+      },
+      {
+        "run_id": "codex-PTBQ-001-d2062272",
+        "executor_id": "codex",
+        "attempt_index": 0,
+        "started_at": "2026-10-09T15:15:30.217255Z",
+        "ended_at": "2026-10-09T15:15:58.856041Z",
+        "duration_s": 28.639,
+        "state": "closed"
+      },
+      {
+        "run_id": "codex-PTBQ-001-d72835ba",
+        "executor_id": "codex",
+        "attempt_index": 1,
+        "started_at": "2026-10-09T15:17:12.329505Z",
+        "ended_at": "2026-10-09T15:17:12.329505Z",
+        "duration_s": 0.0,
+        "state": "suspended"
+      },
+      {
+        "run_id": "codex-PTBQ-001-fe3e5455",
+        "executor_id": "codex",
+        "attempt_index": 1,
+        "started_at": "2026-10-09T15:17:41.115285Z",
+        "ended_at": "2026-10-09T15:18:30.003332Z",
+        "duration_s": 48.888,
+        "state": "closed"
+      },
+      {
+        "run_id": "codex-PTBQ-001-31193e96",
+        "executor_id": "codex",
+        "attempt_index": 2,
+        "started_at": "2026-10-09T15:20:06.059910Z",
+        "ended_at": "2026-10-09T15:20:06.059910Z",
+        "duration_s": 0.0,
+        "state": "suspended"
+      },
+      {
+        "run_id": "codex-PTBQ-001-18f6f2df",
+        "executor_id": "codex",
+        "attempt_index": 2,
+        "started_at": "2026-10-09T15:20:30.346058Z",
+        "ended_at": "2026-10-09T15:21:02.433361Z",
+        "duration_s": 32.087,
+        "state": "closed"
+      }
+    ],
+    "permission_elevation_mode": "full",
+    "permission_elevation_source": "task_elevation",
+    "permission_elevation_state": "verified",
+    "log_worker_run_id": "runner-worker-b1474a05a8f2",
+    "resuming_at": "2026-10-09T15:20:30.236178Z",
+    "permission_runtime_state": "retired",
+    "attempt_index": 2,
+    "attempt_started_at": "2026-10-09T15:20:05.767372Z",
+    "waiting_since": "2026-10-09T15:20:24.433050Z",
+    "worker_run_id": "runner-worker-b68ee41d712d",
+    "dispatch_status": "accepted",
+    "worker_pid": 3948,
+    "monitor_status": "disabled",
+    "executor_run_id": "codex-PTBQ-001-18f6f2df",
+    "executor_id": "codex",
+    "started_at": "2026-10-09T15:20:30.346058Z",
+    "last_heartbeat_at": "2026-10-09T15:21:02.433361Z",
+    "runner_status": "completed",
+    "pid": 3948,
+    "output_truncated": false
+  },
+  "timing": {
+    "task_id": "PTBQ-001",
+    "wall_duration_s": 359.729,
+    "execution_duration_s": 109.614,
+    "last_run_duration_s": 32.087,
+    "attempt_index": 2,
+    "attempt_started_at": "2026-10-09T15:20:05.767372Z",
+    "attempt_wall_duration_s": 56.669,
+    "attempt_execution_duration_s": 32.087,
+    "attempt_run_count": 2,
+    "attempt_run_intervals": [
+      {
+        "run_id": "codex-PTBQ-001-18f6f2df",
+        "executor_id": "codex",
+        "attempt_index": 2,
+        "started_at": "2026-10-09T15:20:30.346058Z",
+        "ended_at": "2026-10-09T15:21:02.433361Z",
+        "duration_s": 32.087,
+        "state": "closed",
+        "source": "current_lease",
+        "execution_duration_s": 32.087
+      }
+    ],
+    "waiting_duration_s": 19.936,
+    "evidence_quality": "authoritative",
+    "execution_duration_known": true,
+    "run_count": 6,
+    "run_intervals": [
+      {
+        "run_id": "codex-PTBQ-001-d2062272",
+        "executor_id": "codex",
+        "started_at": "2026-10-09T15:15:30.217255Z",
+        "ended_at": "2026-10-09T15:15:58.856041Z",
+        "duration_s": 28.639,
+        "state": "closed",
+        "source": "recorded",
+        "attempt_index": 0,
+        "execution_duration_s": 28.639
+      },
+      {
+        "run_id": "codex-PTBQ-001-fe3e5455",
+        "executor_id": "codex",
+        "started_at": "2026-10-09T15:17:41.115285Z",
+        "ended_at": "2026-10-09T15:18:30.003332Z",
+        "duration_s": 48.888,
+        "state": "closed",
+        "source": "recorded",
+        "attempt_index": 1,
+        "execution_duration_s": 48.888
+      },
+      {
+        "run_id": "codex-PTBQ-001-18f6f2df",
+        "executor_id": "codex",
+        "attempt_index": 2,
+        "started_at": "2026-10-09T15:20:30.346058Z",
+        "ended_at": "2026-10-09T15:21:02.433361Z",
+        "duration_s": 32.087,
+        "state": "closed",
+        "source": "current_lease",
+        "execution_duration_s": 32.087
+      }
+    ],
+    "lease_state": "closed"
+  },
+  "debug": {
+    "execution": {
+      "internal_status": "completed",
+      "lease_state": "closed",
+      "run_intervals": [
+        {
+          "run_id": "codex-PTBQ-001-c24031db",
+          "executor_id": "codex",
+          "attempt_index": 0,
+          "started_at": "2026-10-09T15:15:02.807692Z",
+          "ended_at": "2026-10-09T15:15:02.807692Z",
+          "duration_s": 0.0,
+          "state": "suspended"
+        },
+        {
+          "run_id": "codex-PTBQ-001-d2062272",
+          "executor_id": "codex",
+          "attempt_index": 0,
+          "started_at": "2026-10-09T15:15:30.217255Z",
+          "ended_at": "2026-10-09T15:15:58.856041Z",
+          "duration_s": 28.639,
+          "state": "closed"
+        },
+        {
+          "run_id": "codex-PTBQ-001-d72835ba",
+          "executor_id": "codex",
+          "attempt_index": 1,
+          "started_at": "2026-10-09T15:17:12.329505Z",
+          "ended_at": "2026-10-09T15:17:12.329505Z",
+          "duration_s": 0.0,
+          "state": "suspended"
+        },
+        {
+          "run_id": "codex-PTBQ-001-fe3e5455",
+          "executor_id": "codex",
+          "attempt_index": 1,
+          "started_at": "2026-10-09T15:17:41.115285Z",
+          "ended_at": "2026-10-09T15:18:30.003332Z",
+          "duration_s": 48.888,
+          "state": "closed"
+        },
+        {
+          "run_id": "codex-PTBQ-001-31193e96",
+          "executor_id": "codex",
+          "attempt_index": 2,
+          "started_at": "2026-10-09T15:20:06.059910Z",
+          "ended_at": "2026-10-09T15:20:06.059910Z",
+          "duration_s": 0.0,
+          "state": "suspended"
+        },
+        {
+          "run_id": "codex-PTBQ-001-18f6f2df",
+          "executor_id": "codex",
+          "attempt_index": 2,
+          "started_at": "2026-10-09T15:20:30.346058Z",
+          "ended_at": "2026-10-09T15:21:02.433361Z",
+          "duration_s": 32.087,
+          "state": "closed"
+        }
+      ],
+      "permission_elevation_mode": "full",
+      "permission_elevation_source": "task_elevation",
+      "permission_elevation_state": "verified",
+      "log_worker_run_id": "runner-worker-b1474a05a8f2",
+      "resuming_at": "2026-10-09T15:20:30.236178Z",
+      "permission_runtime_state": "retired",
+      "attempt_index": 2,
+      "attempt_started_at": "2026-10-09T15:20:05.767372Z",
+      "waiting_since": "2026-10-09T15:20:24.433050Z",
+      "worker_run_id": "runner-worker-b68ee41d712d",
+      "dispatch_status": "accepted",
+      "worker_pid": 3948,
+      "monitor_status": "disabled",
+      "executor_run_id": "codex-PTBQ-001-18f6f2df",
+      "executor_id": "codex",
+      "started_at": "2026-10-09T15:20:30.346058Z",
+      "last_heartbeat_at": "2026-10-09T15:21:02.433361Z",
+      "runner_status": "completed",
+      "pid": 3948,
+      "output_truncated": false
+    },
+    "timing": {
+      "task_id": "PTBQ-001",
+      "wall_duration_s": 359.729,
+      "execution_duration_s": 109.614,
+      "last_run_duration_s": 32.087,
+      "attempt_index": 2,
+      "attempt_started_at": "2026-10-09T15:20:05.767372Z",
+      "attempt_wall_duration_s": 56.669,
+      "attempt_execution_duration_s": 32.087,
+      "attempt_run_count": 2,
+      "attempt_run_intervals": [
+        {
+          "run_id": "codex-PTBQ-001-18f6f2df",
+          "executor_id": "codex",
+          "attempt_index": 2,
+          "started_at": "2026-10-09T15:20:30.346058Z",
+          "ended_at": "2026-10-09T15:21:02.433361Z",
+          "duration_s": 32.087,
+          "state": "closed",
+          "source": "current_lease",
+          "execution_duration_s": 32.087
+        }
+      ],
+      "waiting_duration_s": 19.936,
+      "evidence_quality": "authoritative",
+      "execution_duration_known": true,
+      "run_count": 6,
+      "run_intervals": [
+        {
+          "run_id": "codex-PTBQ-001-d2062272",
+          "executor_id": "codex",
+          "started_at": "2026-10-09T15:15:30.217255Z",
+          "ended_at": "2026-10-09T15:15:58.856041Z",
+          "duration_s": 28.639,
+          "state": "closed",
+          "source": "recorded",
+          "attempt_index": 0,
+          "execution_duration_s": 28.639
+        },
+        {
+          "run_id": "codex-PTBQ-001-fe3e5455",
+          "executor_id": "codex",
+          "started_at": "2026-10-09T15:17:41.115285Z",
+          "ended_at": "2026-10-09T15:18:30.003332Z",
+          "duration_s": 48.888,
+          "state": "closed",
+          "source": "recorded",
+          "attempt_index": 1,
+          "execution_duration_s": 48.888
+        },
+        {
+          "run_id": "codex-PTBQ-001-18f6f2df",
+          "executor_id": "codex",
+          "attempt_index": 2,
+          "started_at": "2026-10-09T15:20:30.346058Z",
+          "ended_at": "2026-10-09T15:21:02.433361Z",
+          "duration_s": 32.087,
+          "state": "closed",
+          "source": "current_lease",
+          "execution_duration_s": 32.087
+        }
+      ],
+      "lease_state": "closed"
+    },
+    "permission": {
+      "version": 2,
+      "configured_mode": "inherit",
+      "inherited_mode": null,
+      "task_override": null,
+      "requested_mode": "inherit",
+      "effective_mode": "inherit",
+      "selection_source": "configured_default",
+      "selection_strategy": "inherit",
+      "resolved_base_mode": "native",
+      "resolution_state": "runtime",
+      "approval_policy": "on_block",
+      "scope": "task",
+      "mapping": {
+        "codex": {
+          "transport": "app-server",
+          "capability_id": "codex.inherit",
+          "args": [],
+          "env": {},
+          "decisions": null,
+          "overrides_native": false,
+          "executor": "codex",
+          "mode": "inherit",
+          "scope": "executor_subprocess",
+          "direct_args": []
+        },
+        "claude": {
+          "transport": "cli",
+          "capability_id": "claude.inherit",
+          "args": [],
+          "env": {},
+          "decisions": null,
+          "overrides_native": false,
+          "executor": "claude",
+          "mode": "inherit",
+          "scope": "executor_subprocess",
+          "direct_args": []
+        },
+        "hermes": {
+          "transport": "hermes-acp",
+          "capability_id": "hermes.acp.inherit",
+          "args": [],
+          "env": {},
+          "decisions": null,
+          "overrides_native": false,
+          "executor": "hermes",
+          "mode": "inherit",
+          "scope": "executor_subprocess",
+          "direct_args": []
+        }
+      },
+      "permission_args": []
+    }
+  }
+}

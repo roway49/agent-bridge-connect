@@ -785,6 +785,46 @@ def handle_codex_collaboration_item_completed(
     )
 
 
+def handle_codex_subagent_activity(
+    extensions: Any, *, owner_task_id: str, owner_run_id: str,
+    parent_session_id: str, item: Any, parent_turn_id: str = "",
+    occurred_at: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Bind official subAgentActivity UUIDs, never model-reported paths."""
+    if not isinstance(item, dict) or item.get("type") != "subAgentActivity":
+        raise ABCError(CODEX_AUXILIARY_RECEIPT_MISSING_CODE, "Invalid sub-agent activity")
+    kind = item.get("kind")
+    child_id = str(item.get("agentThreadId") or "").strip()
+    import uuid
+    try:
+        uuid.UUID(child_id)
+    except ValueError as exc:
+        raise ABCError(CODEX_AUXILIARY_RECEIPT_MISSING_CODE, "Activity has no official child UUID") from exc
+    if child_id == parent_session_id or kind not in {"started", "completed"}:
+        raise ABCError(CODEX_AUXILIARY_SESSION_UNREGISTERED_CODE, "Invalid child lifecycle binding")
+    matches = [entry for entry in read_auxiliary_ledger(extensions)["sessions"]
+               if entry.get("session_id") == child_id]
+    if matches:
+        entry = matches[0]
+        if len(matches) != 1 or any(entry.get(k) != value for k, value in (
+            ("owner_task_id", owner_task_id), ("owner_run_id", owner_run_id),
+            ("parent_session_id", parent_session_id))):
+            raise ABCError(CODEX_AUXILIARY_SESSION_UNREGISTERED_CODE, "Conflicting activity owner")
+        updated = extensions
+    elif kind == "started":
+        updated, entry = reserve_codex_collaboration_session(
+            extensions, owner_task_id=owner_task_id, owner_run_id=owner_run_id,
+            parent_session_id=parent_session_id, item_id=_collaboration_item_id(item),
+            parent_turn_id=parent_turn_id, created_at=occurred_at)
+        updated, entry = bind_codex_collaboration_receipt(
+            updated, aux_id=entry["aux_id"], receiver_thread_id=child_id)
+    else:
+        raise ABCError(CODEX_AUXILIARY_RECEIPT_MISSING_CODE, "Completion has no official start binding")
+    if kind == "completed":
+        return mark_codex_collaboration_terminal(updated, aux_id=entry["aux_id"], occurred_at=occurred_at)
+    return updated, entry
+
+
 def reconcile_codex_descendants(
     extensions: Any,
     *,
@@ -1011,7 +1051,11 @@ def transition_auxiliary_cleanup(
                     "Codex auxiliary cleanup succeeded without Desktop archive and "
                     "delete command acknowledgements"
                 )
-        if executor_is_codex and is_archive_strategy:
+        if executor_is_codex and (strategy or receipt['strategy']) == 'container_session_archive_then_delete':
+            from .container_session_cleanup import proof_valid
+            if not proof_valid(normalized_verification, normalized_commands or {}):
+                _raise_cleanup_transition('Container cleanup requires actual archive/delete acknowledgements and fresh absence proof')
+        elif executor_is_codex and is_archive_strategy:
             desktop_archive_status = str(
                 (normalized_commands or {}).get("desktop_archive", {}).get("status") or ""
             )

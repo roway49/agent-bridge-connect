@@ -1,0 +1,16 @@
+{
+  "installation_id": "abfb6ee8e1f94aa2b259c5c94ea93a6c",
+  "image_id": "sha256:b06a35dcfd204cecfd7c8e247d510599907c4fca9347cc748089c2465b86e4f0",
+  "port": 32487,
+  "doctor_exit": 0,
+  "desktop": "ready",
+  "services": {
+    "webui": "healthy",
+    "runner": "healthy"
+  },
+  "create_help_exit": 0,
+  "create_help_seconds": 5.91,
+  "runner_ready": true,
+  "board_empty": true,
+  "zip_sha256": "0dad8e2887b283541b26844b6a1dac4559e018a29c3646d6949df0d6174d04d8"
+}

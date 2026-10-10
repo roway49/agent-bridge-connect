@@ -1,0 +1,123 @@
+{
+  "doctor": {
+    "installation_type": "docker-preview",
+    "container_id": "9da9e25454f51df82fe56e2aa56f37e9504bde6831f8d60de82729bbb0f4c205",
+    "approval_delivery": "desktop",
+    "desktop": {
+      "pid": 21916,
+      "sid": "S-1-5-21-3774179316-1493029025-1910149102-1001",
+      "session_id": 1,
+      "logon_id": "478573",
+      "created": 134359010388801365,
+      "installation_id": "preview-d80dd44c0d2891135320",
+      "container_id": "9da9e25454f51df82fe56e2aa56f37e9504bde6831f8d60de82729bbb0f4c205",
+      "instance_key": "8f8e76fd080b4c9286f725390cc4e5e2",
+      "state": "ready",
+      "reason": "",
+      "webui_error": "",
+      "heartbeat": 1791427488.8606684,
+      "updated_at": "2026-10-08T02:44:48.860668+00:00"
+    }
+  },
+  "webui": {
+    "running": true,
+    "port": 36124,
+    "origin": "http://127.0.0.1:36124",
+    "restart_policy": "no",
+    "health": "healthy",
+    "error": ""
+  },
+  "permissions": {
+    "ok": true,
+    "command": "permissions status",
+    "setting": "permissions.mode",
+    "setting_path": "permissions.mode",
+    "configured_mode": "inherit",
+    "configured_source": "configured_default",
+    "default_mode": "inherit",
+    "legacy_safe_default": "safe",
+    "effective_mode_for_new_tasks": "inherit",
+    "priority": [
+      "task_override",
+      "handoff_snapshot",
+      "configured",
+      "legacy_safe"
+    ],
+    "scope": "future_tasks",
+    "mapping": {
+      "codex": {
+        "transport": "app-server",
+        "capability_id": "codex.inherit",
+        "args": [],
+        "env": {},
+        "decisions": null,
+        "overrides_native": false,
+        "executor": "codex",
+        "mode": "inherit",
+        "scope": "executor_subprocess",
+        "direct_args": []
+      },
+      "claude": {
+        "transport": "cli",
+        "capability_id": "claude.inherit",
+        "args": [],
+        "env": {},
+        "decisions": null,
+        "overrides_native": false,
+        "executor": "claude",
+        "mode": "inherit",
+        "scope": "executor_subprocess",
+        "direct_args": []
+      },
+      "hermes": {
+        "transport": "hermes-acp",
+        "capability_id": "hermes.acp.inherit",
+        "args": [],
+        "env": {},
+        "decisions": null,
+        "overrides_native": false,
+        "executor": "hermes",
+        "mode": "inherit",
+        "scope": "executor_subprocess",
+        "direct_args": []
+      }
+    },
+    "legacy_setting_present": false,
+    "notes": [
+      "Affects newly dispatched root tasks and handoff iterations only; active, input_required, needs_recovery tasks and same-task resume keep their frozen permission snapshot."
+    ]
+  },
+  "tasks": {
+    "G9B5-001": {
+      "status": "completed",
+      "artifact_sha256": "903fa73806f2e28dc163160f85c2a7e6ed1a0b779cddb086a2e122457179664c",
+      "cleanup": "succeeded",
+      "notification": {
+        "state": "succeeded",
+        "attempts": 1,
+        "last_error_code": ""
+      }
+    },
+    "Q8HC-001": {
+      "status": "completed",
+      "artifact_sha256": "be8c59701efa913bc2781a60cd1fe02d14d39b6d859d10806b795a8ae62037d5",
+      "cleanup": "succeeded",
+      "notification": {
+        "state": "succeeded",
+        "attempts": 1,
+        "last_error_code": ""
+      }
+    },
+    "RCPQ-001": {
+      "status": "completed",
+      "artifact_sha256": "998585b483fa3bc2ed15d35037fc179125795c29a7a8ac4b8a532550f502336c",
+      "cleanup": "succeeded",
+      "notification": {
+        "state": "succeeded",
+        "attempts": 1,
+        "last_error_code": ""
+      }
+    }
+  },
+  "runtime_sha256_matches": true
+}

@@ -459,6 +459,13 @@ def assert_executor_permission_supported(
     executable: str | Path | None,
 ) -> None:
     selected = normalize_permission_mode(mode)
+    if executor == "opencode":
+        if selected not in {"inherit", "full"}:
+            raise ABCError(
+                "opencode_permission_mode_unsupported",
+                "OpenCode supports inherit/full only; safe approval continuation is not supported.",
+            )
+        return
     permission_flags(executor, selected)
     # Plan D deliberately does not probe --help, versions, or capability
     # receipts. Protocol-compatible releases and forks use the native flag

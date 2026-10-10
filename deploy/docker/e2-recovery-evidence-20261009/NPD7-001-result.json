@@ -1,0 +1,160 @@
+{
+  "id": "NPD7-001",
+  "status": "needs_recovery",
+  "has_final_callback": false,
+  "run_lease_state": "closed",
+  "revival": {
+    "version": 1,
+    "eligible": true,
+    "allowed_next_actions": [
+      "retry",
+      "handoff"
+    ],
+    "recommended_action": "retry",
+    "error_codes": [],
+    "warnings": [],
+    "reservation": {
+      "revival_id": "REV-e546722c3e35458c9927792102538901",
+      "operation": "retry",
+      "state": "committed",
+      "created_at": "2026-10-09T13:59:15.615342Z"
+    },
+    "replay_revival_id": ""
+  },
+  "execution_policy": {
+    "version": 1,
+    "resources": null,
+    "session": {
+      "retain": false,
+      "session_id": "01a120f6-0311-7150-a50e-98dbcad0e082",
+      "session_state": "needs_recovery",
+      "project_mode": "none",
+      "cleanup": {
+        "capability": "supported",
+        "state": "succeeded",
+        "attempts": 1,
+        "error_code": "",
+        "retryable": false,
+        "version": 5,
+        "strategy": "container_session_archive_then_delete",
+        "phase": "delete_acknowledged",
+        "verification": {
+          "cli": {
+            "status": "absent",
+            "checked_at": "2026-10-09T14:01:01.997933Z"
+          },
+          "desktop_backend": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T14:01:01.795566Z"
+          },
+          "desktop_live": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T14:01:01.795566Z"
+          },
+          "desktop": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T14:01:01.795566Z"
+          }
+        },
+        "commands": {
+          "desktop_archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T14:01:01.795566Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "app_server_archive": {
+            "status": "acknowledged",
+            "checked_at": "2026-10-09T14:00:47.216944Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "delete": {
+            "status": "acknowledged",
+            "checked_at": "2026-10-09T14:01:01.997933Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-09T14:01:01.795566Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          }
+        }
+      }
+    },
+    "permission_grant": null,
+    "auxiliary_sessions": [],
+    "auxiliary_aggregate": {
+      "state": "blocked",
+      "total": 0,
+      "resolved": 0,
+      "unresolved": 0
+    },
+    "terminal_delivery": {
+      "version": 1,
+      "delivery_id": "3d16d579-7790-4ed1-aa7e-c6cbb648bd9c",
+      "terminal_state": "needs_recovery",
+      "terminal_event": "task.recovery_required",
+      "committed_at": "2026-10-09T14:00:47.225903Z",
+      "stages": {
+        "report": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "record": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "index": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "file_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "ui_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        }
+      },
+      "updated_at": "2026-10-09T14:00:48.669160Z"
+    },
+    "delivery_health": {
+      "state": "succeeded",
+      "delivery_id": "3d16d579-7790-4ed1-aa7e-c6cbb648bd9c",
+      "stages_total": 5,
+      "stages_succeeded": 5,
+      "stages_outstanding": 0,
+      "stages_retry_wait": 0,
+      "stages_in_progress": 0,
+      "outstanding_stages": [],
+      "attempts_total": 5,
+      "error_codes": [],
+      "healthy": true,
+      "updated_at": "2026-10-09T14:00:48.669160Z"
+    },
+    "progress": {
+      "version": 1,
+      "attempt_index": 1,
+      "latest_sequence": 1,
+      "confirmed_step_ids": [
+        1
+      ],
+      "confirmed_count": 1,
+      "evidence_quality": "authoritative",
+      "updated_at": "2026-10-09T13:59:58.563629Z"
+    }
+  }
+}

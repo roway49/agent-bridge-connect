@@ -1,0 +1,35 @@
+{
+  "task_id": "DPZE-001",
+  "scope": "Windows Docker isolated Codex text-only round trip",
+  "accepted": true,
+  "wall_duration_s": 38.574,
+  "wheel_sha256": "b4c34a87ba99ac77a8f869fcbe974d635cda333f60b575719246395ae7bb1abc",
+  "callback": {
+    "version": 1,
+    "task_id": "DPZE-001",
+    "final_state": "completed",
+    "report_file": "/data/workspace/tasks/report/2026-10-01/DPZE/DPZE-001-report.md",
+    "artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-01/DPZE",
+    "summary": "Completed the text-only Windows Docker minimal round trip.",
+    "executor_run_id": "codex-DPZE-001-35af38f8",
+    "finished_at": "2026-10-01T15:35:20.977620Z",
+    "source": "executor_final_marker",
+    "outcome": "flow_declared",
+    "exit_code": 0,
+    "step_results": [
+      {
+        "id": 1,
+        "status": "done"
+      }
+    ],
+    "marker_valid": true,
+    "completed_step_count": 1
+  },
+  "windows_credentials_only": true,
+  "mac_credentials_copied": false,
+  "permission_mode": "inherit",
+  "ui_notification": "pending",
+  "session_cleanup": "not_requested",
+  "formal_windows_installation_accepted": false,
+  "python_regression": "2290 tests / 128.137s / OK"
+}

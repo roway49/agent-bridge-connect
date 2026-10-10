@@ -1,14 +1,7 @@
-"""Runner IPC transport: the client, the service and the single request router.
+"""Runner IPC authentication, serialization and request routing.
 
-ARCH-104-001 Slice B: this module owns RunnerClient, RunnerService, request
-authentication/expiry/serialization, response handling, and the one
-``_dispatch_request`` routing chain.  The production flow stays exactly
-``RunnerClient -> _dispatch_request -> one RunnerState handler``.
-
-Runner state, process authorization/spawn/reap, task dispatch, maintenance and
-``create_runner_service`` stay owned by ``agent_bridge_connect.runner``.  The
-state is typed here through the internal ``RunnerOperations`` protocol so this
-module never imports ``RunnerState`` and no import cycle is introduced.
+RunnerClient -> _dispatch_request -> one RunnerState handler. Process lifecycle
+and maintenance remain in runner.py; RunnerOperations prevents circular imports.
 """
 
 from __future__ import annotations
@@ -433,6 +426,7 @@ class RunnerClient:
         files: list[str | Path] | None = None,
         session_id: str | None = None,
         permission_mode: str | None = None,
+        steps: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         self._try_register_current_desktop_route(board_root=board_root)
         return self._request(
@@ -441,6 +435,7 @@ class RunnerClient:
                 "source_task_id": source_task_id,
                 "target_assignee": target_assignee,
                 "message": message,
+                "steps": steps,
                 "branch": branch,
                 "session_id": session_id,
                 "source_platform": source_platform,
@@ -610,7 +605,9 @@ class RunnerService:
                 self._stop.wait(self.interval_s)
 
     def serve_once(self) -> bool:
+        from .run_lease import maintain_runner_leases
         now = time.monotonic()
+        maintain_runner_leases(self.runner_state, now=now)
         if now - self._last_maintenance_at >= 60.0:
             self.runner_state.maintain_waiting_inputs()
             self.runner_state.maintain_terminal_delivery()

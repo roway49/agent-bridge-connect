@@ -280,7 +280,14 @@ def run_update_flow(
 
 
 def install_verified_release(release: dict[str, Any]) -> dict[str, Any]:
+    from .installation_native import guarded_update
+    return guarded_update(_install_verified_release_payload, release)
+
+
+def _install_verified_release_payload(release: dict[str, Any]) -> dict[str, Any]:
     """Install and cut over the managed CLI as one CLI/Skill/Runner transaction."""
+    from .installation_native import assert_native
+    assert_native()
     wheel = release["wheel"]
     strategy = _local_install_strategy()
     if strategy["method"] == "homebrew":
@@ -336,6 +343,7 @@ def install_verified_release(release: dict[str, Any]) -> dict[str, Any]:
     temporary_link = bin_dir / f".agentbc-update-{transaction}"
     snapshot: dict[str, Any] | None = None
     transaction_started = False
+    webui_state = None
     try:
         target_skill_specs = _target_managed_skill_specs(new_python)
         snapshot = _capture_skill_snapshot(
@@ -353,6 +361,10 @@ def install_verified_release(release: dict[str, Any]) -> dict[str, Any]:
         # From this point on a Runner stop may have happened even if the stop
         # helper reports an error, so every exception must enter rollback.
         transaction_started = True
+        from .web_service import Service
+        webui = Service()
+        webui_state = {**webui.status(), "config": str(webui.config)}
+        webui.suspend_update()
         stopped = stop_runner_background()
         if not stopped.get("ok"):
             raise ABCError("update_runner_stop_failed", "The current Runner could not be stopped safely")
@@ -370,6 +382,10 @@ def install_verified_release(release: dict[str, Any]) -> dict[str, Any]:
             capture_output=True,
         )
         _require_post_update_identity(new_cli, version)
+        if webui_state and (webui_state["running"] or webui_state["login_registered"]):
+            subprocess.run([str(new_python), "-m", "agent_bridge_connect.web_service", "--config", webui_state["config"],
+                            "--restore-state", json.dumps(webui_state)], check=True, capture_output=True)
+
     except Exception as exc:
         if temporary_link.is_symlink():
             temporary_link.unlink()
@@ -389,6 +405,13 @@ def install_verified_release(release: dict[str, Any]) -> dict[str, Any]:
             snapshot=snapshot,
             transaction=transaction,
         )
+        if webui_state and (webui_state["running"] or webui_state["login_registered"]):
+            try:
+                Service().login(False)
+                Service().close()
+                Service().restore_update(webui_state)
+            except Exception:
+                rollback_ok = False
         shutil.rmtree(new_venv, ignore_errors=True)
         if rollback_ok:
             raise ABCError(

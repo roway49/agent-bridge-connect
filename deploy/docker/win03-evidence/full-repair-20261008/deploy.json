@@ -1,0 +1,48 @@
+{
+  "image_id": "sha256:30f685acaac484f60b4449d8ce65fa4f61574a68a9221cffb6d9c65ccb38a099",
+  "runner": {
+    "ok": true,
+    "status": "ready",
+    "pid": 7,
+    "python_executable": "/usr/local/bin/python3.11",
+    "module_path": "/probe/sdk-amd64/lib/python3.11/site-packages/agent_bridge_connect/__init__.py",
+    "executors": [
+      "claude",
+      "codex",
+      "hermes"
+    ],
+    "executor_commands": {
+      "claude": {
+        "path": "/opt/agentbc/bin/claude",
+        "source": "config"
+      },
+      "codex": {
+        "path": "/opt/agentbc/bin/codex",
+        "source": "config"
+      },
+      "hermes": {
+        "path": "/opt/agentbc/bin/hermes",
+        "source": "config"
+      }
+    },
+    "path_policy": {
+      "agent_input": "customer_path",
+      "default_customer_path": "default path",
+      "authorization": "runner_task_scoped"
+    },
+    "atomic_dispatch": true,
+    "desktop_archive_route": {
+      "status": "unavailable",
+      "capability": "unavailable",
+      "route_digest": "",
+      "app_instance_digest": ""
+    }
+  },
+  "desktop_state": "ready",
+  "source_sha256": {
+    "executors/base.py": "c82440595100eacf128dba1489a64cc870792c95300cc56d41d3fe03cf912720",
+    "executors/codex.py": "1db88105767ecbdd90ad12c7bd5c9741d2212ec86f5fa63c3237d607e88e7282",
+    "executors/claude.py": "839951d1081802f2307a162cbef0b3d1b4868027e379f80a82ded806247248f3",
+    "reports.py": "67d6a04d2b4a48ebf253f648f807b42bf550cf1d173269da96e4d84ab1278ce8"
+  }
+}

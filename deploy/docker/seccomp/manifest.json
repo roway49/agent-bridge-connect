@@ -1,0 +1,20 @@
+{
+  "upstream": "https://github.com/moby/profiles",
+  "commit": "85e237f1fe229a0c61c9c7d8e743fa780d3b97ca",
+  "source": "seccomp/default.json",
+  "codex_version": "0.153.4",
+  "architectures": [
+    "arm64",
+    "amd64"
+  ],
+  "qualified_hosts": [
+    "macOS Docker Desktop arm64 only; amd64 pending"
+  ],
+  "note": "Pinned upstream baseline is not asserted identical to every Docker daemon compiled default. Namespace syscall additions expand outer kernel surface; require non-root, cap-drop ALL and no-new-privileges.",
+  "sha256": {
+    "moby-default.json": "785b2429264afba4d594320337cb17f144f3c7d51585f9805eef72e28f4f9334",
+    "codex-bwrap-rules.json": "f76df5acd8c374bac72eaa10cc64b7941d5514882a2bd5a66b04c48af130391b",
+    "codex-bwrap.json": "292e8331d916a43109c4088cfa23feed512b7a939af622e2b4cf839f8a11540c",
+    "LICENSE.moby": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+  }
+}

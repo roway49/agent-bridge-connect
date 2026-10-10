@@ -1,0 +1,23 @@
+{
+  "workspace": "C:\\Users\\developer\\Documents\\AgentBC\\workspace",
+  "runner_id": "b8b58dfc1244f988b87564fdc2fd34c395c3aa9a5bb4b6ee827597076bb4f721",
+  "webui_id": "c5e4b5d5108e1a02767ef6783b2e1e2d59564e8de779062b81370d9adaa0d2f7",
+  "webui": {
+    "running": true,
+    "port": 50757,
+    "origin": "http://127.0.0.1:50757",
+    "restart_policy": "no",
+    "health": "starting",
+    "error": ""
+  },
+  "desktop": "ready",
+  "task": "38K8-001",
+  "state": "completed",
+  "lease": "closed",
+  "credential_hashes_unchanged": true,
+  "unauthenticated_api": 401,
+  "snapshot_and_report": true,
+  "artifact_sha256": "38dd884b499198a215707c61b48280f30181c7912b754defd96f7d5811800e9a",
+  "repeat_setup_and_start_close": true,
+  "wheel_sha256": "83f4db5b4e510ba5e3cd0e96f7254517db5c2c06678217b19fc2c2b6b5d6dcfb"
+}

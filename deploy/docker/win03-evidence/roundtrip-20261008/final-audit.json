@@ -1,0 +1,19 @@
+{
+  "doctor_exit": 0,
+  "task_list_exit": 0,
+  "task_list_empty": true,
+  "receipt_state": "installed",
+  "installation_id": "4f8b600f1f0a4dcf8fc72564aa659e9d",
+  "image_id": "sha256:4acf4c483e90be7ea7dd31324f4dfaab5ff1f6c05b2ec26c5006c7ef54a6ffce",
+  "port": 32353,
+  "services": {
+    "webui": "healthy",
+    "runner": "healthy"
+  },
+  "desktop": "ready",
+  "zip_sha256": "4da282d0c71abd63a4c6a91c860eb68b45a35dde6a24fd460e1b3a18892ddb1f",
+  "workspace_archives": [
+    "C:\\Users\\developer\\Documents\\AgentBC\\workspace-backup-20261008-214855-301958",
+    "C:\\Users\\developer\\Documents\\AgentBC\\workspace-backup-20261008-215226-270521"
+  ]
+}

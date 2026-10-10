@@ -9,14 +9,17 @@ exclusively agent_bridge_connect.approval.
 
 from __future__ import annotations
 
+from .approval_timing import permission_denial_source
+
 import functools
 import re
 import threading
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+from .approval_timing import approval_timing
 from .approval import (
     APPROVAL_EXTENSION_KEY,
     APPROVAL_SCOPE,
@@ -282,7 +285,7 @@ class ApprovalLifecycleMixin:
     ) -> dict[str, Any] | None:
         """Durably revoke a consumed grant bound to one executor run.
 
-        GGQN-002: the transport-lifecycle revocation path.  Reloads the task
+        runtime verification: the transport-lifecycle revocation path.  Reloads the task
         through the TaskService store, verifies the persisted grant is the
         exact consumed grant backing ``target_run_id`` (same ``grant_id`` and
         ``binding.target_run_id`` when ``expected_grant`` is supplied),
@@ -302,7 +305,7 @@ class ApprovalLifecycleMixin:
             # The caller mirrors the exact grant envelope the Runner consumed
             # for this run.  Both the grant id AND the target-run binding
             # must match the persisted envelope, so a transport holding a
-            # grant bound to a different run can never revoke it (GGQN-002
+            # grant bound to a different run can never revoke it (runtime verification
             # fail-closed wrong-identity rejection).
             expected_id = str((expected_grant or {}).get("grant_id") or "")
             if expected_id and str(persisted.get("grant_id") or "") != expected_id:
@@ -811,19 +814,7 @@ class ApprovalLifecycleMixin:
         full_preflight: dict[str, Any] | None = None,
         native_live_elevation: bool = False,
     ) -> dict[str, Any]:
-        """Block the first incomplete step for one structured native approval request.
-
-        Core entry for the ``PERM-103-003`` approval flow.  The caller supplies
-        the executor-neutral ``agentbc.approval`` v1 binding facts; Core builds a
-        bounded summary, persists the approval receipt under
-        ``agentbc.approval``, and creates an ``input_required(type=permission)``
-        request that only Approve / Deny can answer through
-        :func:`notify_input_required`.  The optional ``reason`` is normalized to
-        a Core single-line ``reason_summary`` (at most 120 characters) and the
-        optional ``reason_detail`` is persisted only after redaction,
-        control-character removal and a 2000-character bound.  No safe-to-full
-        grant is issued and the task ``effective_mode`` is never changed.
-        """
+        """Bind one native approval to its task/run/session and freeze its wait; issue no grant."""
         from .approval import (
             APPROVAL_SCOPE,
             compute_request_fingerprint,
@@ -985,7 +976,11 @@ class ApprovalLifecycleMixin:
             )
 
         now = _utc_now()
-        deadline_at = (_parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)).isoformat().replace("+00:00", "Z")
+        deadline_at, approval_max_time_s = approval_timing(
+            board_root=self.board_root, config=getattr(self, "config", {}),
+            task_id=task_id, executor=normalized_executor, executor_run_id=normalized_run_id,
+            session_id=official_session_id, request_id=clean_request_id, now=_parse_timestamp(now),
+        )
         request: dict[str, Any] = {
             "input_id": f"input-{uuid.uuid4().hex}",
             "executor_run_id": normalized_run_id,
@@ -1000,6 +995,7 @@ class ApprovalLifecycleMixin:
             "summary_truncated": bool(receipt.get("summary_truncated", False)),
             "created_at": now,
             "deadline_at": deadline_at,
+            "approval_max_time_s": approval_max_time_s,
             "status": "waiting",
         }
         native_binding = {
@@ -1200,6 +1196,7 @@ class ApprovalLifecycleMixin:
         input_id: str,
         *,
         response_type: str,
+        message: str = "",
     ) -> dict[str, Any]:
         """Answer the live dialog while retaining the current worker/lease."""
         from .run_lease import RunLeaseState, load_lease
@@ -1261,6 +1258,7 @@ class ApprovalLifecycleMixin:
                 "permission_elevation_state_invalid",
                 "The live task elevation receipt is not pending",
             )
+        decision_source = permission_denial_source(response_type, message)
         now = _utc_now()
         deadline = _parse_timestamp(str(request.get("deadline_at") or now))
         if deadline <= _parse_timestamp(now):
@@ -1270,7 +1268,7 @@ class ApprovalLifecycleMixin:
             extensions[APPROVAL_EXTENSION_KEY] = record_approval_decision(
                 approval_receipt,
                 "approve_full" if response_value == "approve" else "deny",
-                source="user",
+                source=decision_source,
                 decided_at=now,
                 executor=task.assignee,
                 task_id=task.id,
@@ -1282,7 +1280,7 @@ class ApprovalLifecycleMixin:
         extensions[PERMISSION_ELEVATION_EXTENSION_KEY] = record_permission_elevation_decision(
             elevation,
             "approve_full" if response_value == "approve" else "deny",
-            source="user",
+            source=decision_source,
             decided_at=now,
             task_id=task.id,
             executor=task.assignee,
@@ -1296,7 +1294,7 @@ class ApprovalLifecycleMixin:
             {
                 "status": "answered",
                 "responded_at": now,
-                "response": {"type": response_value, "summary": response_value},
+                "response": {"type": response_value, "summary": response_value, "source": decision_source},
                 "approval_decision": response_value,
             }
         )
@@ -1311,6 +1309,7 @@ class ApprovalLifecycleMixin:
                 "permission_elevation_state": ("approved" if response_value == "approve" else "denied"),
             },
         )
+        self._set_known_executor_session_state(task, "active")
         self.store.write_task(task.id, _without_none(task.to_dict()))
         self.store.append_event(
             task.id,
@@ -1319,7 +1318,7 @@ class ApprovalLifecycleMixin:
                 "task_id": task.id,
                 "input_id": input_id,
                 "request_id": str(request.get("request_id") or ""),
-                "decision": response_value,
+                "decision": response_value, "decision_source": decision_source,
                 "executor_run_id": expected_run,
                 "session_id": session_id,
                 "created_at": now,
@@ -1509,7 +1508,11 @@ class ApprovalLifecycleMixin:
             authority=authority_value,
         )
         now = _utc_now()
-        deadline_at = (_parse_timestamp(now) + timedelta(seconds=DEFAULT_INPUT_WAIT_SECONDS)).isoformat().replace("+00:00", "Z")
+        deadline_at, approval_max_time_s = approval_timing(
+            board_root=self.board_root, config=getattr(self, "config", {}),
+            task_id=task_id, executor=executor, executor_run_id=executor_run_id,
+            session_id=session_id, request_id=request_id, now=_parse_timestamp(now),
+        )
         request: dict[str, Any] = {
             "input_id": f"input-{uuid.uuid4().hex}",
             "executor_run_id": executor_run_id,
@@ -1541,6 +1544,7 @@ class ApprovalLifecycleMixin:
             },
             "created_at": now,
             "deadline_at": deadline_at,
+            "approval_max_time_s": approval_max_time_s,
             "status": "waiting",
         }
         if str(input_fingerprint or "").strip():
@@ -1861,17 +1865,11 @@ class ApprovalLifecycleMixin:
         answered = dict(request)
         answered["status"] = "answered"
         answered["responded_at"] = now
-        permission_denial_source = (
-            "timeout"
-            if response_type == "deny" and message == PERMISSION_DIALOG_TIMEOUT_RESPONSE
-            else "dialog_closed"
-            if response_type == "deny" and message == PERMISSION_DIALOG_CLOSED_RESPONSE
-            else "user"
-        )
+        denial_source = permission_denial_source(response_type, message)
         response_payload: dict[str, Any] = {
             "type": response_type,
             "summary": clean_message,
-            **({"source": permission_denial_source} if response_type == "deny" else {}),
+            **({"source": denial_source} if response_type == "deny" else {}),
         }
         if response_type == "permission_option" and selected_choice is not None:
             response_payload["permission_choice"] = {
@@ -1901,7 +1899,7 @@ class ApprovalLifecycleMixin:
                 )
             session_value = str((extensions.get(SESSION_EXTENSION_KEY) or {}).get("session_id") or "")
             approval_receipt = self._approval_receipt_for_response(task, extensions, request, input_id)
-            elevation_source = permission_denial_source if response_type == "deny" else "user"
+            elevation_source = denial_source if response_type == "deny" else "user"
             extensions[APPROVAL_EXTENSION_KEY] = record_approval_decision(
                 approval_receipt,
                 response_type,
@@ -1928,7 +1926,7 @@ class ApprovalLifecycleMixin:
                 request_fingerprint=str(request.get("request_fingerprint") or ""),
             )
             if response_type == "deny":
-                timed_out = permission_denial_source == "timeout"
+                timed_out = denial_source == "timeout"
                 failure_code = "permission_denied_by_timeout" if timed_out else "permission_denied_by_user"
                 failure_message = (
                     "Task elevation timed out and was automatically denied" if timed_out else "User denied full task elevation"
@@ -2036,8 +2034,8 @@ class ApprovalLifecycleMixin:
             receipt = self._approval_receipt_for_response(task, extensions, request, input_id)
             if response_type == "permission_option" and selected_choice is not None:
                 approval_source = (
-                    permission_denial_source
-                    if str(selected_choice.get("kind") or "") == "deny" and permission_denial_source != "user"
+                    denial_source
+                    if str(selected_choice.get("kind") or "") == "deny" and denial_source != "user"
                     else "user"
                 )
                 decided_type = "deny" if str(selected_choice.get("kind") or "") == "deny" else "approve"
@@ -2050,7 +2048,7 @@ class ApprovalLifecycleMixin:
                     decided_type=decided_type,
                 )
             else:
-                approval_source = permission_denial_source if response_type == "deny" else "user"
+                approval_source = denial_source if response_type == "deny" else "user"
                 updated_receipt = record_approval_decision(
                     receipt,
                     response_type,
@@ -2127,7 +2125,7 @@ class ApprovalLifecycleMixin:
             }
 
         if response_type == "deny":
-            timed_out = permission_denial_source == "timeout"
+            timed_out = denial_source == "timeout"
             failure_message = (
                 "Permission request timed out and was automatically denied" if timed_out else "User denied the requested full permission"
             )
@@ -2157,7 +2155,7 @@ class ApprovalLifecycleMixin:
                     "task_id": task.id,
                     "input_id": input_id,
                     "response_type": response_type,
-                    "response_source": permission_denial_source,
+                    "response_source": denial_source,
                     "created_at": now,
                 },
             )

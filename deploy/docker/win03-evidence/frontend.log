@@ -1,0 +1,30 @@
+
+> agentbc-webui@0.0.0 test
+> node --experimental-strip-types --test src/*.test.ts
+
+✔ HTTP and memory transports produce identical view state including cancellable plain report (25.568583ms)
+✔ A B A late responses ignoring abort never replace the last selection (0.55325ms)
+✔ group change rejects old list and detail; empty group clears view (0.361458ms)
+✔ terminal transition and pagination preserve selected detail, expiration resets page with notice (0.347417ms)
+✔ new source resets all flights and cursor while old source responses cannot return (0.34725ms)
+✔ timeouts and transient failures back off deterministically and manual refresh recovers (1.831375ms)
+✔ 401 and 403 stop all reads, including manual actions (0.323042ms)
+✔ 404 clears old detail; 422 413 and malformed responses mark preserved data stale (0.271833ms)
+✔ attempt/run replaces full snapshot; report deduplicates and old errors do not affect new task (0.2065ms)
+✔ dispose and repeated start never duplicate polling or retain listeners (0.209084ms)
+✔ HTTP bounds utf8 bytes, typed status, malformed json and wrong task identity (1.131584ms)
+✔ 120 tasks paginate without changing selection and retain frozen catalogue (0.2335ms)
+✔ backoff caps at thirty seconds and ten-minute fake-clock run has bounded timers (15.458417ms)
+✔ late fulfilled report is discarded after task switch; unmount settles ignored cancellation (0.223625ms)
+✔ fetch adapter preserves native global receiver and forwards cancellation (0.211916ms)
+✔ same snapshot preserves text and failure semantics (0.905959ms)
+✔ unknown, null, dates and text availability are distinct (0.121625ms)
+✔ runtime guards reject wrong version and malformed fields (0.285125ms)
+ℹ tests 18
+ℹ suites 0
+ℹ pass 18
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 183.850458

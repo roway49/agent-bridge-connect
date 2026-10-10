@@ -507,3 +507,17 @@ def _now() -> datetime:
 
 def _utc_now() -> str:
     return _now().isoformat().replace("+00:00", "Z")
+
+
+def maintain_runner_leases(runner_state, *, now: float) -> None:
+    """Reconcile known boards from Runner, never from task status/list reads."""
+    if now - getattr(runner_state, "_last_lease_maintenance_at", float("-inf")) < 10:
+        return
+    runner_state._last_lease_maintenance_at = now
+    with runner_state.lock:
+        boards = tuple(runner_state.known_boards)
+    for board in boards:
+        try:
+            reap_orphaned(board)
+        except (ABCError, OSError, ValueError):
+            continue

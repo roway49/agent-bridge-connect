@@ -1,0 +1,25 @@
+{
+  "control_network_reachable": true,
+  "cases": {
+    "read-only": {
+      "exit": 1,
+      "stderr": "bwrap: No permissions to create a new namespace, likely because the kernel does not allow non-privileged user namespaces. On e.g. debian this can be enabled with 'sysctl kernel.unprivileged_userns_clone=1'.\n",
+      "stdout": ""
+    },
+    "workspace-write": {
+      "exit": 1,
+      "stderr": "bwrap: No permissions to create a new namespace, likely because the kernel does not allow non-privileged user namespaces. On e.g. debian this can be enabled with 'sysctl kernel.unprivileged_userns_clone=1'.\n",
+      "stdout": ""
+    }
+  },
+  "outside_unchanged": true,
+  "container_exit": 0,
+  "container_stderr": "",
+  "failures": [
+    "read-only: command failed",
+    "workspace-write: command failed"
+  ],
+  "platform": "linux/arm64",
+  "image": "docker.io/library/python:3.11.15-slim-bookworm@sha256:d29f48a31a8b408ed19272ca1e7b10ebae13b240a27e862d3d4217c528e2e0c3",
+  "profile_sha256": "785b2429264afba4d594320337cb17f144f3c7d51585f9805eef72e28f4f9334"
+}

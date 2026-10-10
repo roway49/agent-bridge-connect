@@ -1,9 +1,13 @@
 # 用户指南
 
+> Unpublished 1.0.5A Docker candidates / Docker 开发候选：安装与当前支持范围见 [development status / 开发状态](DEVELOPMENT_STATUS.md)。本页命令已按 1.0.5A / `1.0.5a1` 准备，须待 Release 资产发布后使用。
+
 中文 | [English](USER_GUIDE.md)
 
-适用于 AgentBC **1.0.4A** 正式 Alpha 版本（tag `v1.0.4A`，Python 包
-`1.0.4a1`）。
+适用于 AgentBC **1.0.5A** 正式 Alpha 版本（tag `v1.0.5A`，Python 包
+`1.0.5a1`）。
+
+开发说明：1.0.5A 工作树新增 [OpenCode 基础执行接入](OPENCODE.md)，不代表已安装的 1.0.5A 已支持该能力。
 
 ## 命令结构
 
@@ -34,6 +38,23 @@ setup 会在后台启动 Runner。恢复时使用 `runner start`，停止时使�
 
 Updater 不会把 Homebrew、pip/pipx、外部 symlink 或复制得到的二进制认定为
 AgentBC 自管的原地更新目标。包管理器安装只返回对应包管理器的升级路径，不会被覆盖。
+
+### 审批等待时间（1.0.5A）
+
+```bash
+agentbc approval max-time 300  # 等待上限 300 秒，即 5 分钟
+agentbc approval max-time 900  # 等待上限 15 分钟
+agentbc approval max-time      # 只读查看设置
+```
+
+设置原子保存到当前配置的 `[approval] max_time`，接受 1–2147483647 的整数秒；默认 300 秒。
+显式设置优先于旧的执行器 `approval_timeout_s`，供后续启动的 Codex、Claude、Hermes run 使用。
+无需重启 Runner；已启动的 run 和已打开的审批保留原时限。使用独立 `AGENTBC_CONFIG_PATH`
+或 `--config` 启动的任务读取各自配置，应在同一配置环境下执行设置命令。
+
+审批弹窗、任务记录与原生控制通道共享本次请求的绝对截止时间；通知延迟和查看详情不会重新计时。
+到期仍拒绝权限，关闭弹窗仍按原有拒绝规则处理。本命令不改变权限模式、批准结果、普通通知停留时间、
+资源预算询问或任务执行超时，也不增加 OpenCode 原生审批能力。历史未设置全局值的执行器专用覆盖继续兼容。
 
 ### 1.0.2A 新增或调整的命令
 
@@ -289,8 +310,8 @@ task ID 必须匹配；`completed` 要求每个声明的步骤恰好出现一次
 两步决策需要给出具体原因并描述两个选项的后果：`"input":{"type":"choice","reason":"为什么需要用户决定","options":[{"label":"Option A","description":"选择 A 会做什么或改变什么"},{"label":"Option B","description":"选择 B 会做什么或改变什么"}]}`。
 AgentBC 在桌面弹窗中显示原因和说明，配两个直接按钮。deadline 与 CLI 兜底命令保留在任务
 报告和通知事件中，但不显示在桌面弹窗。自由文本继续使用 `type: message`，批准/拒绝类请求
-使用 `type: permission`，输入弹窗最长等待五分钟；关闭或超时后同一任务继续等待
-`agentbc task respond`。
+使用 `type: permission`。权限审批按 `approval max-time` 设置等待（默认五分钟），关闭或超时即拒绝。
+其他输入弹窗仍最多等待五分钟，关闭或超时后同一任务继续等待 `agentbc task respond`。
 
 每份报告与 task brief 都包含 `Dispatcher Traceability`（派发者溯源）小节，带两个标签：
 `Dispatcher platform`（派发平台）和 `Dispatcher conversation ID`（派发会话 ID）。它们描述

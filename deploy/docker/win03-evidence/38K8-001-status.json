@@ -1,0 +1,897 @@
+{
+  "resolved_task_id": "38K8-001",
+  "resolution_mode": "explicit_id",
+  "active_candidates": [],
+  "has_active_task": false,
+  "message": "Resolved explicit task id: 38K8-001",
+  "current_task": {
+    "extensions": {
+      "agentbc.provenance": {
+        "source_platform": "codex",
+        "conversation_id": null
+      },
+      "agentbc.lineage": {
+        "parent_task_id": null,
+        "base_task_id": "38K8-001",
+        "chain_root_task_id": "38K8-001",
+        "iteration_index": 1,
+        "task_code": "38K8",
+        "task_date": "2026-10-05",
+        "agentbc_root": "/data/workspace",
+        "base_workspace_root": "/data/workspace/tasks/artifacts/2026-10-05/38K8",
+        "base_artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-05/38K8",
+        "branch_mode": "linear",
+        "chain_id": "38K8",
+        "chain_token": "38K8",
+        "chain_dir": "38K8",
+        "chain_task_id": "001",
+        "chain_output_dir": "/data/workspace/tasks/report/2026-10-05/38K8"
+      },
+      "agentbc.execution": {
+        "internal_status": "completed",
+        "lease_state": "active",
+        "run_intervals": [
+          {
+            "run_id": "hermes-38K8-001-1555abec",
+            "executor_id": "hermes",
+            "attempt_index": 0,
+            "started_at": "2026-10-05T13:36:44.112243Z",
+            "ended_at": "2026-10-05T13:40:09.218419Z",
+            "duration_s": 205.106,
+            "state": "active"
+          },
+          {
+            "run_id": "hermes-38K8-001-68de67e9",
+            "executor_id": "hermes",
+            "attempt_index": 0,
+            "started_at": "2026-10-05T13:40:39.194034Z",
+            "ended_at": "2026-10-05T13:40:48.640251Z",
+            "duration_s": 9.446,
+            "state": "closed"
+          }
+        ],
+        "waiting_since": "2026-10-05T13:40:09.218117Z",
+        "permission_elevation_mode": "full",
+        "permission_elevation_source": "task_elevation",
+        "permission_elevation_state": "verified",
+        "log_worker_run_id": "runner-worker-e5b41801a871",
+        "resuming_at": "2026-10-05T13:40:38.752724Z",
+        "worker_run_id": "runner-worker-a7ac4fec753f",
+        "dispatch_status": "accepted",
+        "worker_pid": 1084,
+        "monitor_status": "disabled",
+        "permission_runtime_state": "retired",
+        "executor_run_id": "hermes-38K8-001-68de67e9"
+      },
+      "agentbc.permission": {
+        "version": 2,
+        "configured_mode": "inherit",
+        "inherited_mode": null,
+        "task_override": null,
+        "requested_mode": "inherit",
+        "effective_mode": "inherit",
+        "selection_source": "configured_default",
+        "selection_strategy": "inherit",
+        "resolved_base_mode": "native",
+        "resolution_state": "runtime",
+        "approval_policy": "on_block",
+        "scope": "task",
+        "mapping": {
+          "codex": {
+            "transport": "app-server",
+            "capability_id": "codex.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "codex",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          },
+          "claude": {
+            "transport": "cli",
+            "capability_id": "claude.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "claude",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          },
+          "hermes": {
+            "transport": "hermes-acp",
+            "capability_id": "hermes.acp.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "hermes",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          }
+        },
+        "permission_args": []
+      },
+      "agentbc.permission_protocol": {
+        "version": 3,
+        "scope": "task_elevation",
+        "mode": "full",
+        "decisions": [
+          "approve_full",
+          "deny"
+        ]
+      },
+      "agentbc.resources": {
+        "version": 1,
+        "executor": "hermes",
+        "resource": "max_turns",
+        "configured_limit": 90,
+        "current_limit": 90,
+        "multiplier": 2,
+        "exhaustion_count": 0,
+        "last_decision": "",
+        "source": "hermes_default_90",
+        "created_at": "2026-10-05T13:36:42.709041Z"
+      },
+      "agentbc.session": {
+        "version": 1,
+        "executor": "hermes",
+        "retain": false,
+        "session_id": "c34118cc-df05-4671-8599-4ee3d1dc2e19",
+        "session_state": "terminal",
+        "project_mode": "none",
+        "run_ids": [
+          "hermes-38K8-001-1555abec",
+          "hermes-38K8-001-68de67e9"
+        ],
+        "run_resume_facts": {
+          "hermes-38K8-001-1555abec": false,
+          "hermes-38K8-001-68de67e9": true
+        },
+        "resume_count": 1,
+        "cleanup": {
+          "capability": "supported",
+          "state": "succeeded",
+          "attempts": 1,
+          "error_code": "",
+          "retryable": false,
+          "version": 5,
+          "strategy": "official_session_delete",
+          "phase": "waiting_for_cleanup",
+          "verification": {
+            "cli": {
+              "status": "not_applicable",
+              "checked_at": ""
+            },
+            "desktop_backend": {
+              "status": "not_applicable",
+              "checked_at": ""
+            },
+            "desktop_live": {
+              "status": "not_applicable",
+              "checked_at": ""
+            },
+            "desktop": {
+              "status": "not_applicable",
+              "checked_at": ""
+            }
+          },
+          "commands": {
+            "desktop_archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-05T13:41:55.547923Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "app_server_archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-05T13:41:55.547923Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "delete": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-05T13:41:55.547923Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-05T13:41:55.547923Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            }
+          }
+        },
+        "created_at": "2026-10-05T13:36:42.709041Z",
+        "receipt_source": "stderr_receipt",
+        "official_receipt_bound": true
+      },
+      "agentbc.approval": {
+        "version": 3,
+        "scope": "task_elevation",
+        "kind": "permission",
+        "executor": "hermes",
+        "operation": "edit",
+        "elevation_mode": "full",
+        "requested_permission": "full",
+        "summary": "Approve edit: /data/workspace/tasks/artifacts/2026-10-05/38K8/hermes-test.txt",
+        "summary_truncated": false,
+        "state": "answered",
+        "source": "task_elevation",
+        "path_plan_digest": "",
+        "containment_profile_digest": "",
+        "created_at": "2026-10-05T13:40:09.217394Z",
+        "cardinality": {
+          "permission_requests": 1,
+          "notifications": 1,
+          "human_decisions": 1,
+          "elevation_receipts": 1,
+          "full_continuations": 1
+        },
+        "authority": {
+          "executor": "hermes",
+          "protocol": "hermes_acp",
+          "protocol_version": 1,
+          "method": "session/request_permission"
+        },
+        "native_event": "hermes_acp.session/request_permission",
+        "request_fingerprint": "fp-e1fff1035cdb59678d46d5ca83b3be1587a4bbad",
+        "reason_summary": "Approve edit: /data/workspace/tasks/artifacts/2026-10-05/38K8/hermes-test.txt",
+        "decision": "approve_full",
+        "decision_source": "user",
+        "decided_at": "2026-10-05T13:40:38.752724Z",
+        "full_continuations": 1
+      },
+      "agentbc.permission_elevation": {
+        "version": 1,
+        "mode": "full",
+        "source": "task_elevation",
+        "requested_permission": "full",
+        "state": "verified",
+        "path_plan_digest": "",
+        "containment_profile_digest": "",
+        "cardinality": {
+          "permission_requests": 1,
+          "notifications": 1,
+          "human_decisions": 1,
+          "elevation_receipts": 1,
+          "full_continuations": 1
+        },
+        "authority": {
+          "executor": "hermes",
+          "protocol": "hermes_acp",
+          "protocol_version": 1,
+          "method": "session/request_permission"
+        },
+        "native_event": "hermes_acp.session/request_permission",
+        "request_fingerprint": "fp-e1fff1035cdb59678d46d5ca83b3be1587a4bbad",
+        "created_at": "2026-10-05T13:40:09.217910Z",
+        "decision": "approve_full",
+        "decision_source": "user",
+        "decided_at": "2026-10-05T13:40:38.752724Z"
+      },
+      "agentbc.input": {
+        "input_id": "input-b6fc6870402d4a69b72d661d20023940",
+        "executor_run_id": "hermes-38K8-001-1555abec",
+        "blocked_step_id": 1,
+        "type": "permission",
+        "scope": "task_elevation",
+        "approval_version": 3,
+        "elevation_mode": "full",
+        "requested_permission": "full",
+        "session_id": "c34118cc-df05-4671-8599-4ee3d1dc2e19",
+        "request_id": "0",
+        "request_fingerprint": "fp-e1fff1035cdb59678d46d5ca83b3be1587a4bbad",
+        "operation": "edit",
+        "summary": "Approve edit: /data/workspace/tasks/artifacts/2026-10-05/38K8/hermes-test.txt",
+        "reason_summary": "Approve edit: /data/workspace/tasks/artifacts/2026-10-05/38K8/hermes-test.txt",
+        "summary_truncated": false,
+        "path_plan_digest": "",
+        "containment_profile_digest": "",
+        "authority": {
+          "executor": "hermes",
+          "protocol": "hermes_acp",
+          "protocol_version": 1,
+          "method": "session/request_permission"
+        },
+        "native_event": "hermes_acp.session/request_permission",
+        "tool_name": "edit",
+        "tool_use_id": "edit-approval-1",
+        "action_fingerprint": "fp-e61ae3a6bcc056a289d3af24ba43f9bf8e684d6d",
+        "escalation_domain": "hermes_acp",
+        "control_path": "hermes-acp",
+        "preflight": {
+          "status": "retired",
+          "mode": "full"
+        },
+        "created_at": "2026-10-05T13:40:09.218117Z",
+        "deadline_at": "2026-10-05T13:45:09.218117Z",
+        "approval_max_time_s": 300.0,
+        "status": "answered",
+        "responded_at": "2026-10-05T13:40:38.752724Z",
+        "response": {
+          "type": "approve_full",
+          "summary": "approve_full"
+        }
+      },
+      "agentbc.progress": {
+        "version": 1,
+        "attempt_index": 0,
+        "latest_sequence": 1,
+        "confirmed_step_ids": [
+          1
+        ],
+        "confirmed_count": 1,
+        "evidence_quality": "authoritative",
+        "updated_at": "2026-10-05T13:40:45.814810Z"
+      },
+      "agentbc.final_callback": {
+        "version": 1,
+        "task_id": "38K8-001",
+        "final_state": "completed",
+        "report_file": "/data/workspace/tasks/report/2026-10-05/38K8/38K8-001-report.md",
+        "artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-05/38K8",
+        "summary": "Created hermes-test.txt containing WINDOWS_HERMES_OK in the assigned artifact root after human-approved native approval, then read it back and verified the exact content (18 bytes, one line). No permission mode changes, no out-of-scope writes.",
+        "executor_run_id": "hermes-38K8-001-68de67e9",
+        "finished_at": "2026-10-05T13:40:48.646605Z",
+        "source": "executor_final_marker",
+        "outcome": "flow_declared",
+        "exit_code": 0,
+        "step_results": [
+          {
+            "id": 1,
+            "status": "done"
+          }
+        ],
+        "marker_valid": true,
+        "completed_step_count": 1
+      },
+      "agentbc.terminal_delivery": {
+        "version": 1,
+        "delivery_id": "1c20a321-6559-41ae-936c-fd131b917b11",
+        "terminal_state": "completed",
+        "terminal_event": "task.finalized",
+        "committed_at": "2026-10-05T13:40:48.646605Z",
+        "stages": {
+          "report": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "record": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "index": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "file_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "ui_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          }
+        },
+        "updated_at": "2026-10-05T13:40:53.809120Z"
+      }
+    },
+    "id": "38K8-001",
+    "title": "Windows Hermes DeepSeek approval and completion test",
+    "status": "completed",
+    "assignee": "hermes",
+    "steps": [
+      {
+        "id": 1,
+        "description": "Windows Docker Hermes approval and completion popup test. In this task's assigned artifact root, create hermes-test.txt containing WINDOWS_HERMES_OK, then read back that exact file and summarize the result. Use only the existing inherited permissions. If a native approval is requested, wait for the human and respect denial; do not change permission mode or bypass the request. Do not access credentials, browse, change settings, or write outside this artifact root. End with the required AGENTBC_FINAL_CALLBACK for this actual task; mark step 1 done only after successful write and read.",
+        "record": "steps/01.json",
+        "status": "done",
+        "result": {
+          "status": "done",
+          "executor_result": {
+            "id": 1,
+            "status": "done"
+          },
+          "progress_receipt": {
+            "version": 1,
+            "sequence": 1,
+            "evidence_source": "agent_cli"
+          }
+        }
+      }
+    ],
+    "created_by": "codex",
+    "created_at": "2026-10-05T13:36:42.709041Z",
+    "updated_at": "2026-10-05T13:40:50.043032Z",
+    "intervention": {
+      "paused": false,
+      "pause_reason": null,
+      "latest_correction_id": null
+    },
+    "errors": [],
+    "workspace": {
+      "customer_dir": false,
+      "customer_path": "",
+      "project_root": "/data/workspace/tasks/artifacts/2026-10-05/38K8",
+      "default_path": "/data/workspace/tasks/artifacts/2026-10-05/38K8",
+      "agentbc_root": "/data/workspace",
+      "root": "/data/workspace/tasks/artifacts/2026-10-05/38K8",
+      "artifact_root": "/data/workspace/tasks/artifacts/2026-10-05/38K8",
+      "artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-05/38K8",
+      "report_root": "/data/workspace/tasks/report/2026-10-05/38K8",
+      "task_file": "/data/workspace/tasks/report/2026-10-05/38K8/38K8-001-task.md",
+      "report_file": "/data/workspace/tasks/report/2026-10-05/38K8/38K8-001-report.md",
+      "output_dir": "/data/workspace/tasks/report/2026-10-05/38K8",
+      "task_code": "38K8",
+      "iteration": "001",
+      "task_date": "2026-10-05",
+      "chain_id": "38K8",
+      "chain_token": "38K8",
+      "chain_dir": "38K8",
+      "chain_task_id": "001",
+      "chain_output_dir": "/data/workspace/tasks/report/2026-10-05/38K8",
+      "internal_task_dir": "/data/workspace/record/38K8/001"
+    },
+    "report": null,
+    "session_id": null,
+    "health": {
+      "state": "completed",
+      "color": "gray",
+      "stale_after_s": 300,
+      "long_stale_after_s": 600,
+      "startup_grace_s": 10,
+      "temp_file": "/data/workspace/record/38K8/001/.38K8-001.run.temp",
+      "run_log": "/data/workspace/record/38K8/001/38K8-001-run.log",
+      "last_progress_at": "",
+      "last_progress_age_s": null,
+      "run_lease_state": "",
+      "run_lease_pid": null,
+      "runner_alive": null,
+      "message": "",
+      "source": ""
+    },
+    "execution_policy": {
+      "version": 1,
+      "resources": {
+        "resource": "max_turns",
+        "limit": 90,
+        "configured_limit": 90,
+        "exhaustion_count": 0,
+        "last_decision": "",
+        "source": "hermes_default_90",
+        "frozen": true
+      },
+      "session": {
+        "retain": false,
+        "session_id": "c34118cc-df05-4671-8599-4ee3d1dc2e19",
+        "session_state": "terminal",
+        "project_mode": "none",
+        "cleanup": {
+          "capability": "supported",
+          "state": "succeeded",
+          "attempts": 1,
+          "error_code": "",
+          "retryable": false,
+          "version": 5,
+          "strategy": "official_session_delete",
+          "phase": "waiting_for_cleanup",
+          "verification": {
+            "cli": {
+              "status": "not_applicable",
+              "checked_at": ""
+            },
+            "desktop_backend": {
+              "status": "not_applicable",
+              "checked_at": ""
+            },
+            "desktop_live": {
+              "status": "not_applicable",
+              "checked_at": ""
+            },
+            "desktop": {
+              "status": "not_applicable",
+              "checked_at": ""
+            }
+          },
+          "commands": {
+            "desktop_archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-05T13:41:55.547923Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "app_server_archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-05T13:41:55.547923Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "delete": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-05T13:41:55.547923Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            },
+            "archive": {
+              "status": "not_applicable",
+              "checked_at": "2026-10-05T13:41:55.547923Z",
+              "request_digest": "",
+              "route_digest": "",
+              "app_instance_digest": ""
+            }
+          }
+        }
+      },
+      "permission_grant": null,
+      "auxiliary_sessions": [],
+      "auxiliary_aggregate": {
+        "state": "blocked",
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      },
+      "terminal_delivery": {
+        "version": 1,
+        "delivery_id": "1c20a321-6559-41ae-936c-fd131b917b11",
+        "terminal_state": "completed",
+        "terminal_event": "task.finalized",
+        "committed_at": "2026-10-05T13:40:48.646605Z",
+        "stages": {
+          "report": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "record": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "index": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "file_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          },
+          "ui_notification": {
+            "state": "succeeded",
+            "attempts": 1,
+            "last_error_code": ""
+          }
+        },
+        "updated_at": "2026-10-05T13:40:53.809120Z"
+      },
+      "delivery_health": {
+        "state": "succeeded",
+        "delivery_id": "1c20a321-6559-41ae-936c-fd131b917b11",
+        "stages_total": 5,
+        "stages_succeeded": 5,
+        "stages_outstanding": 0,
+        "stages_retry_wait": 0,
+        "stages_in_progress": 0,
+        "outstanding_stages": [],
+        "attempts_total": 5,
+        "error_codes": [],
+        "healthy": true,
+        "updated_at": "2026-10-05T13:40:53.809120Z"
+      },
+      "progress": {
+        "version": 1,
+        "attempt_index": 0,
+        "latest_sequence": 1,
+        "confirmed_step_ids": [
+          1
+        ],
+        "confirmed_count": 1,
+        "evidence_quality": "authoritative",
+        "updated_at": "2026-10-05T13:40:45.814810Z"
+      }
+    },
+    "chain_root_task_id": "38K8-001",
+    "head_task_ids": [
+      "38K8-001"
+    ],
+    "is_chain_head": true,
+    "chain_anomalies": [],
+    "parent_task_id": null,
+    "base_task_id": "38K8-001",
+    "iteration_index": 1,
+    "branch_mode": "linear",
+    "task_code": "38K8",
+    "iteration": "001",
+    "task_date": "2026-10-05",
+    "chain_task_id": "001",
+    "has_final_callback": true,
+    "report_ready": true,
+    "run_lease_state": "closed",
+    "execution": {
+      "internal_status": "completed",
+      "lease_state": "closed",
+      "run_intervals": [
+        {
+          "run_id": "hermes-38K8-001-1555abec",
+          "executor_id": "hermes",
+          "attempt_index": 0,
+          "started_at": "2026-10-05T13:36:44.112243Z",
+          "ended_at": "2026-10-05T13:40:09.218419Z",
+          "duration_s": 205.106,
+          "state": "active"
+        },
+        {
+          "run_id": "hermes-38K8-001-68de67e9",
+          "executor_id": "hermes",
+          "attempt_index": 0,
+          "started_at": "2026-10-05T13:40:39.194034Z",
+          "ended_at": "2026-10-05T13:40:48.640251Z",
+          "duration_s": 9.446,
+          "state": "closed"
+        }
+      ],
+      "waiting_since": "2026-10-05T13:40:09.218117Z",
+      "permission_elevation_mode": "full",
+      "permission_elevation_source": "task_elevation",
+      "permission_elevation_state": "verified",
+      "log_worker_run_id": "runner-worker-e5b41801a871",
+      "resuming_at": "2026-10-05T13:40:38.752724Z",
+      "worker_run_id": "runner-worker-a7ac4fec753f",
+      "dispatch_status": "accepted",
+      "worker_pid": 1084,
+      "monitor_status": "disabled",
+      "permission_runtime_state": "retired",
+      "executor_run_id": "hermes-38K8-001-68de67e9",
+      "executor_id": "hermes",
+      "started_at": "2026-10-05T13:40:39.194034Z",
+      "last_heartbeat_at": "2026-10-05T13:40:48.640251Z",
+      "runner_status": "completed",
+      "pid": 1084,
+      "output_truncated": false
+    },
+    "timing": {
+      "task_id": "38K8-001",
+      "wall_duration_s": 245.938,
+      "execution_duration_s": 214.552,
+      "last_run_duration_s": 9.446,
+      "attempt_index": 0,
+      "attempt_started_at": "",
+      "attempt_wall_duration_s": null,
+      "attempt_execution_duration_s": 214.552,
+      "attempt_run_count": 2,
+      "attempt_run_intervals": [
+        {
+          "run_id": "hermes-38K8-001-1555abec",
+          "executor_id": "hermes",
+          "started_at": "2026-10-05T13:36:44.112243Z",
+          "ended_at": "2026-10-05T13:40:09.218419Z",
+          "duration_s": 205.106,
+          "state": "active",
+          "source": "recorded",
+          "attempt_index": 0,
+          "execution_duration_s": 205.106
+        },
+        {
+          "run_id": "hermes-38K8-001-68de67e9",
+          "executor_id": "hermes",
+          "attempt_index": 0,
+          "started_at": "2026-10-05T13:40:39.194034Z",
+          "ended_at": "2026-10-05T13:40:48.640251Z",
+          "duration_s": 9.446,
+          "state": "closed",
+          "source": "current_lease",
+          "execution_duration_s": 9.446
+        }
+      ],
+      "waiting_duration_s": 29.535,
+      "evidence_quality": "authoritative",
+      "execution_duration_known": true,
+      "run_count": 2,
+      "run_intervals": [
+        {
+          "run_id": "hermes-38K8-001-1555abec",
+          "executor_id": "hermes",
+          "started_at": "2026-10-05T13:36:44.112243Z",
+          "ended_at": "2026-10-05T13:40:09.218419Z",
+          "duration_s": 205.106,
+          "state": "active",
+          "source": "recorded",
+          "attempt_index": 0,
+          "execution_duration_s": 205.106
+        },
+        {
+          "run_id": "hermes-38K8-001-68de67e9",
+          "executor_id": "hermes",
+          "attempt_index": 0,
+          "started_at": "2026-10-05T13:40:39.194034Z",
+          "ended_at": "2026-10-05T13:40:48.640251Z",
+          "duration_s": 9.446,
+          "state": "closed",
+          "source": "current_lease",
+          "execution_duration_s": 9.446
+        }
+      ],
+      "lease_state": "closed"
+    },
+    "debug": {
+      "execution": {
+        "internal_status": "completed",
+        "lease_state": "closed",
+        "run_intervals": [
+          {
+            "run_id": "hermes-38K8-001-1555abec",
+            "executor_id": "hermes",
+            "attempt_index": 0,
+            "started_at": "2026-10-05T13:36:44.112243Z",
+            "ended_at": "2026-10-05T13:40:09.218419Z",
+            "duration_s": 205.106,
+            "state": "active"
+          },
+          {
+            "run_id": "hermes-38K8-001-68de67e9",
+            "executor_id": "hermes",
+            "attempt_index": 0,
+            "started_at": "2026-10-05T13:40:39.194034Z",
+            "ended_at": "2026-10-05T13:40:48.640251Z",
+            "duration_s": 9.446,
+            "state": "closed"
+          }
+        ],
+        "waiting_since": "2026-10-05T13:40:09.218117Z",
+        "permission_elevation_mode": "full",
+        "permission_elevation_source": "task_elevation",
+        "permission_elevation_state": "verified",
+        "log_worker_run_id": "runner-worker-e5b41801a871",
+        "resuming_at": "2026-10-05T13:40:38.752724Z",
+        "worker_run_id": "runner-worker-a7ac4fec753f",
+        "dispatch_status": "accepted",
+        "worker_pid": 1084,
+        "monitor_status": "disabled",
+        "permission_runtime_state": "retired",
+        "executor_run_id": "hermes-38K8-001-68de67e9",
+        "executor_id": "hermes",
+        "started_at": "2026-10-05T13:40:39.194034Z",
+        "last_heartbeat_at": "2026-10-05T13:40:48.640251Z",
+        "runner_status": "completed",
+        "pid": 1084,
+        "output_truncated": false
+      },
+      "timing": {
+        "task_id": "38K8-001",
+        "wall_duration_s": 245.938,
+        "execution_duration_s": 214.552,
+        "last_run_duration_s": 9.446,
+        "attempt_index": 0,
+        "attempt_started_at": "",
+        "attempt_wall_duration_s": null,
+        "attempt_execution_duration_s": 214.552,
+        "attempt_run_count": 2,
+        "attempt_run_intervals": [
+          {
+            "run_id": "hermes-38K8-001-1555abec",
+            "executor_id": "hermes",
+            "started_at": "2026-10-05T13:36:44.112243Z",
+            "ended_at": "2026-10-05T13:40:09.218419Z",
+            "duration_s": 205.106,
+            "state": "active",
+            "source": "recorded",
+            "attempt_index": 0,
+            "execution_duration_s": 205.106
+          },
+          {
+            "run_id": "hermes-38K8-001-68de67e9",
+            "executor_id": "hermes",
+            "attempt_index": 0,
+            "started_at": "2026-10-05T13:40:39.194034Z",
+            "ended_at": "2026-10-05T13:40:48.640251Z",
+            "duration_s": 9.446,
+            "state": "closed",
+            "source": "current_lease",
+            "execution_duration_s": 9.446
+          }
+        ],
+        "waiting_duration_s": 29.535,
+        "evidence_quality": "authoritative",
+        "execution_duration_known": true,
+        "run_count": 2,
+        "run_intervals": [
+          {
+            "run_id": "hermes-38K8-001-1555abec",
+            "executor_id": "hermes",
+            "started_at": "2026-10-05T13:36:44.112243Z",
+            "ended_at": "2026-10-05T13:40:09.218419Z",
+            "duration_s": 205.106,
+            "state": "active",
+            "source": "recorded",
+            "attempt_index": 0,
+            "execution_duration_s": 205.106
+          },
+          {
+            "run_id": "hermes-38K8-001-68de67e9",
+            "executor_id": "hermes",
+            "attempt_index": 0,
+            "started_at": "2026-10-05T13:40:39.194034Z",
+            "ended_at": "2026-10-05T13:40:48.640251Z",
+            "duration_s": 9.446,
+            "state": "closed",
+            "source": "current_lease",
+            "execution_duration_s": 9.446
+          }
+        ],
+        "lease_state": "closed"
+      },
+      "permission": {
+        "version": 2,
+        "configured_mode": "inherit",
+        "inherited_mode": null,
+        "task_override": null,
+        "requested_mode": "inherit",
+        "effective_mode": "inherit",
+        "selection_source": "configured_default",
+        "selection_strategy": "inherit",
+        "resolved_base_mode": "native",
+        "resolution_state": "runtime",
+        "approval_policy": "on_block",
+        "scope": "task",
+        "mapping": {
+          "codex": {
+            "transport": "app-server",
+            "capability_id": "codex.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "codex",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          },
+          "claude": {
+            "transport": "cli",
+            "capability_id": "claude.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "claude",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          },
+          "hermes": {
+            "transport": "hermes-acp",
+            "capability_id": "hermes.acp.inherit",
+            "args": [],
+            "env": {},
+            "decisions": null,
+            "overrides_native": false,
+            "executor": "hermes",
+            "mode": "inherit",
+            "scope": "executor_subprocess",
+            "direct_args": []
+          }
+        },
+        "permission_args": []
+      }
+    }
+  }
+}

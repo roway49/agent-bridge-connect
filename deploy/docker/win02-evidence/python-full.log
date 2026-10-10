@@ -1,0 +1,425 @@
+/Users/developer/hermes-team/codex/agentbc-dev-workspace/agent-worktrees/integration/src/agent_bridge_connect/executor_registry.py:125: DeprecationWarning: claude executor config 'allowed_tools' is legacy: it is read as 'tools' (tool visibility) and never auto-approves; use 'tools' and 'auto_approve_tools'.
+  executor = executor_class(**runtime_config)
+usage: agentbc task respond [-h] [--root ROOT] --input INPUT_ID
+                            [--message MESSAGE] [--approve] [--approve-full]
+                            [--deny]
+                            [--denial-source {user,timeout,dialog_closed}]
+                            [--permission-option PERMISSION_OPTION]
+                            [--config CONFIG] [--interval INTERVAL]
+                            id
+agentbc task respond: error: argument --deny: not allowed with argument --approve
+worker_error: executor failed for T65A-001: permission input must identify exactly one blocked declared step
+respond_error: legacy_session_tool_rule_removed: --approve-tool/--scope session were removed; respond with --permission-option <handle> (or --approve/--deny) instead.
+respond_error: legacy_session_tool_rule_removed: --approve-tool/--scope session were removed; respond with --permission-option <handle> (or --approve/--deny) instead.
+completed: YFZC-001
+Continue A4Z8-001 from its existing baseline.
+This will preserve its report and artifacts, then create A4Z8-002.
+Requirements and recorded step state will be imported mechanically.
+The new iteration will be dispatched to claude.
+handoff_created: A4Z8-001 -> A4Z8-002
+created: A4Z8-002
+assignee: claude
+task_code: A4Z8
+iteration: 001
+project_root: /private/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmpk121tkx2/project
+requirements: /private/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmpk121tkx2/board/tasks/report/2026-10-01/A4Z8/A4Z8-001-task.md
+artifact_root: /private/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmpk121tkx2/project
+report: /private/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmpk121tkx2/board/tasks/report/2026-10-01/A4Z8/A4Z8-001-report.md
+dispatched: A4Z8-002
+worker_run_id: recovery-handoff-worker
+status: accepted
+monitor: opened
+input_required: XQDN-001 request=0
+input_required: MFYK-001 request=0
+input_required: 88CE-001 request=0
+worker_error: executor failed for VJ3C-001: Executor exited without a valid AGENTBC_FINAL_CALLBACK
+input_required: B9HK-001 request=0
+input_required: 2Z3J-001 request=0
+worker_error: executor failed for C4Y2-001: Executor exited without a valid AGENTBC_FINAL_CALLBACK
+input_required: PZY4-001 request=0
+input_required: PWR5-001 request=0
+input_required: 7SYH-001 request=0
+completed: 7SYH-001
+completed: FXM6-001
+input_required: E62Y-001
+worker_error: executor failed for 4SAC-001: limit mismatch
+worker_error: executor session receipt failed for DM8Y-001: execution_session must be an object
+worker_error: executor failed for 3T9X-001: native transport could not start
+retried: 3CZM-001
+created: 3CZM-001
+assignee: codex
+task_code: 3CZM
+iteration: 001
+project_root: /private/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp5fjm85cl/customer
+requirements: /private/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp5fjm85cl/workspace/tasks/report/2026-10-01/3CZM/3CZM-001-task.md
+artifact_root: /private/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp5fjm85cl/customer
+report: /private/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp5fjm85cl/workspace/tasks/report/2026-10-01/3CZM/3CZM-001-report.md
+dispatched: 3CZM-001
+worker_run_id: new-worker
+status: accepted
+monitor: not_requested
+Retry XRP2-001 from Step 1.
+This will delete the previous failure report: /private/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmpqvphshyv/workspace/tasks/report/2026-10-01/XRP2/XRP2-001-report.md
+This will clear previous AgentBC-managed artifacts: /private/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmpqvphshyv/workspace/tasks/artifacts/2026-10-01/XRP2
+The Task ID and revival audit receipt will be preserved.
+retried: XRP2-001
+created: XRP2-001
+assignee: codex
+task_code: XRP2
+iteration: 001
+project_root: /private/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmpqvphshyv/workspace/tasks/artifacts/2026-10-01/XRP2
+requirements: /private/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmpqvphshyv/workspace/tasks/report/2026-10-01/XRP2/XRP2-001-task.md
+artifact_root: /private/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmpqvphshyv/workspace/tasks/artifacts/2026-10-01/XRP2
+report: /private/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmpqvphshyv/workspace/tasks/report/2026-10-01/XRP2/XRP2-001-report.md
+dispatched: XRP2-001
+worker_run_id: recovery-retry-worker
+status: accepted
+monitor: opened
+runner_error: runner already running for spool default: pid 12345
+worker_error: executor failed for NP34-001: boom
+input_required: TVFP-001 request=native-request-1
+completed: TVFP-001
+worker_error: Executor exited without a valid AGENTBC_FINAL_CALLBACK
+completed: 2TZP-001
+{
+  "declared_version": "0.146.0",
+  "detected_version": "0.146.0",
+  "executor": "codex",
+  "files": {
+    "delete_help.txt": {
+      "bytes": 325,
+      "diff": "--- matrix/codex/0.146.0/delete_help.txt\n+++ <staged>/delete_help.txt\n@@ -11,3 +11,5 @@\n Options:\n       --force\n           Delete without prompting. SESSION must be a UUID\n+\n+Extra official line",
+      "diff_lines": 8,
+      "sha256": "03ff2d0bfa43a8aa4c0fd963289ed3527b7bd7e68b37276d9715049017404f25",
+      "unchanged": false
+    }
+  }
+}
+Codex Skill: installed; linked to Docker agentbc.
+Claude Skill: installed; linked to Docker agentbc.
+Hermes Skill: installed; linked to Docker agentbc.
+Installation type: docker
+WebUI address: http://127.0.0.1:12345/
+Fixed WebUI port: 12345
+WebUI service: not started
+Run agentbc webui start to open the authenticated monitoring page.
+Run agentbc webui close to stop the page service without cancelling tasks.
+
+AI connection setup:
+  Codex      Not imported by setup; existing settings, if any, kept
+  Claude     Not imported by setup; existing settings, if any, kept
+  Hermes     Not imported by setup; existing settings, if any, kept
+  Opencode   Not imported by setup; existing settings, if any, kept
+No AI connection has been verified by setup. Validate each configured AI with a small task.
+Run agentbc setup again to add or change a connection. No reinstallation is needed.
+repository root boundary (test): ok
+repository root boundary (test) failed:
+- unauthorized root file added: PRIVATE_NOTES.md
+Root structural changes require owner review and a manifest update via PR.
+repository root boundary (test) failed:
+- protected root file deleted: README.md
+Root structural changes require owner review and a manifest update via PR.
+Claude Skill requires writing: /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmpm0f6ymgp/confirmation
+
+Execution permission modes:
+  safe     keep AgentBC's conservative executor behavior
+  full     grant the executor its maximum documented noninteractive access
+  inherit  use the executor's existing user/global permission settings (legacy/advanced)
+  WARNING: full is auditable per task and can bypass executor safety checks.
+default permission mode: inherit
+The setting affects future dispatched tasks only; it never changes active,
+input_required, needs_recovery tasks or the same-task resume path.
+WebUI address: not configured; run interactive setup to assign a port.
+WebUI fixed port: not configured
+WebUI service: unchanged (non-interactive setup).
+Run `agentbc webui start` to start or reuse the service and open an authenticated browser link.
+Use `agentbc webui close` to stop it, or `agentbc webui status` to check its state.
+AgentBC environment scan
+
+Agent        Status     Version            Capability Skill
+----------------------------------------------------------------------
+codex        missing    -                  L2         installed
+hermes       missing    -                  L2         installed
+claude       missing    -                  L1         installed
+opencode     missing    -                  L0         -
+cursor       missing    -                  frontend   -
+gemini       missing    -                  L1         -
+
+Codex CLI not detected.
+  searched paths: 
+  manual override: 
+Hermes Agent not detected.
+  searched paths: /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.hermes/hermes-agent/venv/bin/hermes, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.local/bin/hermes, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.npm-global/bin/hermes, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.bun/bin/hermes, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.volta/bin/hermes, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.asdf/shims/hermes, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.mise/shims/hermes, /opt/homebrew/bin/hermes, /usr/local/bin/hermes
+  manual override: AGENTBC_HERMES_BIN=/your/path/hermes agentbc setup
+Claude Code not detected.
+  searched paths: /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.local/bin/claude, /opt/homebrew/bin/claude, /usr/local/bin/claude, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.npm-global/bin/claude, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.bun/bin/claude, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.volta/bin/claude, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.asdf/shims/claude, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.mise/shims/claude
+  manual override: AGENTBC_CLAUDE_BIN=/your/path/claude agentbc setup
+OpenCode not detected.
+  searched paths: /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.local/bin/opencode, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.npm-global/bin/opencode, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.bun/bin/opencode, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.volta/bin/opencode, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.asdf/shims/opencode, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.mise/shims/opencode, /opt/homebrew/bin/opencode, /usr/local/bin/opencode
+  manual override: AGENTBC_OPENCODE_BIN=/your/path/opencode agentbc setup
+Cursor not detected.
+  searched paths: /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.local/bin/cursor, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.npm-global/bin/cursor, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.bun/bin/cursor, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.volta/bin/cursor, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.asdf/shims/cursor, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.mise/shims/cursor, /opt/homebrew/bin/cursor, /usr/local/bin/cursor
+  manual override: AGENTBC_CURSOR_BIN=/your/path/cursor agentbc setup
+Gemini CLI not detected.
+  searched paths: /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.local/bin/gemini, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.npm-global/bin/gemini, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.bun/bin/gemini, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.volta/bin/gemini, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.asdf/shims/gemini, /var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/.mise/shims/gemini, /opt/homebrew/bin/gemini, /usr/local/bin/gemini
+  manual override: AGENTBC_GEMINI_BIN=/your/path/gemini agentbc setup
+
+enabled executors: -
+detected but not enabled: -
+workspace root: /private/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp_z2yv0ab/home/Documents/AgentBC/workspace
+
+Execution permission modes:
+  safe     keep AgentBC's conservative executor behavior
+  full     grant the executor its maximum documented noninteractive access
+  inherit  use the executor's existing user/global permission settings (legacy/advanced)
+  WARNING: full is auditable per task and can bypass executor safety checks.
+default permission mode: inherit
+The setting affects future dispatched tasks only; it never changes active,
+input_required, needs_recovery tasks or the same-task resume path.
+
+Executor resource settings:
+  Claude max budget: $10 (claude_default_10)
+  Hermes max turns: 90 (hermes_default_90)
+  Retain executor sessions: false (session_default_false)
+
+Execution permission modes:
+  safe     keep AgentBC's conservative executor behavior
+  full     grant the executor its maximum documented noninteractive access
+  inherit  use the executor's existing user/global permission settings (legacy/advanced)
+  WARNING: full is auditable per task and can bypass executor safety checks.
+default permission mode: inherit
+The setting affects future dispatched tasks only; it never changes active,
+input_required, needs_recovery tasks or the same-task resume path.
+Task list style: Terminal. Run `agentbc task list` to view tasks.
+{
+  "state": "legacy_permission_cutover_maintenance",
+  "code": "legacy_permission_cutover_maintenance",
+  "maintenance": {
+    "active": true,
+    "reason": "manual wheel/bundle bypass",
+    "entered_at": "2026-10-01T14:07:34.943930Z",
+    "allowed_commands": [
+      "abort_close",
+      "cancel",
+      "close",
+      "commit_close",
+      "delete",
+      "doctor",
+      "report",
+      "status"
+    ]
+  },
+  "note": "create/dispatch blocked until the old channel is cleared and a supported update completes"
+}
+task_create_error: Maintenance mode only allows: abort_close, cancel, close, commit_close, delete, doctor, report, status
+Homebrew-managed install: run `brew upgrade agentbc`.
+{
+  "state": "homebrew_update_required",
+  "code": "",
+  "channel": "alpha",
+  "current": "1.0.4a1",
+  "source": "homebrew",
+  "updated": false,
+  "upgrade_command": "brew upgrade agentbc"
+}
+AgentBC update: current=1.0.3a1 latest=1.0.4a1 channel=alpha source=github_release_manifest
+Summary: fixes
+{
+  "state": "legacy_permission_cutover_blocked",
+  "code": "legacy_permission_cutover_blocked",
+  "cutover_ready": false,
+  "blockers": [
+    {
+      "task_id": "S4W4-001",
+      "status": "needs_recovery",
+      "reasons": [
+        "old_channel_status:needs_recovery"
+      ]
+    }
+  ],
+  "maintenance_active": false
+}
+AgentBC update: current=1.0.3a1 latest=1.0.4a1 channel=alpha source=github_release_manifest
+Summary: fixes
+{
+  "state": "legacy_permission_cutover_blocked",
+  "code": "legacy_permission_cutover_blocked",
+  "cutover_ready": false,
+  "blockers": [
+    {
+      "task_id": "ZN49-001",
+      "status": "pending",
+      "reasons": [
+        "old_channel_status:pending"
+      ]
+    }
+  ],
+  "maintenance_active": false
+}
+AgentBC update: current=1.0.3a1 latest=1.0.4a1 channel=alpha source=github_release_manifest
+Summary: fixes
+{
+  "state": "updated",
+  "code": "",
+  "channel": "alpha",
+  "current": "1.0.3a1",
+  "latest": "1.0.4a1",
+  "update_available": true,
+  "source": "github_release_manifest",
+  "release_url": "https://example.test/release",
+  "summary": "fixes",
+  "wheel": {
+    "filename": "agentbc-1.0.4a1-py3-none-any.whl",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "url": "https://example.test/wheel"
+  },
+  "updated": true,
+  "preflight": {
+    "state": "cutover-ready",
+    "code": "",
+    "cutover_ready": true,
+    "blockers": [],
+    "maintenance_active": false,
+    "stamp": {
+      "state": "cutover-ready",
+      "installed_version": "1.0.4a1",
+      "cutover_ready": true,
+      "cleared_at": "2026-10-01T14:07:34.973498Z"
+    }
+  },
+  "install": {
+    "version": "1.0.4a1"
+  }
+}
+{
+  "ok": false,
+  "mode": "update",
+  "agents": [
+    {
+      "name": "codex",
+      "display": "codex",
+      "found": true,
+      "supported_executor": true,
+      "path": "/fake/codex",
+      "binary": "codex",
+      "version": "test",
+      "source": "test",
+      "capability_level": "L2",
+      "capabilities": {},
+      "skill": {
+        "installed": true,
+        "up_to_date": false,
+        "path": "/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp2d9qer4g/cli-update-home/.codex/skills/agentbc/SKILL.md"
+      }
+    }
+  ],
+  "workspace_root": "/private/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp2d9qer4g/cli-update-home/Documents/AgentBC/workspace",
+  "items": [
+    {
+      "id": "executor:codex",
+      "label": "codex executor",
+      "status": "enable",
+      "action": "update_executor",
+      "agent": {
+        "name": "codex",
+        "display": "codex",
+        "found": true,
+        "supported_executor": true,
+        "path": "/fake/codex",
+        "binary": "codex",
+        "version": "test",
+        "source": "test",
+        "capability_level": "L2",
+        "capabilities": {},
+        "skill": {
+          "installed": true,
+          "up_to_date": false,
+          "path": "/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp2d9qer4g/cli-update-home/.codex/skills/agentbc/SKILL.md"
+        }
+      }
+    },
+    {
+      "id": "skill:codex",
+      "label": "Codex Skill",
+      "status": "refresh",
+      "action": "install_codex_skill",
+      "path": "/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp2d9qer4g/cli-update-home/.codex/skills/agentbc/SKILL.md"
+    }
+  ],
+  "selected": [
+    "skill:codex"
+  ],
+  "actions": [
+    {
+      "item": "skill:codex",
+      "status": "modified_requires_confirmation",
+      "config_changed": false,
+      "path": "/var/folders/49/v02y84t117gc44hyyhpl10840000gn/T/tmp2d9qer4g/cli-update-home/.codex/skills/agentbc/SKILL.md",
+      "classification": "modified",
+      "manifest": {
+        "completion_version": 1,
+        "files": {
+          "SKILL.md": "fcffaede3997c0d2876aca396638714a915c234d6400dca6f33525826e1a393c",
+          "agents/openai.yaml": "8f6cf84d2091c1ea1e895ec06f9d2321daceee34e5707cd9df3fc8a9142ca21a",
+          "references/agentbc-steps-yaml.md": "ec2d398a422e7ae4787b7321a66a29aa77e6442ad1ed27f5b835007bdf8880dc",
+          "references/controller-contract.md": "d1cb5c48177934cdee8b4de7118ce9b66ce8b1dfa7672931e35d687d5260b363"
+        },
+        "package_version": "1.0.4a1",
+        "platform": "codex",
+        "protocol_version": "1.0",
+        "schema_version": 1,
+        "template_sha256": "b56e0899273ce30ef3950459b91781410943149271b264890e1c651744da7686"
+      },
+      "expected_manifest": {
+        "schema_version": 1,
+        "platform": "codex",
+        "package_version": "1.0.4a1",
+        "protocol_version": "1.0",
+        "completion_version": 1,
+        "template_sha256": "b56e0899273ce30ef3950459b91781410943149271b264890e1c651744da7686",
+        "files": {
+          "SKILL.md": "fcffaede3997c0d2876aca396638714a915c234d6400dca6f33525826e1a393c",
+          "agents/openai.yaml": "8f6cf84d2091c1ea1e895ec06f9d2321daceee34e5707cd9df3fc8a9142ca21a",
+          "references/agentbc-steps-yaml.md": "ec2d398a422e7ae4787b7321a66a29aa77e6442ad1ed27f5b835007bdf8880dc",
+          "references/controller-contract.md": "d1cb5c48177934cdee8b4de7118ce9b66ce8b1dfa7672931e35d687d5260b363"
+        }
+      },
+      "installed": true,
+      "changed": false
+    }
+  ]
+}e2e_gate_required: the real two-version run is opt-in; set AGENTBC_E2E_RUN_REAL=1 to enable it
+
+AgentBC Update RC E2E plan
+  scenario:            success
+  old version:         1.0.2a1 -> new version: 1.0.3a1
+  old source/wheel:    /Users/developer/hermes-team/codex/agentbc-dev-workspace/agent-worktrees/integration/src
+  new source/wheel:    /Users/developer/hermes-team/codex/agentbc-dev-workspace/agent-worktrees/integration/src
+  isolation root:      <TMPROOT>
+  isolated HOME:       <TMPROOT>/home
+  install root:        <TMPROOT>/install
+  bin dir:             <TMPROOT>/bin
+  config:              <TMPROOT>/config/config.toml
+  workspace/board:     <TMPROOT>/workspace/record
+  runner spool:        <TMPROOT>/spool
+  fault injection:     none
+  keep root:           False
+{
+  "ok": true,
+  "mode": "uninstall"
+}
+usage: agentbc permissions set [-h] {inherit,safe,full}
+agentbc permissions set: error: argument mode: invalid choice: 'root' (choose from 'inherit', 'safe', 'full')
+----------------------------------------------------------------------
+Ran 2288 tests in 203.254s
+
+OK
+
+Execution permission modes:
+  safe     keep AgentBC's conservative executor behavior
+  full     grant the executor its maximum documented noninteractive access
+  inherit  use the executor's existing user/global permission settings (legacy/advanced)
+  WARNING: full is auditable per task and can bypass executor safety checks.
+default permission mode: safe
+The setting affects future dispatched tasks only; it never changes active,
+input_required, needs_recovery tasks or the same-task resume path.

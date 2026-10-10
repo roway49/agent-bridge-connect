@@ -47,6 +47,7 @@ CLEANUP_STRATEGIES = frozenset(
         "claude_project_purge",
         "official_session_delete",
         "official_session_archive_then_delete",
+        "container_session_archive_then_delete",
     }
 )
 # SESSION-104-001 bounded command-evidence statuses.  ``acknowledged`` means
@@ -626,7 +627,7 @@ def session_cleanup_view(value: Any) -> dict[str, Any]:
         elif desktop_archive["status"] in {"acknowledged", "confirmed"}:
             phase = "desktop_archive_acknowledged"
         elif receipt["state"] in {"pending", "failed"}:
-            phase = "waiting_for_desktop"
+            phase = "waiting_for_container_cleanup" if receipt["strategy"] == "container_session_archive_then_delete" else "waiting_for_desktop"
         else:
             phase = "waiting_for_cleanup"
         return {
@@ -818,7 +819,11 @@ def _validate_cleanup_fields(
                 # Backend/read/list sides are diagnostics under v4.
             elif version == SESSION_CLEANUP_RECEIPT_VERSION:
                 commands = value["commands"]
-                if strategy == "official_session_archive_then_delete":
+                if strategy == "container_session_archive_then_delete":
+                    from .container_session_cleanup import proof_valid
+                    if not proof_valid(verification, commands):
+                        errors.append(f"{prefix}.succeeded container receipt requires archive/delete and fresh absence proof")
+                elif strategy == "official_session_archive_then_delete":
                     if commands["desktop_archive"]["status"] not in {
                         "acknowledged",
                         "confirmed",
@@ -1309,13 +1314,14 @@ def session_cleanup_blockers(
     cleanup gates: report and notification delivery are now independent
     ``agentbc.terminal_delivery`` stages, and a report/notifications failure must
     never block executor-session cleanup or change a task terminal state.
-    The task/session status values are intentionally not lifecycle gates. The
-    sole lifecycle signal is a persisted successful task-end dialog delivery;
+    Recovery tasks keep their sessions for explicit continuation. Otherwise the
+    lifecycle signal is a persisted successful task-end dialog delivery;
     RunLease closure, retention and exact receipt binding remain execution
     isolation gates.
     """
     blockers: list[str] = []
-    del task_status
+    if str(task_status or "").strip().lower() == "needs_recovery":
+        blockers.append("recovery_session_preserved")
     if task_end_dialog_delivered is not True:
         blockers.append("task_end_dialog_not_delivered")
     if str(lease_state or "").strip().lower() != "closed":
@@ -1376,6 +1382,7 @@ def transition_session_cleanup(
     commands: Any | None = None,
     occurred_at: str | None = None,
     authoritative_archive_ack: bool = False,
+    repaired_container_scope: bool = False,
 ) -> dict[str, Any]:
     """Apply one pure, fail-closed cleanup receipt transition.
 
@@ -1432,7 +1439,17 @@ def transition_session_cleanup(
         if blockers:
             _raise_cleanup_transition("cleanup request is blocked", blockers)
         if current_state == "failed":
-            if authoritative_archive_ack:
+            if repaired_container_scope:
+                if (session.get("executor") != "codex"
+                        or session.get("official_receipt_bound") is not True
+                        or receipt["strategy"] != "container_session_archive_then_delete"
+                        or not (receipt["error_code"] == "container_session_scope_invalid"
+                            or (receipt["error_code"] == "codex_session_archive_failed"
+                                and session.get("archive_acknowledged") is True
+                                and _valid_utc_timestamp(session.get("archive_checked_at", ""))))
+                        or receipt["attempts"] >= MAX_SESSION_CLEANUP_ATTEMPTS):
+                    _raise_cleanup_transition("container scope repair is not eligible")
+            elif authoritative_archive_ack:
                 if str(session.get("executor") or "").strip().lower() != "codex":
                     _raise_cleanup_transition(
                         "authoritative archive acknowledgement requires Codex"
@@ -1510,7 +1527,11 @@ def transition_session_cleanup(
                     "Codex cleanup succeeded without both official archive and "
                     "delete command acknowledgements"
                 )
-        if executor_is_codex and is_archive_strategy:
+        if executor_is_codex and (strategy or receipt['strategy']) == 'container_session_archive_then_delete':
+            from .container_session_cleanup import proof_valid
+            if not proof_valid(normalized_verification, normalized_commands or {}):
+                _raise_cleanup_transition('Container cleanup requires actual archive/delete acknowledgements and fresh absence proof')
+        elif executor_is_codex and is_archive_strategy:
             desktop_archive_status = str(
                 (normalized_commands or {}).get("desktop_archive", {}).get("status") or ""
             )

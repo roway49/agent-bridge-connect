@@ -1,0 +1,826 @@
+{
+  "G9B5-001": {
+    "status": "needs_recovery",
+    "steps": [
+      {
+        "id": 1,
+        "description": "Windows Docker codex execution verification. In this task assigned artifact root only, create codex-full-verify.txt containing exactly WINDOWS_CODEX_FULL_VERIFY_OK, then read the same file back and verify its content. This task was explicitly dispatched with full permission. Use the supplied runtime mode without changing global settings or adding overrides. If a permission or runtime error occurs, report it truthfully; do not bypass it. Do not access credentials, network tools, other projects, or settings. Report the actual outcome and required AGENTBC_FINAL_CALLBACK for this task; mark step 1 done only after successful write and read.",
+        "record": "steps/01.json",
+        "status": "pending"
+      }
+    ],
+    "callback": null,
+    "has_final_callback": false,
+    "report_ready": true,
+    "lease": "closed",
+    "permission_extensions": {
+      "agentbc.permission": {
+        "version": 2,
+        "configured_mode": "inherit",
+        "inherited_mode": null,
+        "task_override": "full",
+        "requested_mode": "full",
+        "effective_mode": "full",
+        "selection_source": "explicit_task",
+        "selection_strategy": "explicit",
+        "resolved_base_mode": "full",
+        "resolution_state": "frozen",
+        "approval_policy": "none",
+        "scope": "task",
+        "mapping": {
+          "codex": {
+            "transport": "cli",
+            "capability_id": "codex.bypass_approvals_and_sandbox",
+            "args": [
+              "--dangerously-bypass-approvals-and-sandbox"
+            ],
+            "env": {},
+            "decisions": null,
+            "overrides_native": true,
+            "executor": "codex",
+            "mode": "full",
+            "scope": "executor_subprocess",
+            "direct_args": [
+              "--dangerously-bypass-approvals-and-sandbox"
+            ]
+          },
+          "claude": {
+            "transport": "cli",
+            "capability_id": "claude.dangerously_skip_permissions",
+            "args": [
+              "--dangerously-skip-permissions"
+            ],
+            "env": {},
+            "decisions": null,
+            "overrides_native": true,
+            "executor": "claude",
+            "mode": "full",
+            "scope": "executor_subprocess",
+            "direct_args": [
+              "--dangerously-skip-permissions"
+            ]
+          },
+          "hermes": {
+            "transport": "direct",
+            "capability_id": "hermes.cli.full.yolo",
+            "args": [
+              "--yolo"
+            ],
+            "env": {},
+            "decisions": null,
+            "overrides_native": true,
+            "executor": "hermes",
+            "mode": "full",
+            "scope": "executor_subprocess",
+            "direct_args": [
+              "--yolo"
+            ]
+          }
+        },
+        "permission_args": []
+      },
+      "agentbc.permission_protocol": {
+        "version": 3,
+        "scope": "task_elevation",
+        "mode": "full",
+        "decisions": [
+          "approve_full",
+          "deny"
+        ]
+      }
+    },
+    "approval": null,
+    "delivery": {
+      "version": 1,
+      "delivery_id": "870dc8f1-ecf6-4bdf-a3ab-1836196339dd",
+      "terminal_state": "needs_recovery",
+      "terminal_event": "task.recovery_required",
+      "committed_at": "2026-10-07T15:59:39.097232Z",
+      "stages": {
+        "report": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "record": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "index": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "file_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "ui_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        }
+      },
+      "updated_at": "2026-10-07T15:59:43.309519Z"
+    },
+    "session": {
+      "version": 1,
+      "executor": "codex",
+      "retain": false,
+      "session_id": "01a11713-16a3-74d2-a49e-645e6286a9b2",
+      "session_state": "needs_recovery",
+      "project_mode": "none",
+      "run_ids": [
+        "codex-G9B5-001-af2fd57e"
+      ],
+      "run_resume_facts": {
+        "codex-G9B5-001-af2fd57e": false
+      },
+      "resume_count": 0,
+      "cleanup": {
+        "capability": "supported",
+        "state": "succeeded",
+        "attempts": 1,
+        "error_code": "",
+        "retryable": false,
+        "version": 5,
+        "strategy": "container_session_archive_then_delete",
+        "phase": "delete_acknowledged",
+        "verification": {
+          "cli": {
+            "status": "absent",
+            "checked_at": "2026-10-07T16:00:15.717743Z"
+          },
+          "desktop_backend": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T16:00:15.290103Z"
+          },
+          "desktop_live": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T16:00:15.290103Z"
+          },
+          "desktop": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T16:00:15.290103Z"
+          }
+        },
+        "commands": {
+          "desktop_archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T16:00:15.290103Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "app_server_archive": {
+            "status": "acknowledged",
+            "checked_at": "2026-10-07T16:00:15.409857Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "delete": {
+            "status": "acknowledged",
+            "checked_at": "2026-10-07T16:00:15.717743Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T16:00:15.290103Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          }
+        }
+      },
+      "created_at": "2026-10-07T15:54:37.719232Z",
+      "receipt_source": "jsonl_thread_started",
+      "official_receipt_bound": true
+    },
+    "artifact": {
+      "exists": false,
+      "matches": false,
+      "bytes": null,
+      "sha256": null
+    }
+  },
+  "Q8HC-001": {
+    "status": "completed",
+    "steps": [
+      {
+        "id": 1,
+        "description": "Windows Docker claude execution verification. In this task assigned artifact root only, create claude-full-verify.txt containing exactly WINDOWS_CLAUDE_FULL_VERIFY_OK, then read the same file back and verify its content. This task was explicitly dispatched with full permission. Use the supplied runtime mode without changing global settings or adding overrides. If a permission or runtime error occurs, report it truthfully; do not bypass it. Do not access credentials, network tools, other projects, or settings. Report the actual outcome and required AGENTBC_FINAL_CALLBACK for this task; mark step 1 done only after successful write and read.",
+        "record": "steps/01.json",
+        "status": "done",
+        "result": {
+          "status": "done",
+          "executor_result": {
+            "id": 1,
+            "status": "done"
+          }
+        }
+      }
+    ],
+    "callback": {
+      "version": 1,
+      "task_id": "Q8HC-001",
+      "final_state": "completed",
+      "report_file": "/data/workspace/tasks/report/2026-10-07/Q8HC/Q8HC-001-report.md",
+      "artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-07/Q8HC",
+      "summary": "Step 1 done: created and read back /data/workspace/tasks/artifacts/2026-10-07/Q8HC/claude-full-verify.txt under the supplied full permission mode; content verified byte-exact as WINDOWS_CLAUDE_FULL_VERIFY_OK (29 bytes, sha256 be8c59701efa913bc2781a60cd1fe02d14d39b6d859d10806b795a8ae62037d5). No permission, sandbox, or runtime error; no settings or overrides changed. Truthful limitation: the authoritative progress receipt could not be recorded - 'agentbc task progress Q8HC-001 --step 1' returns progress_s...",
+      "executor_run_id": "claude-Q8HC-001-bd7ab951",
+      "finished_at": "2026-10-07T15:55:26.465891Z",
+      "source": "executor_final_marker",
+      "outcome": "flow_declared",
+      "exit_code": 0,
+      "step_results": [
+        {
+          "id": 1,
+          "status": "done"
+        }
+      ],
+      "marker_valid": true,
+      "completed_step_count": 1
+    },
+    "has_final_callback": true,
+    "report_ready": true,
+    "lease": "closed",
+    "permission_extensions": {
+      "agentbc.permission": {
+        "version": 2,
+        "configured_mode": "inherit",
+        "inherited_mode": null,
+        "task_override": "full",
+        "requested_mode": "full",
+        "effective_mode": "full",
+        "selection_source": "explicit_task",
+        "selection_strategy": "explicit",
+        "resolved_base_mode": "full",
+        "resolution_state": "frozen",
+        "approval_policy": "none",
+        "scope": "task",
+        "mapping": {
+          "codex": {
+            "transport": "cli",
+            "capability_id": "codex.bypass_approvals_and_sandbox",
+            "args": [
+              "--dangerously-bypass-approvals-and-sandbox"
+            ],
+            "env": {},
+            "decisions": null,
+            "overrides_native": true,
+            "executor": "codex",
+            "mode": "full",
+            "scope": "executor_subprocess",
+            "direct_args": [
+              "--dangerously-bypass-approvals-and-sandbox"
+            ]
+          },
+          "claude": {
+            "transport": "cli",
+            "capability_id": "claude.dangerously_skip_permissions",
+            "args": [
+              "--dangerously-skip-permissions"
+            ],
+            "env": {},
+            "decisions": null,
+            "overrides_native": true,
+            "executor": "claude",
+            "mode": "full",
+            "scope": "executor_subprocess",
+            "direct_args": [
+              "--dangerously-skip-permissions"
+            ]
+          },
+          "hermes": {
+            "transport": "direct",
+            "capability_id": "hermes.cli.full.yolo",
+            "args": [
+              "--yolo"
+            ],
+            "env": {},
+            "decisions": null,
+            "overrides_native": true,
+            "executor": "hermes",
+            "mode": "full",
+            "scope": "executor_subprocess",
+            "direct_args": [
+              "--yolo"
+            ]
+          }
+        },
+        "permission_args": []
+      },
+      "agentbc.permission_protocol": {
+        "version": 3,
+        "scope": "task_elevation",
+        "mode": "full",
+        "decisions": [
+          "approve_full",
+          "deny"
+        ]
+      }
+    },
+    "approval": null,
+    "delivery": {
+      "version": 1,
+      "delivery_id": "8e547ac8-e4b3-4b31-9665-d5b86866212e",
+      "terminal_state": "completed",
+      "terminal_event": "task.finalized",
+      "committed_at": "2026-10-07T15:55:26.465891Z",
+      "stages": {
+        "report": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "record": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "index": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "file_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "ui_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        }
+      },
+      "updated_at": "2026-10-07T15:55:43.005844Z"
+    },
+    "session": {
+      "version": 1,
+      "executor": "claude",
+      "retain": false,
+      "session_id": "7f535101-caa8-4a4d-a24b-b7905ab31e95",
+      "session_state": "terminal",
+      "project_mode": "ephemeral",
+      "run_ids": [
+        "claude-Q8HC-001-bd7ab951"
+      ],
+      "run_resume_facts": {
+        "claude-Q8HC-001-bd7ab951": false
+      },
+      "resume_count": 0,
+      "cleanup": {
+        "capability": "supported",
+        "state": "succeeded",
+        "attempts": 1,
+        "error_code": "",
+        "retryable": false,
+        "version": 5,
+        "strategy": "claude_project_purge",
+        "phase": "waiting_for_cleanup",
+        "verification": {
+          "cli": {
+            "status": "not_applicable",
+            "checked_at": ""
+          },
+          "desktop_backend": {
+            "status": "not_applicable",
+            "checked_at": ""
+          },
+          "desktop_live": {
+            "status": "not_applicable",
+            "checked_at": ""
+          },
+          "desktop": {
+            "status": "not_applicable",
+            "checked_at": ""
+          }
+        },
+        "commands": {
+          "desktop_archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T15:56:14.954639Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "app_server_archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T15:56:14.954639Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "delete": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T15:56:14.954639Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T15:56:14.954639Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          }
+        }
+      },
+      "created_at": "2026-10-07T15:54:39.386568Z",
+      "receipt_source": "preallocated",
+      "official_receipt_bound": true
+    },
+    "artifact": {
+      "exists": true,
+      "matches": true,
+      "bytes": 29,
+      "sha256": "be8c59701efa913bc2781a60cd1fe02d14d39b6d859d10806b795a8ae62037d5"
+    }
+  },
+  "RCPQ-001": {
+    "status": "completed",
+    "steps": [
+      {
+        "id": 1,
+        "description": "Windows Docker hermes execution verification. In this task assigned artifact root only, create hermes-full-verify.txt containing exactly WINDOWS_HERMES_FULL_VERIFY_OK, then read the same file back and verify its content. This task was explicitly dispatched with full permission. Use the supplied runtime mode without changing global settings or adding overrides. If a permission or runtime error occurs, report it truthfully; do not bypass it. Do not access credentials, network tools, other projects, or settings. Report the actual outcome and required AGENTBC_FINAL_CALLBACK for this task; mark step 1 done only after successful write and read.",
+        "record": "steps/01.json",
+        "status": "done",
+        "result": {
+          "status": "done",
+          "executor_result": {
+            "id": 1,
+            "status": "done"
+          },
+          "progress_receipt": {
+            "version": 1,
+            "sequence": 1,
+            "evidence_source": "agent_cli"
+          }
+        }
+      }
+    ],
+    "callback": {
+      "version": 1,
+      "task_id": "RCPQ-001",
+      "final_state": "completed",
+      "report_file": "/data/workspace/tasks/report/2026-10-07/RCPQ/RCPQ-001-report.md",
+      "artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-07/RCPQ",
+      "summary": "Under full effective permission, created /data/workspace/tasks/artifacts/2026-10-07/RCPQ/hermes-full-verify.txt containing exactly WINDOWS_HERMES_FULL_VERIFY_OK (29 bytes, sha256 998585b483fa3bc2ed15d35037fc179125795c29a7a8ac4b8a532550f502336c), read it back and verified byte-exact match. No permission/runtime errors; no bypass. Step 1 recorded via agentbc (confirmed_step=1).",
+      "executor_run_id": "hermes-RCPQ-001-c0211ce5",
+      "finished_at": "2026-10-07T15:55:02.677721Z",
+      "source": "executor_final_marker",
+      "outcome": "flow_declared",
+      "exit_code": 0,
+      "step_results": [
+        {
+          "id": 1,
+          "status": "done"
+        }
+      ],
+      "marker_valid": true,
+      "completed_step_count": 1
+    },
+    "has_final_callback": true,
+    "report_ready": true,
+    "lease": "closed",
+    "permission_extensions": {
+      "agentbc.permission": {
+        "version": 2,
+        "configured_mode": "inherit",
+        "inherited_mode": null,
+        "task_override": "full",
+        "requested_mode": "full",
+        "effective_mode": "full",
+        "selection_source": "explicit_task",
+        "selection_strategy": "explicit",
+        "resolved_base_mode": "full",
+        "resolution_state": "frozen",
+        "approval_policy": "none",
+        "scope": "task",
+        "mapping": {
+          "codex": {
+            "transport": "cli",
+            "capability_id": "codex.bypass_approvals_and_sandbox",
+            "args": [
+              "--dangerously-bypass-approvals-and-sandbox"
+            ],
+            "env": {},
+            "decisions": null,
+            "overrides_native": true,
+            "executor": "codex",
+            "mode": "full",
+            "scope": "executor_subprocess",
+            "direct_args": [
+              "--dangerously-bypass-approvals-and-sandbox"
+            ]
+          },
+          "claude": {
+            "transport": "cli",
+            "capability_id": "claude.dangerously_skip_permissions",
+            "args": [
+              "--dangerously-skip-permissions"
+            ],
+            "env": {},
+            "decisions": null,
+            "overrides_native": true,
+            "executor": "claude",
+            "mode": "full",
+            "scope": "executor_subprocess",
+            "direct_args": [
+              "--dangerously-skip-permissions"
+            ]
+          },
+          "hermes": {
+            "transport": "direct",
+            "capability_id": "hermes.cli.full.yolo",
+            "args": [
+              "--yolo"
+            ],
+            "env": {},
+            "decisions": null,
+            "overrides_native": true,
+            "executor": "hermes",
+            "mode": "full",
+            "scope": "executor_subprocess",
+            "direct_args": [
+              "--yolo"
+            ]
+          }
+        },
+        "permission_args": []
+      },
+      "agentbc.permission_protocol": {
+        "version": 3,
+        "scope": "task_elevation",
+        "mode": "full",
+        "decisions": [
+          "approve_full",
+          "deny"
+        ]
+      }
+    },
+    "approval": null,
+    "delivery": {
+      "version": 1,
+      "delivery_id": "5595b556-cfd7-4674-af81-e2d1ec421a6a",
+      "terminal_state": "completed",
+      "terminal_event": "task.finalized",
+      "committed_at": "2026-10-07T15:55:02.677721Z",
+      "stages": {
+        "report": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "record": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "index": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "file_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "ui_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        }
+      },
+      "updated_at": "2026-10-07T15:55:07.098361Z"
+    },
+    "session": {
+      "version": 1,
+      "executor": "hermes",
+      "retain": false,
+      "session_id": "20261007_155443_b9ab71",
+      "session_state": "terminal",
+      "project_mode": "none",
+      "run_ids": [
+        "hermes-RCPQ-001-c0211ce5"
+      ],
+      "run_resume_facts": {
+        "hermes-RCPQ-001-c0211ce5": false
+      },
+      "resume_count": 0,
+      "cleanup": {
+        "capability": "supported",
+        "state": "succeeded",
+        "attempts": 1,
+        "error_code": "",
+        "retryable": false,
+        "version": 5,
+        "strategy": "official_session_delete",
+        "phase": "waiting_for_cleanup",
+        "verification": {
+          "cli": {
+            "status": "not_applicable",
+            "checked_at": ""
+          },
+          "desktop_backend": {
+            "status": "not_applicable",
+            "checked_at": ""
+          },
+          "desktop_live": {
+            "status": "not_applicable",
+            "checked_at": ""
+          },
+          "desktop": {
+            "status": "not_applicable",
+            "checked_at": ""
+          }
+        },
+        "commands": {
+          "desktop_archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T15:56:15.644023Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "app_server_archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T15:56:15.644023Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "delete": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T15:56:15.644023Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T15:56:15.644023Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          }
+        }
+      },
+      "created_at": "2026-10-07T15:54:41.054637Z",
+      "receipt_source": "stderr_receipt",
+      "official_receipt_bound": true
+    },
+    "artifact": {
+      "exists": true,
+      "matches": true,
+      "bytes": 29,
+      "sha256": "998585b483fa3bc2ed15d35037fc179125795c29a7a8ac4b8a532550f502336c"
+    }
+  },
+  "permissions": {
+    "exit_code": 0,
+    "result": {
+      "ok": true,
+      "command": "permissions status",
+      "setting": "permissions.mode",
+      "setting_path": "permissions.mode",
+      "configured_mode": "inherit",
+      "configured_source": "configured_default",
+      "default_mode": "inherit",
+      "legacy_safe_default": "safe",
+      "effective_mode_for_new_tasks": "inherit",
+      "priority": [
+        "task_override",
+        "handoff_snapshot",
+        "configured",
+        "legacy_safe"
+      ],
+      "scope": "future_tasks",
+      "mapping": {
+        "codex": {
+          "transport": "app-server",
+          "capability_id": "codex.inherit",
+          "args": [],
+          "env": {},
+          "decisions": null,
+          "overrides_native": false,
+          "executor": "codex",
+          "mode": "inherit",
+          "scope": "executor_subprocess",
+          "direct_args": []
+        },
+        "claude": {
+          "transport": "cli",
+          "capability_id": "claude.inherit",
+          "args": [],
+          "env": {},
+          "decisions": null,
+          "overrides_native": false,
+          "executor": "claude",
+          "mode": "inherit",
+          "scope": "executor_subprocess",
+          "direct_args": []
+        },
+        "hermes": {
+          "transport": "hermes-acp",
+          "capability_id": "hermes.acp.inherit",
+          "args": [],
+          "env": {},
+          "decisions": null,
+          "overrides_native": false,
+          "executor": "hermes",
+          "mode": "inherit",
+          "scope": "executor_subprocess",
+          "direct_args": []
+        }
+      },
+      "legacy_setting_present": false,
+      "notes": [
+        "Affects newly dispatched root tasks and handoff iterations only; active, input_required, needs_recovery tasks and same-task resume keep their frozen permission snapshot."
+      ]
+    }
+  },
+  "runner": {
+    "exit_code": 0,
+    "result": {
+      "ok": true,
+      "status": "ready",
+      "pid": 7,
+      "python_executable": "/usr/local/bin/python3.11",
+      "module_path": "/probe/sdk-amd64/lib/python3.11/site-packages/agent_bridge_connect/__init__.py",
+      "executors": [
+        "claude",
+        "codex",
+        "hermes"
+      ],
+      "executor_commands": {
+        "claude": {
+          "path": "/opt/agentbc/bin/claude",
+          "source": "config"
+        },
+        "codex": {
+          "path": "/opt/agentbc/bin/codex",
+          "source": "config"
+        },
+        "hermes": {
+          "path": "/opt/agentbc/bin/hermes",
+          "source": "config"
+        }
+      },
+      "path_policy": {
+        "agent_input": "customer_path",
+        "default_customer_path": "default path",
+        "authorization": "runner_task_scoped"
+      },
+      "atomic_dispatch": true,
+      "desktop_archive_route": {
+        "status": "unavailable",
+        "capability": "unavailable",
+        "route_digest": "",
+        "app_instance_digest": ""
+      }
+    }
+  },
+  "webui": {
+    "exit_code": 0,
+    "result": {
+      "running": true,
+      "port": 36124,
+      "origin": "http://127.0.0.1:36124",
+      "restart_policy": "no",
+      "health": "healthy",
+      "error": ""
+    }
+  },
+  "doctor": {
+    "exit_code": 0,
+    "result": {
+      "installation_type": "docker-preview",
+      "container_id": "b39c374cf9d8d340b7d043340d094b973e8fd1247842f7c083ce979c5a9013fc",
+      "approval_delivery": "desktop",
+      "desktop": {
+        "pid": 11096,
+        "sid": "S-1-5-21-3774179316-1493029025-1910149102-1001",
+        "session_id": 1,
+        "logon_id": "478573",
+        "created": 134358602999117875,
+        "installation_id": "preview-740b0e923b1645641071",
+        "container_id": "b39c374cf9d8d340b7d043340d094b973e8fd1247842f7c083ce979c5a9013fc",
+        "instance_key": "b329d3bcf4c1401980d6092e0634958a",
+        "state": "ready",
+        "reason": "",
+        "webui_error": "",
+        "heartbeat": 1791389131.205723,
+        "updated_at": "2026-10-07T16:05:31.205723+00:00"
+      }
+    }
+  }
+}

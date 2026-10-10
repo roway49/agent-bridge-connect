@@ -1,0 +1,98 @@
+{
+  "control_network_reachable": true,
+  "cases": {
+    "read-only": {
+      "exit": 0,
+      "stderr": "",
+      "checks": {
+        "project": {
+          "errno": 30
+        },
+        "outside": {
+          "errno": 30
+        },
+        "symlink": {
+          "errno": 30
+        },
+        "git": {
+          "errno": 30
+        },
+        "codex": {
+          "errno": 30
+        },
+        "agents": {
+          "errno": 30
+        },
+        "secret_read": {
+          "errno": 13
+        },
+        "network": {
+          "errno": 1
+        },
+        "unshare_mount": {
+          "return": -1,
+          "errno": 1
+        },
+        "mount": {
+          "return": -1,
+          "errno": 1
+        },
+        "status": {
+          "Uid": "1000\t1000\t1000\t1000",
+          "CapEff": "0000000000000000",
+          "NoNewPrivs": "1",
+          "Seccomp": "2"
+        }
+      }
+    },
+    "workspace-write": {
+      "exit": 0,
+      "stderr": "",
+      "checks": {
+        "project": "allowed",
+        "outside": {
+          "errno": 30
+        },
+        "symlink": {
+          "errno": 30
+        },
+        "git": {
+          "errno": 30
+        },
+        "codex": {
+          "errno": 30
+        },
+        "agents": {
+          "errno": 30
+        },
+        "secret_read": {
+          "errno": 13
+        },
+        "network": {
+          "errno": 1
+        },
+        "unshare_mount": {
+          "return": -1,
+          "errno": 1
+        },
+        "mount": {
+          "return": -1,
+          "errno": 1
+        },
+        "status": {
+          "Uid": "1000\t1000\t1000\t1000",
+          "CapEff": "0000000000000000",
+          "NoNewPrivs": "1",
+          "Seccomp": "2"
+        }
+      }
+    }
+  },
+  "outside_unchanged": true,
+  "container_exit": 0,
+  "container_stderr": "",
+  "failures": [],
+  "platform": "linux/amd64",
+  "image": "agentbc-win01-probe:amd64",
+  "profile_sha256": "292e8331d916a43109c4088cfa23feed512b7a939af622e2b4cf839f8a11540c"
+}

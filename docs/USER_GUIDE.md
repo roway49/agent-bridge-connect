@@ -1,9 +1,13 @@
 # User Guide
 
+> Unpublished 1.0.5A Docker candidates / Docker 开发候选：安装与当前支持范围见 [development status / 开发状态](DEVELOPMENT_STATUS.md)。本页命令已按 1.0.5A / `1.0.5a1` 准备，须待 Release 资产发布后使用。
+
 [中文](USER_GUIDE_ZH.md) | English
 
-Applies to the AgentBC **1.0.4A** release (tag `v1.0.4A`, Python package
-`1.0.4a1`).
+Applies to the AgentBC **1.0.5A** release (tag `v1.0.5A`, Python package
+`1.0.5a1`).
+
+Development note: the 1.0.5A working tree adds [OpenCode basic execution](OPENCODE.md); this does not describe an installed 1.0.5A capability.
 
 ## Command Surface
 
@@ -36,6 +40,27 @@ Setup starts Runner in the background. Use `runner start` for recovery,
 The updater never treats Homebrew, pip/pipx, an external symlink, or a copied
 binary as an AgentBC-managed in-place target. Package-manager installations are
 routed to their package manager instead of being overwritten.
+
+### Approval waiting time (1.0.5A)
+
+```bash
+agentbc approval max-time 300  # five minutes
+agentbc approval max-time 900  # fifteen minutes
+agentbc approval max-time      # inspect without writing
+```
+
+The command atomically saves `[approval] max_time` in the selected configuration.
+It accepts integer seconds from 1 through 2147483647; the default is 300.
+An explicit global setting takes precedence over legacy executor `approval_timeout_s` overrides.
+New Codex, Claude and Hermes runs use the value without restarting Runner. Existing runs and
+open approvals keep their original deadline. Use the same `AGENTBC_CONFIG_PATH` environment
+when configuring tasks that run with a separate config file.
+
+Core, the native control channel and the dialog share the request's absolute deadline.
+Delivery delays and viewing details cannot restart the clock. Expiry still denies permission.
+This setting does not change permission modes, ordinary notifications, resource-limit decisions,
+task execution timeouts, or OpenCode's unsupported native approval lifecycle.
+Legacy per-executor overrides remain compatible until an explicit global value is saved.
 
 ### Commands Added Or Changed In 1.0.2A
 
@@ -306,8 +331,9 @@ both options: `"input":{"type":"choice","reason":"why the user must decide","opt
 AgentBC shows the reason and descriptions above two direct option buttons. The
 deadline and CLI fallback command remain available in the task report but are not
 shown in the desktop dialog. Free-text requests continue to use `type: message`,
-approve/deny requests use `type: permission`, and input dialogs wait up to five
-minutes. Dismissal or timeout keeps the same task waiting for `agentbc task respond`.
+native approve/deny requests use `type: permission`. Permission dialogs use the configured
+`approval max-time` deadline (default five minutes); dismissal or expiry denies permission.
+Other input dialogs retain their five-minute window and leave the task waiting for `agentbc task respond`.
 
 Reports show marker validity, completed-step count, failure code, failed/blocked
 steps, and `Flow contract satisfied`. That field is `yes` only for a valid

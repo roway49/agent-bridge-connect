@@ -1,0 +1,13 @@
+workspace_root = "/data/workspace"
+board_root = "/data/workspace/record"
+[permissions]
+mode = "inherit"
+[executors.opencode]
+command = "/opt/opencode/opencode"
+timeout_s = 600
+[sessions]
+retain_executor_sessions = true
+[webui]
+preferred_view = "webui"
+port = 8080
+autostart = false

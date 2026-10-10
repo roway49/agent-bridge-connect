@@ -1,0 +1,135 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color: #202933;
+  background: #f5f6f8;
+}
+body {
+  margin: 0;
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 1rem 2rem;
+  background: white;
+  border-bottom: 1px solid #ddd;
+}
+h1 {
+  font-size: 1.3rem;
+  margin: 0;
+}
+header button {
+  margin-left: auto;
+}
+main {
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  gap: 1rem;
+  padding: 1rem;
+}
+aside,
+section {
+  background: white;
+  padding: 1rem;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  min-width: 0;
+}
+button {
+  font: inherit;
+  padding: 0.5rem 0.8rem;
+  cursor: pointer;
+  background: #fff;
+  border: 1px solid #bec6cf;
+  border-radius: 4px;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.task {
+  display: block;
+  text-align: left;
+  width: 100%;
+  margin: 0.5rem 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.task:hover,
+.task[aria-pressed="true"] {
+  background: #eef4fa;
+  border-color: #426789;
+}
+h2 {
+  font-size: 1.1rem;
+}
+h3 {
+  font-size: 0.85rem;
+  color: #546171;
+  margin: 0 0 0.4rem;
+}
+pre {
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+.field,
+.step {
+  padding: 0.8rem 0;
+  border-bottom: 1px solid #eee;
+}
+small {
+  display: block;
+  overflow-wrap: anywhere;
+  color: #687582;
+  margin-top: 1rem;
+}
+p[role="status"] {
+  font-size: 0.85rem;
+  color: #546171;
+}
+aside > button {
+  margin-right: 0.5rem;
+}
+@media (max-width: 720px) {
+  main {
+    grid-template-columns: 1fr;
+  }
+  header {
+    padding: 1rem;
+    flex-wrap: wrap;
+  }
+  aside {
+    max-height: 320px;
+    overflow: auto;
+  }
+}
+
+@media (min-width: 721px) {
+  aside {
+    position: sticky;
+    top: 1rem;
+    align-self: start;
+    max-height: calc(100vh - 4rem);
+    overflow: auto;
+  }
+}
+
+nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+nav button {
+  font-size: 0.85rem;
+  padding: 0.4rem;
+}
+nav button[aria-pressed="true"] {
+  background: #213547;
+  color: white;
+}
+a {
+  color: #245b93;
+  overflow-wrap: anywhere;
+}

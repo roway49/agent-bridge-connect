@@ -29,6 +29,7 @@ DEFAULT_BOARD_ROOT = DEFAULT_WORKSPACE_ROOT / "record"
 DEFAULT_CLAUDE_MAX_BUDGET_USD = 10.0
 DEFAULT_HERMES_MAX_TURNS = 90
 DEFAULT_RETAIN_EXECUTOR_SESSIONS = False
+DEFAULT_APPROVAL_MAX_TIME = 300
 
 _BARE_TOML_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -43,11 +44,40 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     return _load_toml_compat(config_path.read_text(encoding="utf-8"))
 
 
+def webui_settings(config):
+    value = config.get("webui", {})
+    if not isinstance(value, dict):
+        raise ABCError("webui_config_invalid", "webui must be a table")
+    result = {"preferred_view": "webui", "autostart": False, **value}
+    port = result.get("port")
+    if result["preferred_view"] not in ("task_list", "webui") or not isinstance(
+        result["autostart"], bool
+    ):
+        raise ABCError("webui_config_invalid", "Invalid WebUI preference or autostart")
+    if port is not None and (type(port) is not int or not 1024 <= port <= 65535):
+        raise ABCError(
+            "webui_port_invalid", "WebUI port must be an integer from 1024 to 65535"
+        )
+    return result
+
+
 def validate_config(config: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     for section in ("executors", "notifiers", "sessions"):
         if section in config and not isinstance(config[section], dict):
             errors.append(f"{section} must be a table")
+    if "webui" in config:
+        try:
+            webui_settings(config)
+        except ABCError as exc:
+            errors.append(str(exc))
+    approval = config.get("approval")
+    if "approval" in config and not isinstance(approval, dict):
+        errors.append("approval must be a table")
+    if isinstance(approval, dict) and "max_time" in approval:
+        value = approval["max_time"]
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 2147483647:
+            errors.append("approval.max_time must be an integer between 1 and 2147483647 seconds")
     permissions = config.get("permissions")
     if "permissions" in config and not isinstance(permissions, dict):
         errors.append("permissions must be a table")
@@ -73,6 +103,16 @@ def validate_config(config: dict[str, Any]) -> list[str]:
             errors.append(str(exc))
     executors = config.get("executors")
     if isinstance(executors, dict):
+        opencode = executors.get("opencode")
+        if "opencode" in executors and not isinstance(opencode, dict):
+            errors.append("executors.opencode must be a table")
+        if isinstance(opencode, dict):
+            for key in ("command", "model"):
+                if key in opencode and (not isinstance(opencode[key], str) or not opencode[key].strip()):
+                    errors.append(f"executors.opencode.{key} must be a non-empty string")
+            timeout = opencode.get("timeout_s", 600)
+            if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+                errors.append("executors.opencode.timeout_s must be a positive finite number")
         claude = executors.get("claude")
         if "claude" in executors and not isinstance(claude, dict):
             errors.append("executors.claude must be a table")
@@ -233,7 +273,10 @@ def toml_dumps(config: dict[str, Any]) -> str:
 
 def get_executor_config(config: dict[str, Any], name: str) -> dict[str, Any]:
     value = config.get("executors", {}).get(name, {})
-    return dict(value) if isinstance(value, dict) else {}
+    result = dict(value) if isinstance(value, dict) else {}
+    if name in {"codex", "claude", "hermes"} and "max_time" in config.get("approval", {}):
+        result["approval_timeout_s"] = config["approval"]["max_time"]
+    return result
 
 
 def get_notifier_config(config: dict[str, Any], name: str) -> dict[str, Any]:

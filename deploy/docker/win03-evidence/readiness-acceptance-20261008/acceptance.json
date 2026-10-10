@@ -1,0 +1,11 @@
+{
+  "image_id": "sha256:d80818543fd748fe4dad1cce1a6847353c901c46027d0e0edb284ddd272b3e8c",
+  "isolation": "fresh workspace/config/profiles volumes; no credentials or model requests",
+  "project": "agentbc-readiness-b23568a500",
+  "fresh_runner": "healthy",
+  "fresh_webui": "healthy",
+  "recreated_runner": "healthy",
+  "new_container_id": true,
+  "production_unchanged": true,
+  "isolated_services_removed": true
+}

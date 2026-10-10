@@ -1,0 +1,50 @@
+{
+  "before": {
+    "windows-desktop-state.json": {
+      "pid": 10308,
+      "sid": "S-1-5-21-3774179316-1493029025-1910149102-1001",
+      "session_id": 1,
+      "logon_id": "555496",
+      "created": 134358534810390991,
+      "installation_id": "preview-740b0e923b1645641071",
+      "container_id": "b39c374cf9d8d340b7d043340d094b973e8fd1247842f7c083ce979c5a9013fc",
+      "instance_key": "7e7eed0314ab4e42b5e9a275b3e4a981",
+      "state": "degraded",
+      "reason": "RuntimeError: desktop binding or transport failed",
+      "heartbeat": 1791380066.6045997,
+      "updated_at": "2026-10-07T13:34:26.604599+00:00"
+    },
+    "desktop-login.json": {
+      "logon_id": "555496"
+    },
+    "containers": {
+      "Status": "running",
+      "Running": true,
+      "Paused": false,
+      "Restarting": false,
+      "OOMKilled": false,
+      "Dead": false,
+      "Pid": 506,
+      "ExitCode": 0,
+      "Error": "",
+      "StartedAt": "2026-10-07T13:37:53.42149397Z",
+      "FinishedAt": "2026-10-07T13:34:18.924656697Z"
+    },
+    "webui_start_error": "fixed_port_50757_access_denied"
+  },
+  "manual_recovery": true,
+  "desktop": {
+    "pid": 20248,
+    "sid": "S-1-5-21-3774179316-1493029025-1910149102-1001",
+    "session_id": 1,
+    "logon_id": "555496",
+    "created": 134358539349006011,
+    "installation_id": "preview-740b0e923b1645641071",
+    "container_id": "b39c374cf9d8d340b7d043340d094b973e8fd1247842f7c083ce979c5a9013fc",
+    "instance_key": "7e7eed0314ab4e42b5e9a275b3e4a981",
+    "state": "ready",
+    "reason": "",
+    "heartbeat": 1791380338.8658586,
+    "updated_at": "2026-10-07T13:38:58.865858+00:00"
+  }
+}

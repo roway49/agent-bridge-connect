@@ -191,6 +191,9 @@ class CodexExecutor(CLIExecutorBase):
             return SessionCleanupCapability("not_applicable", "retain")
         if self.agent_bin is None:
             return _codex_cleanup_unsupported()
+        from agent_bridge_connect.container_session_cleanup import STRATEGY, enabled
+        if enabled() and request.strategy == STRATEGY:
+            return SessionCleanupCapability('supported', STRATEGY)
         if self._uses_cleanup_app_server(request):
             # SESSION-104-001: the official App Server sequence is always
             # archive first (acknowledged) then delete.
@@ -228,6 +231,9 @@ class CodexExecutor(CLIExecutorBase):
                 request_error,
                 False,
             )
+        from agent_bridge_connect.container_session_cleanup import STRATEGY, cleanup
+        if request.strategy == STRATEGY:
+            return cleanup(self, request)
         # Codex retain=false cleanup is always routed through the current
         # Desktop App Tools acknowledgement.  The old CLI path remains a
         # bounded compatibility seam, but can never satisfy this gate.
@@ -636,15 +642,28 @@ class CodexExecutor(CLIExecutorBase):
                     executor_run_id=run_id,
                 )
             self._heartbeat_run(run_id)
-            completed = subprocess.run(
-                command,
-                cwd=root,
-                text=True,
-                capture_output=True,
-                input=prompt_input,
-                check=False,
-                timeout=self.timeout_s,
-            )
+            if task_packet.get("runner_authorization_required") is True:
+                from agent_bridge_connect.executors.base import run_with_stdout_receipts
+
+                def bind_receipt(line):
+                    receipt = _execution_session_receipt(_parse_jsonl(line), resumed=resumed)
+                    if receipt is not None:
+                        self._bind_live_session(task_packet, run_id, receipt)
+
+                completed = run_with_stdout_receipts(
+                    command, cwd=root, input=prompt_input,
+                    timeout=self.timeout_s, on_line=bind_receipt, interrupt_on_sigterm=True,
+                )
+            else:
+                completed = subprocess.run(
+                    command,
+                    cwd=root,
+                    text=True,
+                    capture_output=True,
+                    input=prompt_input,
+                    check=False,
+                    timeout=self.timeout_s,
+                )
         except subprocess.TimeoutExpired as exc:
             events = _parse_jsonl(exc.stdout or "")
             self._store_metadata(run_id, root, events, returncode=None)
@@ -672,7 +691,7 @@ class CodexExecutor(CLIExecutorBase):
             return StartResult(
                 ok=True, run_id=run_id, message="codex execution needs recovery"
             )
-        except (OSError, RunnerError) as exc:
+        except (OSError, RunnerError, ABCError) as exc:
             self._close_run_lease(run_id)
             return StartResult(
                 ok=False, run_id="", message=f"failed to start codex: {exc}"
@@ -680,6 +699,22 @@ class CodexExecutor(CLIExecutorBase):
 
         self._heartbeat_run(run_id)
         events = _parse_jsonl(completed.stdout)
+        if getattr(completed, "agentbc_interrupted", False) is True:
+            from agent_bridge_connect.codex_session_cleanup import CodexSessionCleanupClient
+            receipt = _execution_session_receipt(events, resumed=resumed)
+            result = {"events": events, "reason": "Codex CLI interrupted", "failure": {
+                "kind": "executor_turn_interrupted", "layer": "executor", "retryable": True,
+                "message": "Codex CLI was interrupted before a trusted terminal callback."}}
+            if receipt is not None:
+                try:
+                    client = CodexSessionCleanupClient(str(self.agent_bin), cwd=root, timeout_s=15)
+                    receipt.update(client.archive_only(receipt["session_id"]))
+                except Exception as exc:
+                    result["archive_error"] = type(exc).__name__
+                result["execution_session"] = receipt
+            self._runs[run_id] = PollResult(status="needs_recovery", progress={}, result=result)
+            self._close_run_lease(run_id)
+            return StartResult(ok=True, run_id=run_id, message="Codex interrupted; recovery required")
         summary = _extract_summary(events)
         validation = extract_callback_validation_from_events(
             events,
@@ -1274,17 +1309,18 @@ class CodexExecutor(CLIExecutorBase):
         if not isinstance(payload, dict) or not isinstance(payload.get("item"), dict):
             return
         item = payload["item"]
-        if str(item.get("type") or "") != "collabAgentToolCall":
+        if str(item.get("type") or "") not in {"collabAgentToolCall", "subAgentActivity"}:
             return
         # Collaboration-mode turns also publish lifecycle items for wait,
         # listAgents, and the other coordination tools.  Only spawnAgent
         # creates a new session receipt; those sibling calls are not malformed
         # spawn events and must not abort the parent transport.
-        if str(item.get("tool") or "") != "spawnAgent":
+        if item.get("type") == "collabAgentToolCall" and str(item.get("tool") or "") != "spawnAgent":
             return
         from agent_bridge_connect.auxiliary_sessions import (
             handle_codex_collaboration_item_completed,
             handle_codex_collaboration_item_started,
+            handle_codex_subagent_activity,
         )
         from agent_bridge_connect.task_store import TaskStore
 
@@ -1316,7 +1352,12 @@ class CodexExecutor(CLIExecutorBase):
         parent_turn_id = str(
             payload.get("turnId") or payload.get("turn_id") or ""
         ).strip()
-        if method == "item/started":
+        if item.get("type") == "subAgentActivity":
+            updated, entry = handle_codex_subagent_activity(
+                extensions, owner_task_id=task_id, owner_run_id=run_id,
+                parent_session_id=parent_session_id, item=item,
+                parent_turn_id=parent_turn_id, occurred_at=_cleanup_now())
+        elif method == "item/started":
             updated, entry = handle_codex_collaboration_item_started(
                 extensions,
                 owner_task_id=task_id,
@@ -2207,7 +2248,7 @@ def _unknown_cleanup_verification() -> dict[str, dict[str, str]]:
 # fallback can never claim the archive gate it does not perform.
 OFFICIAL_SESSION_ARCHIVE_THEN_DELETE = "official_session_archive_then_delete"
 _CODEX_CLEANUP_REQUEST_STRATEGIES = frozenset(
-    {"official_session_delete", OFFICIAL_SESSION_ARCHIVE_THEN_DELETE}
+    {"official_session_delete", OFFICIAL_SESSION_ARCHIVE_THEN_DELETE, "container_session_archive_then_delete"}
 )
 
 

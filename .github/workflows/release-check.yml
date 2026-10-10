@@ -45,14 +45,20 @@ jobs:
 
       - name: Run static checks
         run: |
-          ruff check src
-          PYTHONPATH=src PYTHONPYCACHEPREFIX=/tmp/agentbc-pycache python -m compileall -q src
-          PYTHONPATH=src PYTHONPYCACHEPREFIX=/tmp/agentbc-pycache python -m unittest discover -s tests -v
+          python scripts/check_test_structure.py
+          ruff check src tests scripts
+          PYTHONPATH=src PYTHONPYCACHEPREFIX=/tmp/agentbc-pycache python -m compileall -q src tests scripts
+          PYTHONPATH=src PYTHONPYCACHEPREFIX=/tmp/agentbc-pycache python -m unittest discover -s tests/unit -t . -v
+          PYTHONPATH=src PYTHONPYCACHEPREFIX=/tmp/agentbc-pycache python -m unittest discover -s tests/contracts -t . -v
+          if [ "${{ matrix.python-version }}" = "3.11" ]; then
+            PYTHONPATH=src PYTHONPYCACHEPREFIX=/tmp/agentbc-pycache python -m unittest discover -s tests/integration -t . -v
+            PYTHONPATH=src PYTHONPYCACHEPREFIX=/tmp/agentbc-pycache python -m unittest discover -s tests/release -t . -v
+          fi
           sh -n scripts/*.sh
           git diff --check
 
       - name: Generate build identity
-        run: python3 scripts/build_provenance.py generate-build-info --build-source ci
+        run: python scripts/build_provenance.py generate-build-info --build-source ci
 
       - name: Build distributions
         run: python -m build
@@ -61,14 +67,14 @@ jobs:
         run: python -m twine check dist/*
 
       - name: Validate distribution filenames
-        run: python3 scripts/build_provenance.py validate-dists
+        run: python scripts/build_provenance.py validate-dists
 
       - name: Generate release manifest
-        run: python3 scripts/build_provenance.py generate-manifest
+        run: python scripts/build_provenance.py generate-manifest
 
       - name: Generate Homebrew formula
         run: |
-          python3 scripts/generate_homebrew_formula.py \
+          python scripts/generate_homebrew_formula.py \
             dist/release-manifest.json \
             --output dist/agentbc.rb
           ruby -c dist/agentbc.rb

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -26,6 +29,18 @@ class DialogNotifier:
         """Show a redacted macOS dialog and return its delivery result."""
         clean = redact_secrets(notification)
         event_type = str(clean.get("event_type", "notification"))
+        if os.environ.get("AGENTBC_HEADLESS_NOTIFICATIONS") == "stdout":
+            if event_type == _INPUT_EVENT:
+                return DeliveryResult(False, "headless input pending; use agentbc task respond")
+            # Explicit container sink: terminal notices are visible in Docker logs.
+            # Do not emit arbitrary payloads, credentials, or approval choices.
+            notice = {key: str(clean.get(key) or "")[:512]
+                      for key in ("task_id", "event_type", "report_path")}
+            try:
+                print("agentbc_notification: " + json.dumps(notice, ensure_ascii=False), flush=True)
+            except OSError as exc:
+                return DeliveryResult(False, f"headless notification write failed: {exc}")
+            return DeliveryResult(False, "host terminal notification pending", "stdout")
         # The compact bounded ``AgentBC · <Executor> · <Task ID>`` title travels
         # only on the explicit ``dialog_title`` field so the generic payload
         # ``title`` (if any) keeps being ignored exactly as before.
@@ -45,6 +60,9 @@ class DialogNotifier:
             input_options = ()
         dialog_timeout_s = self.input_timeout_s if event_type == _INPUT_EVENT else self.timeout_s
         if event_type == _INPUT_EVENT and input_type == "permission":
+            configured_timeout = clean.get("approval_max_time_s")
+            if isinstance(configured_timeout, (int, float)) and not isinstance(configured_timeout, bool) and math.isfinite(configured_timeout) and configured_timeout > 0:
+                dialog_timeout_s = max(1, math.ceil(configured_timeout))
             if clean.get("native_live_elevation") is True:
                 return self._send_live_claude_elevation_dialog(
                     clean, title, dialog_timeout_s
@@ -437,14 +455,14 @@ class DialogNotifier:
         try:
             result = subprocess.run(
                 [str(self.osascript), "-", title, body],
-                input=script,
+                input=script.replace("on run argv\n", "on run argv\n  activate\n", 1),
                 text=True,
                 capture_output=True,
                 check=False,
                 timeout=give_up_s + 5,
             )
         except subprocess.TimeoutExpired:
-            return "timed_out"
+            return DeliveryResult(False, "dialog process timed out; display was not confirmed")
         except OSError as exc:
             return DeliveryResult(False, f"dialog notification failed: {exc}")
         if result.returncode != 0:

@@ -79,7 +79,7 @@ _HERMES_CLEANUP_TIMEOUT_S = 60
 # are legitimately bound receipts, so both are accepted and nothing else:
 #   * ACP ``session/new`` / ``session/load`` -> a UUID
 #     (``acp_adapter/session.py``: ``str(uuid.uuid4())``), which is the shape the
-#     Hermes ACP stderr receipt binds.  TJBS-001 bound
+#     Hermes ACP stderr receipt binds.  the long-running regression bound
 #     ``18a3e156-6aae-4286-b504-4276f90fc5b2`` and then cleanup rejected that
 #     exact receipt with ``hermes_session_delete_invalid_session_id`` because
 #     the old check accepted only the CLI token form.
@@ -1578,7 +1578,7 @@ class HermesExecutor(CLIExecutorBase):
         ).get("root") or record.get("root")
         service = TaskService(
             board_root,
-            config={"_runner_worker": True},
+            config={"_runner_worker": True, "executors": {"hermes": {"approval_timeout_s": self.approval_timeout_s}}},
         )
         task_id = str(task_packet.get("task_id") or "")
         blocked = service.block_task_for_elevation(
@@ -2103,7 +2103,10 @@ def _hermes_exit_summary_session_id(stdout: str) -> str | None:
         return None
     resume_id = str(match.group("resume") or "").strip()
     session_id = str(match.group("session") or "").strip()
-    if resume_id != session_id or _HERMES_SESSION_ID_RE.fullmatch(session_id) is None:
+    if resume_id != session_id or (
+        _HERMES_SESSION_ID_RE.fullmatch(session_id) is None
+        and _HERMES_ACP_SESSION_ID_RE.fullmatch(session_id) is None
+    ):
         return None
     return session_id
 

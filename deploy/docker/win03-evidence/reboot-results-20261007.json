@@ -1,0 +1,679 @@
+{
+  "DKRV-001": {
+    "status": "completed",
+    "steps": [
+      {
+        "id": 1,
+        "description": "Windows Docker codex execution verification. In this task assigned artifact root only, create codex-verify.txt containing exactly WINDOWS_CODEX_VERIFY_OK, then read the same file back and verify its content. Keep existing inherited permissions. If approval is required, wait for the human and respect denial; do not bypass or change permissions. Do not access credentials, network tools, other projects, or settings. Report the actual outcome and required AGENTBC_FINAL_CALLBACK for this task; mark step 1 done only after successful write and read.",
+        "record": "steps/01.json",
+        "status": "done",
+        "result": {
+          "status": "done",
+          "executor_result": {
+            "id": 1,
+            "status": "done"
+          },
+          "progress_receipt": {
+            "version": 1,
+            "sequence": 1,
+            "evidence_source": "agent_cli"
+          }
+        }
+      }
+    ],
+    "callback": {
+      "version": 1,
+      "task_id": "DKRV-001",
+      "final_state": "completed",
+      "report_file": "/data/workspace/tasks/report/2026-10-07/DKRV/DKRV-001-report.md",
+      "artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-07/DKRV",
+      "summary": "Created and read back codex-verify.txt; verified exact 23-byte content WINDOWS_CODEX_VERIFY_OK, preserved permissions, and recorded completion.",
+      "executor_run_id": "codex-DKRV-001-353d6083",
+      "finished_at": "2026-10-07T13:42:01.591987Z",
+      "source": "executor_final_marker",
+      "outcome": "flow_declared",
+      "exit_code": 0,
+      "step_results": [
+        {
+          "id": 1,
+          "status": "done"
+        }
+      ],
+      "marker_valid": true,
+      "completed_step_count": 1
+    },
+    "has_final_callback": true,
+    "report_ready": true,
+    "lease": "closed",
+    "approval": {
+      "version": 3,
+      "scope": "task_elevation",
+      "kind": "permission",
+      "executor": "codex",
+      "operation": "command",
+      "elevation_mode": "full",
+      "requested_permission": "full",
+      "summary": "Command execution approval requested",
+      "summary_truncated": false,
+      "state": "answered",
+      "source": "task_elevation",
+      "path_plan_digest": "",
+      "containment_profile_digest": "",
+      "created_at": "2026-10-07T13:40:10.428101Z",
+      "cardinality": {
+        "permission_requests": 1,
+        "notifications": 1,
+        "human_decisions": 1,
+        "elevation_receipts": 1,
+        "full_continuations": 1
+      },
+      "authority": {
+        "executor": "codex",
+        "protocol": "codex_app_server",
+        "protocol_version": 2,
+        "method": "item/commandExecution/requestApproval"
+      },
+      "native_event": "codex_app_server.item/commandExecution/requestApproval",
+      "request_fingerprint": "fp-35d2b7160d2690ef1a80bf06815101dadd9c2617",
+      "reason_summary": "Command execution approval requested",
+      "decision": "approve_full",
+      "decision_source": "user",
+      "decided_at": "2026-10-07T13:41:25.603861Z",
+      "full_continuations": 1
+    },
+    "delivery": {
+      "version": 1,
+      "delivery_id": "4abc5643-c4f0-41ad-a60a-c9bc43f9aa05",
+      "terminal_state": "completed",
+      "terminal_event": "task.finalized",
+      "committed_at": "2026-10-07T13:42:01.591987Z",
+      "stages": {
+        "report": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "record": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "index": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "file_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "ui_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        }
+      },
+      "updated_at": "2026-10-07T13:42:41.905399Z"
+    },
+    "session": {
+      "version": 1,
+      "executor": "codex",
+      "retain": false,
+      "session_id": "01a11697-78ed-7f60-965a-ed05b9b8488e",
+      "session_state": "terminal",
+      "project_mode": "none",
+      "run_ids": [
+        "codex-DKRV-001-de7f945e",
+        "codex-DKRV-001-353d6083"
+      ],
+      "run_resume_facts": {
+        "codex-DKRV-001-de7f945e": false,
+        "codex-DKRV-001-353d6083": true
+      },
+      "resume_count": 1,
+      "cleanup": {
+        "capability": "supported",
+        "state": "succeeded",
+        "attempts": 1,
+        "error_code": "",
+        "retryable": false,
+        "version": 5,
+        "strategy": "container_session_archive_then_delete",
+        "phase": "delete_acknowledged",
+        "verification": {
+          "cli": {
+            "status": "absent",
+            "checked_at": "2026-10-07T13:43:55.315662Z"
+          },
+          "desktop_backend": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T13:43:54.819361Z"
+          },
+          "desktop_live": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T13:43:54.819361Z"
+          },
+          "desktop": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T13:43:54.819361Z"
+          }
+        },
+        "commands": {
+          "desktop_archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T13:43:54.819361Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "app_server_archive": {
+            "status": "acknowledged",
+            "checked_at": "2026-10-07T13:43:54.964453Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "delete": {
+            "status": "acknowledged",
+            "checked_at": "2026-10-07T13:43:55.315662Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T13:43:54.819361Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          }
+        }
+      },
+      "created_at": "2026-10-07T13:39:43.147371Z",
+      "receipt_source": "jsonl_thread_started",
+      "official_receipt_bound": true
+    },
+    "artifact": {
+      "exists": true,
+      "matches": true,
+      "bytes": 23,
+      "sha256": "7664ce299d85721b052d1fef83a000a769c0e209cdb6808120be46c235c3a576"
+    }
+  },
+  "WMTT-001": {
+    "status": "completed",
+    "steps": [
+      {
+        "id": 1,
+        "description": "Windows Docker claude execution verification. In this task assigned artifact root only, create claude-verify.txt containing exactly WINDOWS_CLAUDE_VERIFY_OK, then read the same file back and verify its content. Keep existing inherited permissions. If approval is required, wait for the human and respect denial; do not bypass or change permissions. Do not access credentials, network tools, other projects, or settings. Report the actual outcome and required AGENTBC_FINAL_CALLBACK for this task; mark step 1 done only after successful write and read.",
+        "record": "steps/01.json",
+        "status": "done",
+        "result": {
+          "status": "done",
+          "executor_result": {
+            "id": 1,
+            "status": "done"
+          },
+          "progress_receipt": {
+            "version": 1,
+            "sequence": 1,
+            "evidence_source": "agent_cli"
+          }
+        }
+      }
+    ],
+    "callback": {
+      "version": 1,
+      "task_id": "WMTT-001",
+      "final_state": "completed",
+      "report_file": "/data/workspace/tasks/report/2026-10-07/WMTT/WMTT-001-report.md",
+      "artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-07/WMTT",
+      "summary": "Step 1 done: created claude-verify.txt in artifact root with exactly WINDOWS_CLAUDE_VERIFY_OK (24 bytes, mode 0644 inherited, unchanged); read-back confirmed exact match (sha256 a44afe...5431). No approval required; no credentials/network/other projects/settings accessed. Step recorded via agentbc CLI.",
+      "executor_run_id": "claude-WMTT-001-1e1cc2d1",
+      "finished_at": "2026-10-07T13:41:33.015994Z",
+      "source": "executor_final_marker",
+      "outcome": "flow_declared",
+      "exit_code": 0,
+      "step_results": [
+        {
+          "id": 1,
+          "status": "done"
+        }
+      ],
+      "marker_valid": true,
+      "completed_step_count": 1
+    },
+    "has_final_callback": true,
+    "report_ready": true,
+    "lease": "closed",
+    "approval": {
+      "version": 3,
+      "scope": "task_elevation",
+      "kind": "permission",
+      "executor": "claude",
+      "operation": "command",
+      "elevation_mode": "full",
+      "requested_permission": "full",
+      "summary": "Command execution approval requested",
+      "summary_truncated": false,
+      "state": "answered",
+      "source": "task_elevation",
+      "path_plan_digest": "",
+      "containment_profile_digest": "",
+      "created_at": "2026-10-07T13:39:51.674140Z",
+      "cardinality": {
+        "permission_requests": 1,
+        "notifications": 1,
+        "human_decisions": 1,
+        "elevation_receipts": 1,
+        "full_continuations": 0
+      },
+      "authority": {
+        "executor": "claude",
+        "protocol": "claude_agent_sdk",
+        "protocol_version": 1,
+        "method": "sdk.can_use_tool"
+      },
+      "native_event": "claude_sdk_can_use_tool",
+      "request_fingerprint": "fp-e50bd27929907229d41dcbe248998ff5c85dd638",
+      "reason_summary": "Command execution approval requested",
+      "decision": "approve_full",
+      "decision_source": "user",
+      "decided_at": "2026-10-07T13:41:13.903298Z"
+    },
+    "delivery": {
+      "version": 1,
+      "delivery_id": "5ae36210-55e0-4661-a765-9976cbe5aa6c",
+      "terminal_state": "completed",
+      "terminal_event": "task.finalized",
+      "committed_at": "2026-10-07T13:41:33.015994Z",
+      "stages": {
+        "report": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "record": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "index": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "file_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "ui_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        }
+      },
+      "updated_at": "2026-10-07T13:41:36.700102Z"
+    },
+    "session": {
+      "version": 1,
+      "executor": "claude",
+      "retain": false,
+      "session_id": "47b79bdc-e8ee-4acc-a635-bdc4e9b16f82",
+      "session_state": "terminal",
+      "project_mode": "ephemeral",
+      "run_ids": [
+        "claude-WMTT-001-1e1cc2d1"
+      ],
+      "run_resume_facts": {
+        "claude-WMTT-001-1e1cc2d1": false
+      },
+      "resume_count": 0,
+      "cleanup": {
+        "capability": "supported",
+        "state": "succeeded",
+        "attempts": 1,
+        "error_code": "",
+        "retryable": false,
+        "version": 5,
+        "strategy": "claude_project_purge",
+        "phase": "waiting_for_cleanup",
+        "verification": {
+          "cli": {
+            "status": "not_applicable",
+            "checked_at": ""
+          },
+          "desktop_backend": {
+            "status": "not_applicable",
+            "checked_at": ""
+          },
+          "desktop_live": {
+            "status": "not_applicable",
+            "checked_at": ""
+          },
+          "desktop": {
+            "status": "not_applicable",
+            "checked_at": ""
+          }
+        },
+        "commands": {
+          "desktop_archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T13:41:54.619738Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "app_server_archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T13:41:54.619738Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "delete": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T13:41:54.619738Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T13:41:54.619738Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          }
+        }
+      },
+      "created_at": "2026-10-07T13:39:44.840244Z",
+      "receipt_source": "preallocated",
+      "official_receipt_bound": true
+    },
+    "artifact": {
+      "exists": true,
+      "matches": true,
+      "bytes": 24,
+      "sha256": "a44afe14291b213bfa29028743c6f3f5e6ce6dacf4f36b6f1c0e21e373e35431"
+    }
+  },
+  "YS8W-001": {
+    "status": "completed",
+    "steps": [
+      {
+        "id": 1,
+        "description": "Windows Docker hermes execution verification. In this task assigned artifact root only, create hermes-verify.txt containing exactly WINDOWS_HERMES_VERIFY_OK, then read the same file back and verify its content. Keep existing inherited permissions. If approval is required, wait for the human and respect denial; do not bypass or change permissions. Do not access credentials, network tools, other projects, or settings. Report the actual outcome and required AGENTBC_FINAL_CALLBACK for this task; mark step 1 done only after successful write and read.",
+        "record": "steps/01.json",
+        "status": "done",
+        "result": {
+          "status": "done",
+          "executor_result": {
+            "id": 1,
+            "status": "done"
+          },
+          "progress_receipt": {
+            "version": 1,
+            "sequence": 1,
+            "evidence_source": "agent_cli"
+          }
+        }
+      }
+    ],
+    "callback": {
+      "version": 1,
+      "task_id": "YS8W-001",
+      "final_state": "completed",
+      "report_file": "/data/workspace/tasks/report/2026-10-07/YS8W/YS8W-001-report.md",
+      "artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-07/YS8W",
+      "summary": "Created hermes-verify.txt in the artifact root with exactly WINDOWS_HERMES_VERIFY_OK (24 bytes, no trailing newline); read back and byte-compared MATCH; inherited perms unchanged (644 agentbc:agentbc). Runtime is WSL2 Linux container.",
+      "executor_run_id": "hermes-YS8W-001-ebc8a61b",
+      "finished_at": "2026-10-07T13:42:01.601070Z",
+      "source": "executor_final_marker",
+      "outcome": "flow_declared",
+      "exit_code": 0,
+      "step_results": [
+        {
+          "id": 1,
+          "status": "done"
+        }
+      ],
+      "marker_valid": true,
+      "completed_step_count": 1
+    },
+    "has_final_callback": true,
+    "report_ready": true,
+    "lease": "closed",
+    "approval": {
+      "version": 3,
+      "scope": "task_elevation",
+      "kind": "permission",
+      "executor": "hermes",
+      "operation": "edit",
+      "elevation_mode": "full",
+      "requested_permission": "full",
+      "summary": "Approve edit: /data/workspace/tasks/artifacts/2026-10-07/YS8W/hermes-verify.txt",
+      "summary_truncated": false,
+      "state": "answered",
+      "source": "task_elevation",
+      "path_plan_digest": "",
+      "containment_profile_digest": "",
+      "created_at": "2026-10-07T13:40:04.935442Z",
+      "cardinality": {
+        "permission_requests": 1,
+        "notifications": 1,
+        "human_decisions": 1,
+        "elevation_receipts": 1,
+        "full_continuations": 1
+      },
+      "authority": {
+        "executor": "hermes",
+        "protocol": "hermes_acp",
+        "protocol_version": 1,
+        "method": "session/request_permission"
+      },
+      "native_event": "hermes_acp.session/request_permission",
+      "request_fingerprint": "fp-81e0e041c03a35b58323fa68f73cccd6ceb866e2",
+      "reason_summary": "Approve edit: /data/workspace/tasks/artifacts/2026-10-07/YS8W/hermes-verify.txt",
+      "decision": "approve_full",
+      "decision_source": "user",
+      "decided_at": "2026-10-07T13:41:37.984256Z",
+      "full_continuations": 1
+    },
+    "delivery": {
+      "version": 1,
+      "delivery_id": "e3cf220a-ff3a-45fe-abd8-1aa94e0b1d2b",
+      "terminal_state": "completed",
+      "terminal_event": "task.finalized",
+      "committed_at": "2026-10-07T13:42:01.601070Z",
+      "stages": {
+        "report": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "record": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "index": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "file_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        },
+        "ui_notification": {
+          "state": "succeeded",
+          "attempts": 1,
+          "last_error_code": ""
+        }
+      },
+      "updated_at": "2026-10-07T13:42:06.126597Z"
+    },
+    "session": {
+      "version": 1,
+      "executor": "hermes",
+      "retain": false,
+      "session_id": "cffb6665-7038-4cc7-877c-25d94d87af63",
+      "session_state": "terminal",
+      "project_mode": "none",
+      "run_ids": [
+        "hermes-YS8W-001-04338c8f",
+        "hermes-YS8W-001-ebc8a61b"
+      ],
+      "run_resume_facts": {
+        "hermes-YS8W-001-04338c8f": false,
+        "hermes-YS8W-001-ebc8a61b": true
+      },
+      "resume_count": 1,
+      "cleanup": {
+        "capability": "supported",
+        "state": "succeeded",
+        "attempts": 1,
+        "error_code": "",
+        "retryable": false,
+        "version": 5,
+        "strategy": "official_session_delete",
+        "phase": "waiting_for_cleanup",
+        "verification": {
+          "cli": {
+            "status": "not_applicable",
+            "checked_at": ""
+          },
+          "desktop_backend": {
+            "status": "not_applicable",
+            "checked_at": ""
+          },
+          "desktop_live": {
+            "status": "not_applicable",
+            "checked_at": ""
+          },
+          "desktop": {
+            "status": "not_applicable",
+            "checked_at": ""
+          }
+        },
+        "commands": {
+          "desktop_archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T13:42:54.658100Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "app_server_archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T13:42:54.658100Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "delete": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T13:42:54.658100Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          },
+          "archive": {
+            "status": "not_applicable",
+            "checked_at": "2026-10-07T13:42:54.658100Z",
+            "request_digest": "",
+            "route_digest": "",
+            "app_instance_digest": ""
+          }
+        }
+      },
+      "created_at": "2026-10-07T13:39:46.516650Z",
+      "receipt_source": "stderr_receipt",
+      "official_receipt_bound": true
+    },
+    "artifact": {
+      "exists": true,
+      "matches": true,
+      "bytes": 24,
+      "sha256": "6073b2e97dd2151a7274c606d36ee40978a5b6b2f585223c18b34eb34246e579"
+    }
+  },
+  "runner": {
+    "exit_code": 0,
+    "result": {
+      "ok": true,
+      "status": "ready",
+      "pid": 8,
+      "python_executable": "/usr/local/bin/python3.11",
+      "module_path": "/probe/sdk-amd64/lib/python3.11/site-packages/agent_bridge_connect/__init__.py",
+      "executors": [
+        "claude",
+        "codex",
+        "hermes"
+      ],
+      "executor_commands": {
+        "claude": {
+          "path": "/opt/agentbc/bin/claude",
+          "source": "config"
+        },
+        "codex": {
+          "path": "/opt/agentbc/bin/codex",
+          "source": "config"
+        },
+        "hermes": {
+          "path": "/opt/agentbc/bin/hermes",
+          "source": "config"
+        }
+      },
+      "path_policy": {
+        "agent_input": "customer_path",
+        "default_customer_path": "default path",
+        "authorization": "runner_task_scoped"
+      },
+      "atomic_dispatch": true,
+      "desktop_archive_route": {
+        "status": "unavailable",
+        "capability": "unavailable",
+        "route_digest": "",
+        "app_instance_digest": ""
+      }
+    }
+  },
+  "webui": {
+    "exit_code": 0,
+    "result": {
+      "running": false,
+      "port": 50757,
+      "origin": "http://127.0.0.1:50757",
+      "restart_policy": "no",
+      "health": "starting",
+      "error": ""
+    }
+  },
+  "doctor": {
+    "exit_code": 0,
+    "result": {
+      "installation_type": "docker-preview",
+      "container_id": "b39c374cf9d8d340b7d043340d094b973e8fd1247842f7c083ce979c5a9013fc",
+      "approval_delivery": "desktop",
+      "desktop": {
+        "pid": 20248,
+        "sid": "S-1-5-21-3774179316-1493029025-1910149102-1001",
+        "session_id": 1,
+        "logon_id": "555496",
+        "created": 134358539349006011,
+        "installation_id": "preview-740b0e923b1645641071",
+        "container_id": "b39c374cf9d8d340b7d043340d094b973e8fd1247842f7c083ce979c5a9013fc",
+        "instance_key": "7e7eed0314ab4e42b5e9a275b3e4a981",
+        "state": "ready",
+        "reason": "",
+        "heartbeat": 1791381527.1240907,
+        "updated_at": "2026-10-07T13:58:47.124090+00:00"
+      }
+    }
+  }
+}

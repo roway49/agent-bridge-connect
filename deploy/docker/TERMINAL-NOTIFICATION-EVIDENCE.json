@@ -1,0 +1,60 @@
+{
+  "candidate": "r11",
+  "installed": true,
+  "python_tests": 2284,
+  "python_seconds": 115.983,
+  "image": "sha256:2e0ed2e2b07e7ae84c4539bf68250dc0b99ba54d564802fc2161be0cbeb70d75",
+  "tasks": {
+    "5FPM-001": {
+      "status": "failed",
+      "callback": false,
+      "lease": "closed",
+      "delivery_id": "d4f6c377-81ae-4287-8e91-400e5efea0a7",
+      "ui": {
+        "state": "succeeded",
+        "attempts": 1,
+        "last_error_code": ""
+      }
+    },
+    "SZXS-001": {
+      "status": "completed",
+      "callback": true,
+      "lease": "closed",
+      "delivery_id": "a53ddf6b-6580-464c-bde0-f0bb8dac8248",
+      "ui": {
+        "state": "succeeded",
+        "attempts": 1,
+        "last_error_code": ""
+      }
+    },
+    "F9H8-001": {
+      "status": "completed",
+      "callback": true,
+      "lease": "closed",
+      "delivery_id": "17899ea8-0ab9-41a9-9df9-06ad94b4cdf8",
+      "ui": {
+        "state": "succeeded",
+        "attempts": 1,
+        "last_error_code": ""
+      }
+    },
+    "23XA-001": {
+      "status": "completed",
+      "callback": true,
+      "lease": "closed",
+      "delivery_id": "4ed42007-7834-4464-b1fc-e64f2d85efaf",
+      "ui": {
+        "state": "succeeded",
+        "attempts": 1,
+        "last_error_code": ""
+      }
+    }
+  },
+  "human_visibility_confirmed": false,
+  "restart_verification": {
+    "runner_and_webui": "healthy",
+    "host_bridge": "ready",
+    "pending_notifications": 0,
+    "four_ui_receipts_unchanged": true
+  }
+}

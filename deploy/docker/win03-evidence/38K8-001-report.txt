@@ -1,0 +1,131 @@
+
+# Report: Windows Hermes DeepSeek approval and completion test
+
+## Summary
+- Task: `38K8-001`
+- Status: `completed`
+- Agent declared state: `completed`
+- Marker valid: `yes`
+- Completed steps: `1/1`
+- Flow contract satisfied: `yes`
+- Terminal delivery: `succeeded`
+- Terminal delivery outstanding: `none`
+- Failure code: `none`
+- Failed steps: `none`
+- Blocked steps: `none`
+- Assignee: `hermes`
+- Requested permission mode: `inherit`
+- Effective permission mode: `inherit`
+- Permission selection source: `configured_default`
+- Created: `2026-10-05 13:36:42 UTC`
+- Completed: `2026-10-05 13:40:48 UTC`
+- Duration: `3m 35s`
+- Execution duration: `3m 35s`
+- Last run duration: `9s`
+- Execution evidence: `authoritative`
+- Waiting duration: `30s`
+- Wall duration: `4m 06s`
+- Run lease: `closed`
+- Last heartbeat age: `1m 13s`
+- Recovery: No recovery action is required.
+
+## Path Plan
+- Task code: `38K8`
+- Iteration: `001`
+- Task date: `2026-10-05`
+- Customer directory: `False`
+- Customer path: `none`
+- Project root: `/data/workspace/tasks/artifacts/2026-10-05/38K8`
+- Artifact root: `/data/workspace/tasks/artifacts/2026-10-05/38K8`
+- Report directory: `/data/workspace/tasks/report/2026-10-05/38K8`
+- Runtime record: `/data/workspace/record/38K8/001`
+- Task brief: `/data/workspace/tasks/report/2026-10-05/38K8/38K8-001-task.md`
+- Report: `/data/workspace/tasks/report/2026-10-05/38K8/38K8-001-report.md`
+
+## Execution Policy
+- Resource: `max_turns`
+- Effective limit: `90`
+- Configured limit: `90`
+- Exhaustion count: `0`
+- Last decision: `none`
+- Resource source: `hermes_default_90`
+- Resource frozen: `yes`
+- Retain executor session: `no`
+- Executor session ID: `c34118cc-df05-4671-8599-4ee3d1dc2e19`
+- Session state: `terminal`
+- Project mode: `none`
+- Cleanup capability: `supported`
+- Cleanup state: `succeeded`
+- Cleanup attempts: `1`
+- Cleanup error code: `none`
+- Cleanup retryable: `no`
+- Cleanup phase: `waiting_for_cleanup`
+- Cleanup strategy: `official_session_delete`
+- CLI verification: `not_applicable` checked_at=``
+- Desktop backend verification: `not_applicable` checked_at=``
+- Desktop live verification: `not_applicable` checked_at=``
+- Desktop verification (aggregate): `not_applicable` checked_at=``
+- Cleanup `desktop_archive` command: `not_applicable` checked_at=`2026-10-05T13:41:55.547923Z`
+- Cleanup `app_server_archive` command: `not_applicable` checked_at=`2026-10-05T13:41:55.547923Z`
+- Cleanup `delete` command: `not_applicable` checked_at=`2026-10-05T13:41:55.547923Z`
+
+### Task Elevation
+- Mode: `full`
+- Source: `task_elevation`
+- State: `verified`
+- Error code: `none`
+- Request cardinality: `1`
+- Notification cardinality: `1`
+- Human decision cardinality: `1`
+- Full continuation cardinality: `1`
+
+## Confirmed Progress
+- Evidence: `authoritative`
+- Attempt: `0`
+- Latest sequence: `1`
+- Confirmed steps: `1`
+- Updated: `2026-10-05T13:40:45.814810Z`
+- Parent task: `none`
+- Previous report: `none`
+- Current task: `38K8-001`
+- Chain root task: `38K8-001`
+- Base task: `38K8-001`
+- Current chain heads: `38K8-001`
+- Is chain head: `yes`
+- Branch mode: `linear`
+- Base workspace: `/data/workspace/tasks/artifacts/2026-10-05/38K8`
+- Base artifacts: `/data/workspace/tasks/artifacts/2026-10-05/38K8`
+- Iteration: `1`
+
+## Input Lifecycle
+- Input ID: `input-b6fc6870402d4a69b72d661d20023940`
+- Status: `answered`
+- Blocked step/type: `1` / `permission`
+- Summary: Approve edit: /data/workspace/tasks/artifacts/2026-10-05/38K8/hermes-test.txt
+- Deadline: `2026-10-05T13:45:09.218117Z`
+
+## Steps
+1. [done] Windows Docker Hermes approval and completion popup test. In this task's assigned artifact root, create hermes-test.txt containing WINDOWS_HERMES_OK, then read back that exact file and summarize the result. Use only the existing inherited permissions. If a native approval is requested, wait for the human and respect denial; do not change permission mode or bypass the request. Do not access credentials, browse, change settings, or write outside this artifact root. End with the required AGENTBC_FINAL_CALLBACK for this actual task; mark step 1 done only after successful write and read.
+
+## Artifacts
+- `hermes-test.txt`
+
+## Timeline
+- `2026-10-05 13:36:42 UTC` created
+- `2026-10-05 13:40:39 UTC` executor.session_run_started
+- `2026-10-05 13:40:45 UTC` task.progress_recorded
+- `2026-10-05 13:40:48 UTC` task.finalized
+- `2026-10-05 13:40:50 UTC` notification_delivery
+- `2026-10-05 13:40:50 UTC` task.permission_elevation_verified
+- `2026-10-05 13:41:09 UTC` notification_delivery
+
+## Dispatcher Traceability
+- Dispatcher platform: `codex`
+- Dispatcher conversation ID: `unavailable`
+
+## Duration
+- Execution duration: `3m 35s`
+- Last run duration: `9s`
+- Execution evidence: `authoritative`
+- Waiting duration: `30s`
+- Wall duration: `4m 06s`

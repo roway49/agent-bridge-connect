@@ -1,0 +1,9 @@
+**
+!deploy/
+!deploy/docker/
+!deploy/docker/runtime_launcher.py
+
+!deploy/docker/locks/
+!deploy/docker/locks/*.txt
+!deploy/docker/Dockerfile.distribution
+!deploy/docker/runtime-lock.json

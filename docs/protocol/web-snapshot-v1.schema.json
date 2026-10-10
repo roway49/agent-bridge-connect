@@ -1,0 +1,322 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:agentbc:web-snapshot:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_id",
+    "snapshot_revision",
+    "captured_at",
+    "consistency",
+    "task",
+    "text"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "source_id": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{32}$"
+    },
+    "snapshot_revision": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "captured_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "consistency": {
+      "const": "consistent"
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "attempt_id",
+        "run_id",
+        "title",
+        "executor",
+        "status",
+        "updated_at",
+        "steps",
+        "waiting",
+        "error",
+        "callback_state",
+        "capabilities"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string"
+        },
+        "attempt_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "executor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "description",
+              "status"
+            ],
+            "properties": {
+              "id": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "waiting": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "type",
+                "status",
+                "summary"
+              ],
+              "properties": {
+                "type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "summary": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "code",
+                "message"
+              ],
+              "properties": {
+                "code": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "message": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "callback_state": {
+          "enum": [
+            "received",
+            "missing",
+            "unknown"
+          ]
+        },
+        "capabilities": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "execution_scope",
+            "full_lifecycle"
+          ],
+          "properties": {
+            "execution_scope": {
+              "enum": [
+                "basic",
+                "unknown"
+              ]
+            },
+            "full_lifecycle": {
+              "enum": [
+                "unverified",
+                "unknown"
+              ]
+            }
+          }
+        },
+        "duration": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "seconds",
+            "label",
+            "display"
+          ],
+          "properties": {
+            "seconds": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "label": {
+              "type": "string"
+            },
+            "display": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "text": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "report",
+        "execution"
+      ],
+      "properties": {
+        "report": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "scope",
+            "text",
+            "truncated"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "available",
+                "missing",
+                "unavailable"
+              ]
+            },
+            "scope": {
+              "enum": [
+                "task",
+                "none"
+              ]
+            },
+            "text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          }
+        },
+        "execution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "scope",
+            "text",
+            "truncated"
+          ],
+          "properties": {
+            "state": {
+              "enum": [
+                "available",
+                "missing",
+                "unavailable"
+              ]
+            },
+            "scope": {
+              "enum": [
+                "task",
+                "none"
+              ]
+            },
+            "text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    }
+  }
+}

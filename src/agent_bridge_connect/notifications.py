@@ -537,6 +537,7 @@ def build_input_required_notification(service: Any, task_id: str) -> dict[str, A
         "report_path": str(workspace.get("report_file") or ""),
         "respond_command": command,
         "deadline_at": str(request.get("deadline_at") or ""),
+        "approval_max_time_s": request.get("approval_max_time_s"),
         "input_id": input_id,
         "input_type": input_type,
         "input_kind": input_kind,

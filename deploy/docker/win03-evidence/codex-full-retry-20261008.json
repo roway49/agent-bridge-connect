@@ -1,0 +1,901 @@
+{
+  "task_id": "G9B5-001",
+  "artifact_matches": true,
+  "artifact_sha256": "903fa73806f2e28dc163160f85c2a7e6ed1a0b779cddb086a2e122457179664c",
+  "artifact_bytes": 28,
+  "status_receipt": {
+    "resolved_task_id": "G9B5-001",
+    "resolution_mode": "explicit_id",
+    "active_candidates": [],
+    "has_active_task": false,
+    "message": "Resolved explicit task id: G9B5-001",
+    "current_task": {
+      "extensions": {
+        "agentbc.provenance": {
+          "source_platform": "codex",
+          "conversation_id": null
+        },
+        "agentbc.lineage": {
+          "parent_task_id": null,
+          "base_task_id": "G9B5-001",
+          "chain_root_task_id": "G9B5-001",
+          "iteration_index": 1,
+          "task_code": "G9B5",
+          "task_date": "2026-10-07",
+          "agentbc_root": "/data/workspace",
+          "base_workspace_root": "/data/workspace/tasks/artifacts/2026-10-07/G9B5",
+          "base_artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-07/G9B5",
+          "branch_mode": "linear",
+          "chain_id": "G9B5",
+          "chain_token": "G9B5",
+          "chain_dir": "G9B5",
+          "chain_task_id": "001",
+          "chain_output_dir": "/data/workspace/tasks/report/2026-10-07/G9B5"
+        },
+        "agentbc.execution": {
+          "internal_status": "completed",
+          "lease_state": "active",
+          "run_intervals": [
+            {
+              "run_id": "codex-G9B5-001-af2fd57e",
+              "executor_id": "codex",
+              "attempt_index": 0,
+              "started_at": "2026-10-07T15:54:38.673000Z",
+              "ended_at": "2026-10-07T15:54:38.989227Z",
+              "duration_s": 0.316,
+              "state": "stale"
+            },
+            {
+              "run_id": "codex-G9B5-001-210c18ac",
+              "executor_id": "codex",
+              "attempt_index": 1,
+              "started_at": "2026-10-07T16:20:46.228586Z",
+              "ended_at": "2026-10-07T16:21:24.979899Z",
+              "duration_s": 38.751,
+              "state": "closed"
+            }
+          ],
+          "attempt_index": 1,
+          "attempt_started_at": "2026-10-07T16:20:45.381002Z",
+          "worker_run_id": "runner-worker-b9f9b7c0697d",
+          "dispatch_status": "accepted",
+          "worker_pid": 9312,
+          "monitor_status": "disabled",
+          "executor_run_id": "codex-G9B5-001-210c18ac"
+        },
+        "agentbc.permission": {
+          "version": 2,
+          "configured_mode": "inherit",
+          "inherited_mode": null,
+          "task_override": "full",
+          "requested_mode": "full",
+          "effective_mode": "full",
+          "selection_source": "explicit_task",
+          "selection_strategy": "explicit",
+          "resolved_base_mode": "full",
+          "resolution_state": "frozen",
+          "approval_policy": "none",
+          "scope": "task",
+          "mapping": {
+            "codex": {
+              "transport": "cli",
+              "capability_id": "codex.bypass_approvals_and_sandbox",
+              "args": [
+                "--dangerously-bypass-approvals-and-sandbox"
+              ],
+              "env": {},
+              "decisions": null,
+              "overrides_native": true,
+              "executor": "codex",
+              "mode": "full",
+              "scope": "executor_subprocess",
+              "direct_args": [
+                "--dangerously-bypass-approvals-and-sandbox"
+              ]
+            },
+            "claude": {
+              "transport": "cli",
+              "capability_id": "claude.dangerously_skip_permissions",
+              "args": [
+                "--dangerously-skip-permissions"
+              ],
+              "env": {},
+              "decisions": null,
+              "overrides_native": true,
+              "executor": "claude",
+              "mode": "full",
+              "scope": "executor_subprocess",
+              "direct_args": [
+                "--dangerously-skip-permissions"
+              ]
+            },
+            "hermes": {
+              "transport": "direct",
+              "capability_id": "hermes.cli.full.yolo",
+              "args": [
+                "--yolo"
+              ],
+              "env": {},
+              "decisions": null,
+              "overrides_native": true,
+              "executor": "hermes",
+              "mode": "full",
+              "scope": "executor_subprocess",
+              "direct_args": [
+                "--yolo"
+              ]
+            }
+          },
+          "permission_args": []
+        },
+        "agentbc.permission_protocol": {
+          "version": 3,
+          "scope": "task_elevation",
+          "mode": "full",
+          "decisions": [
+            "approve_full",
+            "deny"
+          ]
+        },
+        "agentbc.session": {
+          "version": 1,
+          "executor": "codex",
+          "retain": false,
+          "session_id": "01a1172a-e808-7540-8551-046c816c824d",
+          "session_state": "terminal",
+          "project_mode": "none",
+          "run_ids": [
+            "codex-G9B5-001-210c18ac"
+          ],
+          "run_resume_facts": {
+            "codex-G9B5-001-210c18ac": false
+          },
+          "resume_count": 0,
+          "cleanup": {
+            "capability": "supported",
+            "state": "succeeded",
+            "attempts": 1,
+            "error_code": "",
+            "retryable": false,
+            "version": 5,
+            "strategy": "container_session_archive_then_delete",
+            "phase": "delete_acknowledged",
+            "verification": {
+              "cli": {
+                "status": "absent",
+                "checked_at": "2026-10-07T16:22:17.296908Z"
+              },
+              "desktop_backend": {
+                "status": "not_applicable",
+                "checked_at": "2026-10-07T16:22:16.837539Z"
+              },
+              "desktop_live": {
+                "status": "not_applicable",
+                "checked_at": "2026-10-07T16:22:16.837539Z"
+              },
+              "desktop": {
+                "status": "not_applicable",
+                "checked_at": "2026-10-07T16:22:16.837539Z"
+              }
+            },
+            "commands": {
+              "desktop_archive": {
+                "status": "not_applicable",
+                "checked_at": "2026-10-07T16:22:16.837539Z",
+                "request_digest": "",
+                "route_digest": "",
+                "app_instance_digest": ""
+              },
+              "app_server_archive": {
+                "status": "acknowledged",
+                "checked_at": "2026-10-07T16:22:16.981071Z",
+                "request_digest": "",
+                "route_digest": "",
+                "app_instance_digest": ""
+              },
+              "delete": {
+                "status": "acknowledged",
+                "checked_at": "2026-10-07T16:22:17.296908Z",
+                "request_digest": "",
+                "route_digest": "",
+                "app_instance_digest": ""
+              },
+              "archive": {
+                "status": "not_applicable",
+                "checked_at": "2026-10-07T16:22:16.837539Z",
+                "request_digest": "",
+                "route_digest": "",
+                "app_instance_digest": ""
+              }
+            }
+          },
+          "created_at": "2026-10-07T16:20:45.381002Z",
+          "receipt_source": "jsonl_thread_started",
+          "official_receipt_bound": true
+        },
+        "run_lease": {
+          "run_id": "codex-G9B5-001-af2fd57e",
+          "state": "closed",
+          "recovery_status": "ready_for_retry",
+          "last_heartbeat_at": "2026-10-07T15:54:38.989227Z",
+          "recommendation": "Run agentbc task retry G9B5-001 or handoff this chain head."
+        },
+        "agentbc.revival": {
+          "version": 1,
+          "revival_id": "REV-ebcaed5d5676433ba05dcb3c02ebc401",
+          "operation": "retry",
+          "state": "committed",
+          "created_at": "2026-10-07T16:20:45.302794Z",
+          "updated_at": "2026-10-07T16:20:45.381002Z",
+          "source_task_id": "G9B5-001",
+          "source_attempt_id": "attempt-0",
+          "target_task_id": "",
+          "target_attempt_id": "attempt-1",
+          "source_report_digest": "sha256:493ac77075dd55b9f1a65617780474dce24db1fcacfb029dbe076b708d55d789",
+          "source_requirements_digest": "sha256:76005cd64e45912d6c2b15ed0394e4466ad8ff39eae8bedd4f35b5e9f9c853ac",
+          "path_plan_digest": "sha256:897db9cfdc2f8a9d6627630f7e1b38b37f34441c476525ac8e91c142bf172b49",
+          "policy_digest": "sha256:3cfa4cf98cea8be98615eece56a82d811e3b18fa0ede1e907b88cfcbaa5c1e91",
+          "cleanup_scope": "managed_default_artifacts",
+          "inherited_done_step_ids": [],
+          "resumed_step_ids": [
+            1
+          ],
+          "warnings": []
+        },
+        "agentbc.final_callback": {
+          "version": 1,
+          "task_id": "G9B5-001",
+          "final_state": "completed",
+          "report_file": "/data/workspace/tasks/report/2026-10-07/G9B5/G9B5-001-report.md",
+          "artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-07/G9B5",
+          "summary": "Write-read verification succeeded. Authoritative progress recording failed: progress_session_receipt_unbound; official Executor session receipt required.",
+          "executor_run_id": "codex-G9B5-001-210c18ac",
+          "finished_at": "2026-10-07T16:21:24.996680Z",
+          "source": "executor_final_marker",
+          "outcome": "flow_declared",
+          "exit_code": 0,
+          "step_results": [
+            {
+              "id": 1,
+              "status": "done"
+            }
+          ],
+          "marker_valid": true,
+          "completed_step_count": 1
+        },
+        "agentbc.terminal_delivery": {
+          "version": 1,
+          "delivery_id": "46be56a4-3c5e-4c86-8a66-73698177c449",
+          "terminal_state": "completed",
+          "terminal_event": "task.finalized",
+          "committed_at": "2026-10-07T16:21:24.996680Z",
+          "stages": {
+            "report": {
+              "state": "succeeded",
+              "attempts": 1,
+              "last_error_code": ""
+            },
+            "record": {
+              "state": "succeeded",
+              "attempts": 1,
+              "last_error_code": ""
+            },
+            "index": {
+              "state": "succeeded",
+              "attempts": 1,
+              "last_error_code": ""
+            },
+            "file_notification": {
+              "state": "succeeded",
+              "attempts": 1,
+              "last_error_code": ""
+            },
+            "ui_notification": {
+              "state": "succeeded",
+              "attempts": 1,
+              "last_error_code": ""
+            }
+          },
+          "updated_at": "2026-10-07T16:21:29.824197Z"
+        }
+      },
+      "id": "G9B5-001",
+      "title": "Windows codex full permission write-read verification",
+      "status": "completed",
+      "assignee": "codex",
+      "steps": [
+        {
+          "id": 1,
+          "description": "Windows Docker codex execution verification. In this task assigned artifact root only, create codex-full-verify.txt containing exactly WINDOWS_CODEX_FULL_VERIFY_OK, then read the same file back and verify its content. This task was explicitly dispatched with full permission. Use the supplied runtime mode without changing global settings or adding overrides. If a permission or runtime error occurs, report it truthfully; do not bypass it. Do not access credentials, network tools, other projects, or settings. Report the actual outcome and required AGENTBC_FINAL_CALLBACK for this task; mark step 1 done only after successful write and read.",
+          "record": "steps/01.json",
+          "status": "done",
+          "result": {
+            "status": "done",
+            "executor_result": {
+              "id": 1,
+              "status": "done"
+            }
+          }
+        }
+      ],
+      "created_by": "codex",
+      "created_at": "2026-10-07T15:54:37.719232Z",
+      "updated_at": "2026-10-07T16:21:24.996680Z",
+      "intervention": {
+        "latest_correction_id": null
+      },
+      "errors": [
+        {
+          "code": "executor_timeout",
+          "message": "codex safety runtime exceeded after 300s",
+          "details": {
+            "executor": "codex",
+            "result": {
+              "events_seen": 8,
+              "event_types": [
+                "thread.started",
+                "turn.started",
+                "error",
+                "item.completed"
+              ],
+              "reason": "codex safety runtime exceeded after 300s",
+              "timeout_is_failure": false,
+              "failure": {
+                "kind": "executor_timeout",
+                "layer": "executor",
+                "message": "codex safety runtime exceeded after 300s",
+                "retryable": true
+              },
+              "extensions": {
+                "executor": {
+                  "codex": {
+                    "agent_bin": "/opt/agentbc/bin/codex",
+                    "agent_bin_source": "extra_path",
+                    "capability_level": 2,
+                    "last_run_id": "codex-G9B5-001-af2fd57e",
+                    "last_run": {
+                      "run_id": "codex-G9B5-001-af2fd57e",
+                      "workspace": "/data/workspace/tasks/artifacts/2026-10-07/G9B5",
+                      "permission": {
+                        "version": 2,
+                        "configured_mode": "inherit",
+                        "inherited_mode": null,
+                        "task_override": "full",
+                        "requested_mode": "full",
+                        "effective_mode": "full",
+                        "selection_source": "explicit_task",
+                        "selection_strategy": "explicit",
+                        "resolved_base_mode": "full",
+                        "resolution_state": "frozen",
+                        "approval_policy": "none",
+                        "scope": "task",
+                        "mapping": {
+                          "codex": {
+                            "transport": "cli",
+                            "capability_id": "codex.bypass_approvals_and_sandbox",
+                            "args": [
+                              "--dangerously-bypass-approvals-and-sandbox"
+                            ],
+                            "env": {},
+                            "decisions": null,
+                            "overrides_native": true,
+                            "executor": "codex",
+                            "mode": "full",
+                            "scope": "executor_subprocess",
+                            "direct_args": [
+                              "--dangerously-bypass-approvals-and-sandbox"
+                            ]
+                          },
+                          "claude": {
+                            "transport": "cli",
+                            "capability_id": "claude.dangerously_skip_permissions",
+                            "args": [
+                              "--dangerously-skip-permissions"
+                            ],
+                            "env": {},
+                            "decisions": null,
+                            "overrides_native": true,
+                            "executor": "claude",
+                            "mode": "full",
+                            "scope": "executor_subprocess",
+                            "direct_args": [
+                              "--dangerously-skip-permissions"
+                            ]
+                          },
+                          "hermes": {
+                            "transport": "direct",
+                            "capability_id": "hermes.cli.full.yolo",
+                            "args": [
+                              "--yolo"
+                            ],
+                            "env": {},
+                            "decisions": null,
+                            "overrides_native": true,
+                            "executor": "hermes",
+                            "mode": "full",
+                            "scope": "executor_subprocess",
+                            "direct_args": [
+                              "--yolo"
+                            ]
+                          }
+                        },
+                        "permission_args": []
+                      },
+                      "writable_roots": [
+                        "/data/workspace/tasks/artifacts/2026-10-07/G9B5",
+                        "/data/workspace/record"
+                      ],
+                      "events_seen": 8,
+                      "returncode": null
+                    }
+                  }
+                }
+              },
+              "execution_session": {
+                "version": 1,
+                "executor": "codex",
+                "session_id": "01a11713-16a3-74d2-a49e-645e6286a9b2",
+                "resumed": false,
+                "persistence": "persistent",
+                "source": "jsonl_thread_started"
+              }
+            },
+            "progress": {
+              "events_seen": 8
+            }
+          },
+          "created_at": "2026-10-07T15:59:39.097232Z"
+        }
+      ],
+      "workspace": {
+        "customer_dir": false,
+        "customer_path": "",
+        "project_root": "/data/workspace/tasks/artifacts/2026-10-07/G9B5",
+        "default_path": "/data/workspace/tasks/artifacts/2026-10-07/G9B5",
+        "agentbc_root": "/data/workspace",
+        "root": "/data/workspace/tasks/artifacts/2026-10-07/G9B5",
+        "artifact_root": "/data/workspace/tasks/artifacts/2026-10-07/G9B5",
+        "artifacts_dir": "/data/workspace/tasks/artifacts/2026-10-07/G9B5",
+        "report_root": "/data/workspace/tasks/report/2026-10-07/G9B5",
+        "task_file": "/data/workspace/tasks/report/2026-10-07/G9B5/G9B5-001-task.md",
+        "report_file": "/data/workspace/tasks/report/2026-10-07/G9B5/G9B5-001-report.md",
+        "output_dir": "/data/workspace/tasks/report/2026-10-07/G9B5",
+        "task_code": "G9B5",
+        "iteration": "001",
+        "task_date": "2026-10-07",
+        "chain_id": "G9B5",
+        "chain_token": "G9B5",
+        "chain_dir": "G9B5",
+        "chain_task_id": "001",
+        "chain_output_dir": "/data/workspace/tasks/report/2026-10-07/G9B5",
+        "internal_task_dir": "/data/workspace/record/G9B5/001"
+      },
+      "report": null,
+      "session_id": null,
+      "revival": {
+        "version": 1,
+        "eligible": false,
+        "allowed_next_actions": [],
+        "recommended_action": "",
+        "error_codes": [
+          "revival_source_status_invalid"
+        ],
+        "warnings": [],
+        "reservation": {
+          "revival_id": "REV-ebcaed5d5676433ba05dcb3c02ebc401",
+          "operation": "retry",
+          "state": "committed",
+          "created_at": "2026-10-07T16:20:45.302794Z"
+        },
+        "replay_revival_id": ""
+      },
+      "health": {
+        "state": "completed",
+        "color": "gray",
+        "stale_after_s": 300,
+        "long_stale_after_s": 600,
+        "startup_grace_s": 10,
+        "temp_file": "/data/workspace/record/G9B5/001/.G9B5-001.run.temp",
+        "run_log": "/data/workspace/record/G9B5/001/G9B5-001-run.log",
+        "last_progress_at": "",
+        "last_progress_age_s": null,
+        "run_lease_state": "",
+        "run_lease_pid": null,
+        "runner_alive": null,
+        "message": "",
+        "source": ""
+      },
+      "execution_policy": {
+        "version": 1,
+        "resources": null,
+        "session": {
+          "retain": false,
+          "session_id": "01a1172a-e808-7540-8551-046c816c824d",
+          "session_state": "terminal",
+          "project_mode": "none",
+          "cleanup": {
+            "capability": "supported",
+            "state": "succeeded",
+            "attempts": 1,
+            "error_code": "",
+            "retryable": false,
+            "version": 5,
+            "strategy": "container_session_archive_then_delete",
+            "phase": "delete_acknowledged",
+            "verification": {
+              "cli": {
+                "status": "absent",
+                "checked_at": "2026-10-07T16:22:17.296908Z"
+              },
+              "desktop_backend": {
+                "status": "not_applicable",
+                "checked_at": "2026-10-07T16:22:16.837539Z"
+              },
+              "desktop_live": {
+                "status": "not_applicable",
+                "checked_at": "2026-10-07T16:22:16.837539Z"
+              },
+              "desktop": {
+                "status": "not_applicable",
+                "checked_at": "2026-10-07T16:22:16.837539Z"
+              }
+            },
+            "commands": {
+              "desktop_archive": {
+                "status": "not_applicable",
+                "checked_at": "2026-10-07T16:22:16.837539Z",
+                "request_digest": "",
+                "route_digest": "",
+                "app_instance_digest": ""
+              },
+              "app_server_archive": {
+                "status": "acknowledged",
+                "checked_at": "2026-10-07T16:22:16.981071Z",
+                "request_digest": "",
+                "route_digest": "",
+                "app_instance_digest": ""
+              },
+              "delete": {
+                "status": "acknowledged",
+                "checked_at": "2026-10-07T16:22:17.296908Z",
+                "request_digest": "",
+                "route_digest": "",
+                "app_instance_digest": ""
+              },
+              "archive": {
+                "status": "not_applicable",
+                "checked_at": "2026-10-07T16:22:16.837539Z",
+                "request_digest": "",
+                "route_digest": "",
+                "app_instance_digest": ""
+              }
+            }
+          }
+        },
+        "permission_grant": null,
+        "auxiliary_sessions": [],
+        "auxiliary_aggregate": {
+          "state": "blocked",
+          "total": 0,
+          "resolved": 0,
+          "unresolved": 0
+        },
+        "terminal_delivery": {
+          "version": 1,
+          "delivery_id": "46be56a4-3c5e-4c86-8a66-73698177c449",
+          "terminal_state": "completed",
+          "terminal_event": "task.finalized",
+          "committed_at": "2026-10-07T16:21:24.996680Z",
+          "stages": {
+            "report": {
+              "state": "succeeded",
+              "attempts": 1,
+              "last_error_code": ""
+            },
+            "record": {
+              "state": "succeeded",
+              "attempts": 1,
+              "last_error_code": ""
+            },
+            "index": {
+              "state": "succeeded",
+              "attempts": 1,
+              "last_error_code": ""
+            },
+            "file_notification": {
+              "state": "succeeded",
+              "attempts": 1,
+              "last_error_code": ""
+            },
+            "ui_notification": {
+              "state": "succeeded",
+              "attempts": 1,
+              "last_error_code": ""
+            }
+          },
+          "updated_at": "2026-10-07T16:21:29.824197Z"
+        },
+        "delivery_health": {
+          "state": "succeeded",
+          "delivery_id": "46be56a4-3c5e-4c86-8a66-73698177c449",
+          "stages_total": 5,
+          "stages_succeeded": 5,
+          "stages_outstanding": 0,
+          "stages_retry_wait": 0,
+          "stages_in_progress": 0,
+          "outstanding_stages": [],
+          "attempts_total": 5,
+          "error_codes": [],
+          "healthy": true,
+          "updated_at": "2026-10-07T16:21:29.824197Z"
+        },
+        "progress": null
+      },
+      "chain_root_task_id": "G9B5-001",
+      "head_task_ids": [
+        "G9B5-001"
+      ],
+      "is_chain_head": true,
+      "chain_anomalies": [],
+      "parent_task_id": null,
+      "base_task_id": "G9B5-001",
+      "iteration_index": 1,
+      "branch_mode": "linear",
+      "task_code": "G9B5",
+      "iteration": "001",
+      "task_date": "2026-10-07",
+      "chain_task_id": "001",
+      "has_final_callback": true,
+      "report_ready": true,
+      "run_lease_state": "closed",
+      "execution": {
+        "internal_status": "completed",
+        "lease_state": "closed",
+        "run_intervals": [
+          {
+            "run_id": "codex-G9B5-001-af2fd57e",
+            "executor_id": "codex",
+            "attempt_index": 0,
+            "started_at": "2026-10-07T15:54:38.673000Z",
+            "ended_at": "2026-10-07T15:54:38.989227Z",
+            "duration_s": 0.316,
+            "state": "stale"
+          },
+          {
+            "run_id": "codex-G9B5-001-210c18ac",
+            "executor_id": "codex",
+            "attempt_index": 1,
+            "started_at": "2026-10-07T16:20:46.228586Z",
+            "ended_at": "2026-10-07T16:21:24.979899Z",
+            "duration_s": 38.751,
+            "state": "closed"
+          }
+        ],
+        "attempt_index": 1,
+        "attempt_started_at": "2026-10-07T16:20:45.381002Z",
+        "worker_run_id": "runner-worker-b9f9b7c0697d",
+        "dispatch_status": "accepted",
+        "worker_pid": 9312,
+        "monitor_status": "disabled",
+        "executor_run_id": "codex-G9B5-001-210c18ac",
+        "executor_id": "codex",
+        "started_at": "2026-10-07T16:20:46.228586Z",
+        "last_heartbeat_at": "2026-10-07T16:21:24.979899Z",
+        "runner_status": "completed",
+        "pid": 9312,
+        "output_truncated": false
+      },
+      "timing": {
+        "task_id": "G9B5-001",
+        "wall_duration_s": 1607.277,
+        "execution_duration_s": 39.067,
+        "last_run_duration_s": 38.751,
+        "attempt_index": 1,
+        "attempt_started_at": "2026-10-07T16:20:45.381002Z",
+        "attempt_wall_duration_s": 39.616,
+        "attempt_execution_duration_s": 38.751,
+        "attempt_run_count": 1,
+        "attempt_run_intervals": [
+          {
+            "run_id": "codex-G9B5-001-210c18ac",
+            "executor_id": "codex",
+            "attempt_index": 1,
+            "started_at": "2026-10-07T16:20:46.228586Z",
+            "ended_at": "2026-10-07T16:21:24.979899Z",
+            "duration_s": 38.751,
+            "state": "closed",
+            "source": "current_lease",
+            "execution_duration_s": 38.751
+          }
+        ],
+        "waiting_duration_s": 0.0,
+        "evidence_quality": "authoritative",
+        "execution_duration_known": true,
+        "run_count": 2,
+        "run_intervals": [
+          {
+            "run_id": "codex-G9B5-001-af2fd57e",
+            "executor_id": "codex",
+            "started_at": "2026-10-07T15:54:38.673000Z",
+            "ended_at": "2026-10-07T15:54:38.989227Z",
+            "duration_s": 0.316,
+            "state": "stale",
+            "source": "recorded",
+            "attempt_index": 0,
+            "execution_duration_s": 0.316
+          },
+          {
+            "run_id": "codex-G9B5-001-210c18ac",
+            "executor_id": "codex",
+            "attempt_index": 1,
+            "started_at": "2026-10-07T16:20:46.228586Z",
+            "ended_at": "2026-10-07T16:21:24.979899Z",
+            "duration_s": 38.751,
+            "state": "closed",
+            "source": "current_lease",
+            "execution_duration_s": 38.751
+          }
+        ],
+        "lease_state": "closed"
+      },
+      "debug": {
+        "execution": {
+          "internal_status": "completed",
+          "lease_state": "closed",
+          "run_intervals": [
+            {
+              "run_id": "codex-G9B5-001-af2fd57e",
+              "executor_id": "codex",
+              "attempt_index": 0,
+              "started_at": "2026-10-07T15:54:38.673000Z",
+              "ended_at": "2026-10-07T15:54:38.989227Z",
+              "duration_s": 0.316,
+              "state": "stale"
+            },
+            {
+              "run_id": "codex-G9B5-001-210c18ac",
+              "executor_id": "codex",
+              "attempt_index": 1,
+              "started_at": "2026-10-07T16:20:46.228586Z",
+              "ended_at": "2026-10-07T16:21:24.979899Z",
+              "duration_s": 38.751,
+              "state": "closed"
+            }
+          ],
+          "attempt_index": 1,
+          "attempt_started_at": "2026-10-07T16:20:45.381002Z",
+          "worker_run_id": "runner-worker-b9f9b7c0697d",
+          "dispatch_status": "accepted",
+          "worker_pid": 9312,
+          "monitor_status": "disabled",
+          "executor_run_id": "codex-G9B5-001-210c18ac",
+          "executor_id": "codex",
+          "started_at": "2026-10-07T16:20:46.228586Z",
+          "last_heartbeat_at": "2026-10-07T16:21:24.979899Z",
+          "runner_status": "completed",
+          "pid": 9312,
+          "output_truncated": false
+        },
+        "timing": {
+          "task_id": "G9B5-001",
+          "wall_duration_s": 1607.277,
+          "execution_duration_s": 39.067,
+          "last_run_duration_s": 38.751,
+          "attempt_index": 1,
+          "attempt_started_at": "2026-10-07T16:20:45.381002Z",
+          "attempt_wall_duration_s": 39.616,
+          "attempt_execution_duration_s": 38.751,
+          "attempt_run_count": 1,
+          "attempt_run_intervals": [
+            {
+              "run_id": "codex-G9B5-001-210c18ac",
+              "executor_id": "codex",
+              "attempt_index": 1,
+              "started_at": "2026-10-07T16:20:46.228586Z",
+              "ended_at": "2026-10-07T16:21:24.979899Z",
+              "duration_s": 38.751,
+              "state": "closed",
+              "source": "current_lease",
+              "execution_duration_s": 38.751
+            }
+          ],
+          "waiting_duration_s": 0.0,
+          "evidence_quality": "authoritative",
+          "execution_duration_known": true,
+          "run_count": 2,
+          "run_intervals": [
+            {
+              "run_id": "codex-G9B5-001-af2fd57e",
+              "executor_id": "codex",
+              "started_at": "2026-10-07T15:54:38.673000Z",
+              "ended_at": "2026-10-07T15:54:38.989227Z",
+              "duration_s": 0.316,
+              "state": "stale",
+              "source": "recorded",
+              "attempt_index": 0,
+              "execution_duration_s": 0.316
+            },
+            {
+              "run_id": "codex-G9B5-001-210c18ac",
+              "executor_id": "codex",
+              "attempt_index": 1,
+              "started_at": "2026-10-07T16:20:46.228586Z",
+              "ended_at": "2026-10-07T16:21:24.979899Z",
+              "duration_s": 38.751,
+              "state": "closed",
+              "source": "current_lease",
+              "execution_duration_s": 38.751
+            }
+          ],
+          "lease_state": "closed"
+        },
+        "permission": {
+          "version": 2,
+          "configured_mode": "inherit",
+          "inherited_mode": null,
+          "task_override": "full",
+          "requested_mode": "full",
+          "effective_mode": "full",
+          "selection_source": "explicit_task",
+          "selection_strategy": "explicit",
+          "resolved_base_mode": "full",
+          "resolution_state": "frozen",
+          "approval_policy": "none",
+          "scope": "task",
+          "mapping": {
+            "codex": {
+              "transport": "cli",
+              "capability_id": "codex.bypass_approvals_and_sandbox",
+              "args": [
+                "--dangerously-bypass-approvals-and-sandbox"
+              ],
+              "env": {},
+              "decisions": null,
+              "overrides_native": true,
+              "executor": "codex",
+              "mode": "full",
+              "scope": "executor_subprocess",
+              "direct_args": [
+                "--dangerously-bypass-approvals-and-sandbox"
+              ]
+            },
+            "claude": {
+              "transport": "cli",
+              "capability_id": "claude.dangerously_skip_permissions",
+              "args": [
+                "--dangerously-skip-permissions"
+              ],
+              "env": {},
+              "decisions": null,
+              "overrides_native": true,
+              "executor": "claude",
+              "mode": "full",
+              "scope": "executor_subprocess",
+              "direct_args": [
+                "--dangerously-skip-permissions"
+              ]
+            },
+            "hermes": {
+              "transport": "direct",
+              "capability_id": "hermes.cli.full.yolo",
+              "args": [
+                "--yolo"
+              ],
+              "env": {},
+              "decisions": null,
+              "overrides_native": true,
+              "executor": "hermes",
+              "mode": "full",
+              "scope": "executor_subprocess",
+              "direct_args": [
+                "--yolo"
+              ]
+            }
+          },
+          "permission_args": []
+        }
+      }
+    }
+  },
+  "acceptance": "full write/read and terminal lifecycle passed; progress receipt unbound and stale prior failure in report remain"
+}

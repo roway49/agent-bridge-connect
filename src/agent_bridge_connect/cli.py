@@ -91,6 +91,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    webui = sub.add_parser("webui", help="Manage the read-only local WebUI.")
+    webui.add_argument("--config", type=Path)
+    webui.set_defaults(webui_action="start", no_open=False)
+    web_commands = webui.add_subparsers(dest="webui_action")
+    for action in ("start", "close", "status", "serve"):
+        command = web_commands.add_parser(action)
+        command.add_argument("--config", type=Path, default=argparse.SUPPRESS)
+        if action == "start":
+            command.add_argument("--no-open", action="store_true", help="Print the private link without opening a browser.")
+        if action == "serve":
+            command.add_argument("--root", type=Path)
+            command.add_argument("--report-root", type=Path)
+            command.add_argument("--assets", type=Path, help="Built static assets (development).")
+            command.add_argument("--port", type=int, default=0)
+            command.add_argument("--listen-host", choices=("127.0.0.1", "0.0.0.0"), default="127.0.0.1")
+            command.add_argument("--public-origin", help="Exact loopback host origin for a container port mapping.")
+            command.add_argument("--launch-file", type=Path, help="Write the private launch URL to a new 0600 file instead of stdout.")
+
     setup = sub.add_parser("setup", help="Prepare AgentBC integrations.")
     setup_modes = setup.add_mutually_exclusive_group()
     setup_modes.add_argument("--show", action="store_true", help="Scan and display setup state without changing files.")
@@ -144,6 +162,11 @@ def build_parser() -> argparse.ArgumentParser:
     hermes_sub = hermes.add_subparsers(dest="hermes_command", required=True)
     hermes_turns = hermes_sub.add_parser("max-turns", help="Set Hermes turns for future executor runs.")
     hermes_turns.add_argument("turns", type=_positive_integer)
+
+    approval = sub.add_parser("approval", help="Configure approval waiting time.")
+    approval_sub = approval.add_subparsers(dest="approval_command", required=True)
+    max_time = approval_sub.add_parser("max-time", help="Set maximum approval waiting time in seconds; omit to inspect.")
+    max_time.add_argument("seconds", type=_positive_integer, nargs="?")
 
     session = sub.add_parser("session", help="Configure executor temporary-session handling.")
     session_sub = session.add_subparsers(dest="session_command", required=True)
@@ -299,6 +322,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Approve the single task-scoped contained-full elevation.",
     )
     response.add_argument("--deny", action="store_true")
+    task_respond.add_argument(
+        "--denial-source", choices=("user", "timeout", "dialog_closed"), default="user",
+        help="Denial origin for host dialog bridges; valid only with --deny.",
+    )
     response.add_argument(
         "--permission-option",
         dest="permission_option",
@@ -436,6 +463,7 @@ def build_parser() -> argparse.ArgumentParser:
     task_handoff.add_argument("id")
     task_handoff.add_argument("--to", required=True)
     task_handoff.add_argument("--message")
+    task_handoff.add_argument("--steps", type=Path, help="Structured steps for a completed-source handoff; message is context only.")
     task_handoff.add_argument(
         "--image",
         action="append",
@@ -915,12 +943,6 @@ def command_task_status(args: argparse.Namespace) -> int:
                 return 1
             resolved_task_id = str(resolution["resolved_task_id"])
             while True:
-                try:
-                    from .run_lease import reconcile_task
-
-                    reconcile_task(resolved_task_id, service.board_root)
-                except PermissionError:
-                    pass
                 status = _decorate_task_status(service.get_task(resolved_task_id), service.board_root)
                 payload = {
                     **resolution,
@@ -940,12 +962,6 @@ def command_task_status(args: argparse.Namespace) -> int:
 
     resolved_task_id = resolution.get("resolved_task_id")
     if resolved_task_id is not None:
-        try:
-            from .run_lease import reconcile_task
-
-            reconcile_task(str(resolved_task_id), service.board_root)
-        except PermissionError:
-            pass
         status = _decorate_task_status(service.get_task(str(resolved_task_id)), service.board_root)
         resolution = {
             **resolution,
@@ -972,6 +988,7 @@ def command_task_logs(args: argparse.Namespace) -> int:
     stdout_offset = 0
     stderr_offset = 0
     last_status_line = ""
+    last_log_run_id = None
     last_status_print_at = 0.0
     while True:
         status = task_to_status(service.get_task(args.id), service)
@@ -990,6 +1007,9 @@ def command_task_logs(args: argparse.Namespace) -> int:
                 last_status_print_at = now
             time.sleep(max(args.interval, 0.1))
             continue
+        if run_id != last_log_run_id:
+            stdout_offset = stderr_offset = 0
+            last_log_run_id = run_id
         stdout = str(remote.get("stdout") or "")
         stderr = str(remote.get("stderr") or "")
         if len(stdout) > stdout_offset:
@@ -1059,6 +1079,10 @@ def command_task_respond(args: argparse.Namespace) -> int:
             "--permission-option <handle> (or --approve/--deny) instead."
         )
         return 1
+    denial_source = getattr(args, "denial_source", "user")
+    if denial_source != "user" and not getattr(args, "deny", False):
+        print("respond_error: denial_source_requires_deny")
+        return 1
     permission_option = str(getattr(args, "permission_option", "") or "").strip()
     if permission_option:
         response_type, message = "permission_option", permission_option
@@ -1069,7 +1093,10 @@ def command_task_respond(args: argparse.Namespace) -> int:
     elif args.approve:
         response_type, message = "approve", ""
     else:
-        response_type, message = "deny", ""
+        from .notifications import PERMISSION_DIALOG_TIMEOUT_RESPONSE, PERMISSION_DIALOG_CLOSED_RESPONSE
+        response_type = "deny"
+        message = {"timeout": PERMISSION_DIALOG_TIMEOUT_RESPONSE,
+                   "dialog_closed": PERMISSION_DIALOG_CLOSED_RESPONSE}.get(denial_source, "")
     try:
         result = RunnerClient().respond_task(
             args.id,
@@ -1094,8 +1121,6 @@ def command_task_respond(args: argparse.Namespace) -> int:
 
 def _execution_snapshot(task_id: str, board_root: Path, status: dict) -> dict:
     from .run_lease import load_lease
-    from .runner import RunnerClient, RunnerError
-
     extensions = status.get("extensions") or {}
     execution = dict(extensions.get("agentbc.execution") or {})
     lease = load_lease(task_id, Path(board_root))
@@ -1113,21 +1138,19 @@ def _execution_snapshot(task_id: str, board_root: Path, status: dict) -> dict:
         )
     else:
         execution["lease_state"] = "closed"
-    run_id = execution.get("executor_run_id") or execution.get("worker_run_id")
-    if run_id:
-        try:
-            remote = RunnerClient().status(str(run_id))
-        except RunnerError as exc:
-            execution["runner_status"] = "unavailable"
-            execution["runner_error"] = str(exc)
-        else:
-            execution.update(
-                {
-                    "runner_status": remote.get("status"),
-                    "pid": remote.get("pid"),
-                    "output_truncated": remote.get("output_truncated", False),
-                }
-            )
+    if status.get('status') in _TASK_TERMINAL_STATUSES and not execution.get('worker_run_id'):
+        if not execution.get('log_worker_run_id'):
+            from .task_store import TaskStore
+            for event in reversed(TaskStore(board_root).read_events(task_id)):
+                if event.get('event_type') == 'worker_dispatched' and event.get('task_id') == task_id:
+                    execution['log_worker_run_id'] = event.get('worker_run_id')
+                    break
+    remote, _, _, error = _task_log_remote(execution)
+    if remote is not None:
+        execution.update(runner_status=remote.get('status'), pid=remote.get('pid'),
+                         output_truncated=remote.get('output_truncated', False))
+    elif error:
+        execution.update(runner_status='unavailable', runner_error=error)
     return execution
 
 
@@ -1187,6 +1210,9 @@ def _task_log_remote(execution: dict) -> tuple[dict | None, str | None, str | No
         and worker_run_id != executor_run_id
     ):
         candidates.append((worker_run_id, "worker"))
+    historical = execution.get('log_worker_run_id')
+    if isinstance(historical, str) and historical and historical not in {item[0] for item in candidates}:
+        candidates.append((historical, 'worker_history'))
     if not candidates:
         return None, None, None, None
 
@@ -1231,6 +1257,12 @@ def command_task_intervention(args: argparse.Namespace) -> int:
     if args.task_command == "handoff":
         from .runner import RunnerClient, RunnerError
 
+        try:
+            steps_path = _optional_path_arg(getattr(args, "steps", None))
+            handoff_steps = load_steps(steps_path, structured_handoff=True) if steps_path else None
+        except (ABCError, OSError, ValueError) as exc:
+            print(f"handoff_steps_invalid: {exc}")
+            return 1
         if not getattr(args, "dispatch", False):
             service = _task_service(args.root, config_path)
             try:
@@ -1247,6 +1279,7 @@ def command_task_intervention(args: argparse.Namespace) -> int:
             result = RunnerClient().handoff_and_dispatch(
                 source_task_id=args.id,
                 target_assignee=args.to,
+                steps=handoff_steps,
                 message=args.message,
                 branch=getattr(args, "branch", False),
                 board_root=args.root,
@@ -1916,6 +1949,17 @@ def command_worker_run(args: argparse.Namespace) -> int:
                         preallocated_run_id,
                     )
                     claimed_task = service.get_task(claimed_task.id)
+            if args.executor == "opencode" and getattr(args, "runner_authorize", False) is True:
+                preallocated_run_id = str(
+                    (claimed_task.extensions.get("agentbc.execution") or {}).get("worker_run_id") or ""
+                ).strip()
+                if not preallocated_run_id:
+                    raise ABCError("opencode_run_id_missing", "OpenCode worker requires a persisted Runner run ID.")
+                if (
+                    os.environ.get("AGENTBC_RUNNER_WORKER_ID") != preallocated_run_id
+                    or os.environ.get("AGENTBC_RUNNER_TASK_ID") != claimed_task.id
+                ):
+                    raise ABCError("opencode_run_id_conflict", "OpenCode worker identity does not match the Runner task/run binding.")
             if preallocated_run_id:
                 service.update_execution_metadata(
                     claimed_task.id,
@@ -2322,7 +2366,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                     isinstance(failure, dict)
                     and failure.get("kind") == "resource_exhaustion_receipt_mismatch"
                 )
-                if _is_explicit_retryable_failure(failure) or resource_receipt_mismatch:
+                if poll.status == "needs_recovery" or _is_explicit_retryable_failure(failure) or resource_receipt_mismatch:
                     terminal_marked = service.mark_task_needs_recovery(
                         task.id,
                         failure_code,
@@ -2402,7 +2446,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                 execution_session=execution_session,
             )
             _handoff_terminal_delivery(service, task.id)
-            # PERM-104-002 (E52M-003 review fix): ``verified`` may only come
+            # PERM-104-002 (compatibility review): ``verified`` may only come
             # from the structured success receipt of the declared target
             # action - a valid agent callback finalized by Core plus the
             # validated official session receipt.  ``poll.status ==
@@ -2495,7 +2539,7 @@ def command_worker_run(args: argparse.Namespace) -> int:
                         session_id=session_id,
                     )
             except ABCError as closure_exc:
-                # E52M-003: a failed closure is never swallowed.  Persist the
+                # Compatibility: a failed closure is never swallowed.  Persist the
                 # blocked state when the record is still writable and fail
                 # the completed task closed below.
                 try:
@@ -3455,6 +3499,34 @@ def command_executor_setting(executor: str, key: str, value: float) -> int:
     return 0
 
 
+def command_approval_max_time(seconds: int | None) -> int:
+    from .config import DEFAULT_APPROVAL_MAX_TIME
+
+    setting = "approval.max_time"
+    try:
+        if seconds is None:
+            config = load_config()
+            errors = validate_config(config)
+            if errors:
+                raise ABCError("config_invalid", "; ".join(errors))
+            changed = False
+        else:
+            def mutate(config: dict[str, Any]) -> None:
+                config.setdefault("approval", {})["max_time"] = seconds
+            config, changed = update_config_atomic(mutate)
+        value = config.get("approval", {}).get("max_time", DEFAULT_APPROVAL_MAX_TIME)
+    except (ABCError, OSError, ValueError, TypeError) as exc:
+        _print_config_command_error(exc, setting)
+        return 2
+    print(json.dumps({
+        "ok": True, "command": "approval max-time", "setting": setting,
+        "value": value, "unit": "seconds", "changed": changed,
+        "scope": "future_executor_runs",
+        "note": "New executor runs use this limit. Existing runs and open approvals keep their original deadline. Timeout denies permission.",
+    }, indent=2))
+    return 0
+
+
 def command_permissions(action: str, mode: str | None = None) -> int:
     setting = "permissions.mode"
     if action == "status":
@@ -3637,7 +3709,7 @@ def _print_config_command_error(exc: Exception, setting: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
-    if argv is None:
+    if argv is None and raw_argv[:1] != ["webui"]:
         _bootstrap_desktop_relay(raw_argv)
     if not raw_argv:
         parser = build_parser()
@@ -3654,6 +3726,10 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = build_parser()
     args = parser.parse_args(expanded_argv)
+
+    if args.command == "webui":
+        from .web_gateway import run_webui
+        return run_webui(args)
 
     if args.command == "setup":
         from .setup import run_clean, run_setup, run_show, run_update
@@ -3687,6 +3763,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "hermes":
         return command_executor_setting("hermes", "max_turns", args.turns)
+
+    if args.command == "approval":
+        return command_approval_max_time(args.seconds)
 
     if args.command == "session":
         if args.session_command == "acknowledge-desktop-archive":
@@ -3771,6 +3850,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _expand_shorthand(argv: list[str]) -> list[str]:
     known_commands = {
+        "webui",
         "setup",
         "update",
         "doctor",
@@ -3780,6 +3860,7 @@ def _expand_shorthand(argv: list[str]) -> list[str]:
         "hermes",
         "session",
         "permissions",
+        "approval",
         "record",
         "task",
         "worker",

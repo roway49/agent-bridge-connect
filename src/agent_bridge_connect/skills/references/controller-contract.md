@@ -29,11 +29,25 @@ Resolve the target executor before writing steps or issuing create/handoff:
 | Hermes | `hermes` |
 | Claude or Claude Code | `claude` |
 | Codex or ChatGPT Codex | `codex` |
+| OpenCode (1.0.5A development basic execution) | `opencode` |
 
 An explicit user choice has priority. Do not reinterpret one executor as another model, select an
 executor from task type, or create a mixed identity. If the user requests multiple executors, create
 the separate tasks or chain operations they requested. Mechanically verify that the user target,
 resolved executor, and final `--assignee` or `--to` value match.
+
+### OpenCode basic-execution boundary
+
+OpenCode supports fresh `task create --assignee opencode --dispatch` and separate
+`task dispatch` through Runner. Check `runner status` for an allowlisted `opencode`
+first; discovery alone does not establish authentication or full lifecycle support.
+Its L0 adapter supports `inherit`/`full`; `safe`, resume, approval continuation,
+retry, handoff (to or from OpenCode), reassignment and native session cleanup are
+unsupported. Do not select full or change the configured default to bypass a
+rejection. Keep the normal explicit-user-override permission rule below.
+An accepted dispatch or produced artifact is not a completed task; inspect the
+callback, task/run, process result and artifact separately. Real OpenCode and
+cross-platform acceptance remain separate from controlled fake routing tests.
 
 ## Permission Modes
 
@@ -174,6 +188,13 @@ agentbc task handoff <current-head-task-id> \
   --source-platform <controller-platform> \
   --dispatch
 ```
+
+For a completed source, supply `--steps <yaml-file>` to declare multiple follow-up steps.
+Each step requires an explicit consecutive integer `id` starting at 1 and a non-empty
+`description`. `--message` is context only when `--steps` is supplied; it never creates
+additional step IDs. Without `--steps`, the existing single-step handoff remains compatible.
+Failed/needs-recovery handoffs reject `--steps`: they inherit the frozen source steps and
+completed progress. Do not replace that recovery baseline with new requirements.
 
 If Core reports `stale_handoff_source`, use its suggested current head. If it reports
 `ambiguous_chain_head`, show the candidate heads and ask the user. Use `--branch` only for an explicit

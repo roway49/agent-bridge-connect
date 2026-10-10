@@ -180,7 +180,9 @@ class TerminalDeliveryCoordinator:
             return {"task_id": task_id, "status": "skipped", "blockers": ["task_not_found"], "attempted": []}
         occurred_at = _sanitize_now(now)
         evidence: dict[str, Any] = {"event_type": "", "notification": notification}
-        with self._task_lock(task_id):
+        with self._task_lock(task_id) as acquired:
+            if acquired is False:
+                return {"task_id": task_id, "status": "deferred", "blockers": ["delivery_lock_busy"], "attempted": []}
             task = self._read_task(task_id)
             if task is None:
                 return {
@@ -392,7 +394,7 @@ class TerminalDeliveryCoordinator:
                 # This process does not own the board-level side channel.  The
                 # stage stays pending without consuming an attempt so the Runner
                 # delivers it instead of a contained worker duplicating it.
-                return StageOutcome(deferred=True)
+                return StageOutcome(False, deferred=True)
             if self._file_notifier is not None:
                 payload = build_notification_payload(
                     self._notification_service(),
@@ -419,7 +421,7 @@ class TerminalDeliveryCoordinator:
                     "deferred": bool(result["file_deferred"]),
                 }
             if result["file_deferred"]:
-                return StageOutcome(deferred=True)
+                return StageOutcome(False, deferred=True)
             if result["file_ok"]:
                 return StageOutcome(True)
             return StageOutcome(False, error_code="file_notification_failed")
@@ -442,8 +444,10 @@ class TerminalDeliveryCoordinator:
                 deliver_terminal_notification,
             )
 
-            if "ui_notification" in self._deferred_stages:
-                return StageOutcome(deferred=True)
+            if "ui_notification" in self._deferred_stages or (
+                os.environ.get('AGENTBC_HEADLESS_NOTIFICATIONS') == 'stdout' and self._ui_notifier is None
+            ):
+                return StageOutcome(False, deferred=True)
             if self._ui_notifier is not None:
                 payload = build_notification_payload(
                     self._notification_service(),
@@ -460,9 +464,11 @@ class TerminalDeliveryCoordinator:
                 if evidence is not None:
                     evidence["ui_notification"] = {
                         "ok": bool(outcome.ok),
-                        "message": "",
+                        "message": "host terminal dialog acknowledged" if outcome.ok else "",
                         "delay_s": 0,
                     }
+                if outcome.deferred:
+                    return outcome
                 if outcome.ok:
                     return StageOutcome(True)
                 return StageOutcome(
@@ -606,8 +612,19 @@ class TerminalDeliveryCoordinator:
             try:
                 os.fchmod(fd, 0o600)
                 if fcntl is not None:
-                    fcntl.flock(fd, fcntl.LOCK_EX)
-                yield
+                    # A host dialog may hold this task lock for 30 seconds.
+                    # Container maintenance must keep serving approvals and IPC.
+                    nonblocking = os.environ.get('AGENTBC_HEADLESS_NOTIFICATIONS') == 'stdout' and self._ui_notifier is None
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0))
+                    except BlockingIOError:
+                        if not nonblocking:
+                            raise
+                        # Another owner is delivering. Keep its durable receipt
+                        # untouched; maintenance will retry unfinished stages.
+                        yield False
+                        return
+                yield True
             finally:
                 os.close(fd)
 

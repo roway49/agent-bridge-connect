@@ -1,0 +1,56 @@
+{
+  "date": "2026-10-06",
+  "image_id": "sha256:dab8c8aa90ddc5234fec70ebd994a30de3c5df24326bca417c89268ea2e3c530",
+  "claude_version": "2.1.247 (Claude Code)",
+  "sdk_version": "0.2.142",
+  "runner": {
+    "ok": true,
+    "status": "ready",
+    "pid": 7,
+    "python_executable": "/usr/local/bin/python3.11",
+    "module_path": "/probe/sdk-amd64/lib/python3.11/site-packages/agent_bridge_connect/__init__.py",
+    "executors": [
+      "claude",
+      "codex",
+      "hermes"
+    ],
+    "executor_commands": {
+      "claude": {
+        "path": "/opt/agentbc/bin/claude",
+        "source": "config"
+      },
+      "codex": {
+        "path": "/opt/cli/bin/codex",
+        "source": "config"
+      },
+      "hermes": {
+        "path": "/opt/agentbc/bin/hermes",
+        "source": "config"
+      }
+    },
+    "path_policy": {
+      "agent_input": "customer_path",
+      "default_customer_path": "default path",
+      "authorization": "runner_task_scoped"
+    },
+    "atomic_dispatch": true,
+    "desktop_archive_route": {
+      "status": "unavailable",
+      "capability": "unavailable",
+      "route_digest": "",
+      "app_instance_digest": ""
+    }
+  },
+  "imported_files": [
+    ".claude/settings.json",
+    ".claude.json"
+  ],
+  "excluded": [
+    "host project settings",
+    "mcpServers"
+  ],
+  "windows_source_unchanged": true,
+  "model_call_performed": false,
+  "desktop": "ready",
+  "webui_restored": true
+}

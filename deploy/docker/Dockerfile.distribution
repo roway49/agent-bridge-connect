@@ -1,0 +1,29 @@
+# Multi-architecture runtime build from pinned assets and dependency locks, no host venvs.
+ARG BASE_IMAGE=agentbc:mac-opencode-dev
+FROM ${BASE_IMAGE}
+USER root
+ARG TARGETARCH
+COPY --from=runtime-inputs /codex /opt/codex
+COPY --from=runtime-inputs /claude /opt/claude
+COPY --from=runtime-inputs /hermes-source /probe/hermes-source
+COPY deploy/docker/locks /build/locks
+COPY deploy/docker/runtime-lock.json /build/runtime-lock.json
+RUN --mount=from=runtime-inputs,source=/wheelhouse,target=/build/wheelhouse,ro python -m venv /probe/sdk-${TARGETARCH} \
+ && python -c "import json; from pathlib import Path; a=json.loads(Path('/build/runtime-lock.json').read_text())['assets']['claude-agent-sdk']['linux/${TARGETARCH}']; Path('/build/sdk-wheel.txt').write_text('/build/wheelhouse/'+a['url'].rsplit('/',1)[1]+' --hash=sha256:'+a['sha256'])" \
+ && /probe/sdk-${TARGETARCH}/bin/pip install --no-index --no-deps --require-hashes -r /build/sdk-wheel.txt \
+ && /probe/sdk-${TARGETARCH}/bin/pip install --no-cache-dir --find-links=/build/wheelhouse --require-hashes -r /build/locks/claude-linux-${TARGETARCH}.txt \
+ && /probe/sdk-${TARGETARCH}/bin/pip check \
+ && python -m venv /probe/hermes-${TARGETARCH} \
+ && /probe/hermes-${TARGETARCH}/bin/pip install --no-cache-dir --find-links=/build/wheelhouse --require-hashes -r /build/locks/hermes-build.txt -r /build/locks/hermes-runtime.txt \
+ && /probe/hermes-${TARGETARCH}/bin/pip install --no-build-isolation --no-deps -e /probe/hermes-source \
+ && /probe/hermes-${TARGETARCH}/bin/pip check \
+ && cp -a /usr/local/lib/python3.11/site-packages/agent_bridge_connect /probe/sdk-${TARGETARCH}/lib/python3.11/site-packages/ \
+ && mkdir -p /opt/agentbc/bin /profiles/codex /profiles/claude /profiles/hermes /profiles/opencode \
+ && chown -R 1000:1000 /profiles
+COPY deploy/docker/runtime_launcher.py /opt/agentbc/runtime_launcher.py
+RUN chmod 755 /opt/agentbc/runtime_launcher.py /opt/claude/claude \
+ && for name in codex claude hermes opencode; do cp /opt/agentbc/runtime_launcher.py /opt/agentbc/bin/$name; done \
+ && printf '#!/bin/sh\nexec /probe/sdk-%s/bin/python -m agent_bridge_connect.cli "$@"\n' "$TARGETARCH" > /usr/local/bin/agentbc \
+ && chmod 755 /usr/local/bin/agentbc
+ENV PATH=/opt/agentbc/bin:/probe/sdk-${TARGETARCH}/bin:/usr/local/bin:/usr/bin:/bin
+USER 1000:1000
