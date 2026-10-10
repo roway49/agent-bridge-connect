@@ -410,6 +410,7 @@ class _update_flow_UpdateResolutionTests(_update_flow_unittest.TestCase):
         payloads = {"https://example.test/releases": _update_flow_json.dumps(release).encode(), "https://example.test/manifest": manifest_bytes}
         return lambda url: payloads[url]
 
+    @_update_flow_mock.patch("agent_bridge_connect.update.__version__", "1.0.4a1")
     def test_verified_manifest_reports_available_or_current(self) -> None:
         available = _update_flow_check_for_update(releases_url="https://example.test/releases", fetch_bytes=self._responses())
         self.assertTrue(available["update_available"])
